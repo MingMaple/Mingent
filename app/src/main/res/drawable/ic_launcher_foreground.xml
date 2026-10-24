@@ -1,0 +1,38 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!--
+      Mingent 的字母 M：三个模块拼起来，不是一笔写成的字母。
+
+      结构（用户逐轮看过预览后定稿）：两根竖笔各内倾 1.5°（下端外张、上端内收），
+      中间一个独立 V 模块架在两根竖笔之间、与竖笔相接而不接顶 —— 参考的 J（两段将断未断）
+      与 P（竖线带一处凸起）都是「结构上留一处刻意的断/错」，这里用同一手法。
+
+      尺寸：整体是用户认可那版的等比放大 1.30 倍（字母高 28.6 单位）。原来那版在桌面 48dp 下
+      只占图标可视区的 31%，和参考应用（约 44%）并排会显得小、发虚，等比放大后约占 40%。
+      等比缩放而不是重新排坐标：结构关系（V 与竖笔的搭接量、断口、倾斜角）必须原样保留。
+
+      为什么用描边：单色几何字母在 48dp 最怕笔画糊在一起，描边 + 圆头在任意缩放都干净，
+      换粗细只改 strokeWidth。矢量绘制，任何密度由系统按目标像素重绘，不存在位图模糊。
+    -->
+    <path
+        android:pathData="M39.7,67.3 L40.449,38.7"
+        android:strokeColor="#2E2F33"
+        android:strokeWidth="7.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M68.3,67.3 L67.551,38.7"
+        android:strokeColor="#2E2F33"
+        android:strokeWidth="7.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M44.9,47.8 L54,58.2 L63.1,47.8"
+        android:strokeColor="#2E2F33"
+        android:strokeWidth="7.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

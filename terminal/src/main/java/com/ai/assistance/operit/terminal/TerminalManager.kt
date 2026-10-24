@@ -1,0 +1,1701 @@
+/*
+ * 本文件源自 Operit AI 项目（https://github.com/AAswordman/Operit）。
+ * Copyright (C) 2023-2024 Operit AI 项目团队
+ *
+ * 依 GNU Lesser General Public License v3.0 授权使用与分发，
+ * 许可证全文见仓库根目录 terminal/LICENSE；Mingent 对其所做的修改
+ * 同样以 LGPL-3.0 提供。
+ */
+
+package com.ai.assistance.operit.terminal
+
+import android.content.Context
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.BufferedWriter
+import java.io.File
+import java.io.IOException
+import java.nio.file.Files
+import kotlinx.coroutines.launch
+import java.nio.file.Paths
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.map
+import com.ai.assistance.operit.terminal.data.TerminalState
+import com.ai.assistance.operit.terminal.data.CommandHistoryItem
+import com.ai.assistance.operit.terminal.data.QueuedCommand
+import com.ai.assistance.operit.terminal.view.domain.OutputProcessor
+import java.util.UUID
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.withLock
+import com.ai.assistance.operit.terminal.data.PackageManagerType
+import com.ai.assistance.operit.terminal.data.SessionInitState
+import com.ai.assistance.operit.terminal.utils.SourceManager
+import com.ai.assistance.operit.terminal.utils.SSHConfigManager
+import com.ai.assistance.operit.terminal.utils.SSHDServerManager
+import com.ai.assistance.operit.terminal.provider.filesystem.FileSystemProvider
+import com.ai.assistance.operit.terminal.provider.filesystem.LocalFileSystemProvider
+import com.ai.assistance.operit.terminal.provider.filesystem.PRootBindMount
+import com.ai.assistance.operit.terminal.provider.filesystem.PRootMountMapping
+import com.ai.assistance.operit.terminal.provider.type.HiddenExecResult
+import com.ai.assistance.operit.terminal.provider.type.TerminalProvider
+import com.ai.assistance.operit.terminal.provider.type.TerminalType
+import com.ai.assistance.operit.terminal.provider.type.LocalTerminalProvider
+import com.ai.assistance.operit.terminal.provider.type.SSHTerminalProvider
+import com.ai.assistance.operit.terminal.data.TerminalSessionData
+import com.ai.assistance.operit.terminal.view.domain.ansi.AnsiTerminalEmulator
+
+class TerminalManager private constructor(
+    private val context: Context
+) {
+    internal val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val envInitMutex = Mutex()
+    private var isEnvInitialized = false
+
+    private val filesDir: File = context.filesDir
+    private val usrDir: File = File(filesDir, "usr")
+    private val binDir: File = File(usrDir, "bin")
+    private val nativeLibDir: String = context.applicationInfo.nativeLibraryDir
+    private val activeSessions = ConcurrentHashMap<String, TerminalSession>()
+    private val closingSessions = ConcurrentHashMap.newKeySet<String>()
+    
+    // SharedPreferences for reading settings
+    private val prefs = context.getSharedPreferences("terminal_settings", Context.MODE_PRIVATE)
+
+    // 核心组件
+    private val sessionManager = SessionManager(this)
+    private val outputProcessor = OutputProcessor(
+        onCommandExecutionEvent = { event ->
+            coroutineScope.launch {
+                _commandExecutionEvents.emit(event)
+            }
+        },
+        onDirectoryChangeEvent = { event ->
+            coroutineScope.launch {
+                _directoryChangeEvents.emit(event)
+            }
+        },
+        onCommandCompleted = { sessionId ->
+            coroutineScope.launch {
+                processNextQueuedCommand(sessionId)
+            }
+        }
+    )
+    private val sourceManager = SourceManager(context)
+    private val sshConfigManager = SSHConfigManager(context)
+    private val sshdServerManager = SSHDServerManager.getInstance(context)
+    
+    // 单例的 TerminalProvider
+    private var terminalProvider: TerminalProvider? = null
+    private val providerMutex = Mutex()
+
+    // 状态和事件流
+    private val _commandExecutionEvents = MutableSharedFlow<CommandExecutionEvent>()
+    val commandExecutionEvents: SharedFlow<CommandExecutionEvent> = _commandExecutionEvents.asSharedFlow()
+
+    private val _directoryChangeEvents = MutableSharedFlow<SessionDirectoryEvent>()
+    val directoryChangeEvents: SharedFlow<SessionDirectoryEvent> = _directoryChangeEvents.asSharedFlow()
+
+    // 暴露会话管理器的状态
+    val terminalState: StateFlow<TerminalState> = sessionManager.state
+
+    // 为了向后兼容，提供单独的状态流
+    val sessions = terminalState.map { it.sessions }
+    val currentSessionId = terminalState.map { it.currentSessionId }
+    val currentDirectory = terminalState.map { it.currentSession?.currentDirectory ?: "$ " }
+    val isInteractiveMode = terminalState.map { it.currentSession?.isInteractiveMode ?: false }
+    val interactivePrompt = terminalState.map { it.currentSession?.interactivePrompt ?: "" }
+    val isFullscreen = terminalState.map { it.currentSession?.isFullscreen ?: false }
+    val terminalEmulator = terminalState.map { it.currentSession?.ansiParser ?: AnsiTerminalEmulator() }
+
+    companion object {
+        @Volatile
+        private var INSTANCE: TerminalManager? = null
+
+        fun getInstance(context: Context): TerminalManager {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: TerminalManager(context.applicationContext).also { INSTANCE = it }
+            }
+        }
+
+        private const val TAG = "TerminalManager"
+        private const val UBUNTU_FILENAME = "ubuntu-noble-aarch64-pd-v4.18.0.tar.xz"
+        private const val MAX_HISTORY_ITEMS = 500
+        private const val MAX_OUTPUT_LINES_PER_ITEM = 1000
+
+        /** 合法的 shell 变量名：非法名 export 会报错并污染 stderr，宁可跳过。 */
+        private val ENV_NAME = Regex("[A-Za-z_][A-Za-z0-9_]*")
+        private const val TERMINAL_ENTER = "\r"
+    }
+
+    init {
+        // 在初始化时异步创建默认session
+        coroutineScope.launch {
+            try {
+                Log.d(TAG, "Creating default session...")
+                // 自动检测：如果有SSH配置则创建SSH会话，否则创建本地会话
+                val sshConfig = sshConfigManager.getConfig()
+                val isEnabled = sshConfigManager.isEnabled()
+                if (sshConfig != null && isEnabled) {
+                    Log.d(TAG, "Found SSH config, creating SSH session")
+                    createNewSession("SSH")
+                } else {
+                    Log.d(TAG, "No SSH config, creating local session")
+                    createNewSession("Local")
+                }
+                Log.d(TAG, "Default session created successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create default session", e)
+            }
+        }
+    }
+
+    /**
+     * 创建新会话 - 同步等待初始化完成
+     * 自动检测终端类型：如果配置了SSH则使用SSH，否则使用本地终端
+     * 
+     * @param title 会话标题
+     */
+    suspend fun createNewSession(
+        title: String? = null
+    ): TerminalSessionData {
+        // 自动检测终端类型
+        val terminalType = if (sshConfigManager.getConfig() != null && sshConfigManager.isEnabled()) {
+            TerminalType.SSH
+        } else {
+            TerminalType.LOCAL
+        }
+        
+        val newSession = sessionManager.createNewSession(title, terminalType)
+
+        // 异步初始化会话
+        coroutineScope.launch {
+            initializeSession(newSession.id)
+        }
+
+        // 等待会话初始化完成
+        val success = withTimeoutOrNull(30000) { // 30秒超时
+            terminalState.first { state ->
+                val session = state.sessions.find { it.id == newSession.id }
+                session?.initState == com.ai.assistance.operit.terminal.data.SessionInitState.READY
+            }
+        }
+
+        if (success == null) {
+            Log.e(TAG, "Session initialization timeout for session: ${newSession.id}")
+            // 初始化失败，移除会话
+            sessionManager.closeSession(newSession.id)
+            throw Exception("Session initialization timeout")
+        }
+
+        Log.d(TAG, "Session ${newSession.id} initialized successfully")
+        return sessionManager.getSession(newSession.id) ?: newSession
+    }
+
+    /**
+     * 切换到会话
+     */
+    fun switchToSession(sessionId: String) {
+        sessionManager.switchToSession(sessionId)
+    }
+
+    /**
+     * 关闭会话
+     */
+    fun closeSession(sessionId: String) {
+        sessionManager.closeSession(sessionId)
+    }
+
+    /**
+     * 会话关闭后的运行态清理（非持久化状态）。
+     */
+    fun onSessionClosed(sessionId: String) {
+        outputProcessor.clearSessionState(sessionId)
+    }
+    
+    /**
+     * 保存会话的滚动位置
+     */
+    fun saveScrollOffset(sessionId: String, scrollOffset: Float) {
+        sessionManager.saveScrollOffset(sessionId, scrollOffset)
+    }
+    
+    /**
+     * 获取会话的滚动位置
+     */
+    fun getScrollOffset(sessionId: String): Float {
+        return sessionManager.getScrollOffset(sessionId)
+    }
+
+    private fun createBusyboxSymlinks() {
+        val links = listOf(
+            "awk", "ash", "basename", "bzip2", "curl", "cp", "chmod", "cut", "cat", "du", "dd",
+            "find", "grep", "gzip", "hexdump", "head", "id", "lscpu", "mkdir", "realpath", "rm",
+            "sed", "stat", "sh", "tr", "tar", "uname", "xargs", "xz", "xxd"
+        )
+        val busybox = File(binDir, "busybox")
+        for (linkName in links) {
+            try {
+                createSymbolicLink(busybox, linkName, binDir, true)
+                Log.d(TAG, "Created busybox link for '$linkName'")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create link for '$linkName'", e)
+            }
+        }
+        try {
+            val fileLink = File(binDir, "file")
+            if (!fileLink.exists()) {
+                Files.createSymbolicLink(fileLink.toPath(), File("/system/bin/file").toPath())
+                Log.d(TAG, "Created symlink for 'file'")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create symlink for 'file'", e)
+        }
+    }
+
+    private fun writeInputToKernel(session: TerminalSessionData, input: String, source: String) {
+        val writer = session.sessionWriter ?: return
+        writer.write(input)
+        writer.flush()
+        Log.d(
+            TAG,
+            "Sent terminal input to kernel [source=$source, sessionId=${session.id}]: '${escapeInputForLog(input)}'"
+        )
+    }
+
+    private fun escapeInputForLog(input: String): String {
+        return buildString(input.length) {
+            input.forEach { char ->
+                when (char) {
+                    '\\' -> append("\\\\")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> {
+                        if (char.isISOControl()) {
+                            append("\\u")
+                            append(char.code.toString(16).padStart(4, '0'))
+                        } else {
+                            append(char)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 发送命令
+     */
+    suspend fun sendCommand(command: String, commandId: String? = null): String {
+        val actualCommandId = commandId ?: UUID.randomUUID().toString()
+        val session = sessionManager.getCurrentSession() ?: return actualCommandId
+
+        // Allow input during initialization (e.g. password prompt) or interactive mode
+        val isInitializing = session.initState != SessionInitState.READY
+        
+        if (session.isInteractiveMode || isInitializing) {
+            Log.d(TAG, "Session in interactive mode or initializing, sending as input: $command")
+            sendInput(command + TERMINAL_ENTER)
+            return actualCommandId
+        }
+
+        session.commandMutex.withLock {
+            if (session.currentExecutingCommand?.isExecuting == true) {
+                // 有命令正在执行，将新命令加入队列
+                session.commandQueue.add(QueuedCommand(actualCommandId, command))
+                Log.d(TAG, "Command queued: $command (id: $actualCommandId). Queue size: ${session.commandQueue.size}")
+            } else {
+                // 没有命令在执行，直接执行
+                executeCommandInternal(command, session, actualCommandId)
+            }
+        }
+        return actualCommandId
+    }
+
+    /**
+     * 向指定会话发送命令（不切换当前会话）
+     */
+    suspend fun sendCommandToSession(sessionId: String, command: String, commandId: String? = null): String {
+        val actualCommandId = commandId ?: UUID.randomUUID().toString()
+        val session = sessionManager.getSession(sessionId) ?: return actualCommandId
+
+        // 如果会话在交互模式，直接发送输入（不创建命令历史）
+        if (session.isInteractiveMode) {
+            Log.d(TAG, "Session $sessionId in interactive mode, sending as input: $command")
+            try {
+                writeInputToKernel(session, command + TERMINAL_ENTER, "interactive-session-command")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending input to session $sessionId", e)
+            }
+            return actualCommandId
+        }
+
+        session.commandMutex.withLock {
+            if (session.currentExecutingCommand?.isExecuting == true) {
+                // 有命令正在执行，将新命令加入队列
+                session.commandQueue.add(QueuedCommand(actualCommandId, command))
+                Log.d(TAG, "Command queued for session $sessionId: $command (id: $actualCommandId). Queue size: ${session.commandQueue.size}")
+            } else {
+                // 没有命令在执行，直接执行
+                executeCommandInternal(command, session, actualCommandId)
+            }
+        }
+        return actualCommandId
+    }
+
+    /**
+     * 处理队列中的下一个命令
+     */
+    private suspend fun processNextQueuedCommand(sessionId: String) {
+        val session = sessionManager.getSession(sessionId) ?: return
+
+        session.commandMutex.withLock {
+            if (session.currentExecutingCommand?.isExecuting == true) {
+                Log.w(TAG, "processNextQueuedCommand called, but a command is still executing. This should not happen.")
+                return@withLock
+            }
+
+            if (session.commandQueue.isNotEmpty()) {
+                val nextCommand = session.commandQueue.removeAt(0)
+                Log.d(TAG, "Processing next queued command: ${nextCommand.command} (id: ${nextCommand.id}). Queue size: ${session.commandQueue.size}")
+                executeCommandInternal(nextCommand.command, session, nextCommand.id)
+            }
+        }
+    }
+
+    /**
+     * 内部执行命令的函数, 必须在 commandMutex 锁内部调用
+     */
+    private suspend fun executeCommandInternal(command: String, session: TerminalSessionData, commandId: String) {
+        if (command.trim() == "clear") {
+            try {
+                writeInputToKernel(session, "clear$TERMINAL_ENTER", "command-clear")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending 'clear' command", e)
+            }
+        } else {
+            handleRegularCommand(command, session, commandId)
+            try {
+                val fullInput = "$command$TERMINAL_ENTER"
+                writeInputToKernel(session, fullInput, "command")
+                Log.d(TAG, "Sent command to PTY: $command")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending command", e)
+            }
+        }
+    }
+
+    /**
+     * 发送输入
+     */
+    fun sendInput(input: String) {
+        coroutineScope.launch(Dispatchers.IO) {
+            val session = sessionManager.getCurrentSession() ?: return@launch
+
+            try {
+                writeInputToKernel(session, input, "direct-input")
+
+                // 如果用户提供了交互式输入，则重置等待状态
+                if (session.isWaitingForInteractiveInput) {
+                    sessionManager.updateSession(session.id) {
+                        it.copy(isWaitingForInteractiveInput = false)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending input", e)
+            }
+        }
+    }
+
+    /**
+     * 发送中断信号
+     */
+    fun sendInterruptSignal() {
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                val currentSession = sessionManager.getCurrentSession()
+                currentSession?.let {
+                    writeInputToKernel(it, "\u0003", "interrupt")
+                    Log.d(TAG, "Sent interrupt signal (Ctrl+C) to session ${it.id}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending interrupt signal", e)
+            }
+        }
+    }
+
+    private fun initializeSession(sessionId: String) {
+        coroutineScope.launch {
+            val success = initializeEnvironment()
+            if (success) {
+                startSession(sessionId)
+            }
+        }
+    }
+
+    private fun startSession(sessionId: String) {
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Starting session...")
+                closingSessions.remove(sessionId)
+
+                // 获取单例的终端提供者
+                val provider = getTerminalProvider()
+
+                // 启动终端会话
+                val result = provider.startSession(sessionId)
+                val (terminalSession, pty) = result.getOrThrow()
+                val sessionWriter = terminalSession.stdin.writer()
+
+                // 启动读取协程
+                val readJob = launch {
+                    var reachedEof = false
+                    try {
+                        terminalSession.stdout.use { inputStream ->
+                            val buffer = ByteArray(4096)
+                            var bytesRead: Int
+                            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                                val chunk = String(buffer, 0, bytesRead)
+                                Log.d(TAG, "Read chunk: '$chunk'")
+                                outputProcessor.processOutput(sessionId, chunk, sessionManager)
+                            }
+                            reachedEof = true
+                        }
+                    } catch (e: java.io.InterruptedIOException) {
+                        Log.i(TAG, "Read job interrupted for session $sessionId.")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in read job for session $sessionId", e)
+                    } finally {
+                        if (closingSessions.remove(sessionId)) {
+                            return@launch
+                        }
+                        if (reachedEof || !terminalSession.process.isAlive) {
+                            handleTerminalSessionExit(sessionId, terminalSession)
+                        }
+                    }
+                }
+
+                // 更新会话信息
+                sessionManager.updateSession(sessionId) { session ->
+                    session.copy(
+                        terminalSession = terminalSession,
+                        pty = pty,
+                        sessionWriter = sessionWriter,
+                        readJob = readJob
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting session", e)
+            }
+        }
+    }
+
+    private fun handleTerminalSessionExit(sessionId: String, terminalSession: TerminalSession) {
+        if (sessionManager.getSession(sessionId) == null) {
+            return
+        }
+
+        val exitCode =
+            if (terminalSession.process.isAlive) {
+                -1
+            } else {
+                runCatching { terminalSession.process.waitFor() }
+                    .getOrElse {
+                        Log.w(TAG, "Failed to read exit code for session $sessionId", it)
+                        -1
+                    }
+            }
+
+        Log.i(TAG, "Terminal session $sessionId exited with code $exitCode")
+        outputProcessor.handleSessionExit(
+            sessionId = sessionId,
+            message = context.getString(R.string.terminal_exited_with_code, exitCode),
+            sessionManager = sessionManager
+        )
+
+        // 已退出的会话不能继续留在状态表中，否则同名 terminal.create 会复用已关闭的 PTY，
+        // 后续命令只会写入失效 writer 并等待一个永远不会到达的完成事件。下一次按名称创建时，
+        // 会话管理器会启动新的会话。
+        sessionManager.closeSession(sessionId)
+    }
+    
+    /**
+     * 获取或创建单例的终端提供者
+     */
+    private suspend fun getTerminalProvider(): TerminalProvider {
+        providerMutex.withLock {
+            if (terminalProvider == null) {
+                val sshConfig = sshConfigManager.getConfig()
+                val provider = if (sshConfig != null && sshConfigManager.isEnabled()) {
+                    Log.d(TAG, "Creating singleton SSH terminal provider")
+                    SSHTerminalProvider(context, sshConfig, this)
+                } else {
+                    Log.d(TAG, "Creating singleton local terminal provider")
+                    LocalTerminalProvider(context)
+                }
+                provider.connect().getOrThrow()
+                terminalProvider = provider
+            }
+        }
+        return terminalProvider!!
+    }
+
+    suspend fun initializeEnvironment(): Boolean {
+        if (isEnvInitialized) {
+            return withContext(Dispatchers.IO) {
+                try {
+                    val startScript = generateStartScript()
+                    File(filesDir, "common.sh").writeText(startScript.replace("\r\n", "\n").replace("\r", "\n"))
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "Environment script refresh failed", e)
+                    false
+                }
+            }
+        }
+
+        envInitMutex.lock()
+        try {
+            if (isEnvInitialized) {
+                return true
+            }
+
+            val success = withContext(Dispatchers.IO) {
+                try {
+                    Log.d(TAG, "Starting environment initialization...")
+
+                    // 1. Create necessary directories
+                    createDirectories()
+
+                    // 2. Link native libraries
+                    linkNativeLibs()
+                    createBusyboxSymlinks()
+
+                    // 3. Extract assets
+                    extractAssets()
+
+                    // 4. Generate and write startup script
+                    val startScript = generateStartScript()
+                    File(filesDir, "common.sh").writeText(startScript.replace("\r\n", "\n").replace("\r", "\n"))
+
+
+                    Log.d(TAG, "Environment initialization completed successfully.")
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "Environment initialization failed", e)
+                    false
+                }
+            }
+            if (success) {
+                isEnvInitialized = true
+            }
+            return success
+        } finally {
+            envInitMutex.unlock()
+        }
+    }
+
+    private fun createDirectories() {
+        if (!usrDir.exists()) {
+            usrDir.mkdirs()
+        }
+        if (!binDir.exists()) {
+            binDir.mkdirs()
+            Log.d(TAG, "Created bin directory at: ${binDir.absolutePath}")
+        }
+        File(filesDir, "tmp").mkdirs()
+    }
+
+    private fun linkNativeLibs() {
+        Log.d(TAG, "Linking native libraries from: $nativeLibDir")
+
+        val nativeLibDirFile = File(nativeLibDir)
+        if (!nativeLibDirFile.exists() || !nativeLibDirFile.isDirectory) {
+            Log.e(TAG, "Native library directory not found or is not a directory.")
+            return
+        }
+
+        Log.d(TAG, "Native lib directory contents:")
+        nativeLibDirFile.listFiles()?.forEach { file ->
+            Log.d(TAG, "  - ${file.name} (file ${file.length()} bytes)")
+        }
+
+        val busybox = File(binDir, "busybox")
+
+        // First, we need to link busybox itself so we can use it.
+        val busyboxSo = File(nativeLibDir, "libbusybox.so")
+        Log.d(TAG, "Checking busybox: libbusybox.so exists = ${busyboxSo.exists()}, busybox exists = ${busybox.exists()}")
+
+        if (!busyboxSo.exists()) {
+            Log.e(TAG, "libbusybox.so not found, cannot create busybox link")
+            return
+        }
+
+        // Always ensure proper busybox link - remove any existing file/broken link first
+        try {
+            val link = busybox.toPath()
+            val target = busyboxSo.toPath()
+
+            // Delete existing file/broken link if it exists to prevent FileAlreadyExistsException
+            Files.deleteIfExists(link)
+
+            // CRITICAL: Set execute permission on the target .so file before creating symlink
+            busyboxSo.setExecutable(true, false)
+
+            // Create the symbolic link
+            Files.createSymbolicLink(link, target)
+            Log.d(TAG, "Created busybox symbolic link using Java NIO")
+
+            // Verify the link was created successfully and is functional
+            if (busybox.exists() && busybox.canExecute()) {
+                Log.d(TAG, "Verification: busybox link exists and is executable at ${busybox.absolutePath}")
+            } else {
+                Log.e(TAG, "Verification failed: busybox link not functional after creation")
+                return
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create busybox link using Java NIO", e)
+            return
+        }
+
+        try {
+            Files.deleteIfExists(File(binDir, "libtalloc.so.2").toPath())
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove stale libtalloc link", e)
+        }
+
+        // Symlink other binaries
+        val libraries = mapOf(
+            "liboperit_proot.so" to "proot",
+            "liboperit_loader.so" to "loader",
+            "libbash.so" to "bash",
+            "libsudo.so" to "sudo"
+        )
+
+        libraries.forEach { (libName, linkName) ->
+            val libFile = File(nativeLibDir, libName)
+            val linkFile = File(binDir, linkName)
+
+            Log.d(TAG, "Checking $libName at ${libFile.absolutePath}, exists: ${libFile.exists()}")
+
+            if (!libFile.exists()) {
+                Log.w(TAG, "Native library not found: $libName")
+                return@forEach
+            }
+
+            // Always ensure proper link - remove any existing file/broken link first
+            try {
+                val link = linkFile.toPath()
+                val target = libFile.toPath()
+
+                // Delete existing file/broken link if it exists to prevent FileAlreadyExistsException
+                Files.deleteIfExists(link)
+
+                // CRITICAL: Set execute permission on the target .so file before creating symlink
+                libFile.setExecutable(true, false)
+
+                // Create the symbolic link
+                Files.createSymbolicLink(link, target)
+                Log.d(TAG, "Created $linkName symbolic link using Java NIO")
+
+                // Verify the link was created successfully and is executable
+                if (linkFile.exists() && linkFile.canExecute()) {
+                    Log.d(TAG, "Verification: $linkName link exists and is executable at ${linkFile.absolutePath}")
+                } else {
+                    Log.w(TAG, "Verification failed: $linkName link not executable after creation")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create $linkName link using Java NIO", e)
+            }
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun createSymbolicLink(target: File, linkName: String, linkDir: File, force: Boolean) {
+        val linkFile = File(linkDir, linkName)
+
+        // Use relative path for target if it's in the same directory
+        val targetPath = if (target.parentFile == linkDir) {
+            Paths.get(target.name)
+        } else {
+            target.toPath()
+        }
+
+        if (force) {
+            Files.deleteIfExists(linkFile.toPath())
+        }
+        Files.createSymbolicLink(linkFile.toPath(), targetPath)
+    }
+
+    private fun extractAssets() {
+        try {
+            val assets = listOf(
+                UBUNTU_FILENAME,
+                "setup_fake_sysdata.sh"
+            )
+            assets.forEach { assetName ->
+                val assetFile = File(filesDir, assetName)
+                // 强制更新脚本文件，大文件只在不存在时提取
+                val shouldExtract = !assetFile.exists() || assetName == "setup_fake_sysdata.sh"
+
+                if (shouldExtract) {
+                    if (assetName.endsWith(".sh")) {
+                        context.assets.open(assetName).use { input ->
+                            val raw = input.readBytes()
+                            val text = raw.toString(Charsets.UTF_8)
+                            val normalized =
+                                text
+                                    .removePrefix("\uFEFF")
+                                    .replace("\r\n", "\n")
+                                    .replace("\r", "\n")
+                            assetFile.writeText(normalized, Charsets.UTF_8)
+                        }
+                    } else {
+                        context.assets.open(assetName).use { input ->
+                            assetFile.outputStream().use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                    }
+                    Log.d(TAG, "Extracted $assetName")
+                } else {
+                    Log.d(TAG, "Asset $assetName already exists.")
+                }
+            }
+        } catch (e: IOException) {
+            Log.e(TAG, "Failed to extract assets", e)
+            throw e
+        }
+    }
+
+    private fun generateStartScript(): String {
+        val ubuntuName = UBUNTU_FILENAME.replace(Regex("-pd.*"), "")
+        val tmpDir = File(filesDir, "tmp").absolutePath
+        val binDir = binDir.absolutePath
+        val homeDir = filesDir.absolutePath
+        val usrDir = usrDir.absolutePath
+        val prootDistroPath = "$usrDir/var/lib/proot-distro"
+        val ubuntuPath = "$prootDistroPath/installed-rootfs/ubuntu"
+        val operitPackage = context.packageName
+        val operitDataDir = context.applicationInfo.dataDir
+        val currentEmulatedStoragePath = PRootMountMapping.currentEmulatedStoragePath()
+        val currentUserDataRootPath = PRootMountMapping.currentUserDataRootPath()
+        val operitUserDataMountPath = "$currentUserDataRootPath/$operitPackage"
+        val operitLegacyDataMountPath = "/data/data/$operitPackage"
+
+        // 获取当前选择的源
+        val aptSource = sourceManager.getSelectedSource(PackageManagerType.APT)
+        val pipSource = sourceManager.getSelectedSource(PackageManagerType.PIP)
+        val npmSource = sourceManager.getSelectedSource(PackageManagerType.NPM)
+        val rustSource = sourceManager.getSelectedSource(PackageManagerType.RUST)
+
+        val common = """
+        export TMPDIR=$tmpDir
+        export BIN=$binDir
+        export HOME=$homeDir
+        export UBUNTU_PATH=$ubuntuPath
+        export UBUNTU=$UBUNTU_FILENAME
+        export UBUNTU_NAME=$ubuntuName
+        export USE_CHROOT=${if (prefs.getBoolean("chroot_enabled", false)) "1" else "0"}
+        export OPERIT_UID=$(id -u)
+        export OPERIT_GID=$(id -g)
+        export OPERIT_GROUPS=$(id -G | tr ' ' ',')
+        export L_NOT_INSTALLED="not installed"
+        export L_INSTALLING="installing"
+        export L_INSTALLED="installed"
+        clear_lines(){
+          printf "\\033[1A" # Move cursor up one line
+          printf "\\033[K"  # Clear the line
+          printf "\\033[1A" # Move cursor up one line
+          printf "\\033[K"  # Clear the line
+        }
+        progress_echo(){
+          echo -e "\\033[31m- ${'$'}@\\033[0m"
+          echo "${'$'}@" > "${'$'}TMPDIR/progress_des"
+        }
+        bump_progress(){
+          current=0
+          if [ -f "${'$'}TMPDIR/progress" ]; then
+            current=${'$'}(cat "${'$'}TMPDIR/progress" 2>/dev/null || echo 0)
+          fi
+          next=${'$'}((current + 1))
+          printf "${'$'}next" > "${'$'}TMPDIR/progress"
+        }
+        write_default_dns(){
+          target_file="${'$'}1"
+          if [ -z "${'$'}target_file" ]; then
+            return 1
+          fi
+          cat > "${'$'}target_file" <<'EOF'
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+nameserver 223.5.5.5
+nameserver 223.6.6.6
+nameserver 119.29.29.29
+nameserver 180.76.76.76
+EOF
+        }
+        can_access_bind_source(){
+          bind_source="${'$'}1"
+          if [ -z "${'$'}bind_source" ]; then
+            return 1
+          fi
+          if [ ! -e "${'$'}bind_source" ] && [ ! -L "${'$'}bind_source" ]; then
+            return 1
+          fi
+          "${'$'}BIN/busybox" ls -Ld "${'$'}bind_source" >/dev/null 2>&1
+        }
+        append_proot_bind_arg(){
+          bind_source="${'$'}1"
+          bind_target="${'$'}2"
+          if ! can_access_bind_source "${'$'}bind_source"; then
+            return 0
+          fi
+          if [ -z "${'$'}bind_target" ] || [ "${'$'}bind_source" = "${'$'}bind_target" ]; then
+            PROOT_BIND_ARGS="${'$'}PROOT_BIND_ARGS -b ${'$'}bind_source"
+          else
+            PROOT_BIND_ARGS="${'$'}PROOT_BIND_ARGS -b ${'$'}bind_source:${'$'}bind_target"
+          fi
+        }
+        run_proot_binary(){
+          LD_LIBRARY_PATH= "${'$'}BIN/proot" "${'$'}@"
+        }
+        exec_proot_binary(){
+          LD_LIBRARY_PATH= exec "${'$'}BIN/proot" "${'$'}@"
+        }
+        LAST_PROOT_PROBE_STATUS=0
+        LAST_PROOT_PROBE_OUTPUT=""
+        LAST_PROOT_PROBE_ARGS=""
+        run_proot_probe(){
+          LAST_PROOT_PROBE_ARGS="${'$'}*"
+          if [ "${'$'}PROOT_LINK2SYMLINK" = "1" ]; then
+            LAST_PROOT_PROBE_OUTPUT="${'$'}(
+              run_proot_binary \
+                -v 1 \
+                -0 \
+                -r "${'$'}UBUNTU_PATH" \
+                --link2symlink \
+                "${'$'}@" \
+                -w /root \
+                /usr/bin/env -i \
+                  HOME=/root \
+                  TERM=xterm-256color \
+                  LANG=en_US.UTF-8 \
+                  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                  /bin/bash --noprofile --norc -c 'exit 0' 2>&1
+            )"
+            LAST_PROOT_PROBE_STATUS="${'$'}?"
+          else
+            LAST_PROOT_PROBE_OUTPUT="${'$'}(
+              run_proot_binary \
+                -v 1 \
+                -0 \
+                -r "${'$'}UBUNTU_PATH" \
+                "${'$'}@" \
+                -w /root \
+                /usr/bin/env -i \
+                  HOME=/root \
+                  TERM=xterm-256color \
+                  LANG=en_US.UTF-8 \
+                  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                  /bin/bash --noprofile --norc -c 'exit 0' 2>&1
+            )"
+            LAST_PROOT_PROBE_STATUS="${'$'}?"
+          fi
+          return "${'$'}LAST_PROOT_PROBE_STATUS"
+        }
+        print_last_proot_probe_failure(){
+          echo "PRoot startup probe failed."
+          echo "exit_code=${'$'}LAST_PROOT_PROBE_STATUS"
+          echo "ubuntu_path=${'$'}UBUNTU_PATH"
+          echo "proot_loader=${'$'}{PROOT_LOADER:-<unset>}"
+          echo "proot_no_seccomp=${'$'}{PROOT_NO_SECCOMP:-<unset>}"
+          echo "ld_library_path=${'$'}{LD_LIBRARY_PATH:-<unset>}"
+          echo "proot_exec_ld_library_path=<empty>"
+          echo "proot_link2symlink=${'$'}PROOT_LINK2SYMLINK"
+          if [ -n "${'$'}PROOT_BIND_ARGS" ]; then
+            echo "bind_args=${'$'}PROOT_BIND_ARGS"
+          else
+            echo "bind_args=<none>"
+          fi
+          if [ -n "${'$'}LAST_PROOT_PROBE_ARGS" ]; then
+            echo "extra_args=${'$'}LAST_PROOT_PROBE_ARGS"
+          else
+            echo "extra_args=<none>"
+          fi
+          echo "--- proot stdout/stderr begin ---"
+          if [ -n "${'$'}LAST_PROOT_PROBE_OUTPUT" ]; then
+            printf '%s\n' "${'$'}LAST_PROOT_PROBE_OUTPUT"
+          else
+            echo "<empty>"
+          fi
+          echo "--- proot stdout/stderr end ---"
+        }
+        probe_proot_link2symlink(){
+          run_proot_binary \
+            -v 1 \
+            -0 \
+            -r "${'$'}UBUNTU_PATH" \
+            --link2symlink \
+            -w /root \
+            /usr/bin/env -i \
+              HOME=/root \
+              TERM=xterm-256color \
+              LANG=en_US.UTF-8 \
+              PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+              /bin/bash --noprofile --norc -c 'exit 0' >/dev/null 2>&1
+        }
+        probe_and_append_bind_arg(){
+          bind_source="${'$'}1"
+          bind_target="${'$'}2"
+          if ! can_access_bind_source "${'$'}bind_source"; then
+            return 0
+          fi
+
+          candidate_bind_args="-b ${'$'}bind_source"
+          if [ -n "${'$'}bind_target" ] && [ "${'$'}bind_source" != "${'$'}bind_target" ]; then
+            candidate_bind_args="-b ${'$'}bind_source:${'$'}bind_target"
+          fi
+
+          if [ -n "${'$'}PROOT_BIND_ARGS" ]; then
+            set -- ${'$'}PROOT_BIND_ARGS ${'$'}candidate_bind_args
+          else
+            set -- ${'$'}candidate_bind_args
+          fi
+
+          if run_proot_probe "${'$'}@"; then
+            append_proot_bind_arg "${'$'}bind_source" "${'$'}bind_target"
+          fi
+        }
+        resolve_proot_runtime(){
+          PROOT_LINK2SYMLINK=0
+          PROOT_BIND_ARGS=""
+
+          if ! run_proot_probe; then
+            print_last_proot_probe_failure
+            return 1
+          fi
+
+          if probe_proot_link2symlink; then
+            PROOT_LINK2SYMLINK=1
+          fi
+          return 0
+        }
+        """.trimIndent()
+
+        val installUbuntu = """
+        install_ubuntu(){
+          OK_FILE="${'$'}UBUNTU_PATH/.operit_installed_ok"
+          LOCK_DIR="${'$'}UBUNTU_PATH.install.lock"
+          LOCK_PID_FILE="${'$'}LOCK_DIR/pid"
+          TMP_DIR="${'$'}UBUNTU_PATH.install.tmp"
+
+          UBUNTU_PARENT="${'$'}{UBUNTU_PATH%/*}"
+          mkdir -p "${'$'}UBUNTU_PARENT" 2>/dev/null
+
+          attempt=0
+          while true; do
+            if mkdir "${'$'}LOCK_DIR" 2>/dev/null; then
+              echo "${'$'}${'$'}" > "${'$'}LOCK_PID_FILE" 2>/dev/null || true
+              break
+            fi
+
+            if [ -f "${'$'}LOCK_PID_FILE" ]; then
+              lock_pid=${'$'}(cat "${'$'}LOCK_PID_FILE" 2>/dev/null)
+              if [ -z "${'$'}lock_pid" ]; then
+                if [ "${'$'}attempt" -gt 2 ]; then
+                  rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+                  continue
+                fi
+              elif ! kill -0 "${'$'}lock_pid" 2>/dev/null; then
+                rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+                continue
+              fi
+            else
+              if [ "${'$'}attempt" -gt 2 ]; then
+                rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+                continue
+              fi
+            fi
+
+            attempt=${'$'}((attempt + 1))
+            if [ "${'$'}attempt" -gt 120 ]; then
+              progress_echo "Ubuntu install lock timeout"
+              return 1
+            fi
+            sleep 1
+          done
+
+          cleanup_install(){
+            rm -rf "${'$'}TMP_DIR" 2>/dev/null
+            rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+          }
+          trap 'cleanup_install' EXIT INT TERM
+
+          if [ -f "${'$'}OK_FILE" ]; then
+            VERSION=`cat ${'$'}UBUNTU_PATH/etc/issue.net 2>/dev/null`
+            progress_echo "Ubuntu ${'$'}L_INSTALLED -> ${'$'}VERSION"
+          else
+            if [ -f "${'$'}UBUNTU_PATH/etc/issue.net" ]; then
+              echo "ok" > "${'$'}OK_FILE" 2>/dev/null || true
+              VERSION=`cat ${'$'}UBUNTU_PATH/etc/issue.net 2>/dev/null`
+              progress_echo "Ubuntu ${'$'}L_INSTALLED -> ${'$'}VERSION"
+            else
+              progress_echo "Ubuntu ${'$'}L_NOT_INSTALLED, ${'$'}L_INSTALLING..."
+              if [ ! -f "${'$'}HOME/${'$'}UBUNTU" ]; then
+                cleanup_install
+                trap - EXIT INT TERM
+                return 1
+              fi
+              rm -rf "${'$'}TMP_DIR" 2>/dev/null
+              mkdir -p "${'$'}TMP_DIR" 2>/dev/null
+              progress_echo "Extracting Ubuntu rootfs..."
+              busybox tar xf "${'$'}HOME/${'$'}UBUNTU" -C "${'$'}TMP_DIR"/ >/dev/null 2>&1
+              if [ ${'$'}? -ne 0 ]; then
+                cleanup_install
+                trap - EXIT INT TERM
+                return 1
+              fi
+              echo "Extraction complete"
+              if [ -d "${'$'}TMP_DIR/${'$'}UBUNTU_NAME" ]; then
+                mv "${'$'}TMP_DIR/${'$'}UBUNTU_NAME"/* "${'$'}TMP_DIR"/ 2>/dev/null
+                rm -rf "${'$'}TMP_DIR/${'$'}UBUNTU_NAME" 2>/dev/null
+              fi
+
+              mkdir -p "${'$'}TMP_DIR/root" 2>/dev/null
+              echo 'export ANDROID_DATA=/home/' >> "${'$'}TMP_DIR/root/.bashrc"
+              mkdir -p "${'$'}TMP_DIR/etc" 2>/dev/null
+              write_default_dns "${'$'}TMP_DIR/etc/resolv.conf"
+              echo "ok" > "${'$'}TMP_DIR/.operit_installed_ok" 2>/dev/null || true
+
+              rm -rf "${'$'}UBUNTU_PATH" 2>/dev/null
+              mv "${'$'}TMP_DIR" "${'$'}UBUNTU_PATH" 2>/dev/null
+              if [ ${'$'}? -ne 0 ]; then
+                cleanup_install
+                trap - EXIT INT TERM
+                return 1
+              fi
+              rm -f "${'$'}HOME/${'$'}UBUNTU" 2>/dev/null
+            fi
+          fi
+
+          mkdir -p ${'$'}UBUNTU_PATH/etc 2>/dev/null
+          write_default_dns "${'$'}UBUNTU_PATH/etc/resolv.conf"
+
+          rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+          trap - EXIT INT TERM
+        }
+        """.trimIndent()
+
+        val configureSources = """
+        configure_sources(){
+          # 配置APT源
+          cat <<'EOF' > ${'$'}UBUNTU_PATH/etc/apt/sources.list
+        # From Operit Settings - ${aptSource.name}
+        deb ${aptSource.url} noble main restricted universe multiverse
+        deb ${aptSource.url} noble-updates main restricted universe multiverse
+        deb ${aptSource.url} noble-backports main restricted universe multiverse
+        EOF
+          
+          # 配置Pip/Uv源
+          mkdir -p ${'$'}UBUNTU_PATH/root/.config/pip 2>/dev/null
+          echo '[global]' > ${'$'}UBUNTU_PATH/root/.config/pip/pip.conf
+          echo 'index-url = ${pipSource.url}' >> ${'$'}UBUNTU_PATH/root/.config/pip/pip.conf
+          
+          mkdir -p ${'$'}UBUNTU_PATH/root/.config/uv 2>/dev/null
+          echo 'index-url = "${pipSource.url}"' > ${'$'}UBUNTU_PATH/root/.config/uv/uv.toml
+          
+          # 配置NPM源
+          mkdir -p ${'$'}UBUNTU_PATH/root 2>/dev/null
+          echo 'registry=${npmSource.url}' > ${'$'}UBUNTU_PATH/root/.npmrc
+        }
+        """.trimIndent()
+
+        val fixPermissions = """
+        fix_permissions(){
+          echo "Fixing permissions..."
+          # Fix "cannot find name for group ID" warnings
+          # Append Android groups to Ubuntu /etc/group
+          current_groups=$(id -G)
+          for gid in ${'$'}current_groups; do
+            if ! grep -q ":${'$'}gid:" ${'$'}UBUNTU_PATH/etc/group; then
+              echo "android_group_${'$'}gid:x:${'$'}gid:" >> ${'$'}UBUNTU_PATH/etc/group
+            fi
+          done
+          echo "Permissions fixed."
+        }
+        """.trimIndent()
+
+        // 读取共享tmp设置
+        val sharedTmpEnabled = prefs.getBoolean("shared_tmp_enabled", true)
+        val prootBindSetup = PRootMountMapping.buildRuntimeBindMounts(
+            homeDir = homeDir,
+            appDataDir = operitDataDir,
+            packageName = operitPackage,
+            chrootEnabled = false
+        ).toMutableList().apply {
+            if (sharedTmpEnabled) {
+                add(4, PRootBindMount(tmpDir, "/dev/shm"))
+            }
+        }.joinToString(separator = "\n") { mount ->
+            "          probe_and_append_bind_arg \"${mount.sourcePath}\" \"${mount.targetPath}\""
+        }
+        
+        val loginUbuntu = """
+        login_ubuntu(){
+          COMMAND_TO_EXEC="$1"
+          if [ -z "${'$'}COMMAND_TO_EXEC" ]; then
+            COMMAND_TO_EXEC="/bin/bash -il"
+          fi
+
+          # Setup fake sysdata
+          if [ "${'$'}USE_CHROOT" != "1" ]; then
+            export INSTALLED_ROOTFS_DIR=$(dirname "${'$'}UBUNTU_PATH")
+            export distro_name=$(basename "${'$'}UBUNTU_PATH")
+            
+            if [ -f "${'$'}HOME/setup_fake_sysdata.sh" ]; then
+                source "${'$'}HOME/setup_fake_sysdata.sh"
+                setup_fake_sysdata
+            fi
+          fi
+
+          # 使用 proot 直接进入解压的 Ubuntu 根文件系统。
+          # - 清理并设置 PATH，避免继承宿主 PATH 造成命令找不到或混用 busybox。
+          # - 绑定常见伪文件系统、外部存储与 Operit 应用沙箱，保障交互和软件包管理工作正常。
+          # 在 proot 环境中创建必要的目录
+          mkdir -p "${'$'}UBUNTU_PATH/storage/emulated" 2>/dev/null
+          mkdir -p "${'$'}UBUNTU_PATH$operitUserDataMountPath" 2>/dev/null
+          mkdir -p "${'$'}UBUNTU_PATH$operitLegacyDataMountPath" 2>/dev/null
+          mkdir -p "${'$'}UBUNTU_PATH/data/local/tmp" 2>/dev/null
+          mkdir -p "${'$'}UBUNTU_PATH$homeDir" 2>/dev/null
+
+          if [ "${'$'}USE_CHROOT" = "1" ]; then
+            CMD_FILE="${'$'}TMPDIR/command_to_exec"
+            printf "%s" "${'$'}COMMAND_TO_EXEC" > "${'$'}CMD_FILE" 2>/dev/null || true
+            CHROOT_WRAPPER="${'$'}TMPDIR/operit_chroot_wrapper.sh"
+            cat > "${'$'}CHROOT_WRAPPER" <<'EOF'
+        BIN="$1"
+        UBUNTU_PATH="$2"
+        CMD_FILE="$3"
+        HOME_DIR="$4"
+        OPERIT_UID="$5"
+        OPERIT_GID="$6"
+        OPERIT_GROUPS="$7"
+        cleanup_mounts(){
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/dev/pts" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/dev" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/sys" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/proc" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH${'$'}HOME_DIR" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH$currentUserDataRootPath" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/data/data" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/data/local/tmp" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/sdcard" 2>/dev/null || true
+        }
+        cleanup_mounts
+
+        "${'$'}BIN/busybox" mkdir -p "${'$'}UBUNTU_PATH/proc" "${'$'}UBUNTU_PATH/sys" "${'$'}UBUNTU_PATH/dev" "${'$'}UBUNTU_PATH/dev/pts" "${'$'}UBUNTU_PATH/sdcard" "${'$'}UBUNTU_PATH$currentUserDataRootPath" "${'$'}UBUNTU_PATH/data/data" "${'$'}UBUNTU_PATH/data/local/tmp" "${'$'}UBUNTU_PATH${'$'}HOME_DIR" 2>/dev/null
+        "${'$'}BIN/busybox" mount -t proc proc "${'$'}UBUNTU_PATH/proc" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind /dev "${'$'}UBUNTU_PATH/dev" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind /sys "${'$'}UBUNTU_PATH/sys" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind /dev/pts "${'$'}UBUNTU_PATH/dev/pts" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind $currentEmulatedStoragePath "${'$'}UBUNTU_PATH/sdcard" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind $currentUserDataRootPath "${'$'}UBUNTU_PATH$currentUserDataRootPath" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind /data/data "${'$'}UBUNTU_PATH/data/data" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind /data/local/tmp "${'$'}UBUNTU_PATH/data/local/tmp" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind "${'$'}HOME_DIR" "${'$'}UBUNTU_PATH${'$'}HOME_DIR" 2>/dev/null || true
+        COMMAND_TO_EXEC="$(cat "${'$'}CMD_FILE" 2>/dev/null)"
+        "${'$'}BIN/busybox" chroot "${'$'}UBUNTU_PATH" /usr/bin/env -i HOME=/root TERM=xterm-256color LANG=en_US.UTF-8 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "COMMAND_TO_EXEC=${'$'}COMMAND_TO_EXEC" "OPERIT_UID=${'$'}OPERIT_UID" "OPERIT_GID=${'$'}OPERIT_GID" "OPERIT_GROUPS=${'$'}OPERIT_GROUPS" /bin/bash -lc 'echo LOGIN_SUCCESSFUL; echo TERMINAL_READY; umask 0002; if [ -n "${'$'}OPERIT_GID" ]; then chown 0:"${'$'}OPERIT_GID" /root 2>/dev/null || true; chmod 2775 /root 2>/dev/null || true; fi; eval "${'$'}COMMAND_TO_EXEC"'
+        ret=${'$'}?
+        cleanup_mounts
+        exit ${'$'}ret
+        EOF
+            chmod 700 "${'$'}CHROOT_WRAPPER" 2>/dev/null || true
+            exec su -c "sh \"${'$'}CHROOT_WRAPPER\" \"${'$'}BIN\" \"${'$'}UBUNTU_PATH\" \"${'$'}CMD_FILE\" \"${homeDir}\" \"${'$'}OPERIT_UID\" \"${'$'}OPERIT_GID\" \"${'$'}OPERIT_GROUPS\""
+          fi
+          if ! resolve_proot_runtime; then
+            return 1
+          fi
+$prootBindSetup
+          if [ "${'$'}USE_CHROOT" != "1" ]; then
+            if [ ! -e /proc/stat ]; then probe_and_append_bind_arg "${'$'}UBUNTU_PATH/proc/.stat" "/proc/stat"; fi
+            if [ ! -e /proc/loadavg ]; then probe_and_append_bind_arg "${'$'}UBUNTU_PATH/proc/.loadavg" "/proc/loadavg"; fi
+            if [ ! -e /proc/uptime ]; then probe_and_append_bind_arg "${'$'}UBUNTU_PATH/proc/.uptime" "/proc/uptime"; fi
+            if [ ! -e /proc/version ]; then probe_and_append_bind_arg "${'$'}UBUNTU_PATH/proc/.version" "/proc/version"; fi
+            if [ ! -e /proc/vmstat ]; then probe_and_append_bind_arg "${'$'}UBUNTU_PATH/proc/.vmstat" "/proc/vmstat"; fi
+            if [ ! -e /proc/sys/kernel/cap_last_cap ]; then probe_and_append_bind_arg "${'$'}UBUNTU_PATH/proc/.sysctl_entry_cap_last_cap" "/proc/sys/kernel/cap_last_cap"; fi
+            if [ ! -e /proc/sys/fs/inotify/max_user_watches ]; then probe_and_append_bind_arg "${'$'}UBUNTU_PATH/proc/.sysctl_inotify_max_user_watches" "/proc/sys/fs/inotify/max_user_watches"; fi
+          fi
+          if [ -n "${'$'}PROOT_BIND_ARGS" ]; then
+            set -- ${'$'}PROOT_BIND_ARGS
+          else
+            set --
+          fi
+          if [ "${'$'}PROOT_LINK2SYMLINK" = "1" ]; then
+            exec_proot_binary \
+              -0 \
+              -r "${'$'}UBUNTU_PATH" \
+              --link2symlink \
+              "${'$'}@" \
+              -w /root \
+              /usr/bin/env -i \
+                HOME=/root \
+                TERM=xterm-256color \
+                LANG=en_US.UTF-8 \
+                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                COMMAND_TO_EXEC="${'$'}COMMAND_TO_EXEC" \
+                /bin/bash -lc 'echo LOGIN_SUCCESSFUL; echo TERMINAL_READY; eval "${'$'}COMMAND_TO_EXEC"'
+          else
+            exec_proot_binary \
+              -0 \
+              -r "${'$'}UBUNTU_PATH" \
+              "${'$'}@" \
+              -w /root \
+              /usr/bin/env -i \
+                HOME=/root \
+                TERM=xterm-256color \
+                LANG=en_US.UTF-8 \
+                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                COMMAND_TO_EXEC="${'$'}COMMAND_TO_EXEC" \
+                /bin/bash -lc 'echo LOGIN_SUCCESSFUL; echo TERMINAL_READY; eval "${'$'}COMMAND_TO_EXEC"'
+          fi
+        }
+        """.trimIndent()
+
+        val sshShell = """
+        ssh_shell(){
+          set -x
+          install_ubuntu
+          configure_sources
+          fix_permissions
+          sleep 1
+          bump_progress
+          
+          # 先进入Ubuntu环境，然后连接SSH
+          # 当SSH退出时，用户会回到本地Ubuntu shell
+          login_ubuntu 'echo "Connecting to SSH..."; '"${'$'}SSH_COMMAND"'; echo "SSH connection closed. You are now in local Ubuntu terminal."; /bin/bash -il'
+        }
+        """.trimIndent()
+
+        return """
+        $common
+        $installUbuntu
+        $configureSources
+        $fixPermissions
+        $loginUbuntu
+        $sshShell
+        clear_lines
+        start_shell(){
+          install_ubuntu
+          configure_sources
+          fix_permissions
+          sleep 1
+          bump_progress
+          login_ubuntu
+        }
+        """.trimIndent()
+    }
+
+    fun closeTerminalSession(sessionId: String) {
+        closingSessions.add(sessionId)
+        // Delegate to provider to ensure underlying process is killed
+        coroutineScope.launch {
+            try {
+                terminalProvider?.closeSession(sessionId)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing session via provider", e)
+            }
+        }
+
+        activeSessions[sessionId]?.let { session ->
+            session.process.destroy()
+            activeSessions.remove(sessionId)
+            Log.d(TAG, "Closed and removed session: $sessionId")
+        }
+    }
+
+    private fun handleRegularCommand(command: String, session: com.ai.assistance.operit.terminal.data.TerminalSessionData, commandId: String) {
+        session.currentCommandOutput.clear()
+        session.currentOutputLineCount = 0
+
+        val newCommandItem = CommandHistoryItem(
+            id = commandId,
+            prompt = session.currentDirectory,
+            command = command,
+            output = "",
+            isExecuting = true
+        )
+
+        // Set the current executing command reference for efficient access
+        session.currentExecutingCommand = newCommandItem
+
+        // 发出命令开始执行事件
+        coroutineScope.launch {
+            _commandExecutionEvents.emit(CommandExecutionEvent(
+                commandId = newCommandItem.id,
+                sessionId = session.id,
+                outputChunk = "",
+                isCompleted = false
+            ))
+        }
+    }
+
+    fun prepareForMaintenance() {
+        // 释放 provider 连接
+        kotlinx.coroutines.runBlocking {
+            terminalProvider?.disconnect()
+            Log.d(TAG, "Disconnected terminal provider")
+            
+            // 停止SSHD服务器
+            sshdServerManager.stopServer()
+            Log.d(TAG, "Stopped SSHD server")
+        }
+        terminalProvider = null
+        
+        activeSessions.keys.toList().forEach { sessionId ->
+            closeTerminalSession(sessionId)
+        }
+        sessionManager.cleanup()
+        Log.d(TAG, "Prepared terminal manager for maintenance.")
+    }
+
+    fun cleanup() {
+        prepareForMaintenance()
+        coroutineScope.cancel()
+        Log.d(TAG, "All active sessions cleaned up.")
+    }
+
+    suspend fun executeHiddenCommand(
+        command: String,
+        executorKey: String = "default",
+        timeoutMs: Long = 120000L
+    ): HiddenExecResult {
+        val initialized = initializeEnvironment()
+        if (!initialized) {
+            return HiddenExecResult(
+                output = "",
+                exitCode = -1,
+                state = HiddenExecResult.State.SHELL_START_FAILED,
+                error = "Terminal environment initialization failed"
+            )
+        }
+
+        return getTerminalProvider().executeHiddenCommand(
+            command = command,
+            executorKey = executorKey,
+            timeoutMs = timeoutMs
+        )
+    }
+
+    /**
+     * 起一条「隐藏的长驻子进程」：没有 PTY、没有回显、没有提示符，
+     * stdout 按行回调给调用方，stdin 由调用方逐行写入。
+     *
+     * 为什么不复用 [executeHiddenCommand]：它是「一条命令一次执行」的语义——
+     * 命令被包成脚本用 setsid 跑，子进程的 stdin 是 /dev/null，没法把请求边喂边收。
+     * 为什么不用 PTY：PTY 默认开回显和行缓冲，写进去的行会被原样吐回来，
+     * 还会被 CR/LF、信号字符改写，脏行混进协议流里（MCP stdio 是「一行一个 JSON」）。
+     *
+     * 复用同一套 proot 启动方式：busybox bash 先 source common.sh，再用 login_ubuntu
+     * 在 Ubuntu 里 exec 调用方给的命令。命令/环境变量/工作目录写进 filesDir/tmp 下的
+     * 启动脚本，避免往两层 shell 里塞引号（命令里带空格或单引号也不会被打散）。
+     *
+     * 不看 SSH 开关：stdio 服务必须和 App 同机才能喂 stdin，所以这里始终跑本机 Ubuntu。
+     * 前提和 executeHiddenCommand 一样：Ubuntu 根文件系统已经装好
+     * （首次要先打开一次「终端」完成安装，这里不替用户跑 install_ubuntu，装一次动辄几分钟，
+     *  不该藏在 MCP 的一次连接里）。
+     *
+     * @param onLine 进程 stdout 的一行（不含换行符）；非法 UTF-8 字节会被 BufferedReader 替换成 �。
+     * @param env 追加给子进程的环境变量（在 Ubuntu 里 export）。
+     * @param cwd 子进程工作目录（Ubuntu 里的路径），空或不存在则 /root。
+     * @param onExit 进程退出或启动失败时回调一次，进度码未知时给 null。
+     * @return 句柄；commandLine 为空返回 null（不抛异常，配置错误由调用方报给用户）。
+     */
+    fun openHiddenProcess(
+        commandLine: String,
+        onLine: (String) -> Unit,
+        env: Map<String, String> = emptyMap(),
+        cwd: String = "",
+        onExit: (Int?) -> Unit = {}
+    ): HiddenHandle? {
+        if (commandLine.isBlank()) {
+            Log.w(TAG, "openHiddenProcess: 命令为空，不启动")
+            return null
+        }
+        val handle = HiddenHandle()
+        coroutineScope.launch {
+            var script: File? = null
+            try {
+                if (!initializeEnvironment()) {
+                    Log.e(TAG, "openHiddenProcess: 终端环境初始化失败")
+                    handle.finish(null)
+                    onExit(null)
+                    return@launch
+                }
+                script = writeHiddenLauncher(commandLine, env, cwd)
+                val process = buildHiddenProcessBuilder(script).start()
+                handle.attach(process)
+                Log.d(TAG, "openHiddenProcess 已启动：" + commandLine.take(200))
+
+                // stderr 必须一直排空：子进程把 64K 管道写满就会卡死。
+                // 但内容只进日志，绝不混进 onLine —— 否则一半的「一行一个 JSON」都被日志污染
+                val stderrJob = launch {
+                    try {
+                        process.errorStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                            lines.forEach { line ->
+                                if (line.isNotBlank()) Log.d(TAG, "hidden stderr: " + line.take(500))
+                            }
+                        }
+                    } catch (e: Exception) {
+                        if (e !is IOException) Log.w(TAG, "hidden stderr 读取结束：" + describe(e))
+                    }
+                }
+
+                try {
+                    process.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                        lines.forEach { line -> onLine(line) }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "hidden stdout 读取结束：" + describe(e))
+                }
+                stderrJob.cancel()
+                val code = runCatching { process.waitFor() }.getOrNull()
+                handle.finish(code)
+                onExit(code)
+                Log.d(TAG, "openHiddenProcess 已退出：exit=" + code)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "openHiddenProcess 失败：" + describe(e))
+                handle.finish(null)
+                onExit(null)
+            } finally {
+                // 启动脚本只在这一条进程的生命周期里有用（内含用户命令与环境变量，含密钥），退出即删
+                script?.delete()
+            }
+        }
+        return handle
+    }
+
+    /**
+     * 把命令写成一个启动脚本。
+     *
+     * 直接拼成 "login_ubuntu 'exec ...'" 的话，用户命令里的单引号要转义两层，
+     * 出错时只会得到一句「syntax error」；写成文件后里面就是裸的 shell，所见即所得。
+     */
+    private fun writeHiddenLauncher(
+        commandLine: String,
+        env: Map<String, String>,
+        cwd: String
+    ): File {
+        val dir = File(filesDir, "tmp")
+        if (!dir.exists()) dir.mkdirs()
+        val script = File(dir, "hidden_proc_" + UUID.randomUUID().toString().replace("-", "") + ".sh")
+        val body = buildString {
+            append("#!/bin/sh\n")
+            // 进不去就退回 /root：cwd 是用户手填的，可能写错或还没建
+            append("cd ").append(shellQuote(cwd.trim().ifEmpty { "/root" })).append(" 2>/dev/null || cd /root\n")
+            for ((key, value) in env) {
+                val name = key.trim()
+                // 非法变量名 export 会报错并污染 stderr，直接跳过
+                if (!ENV_NAME.matches(name)) {
+                    Log.w(TAG, "openHiddenProcess: 环境变量名不合法，跳过：" + name)
+                    continue
+                }
+                append("export ").append(name).append("=").append(shellQuote(value)).append('\n')
+            }
+            append("exec ").append(commandLine).append('\n')
+        }
+        script.writeText(body, Charsets.UTF_8)
+        Log.d(TAG, "隐藏进程启动脚本：" + script.absolutePath)
+        return script
+    }
+
+    /** 和 LocalTerminalProvider 的隐藏执行同一套启动方式（busybox bash → common.sh → proot Ubuntu）。 */
+    private fun buildHiddenProcessBuilder(script: File): ProcessBuilder {
+        val bash = File(binDir, "bash").absolutePath
+        val inner = "exec /bin/bash --noprofile --norc " + shellQuote(script.absolutePath)
+        val startScript = "source \$HOME/common.sh && login_ubuntu " + shellQuote(inner)
+        val builder = ProcessBuilder(bash, "-c", startScript)
+        builder.directory(filesDir)
+        // stderr 不和 stdout 合并：协议流必须干净
+        builder.redirectErrorStream(false)
+        val environment = builder.environment()
+        environment.clear()
+        environment.putAll(buildHiddenEnvironment())
+        return builder
+    }
+
+    /** proot 能不能起来全靠这几个环境变量（尤其 PROOT_LOADER 与 LD_LIBRARY_PATH）。 */
+    private fun buildHiddenEnvironment(): Map<String, String> {
+        val tmpDir = File(filesDir, "tmp").absolutePath
+        val environment = mutableMapOf<String, String>()
+        environment["PATH"] = binDir.absolutePath + ":" + (System.getenv("PATH") ?: "/system/bin")
+        environment["HOME"] = filesDir.absolutePath
+        environment["PREFIX"] = usrDir.absolutePath
+        environment["TERMUX_PREFIX"] = usrDir.absolutePath
+        environment["LD_LIBRARY_PATH"] = nativeLibDir + ":" + binDir.absolutePath
+        environment["PROOT_LOADER"] = File(binDir, "loader").absolutePath
+        environment["TMPDIR"] = tmpDir
+        environment["PROOT_TMP_DIR"] = tmpDir
+        environment["TERM"] = "xterm-256color"
+        environment["LANG"] = "en_US.UTF-8"
+        return environment
+    }
+
+    /** 单引号包裹；值里的 ' 变成 '\'' —— 路径或参数带空格、引号都不会被外层 shell 拆开。 */
+    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+
+    private fun describe(e: Throwable): String =
+        e.message ?: e.javaClass.simpleName
+
+    /**
+     * 获取文件系统提供者
+     * 
+     * 根据配置返回对应的提供者（本地或SSH）
+     * 如果配置了SSH且已连接，返回SSH的文件系统提供者（共享SFTP连接）
+     * 否则返回本地文件系统提供者
+     */
+    fun getFileSystemProvider(): FileSystemProvider = kotlinx.coroutines.runBlocking {
+        getTerminalProvider().getFileSystemProvider()
+    }
+    
+    /**
+     * 获取SSHD服务器管理器
+     * 
+     * 用于管理本地SSHD服务器（反向SSH隧道场景）
+     */
+    fun getSSHDServerManager(): SSHDServerManager = sshdServerManager
+}
+
+/**
+ * 一条隐藏长驻子进程的句柄，由 [TerminalManager.openHiddenProcess] 创建。
+ *
+ * 对外只有三件事：写一行进 stdin、问是否还活着、关掉。
+ * 进程还在启动（首次进 proot 可能要等 Ubuntu 装好）时写入会先排队，
+ * 起来后按顺序补发——否则调用方在一启动就发的 initialize 请求会直接丢。
+ *
+ * 两把锁分开：stateLock 只保护字段，writeLock 只保护「写管道」的顺序。
+ * 绝不在持锁时做可能长时间阻塞的 I/O，否则子进程读得慢就把 close() 也一起卡死。
+ */
+class HiddenHandle internal constructor() {
+
+    private val stateLock = Any()
+    private val writeLock = Any()
+
+    private var process: Process? = null
+    private var writer: BufferedWriter? = null
+
+    /** 进程还没起来时写入的行；attach 时按序补发。 */
+    private val queued = ArrayList<String>()
+    private var closed = false
+
+    /** 进程是否还活着；启动失败、退出或写入失败后变 false。 */
+    @Volatile
+    var isAlive: Boolean = true
+        private set
+
+    /** 退出码；进程还没退出、或拿不到退出码时为 null。 */
+    @Volatile
+    var exitCode: Int? = null
+        private set
+
+    /** 往子进程 stdin 写一行（自动补换行并 flush）；已退出返回 false。 */
+    fun writeLine(line: String): Boolean {
+        val out = synchronized(stateLock) {
+            if (!isAlive || closed) return false
+            val current = writer
+            if (current == null) {
+                // 进程还在启动：先排队，别把请求丢了
+                queued.add(line)
+                return true
+            }
+            current
+        }
+        return try {
+            // 整行一次写完：管道上不能和别的线程的半行交错
+            synchronized(writeLock) {
+                out.write(line)
+                out.write("\n")
+                out.flush()
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(HIDDEN_TAG, "隐藏进程写入失败：" + (e.message ?: e.javaClass.simpleName))
+            isAlive = false
+            false
+        }
+    }
+
+    /** 关 stdin 并杀进程；可重复调用。 */
+    fun close() {
+        val current = synchronized(stateLock) {
+            if (closed) return
+            closed = true
+            queued.clear()
+            val out = writer
+            writer = null
+            val running = process
+            process = null
+            out to running
+        }
+        isAlive = false
+        runCatching { current.first?.close() }
+        runCatching { current.second?.destroy() }
+    }
+
+    /** 进程真正起来了：接上管道，并补发启动期间排队的行。 */
+    internal fun attach(running: Process) {
+        val out = running.outputStream.bufferedWriter(Charsets.UTF_8)
+        val backlog = synchronized(stateLock) {
+            if (closed) {
+                runCatching { out.close() }
+                return
+            }
+            process = running
+            writer = out
+            val copy = queued.toList()
+            queued.clear()
+            copy
+        }
+        if (backlog.isEmpty()) return
+        synchronized(writeLock) {
+            runCatching {
+                for (line in backlog) {
+                    out.write(line)
+                    out.write("\n")
+                }
+                out.flush()
+            }
+        }
+    }
+
+    /** 进程结束/启动失败：置死掉状态并放掉管道。 */
+    internal fun finish(code: Int?) {
+        isAlive = false
+        exitCode = code
+        val out = synchronized(stateLock) {
+            val current = writer
+            writer = null
+            process = null
+            queued.clear()
+            current
+        }
+        runCatching { out?.close() }
+    }
+
+    private companion object {
+        /** 与 TerminalManager 同一个日志 tag，翻日志时不用记两个名字。 */
+        const val HIDDEN_TAG = "TerminalManager"
+    }
+}

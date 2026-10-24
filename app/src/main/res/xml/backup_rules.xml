@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用私有目录里有 300MB 的 Ubuntu rootfs 和 60MB 安装包，系统自动备份必然超限：
+     这里把它们排除掉，只留小体积的应用数据（会话/工作区清单/统计）。 -->
+<full-backup-content>
+    <exclude domain="file" path="usr" />
+    <exclude domain="file" path="tmp" />
+    <exclude domain="file" path="bin" />
+    <exclude domain="file" path="ubuntu-noble-aarch64-pd-v4.18.0.tar.xz" />
+</full-backup-content>

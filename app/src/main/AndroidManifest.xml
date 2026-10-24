@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 后台运行：常驻前台服务（targetSdk 28，不需要 foregroundServiceType） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- 悬浮球：悬浮窗权限（用户需在系统设置里手动允许） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- 存储：targetSdk 28 走 legacy 外部存储，授予后 /sdcard 可全盘读写（Android 14 待装机实测） -->
+    <!-- 不加 maxSdkVersion：加了等于在 Android 13+ 上「根本没申请」，pm grant 会报 has not requested -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!-- 通知（Android 13+ 才弹框，targetSdk 28 上声明无副作用） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 任务结果渠道要走横幅+振动；没有这条权限系统会静默吞掉振动 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 保活：请求忽略电池优化（设置｜权限管理页一键跳转） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 后续在 App 内装 APK（插件/更新） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Shizuku：动态授权的 shell 通道（见 core/capability/ShizukuBridge.kt） -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <!-- 允许 http 明文：web_fetch 抓 http 页面、以及后续连本机 dsh 面板（http://127.0.0.1:…）都要用 -->
+    <application
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:usesCleartextTraffic="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="${appLabel}"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Agent">
+        <!-- configChanges：系统切深浅色时不重建 Activity，否则 ChatViewModel 连同聊天记录一起没了 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize|locale|layoutDirection|density"
+            android:windowSoftInputMode="adjustNothing">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".TerminalActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Agent.Terminal"
+            android:windowSoftInputMode="adjustNothing" />
+
+        <!-- 常驻前台服务：让进程退到后台后不被轻易回收 -->
+        <service
+            android:name=".service.AgentForegroundService"
+            android:exported="false" />
+
+        <!-- 悬浮球：TYPE_APPLICATION_OVERLAY 悬浮窗 -->
+        <service
+            android:name=".service.FloatingBallService"
+            android:exported="false" />
+
+        <!-- 定时任务：AlarmManager 到点后由它转发给 ScheduleRunner；exported=false，只有本 App 的闹钟能发进来 -->
+        <receiver
+            android:name=".schedule.ScheduleReceiver"
+            android:exported="false" />
+
+        <!-- Shizuku：provider 必须有，Shizuku 应用才认这个客户端；V3_SUPPORT 开新版 binder 协议 -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <meta-data
+            android:name="moe.shizuku.client.V3_SUPPORT"
+            android:value="true" />
+    </application>
+
+</manifest>

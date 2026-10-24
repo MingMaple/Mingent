@@ -1,0 +1,25 @@
+# 签名与密码（绝不能提交）
+# signing/ 整个目录只保留说明文件：keystore 与密码文件一旦进仓库，等于把发版权交出去
+signing/*
+!signing/README.md
+*.jks
+*.keystore
+keystore.properties
+# 本机配置
+local.properties
+# 构建产物与缓存
+.gradle/
+.kotlin/
+build/
+*/build/
+dist/
+# IDE
+.idea/
+*.iml
+# 内部文档（不公开）
+PLAN.md
+# 杂项
+_temp/
+*.bak
+*.log
+.DS_Store

@@ -1,0 +1,10 @@
+# 统一换行：源码与文本按 LF 入库（避免 Windows 上检出后整片 CRLF 差异）
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.jar binary
+*.jks binary
+*.keystore binary
+*.png binary
+*.jpg binary
+*.webp binary

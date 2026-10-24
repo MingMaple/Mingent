@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 自适应图标的背景：淡灰白，比纯白柔和一点，避免桌面上和别的白图标糊在一起 -->
+    <color name="ic_launcher_background">#F6F6F9</color>
+</resources>

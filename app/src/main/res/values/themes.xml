@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 终端页专用：窗口底色改成纯黑。SurfaceView 靠「挖洞」合成，
+         进页时画布首次 1dp 尺寸微抖会让窗口底色漏出一帧，浅色底就是那条白线。 -->
+    <style name="Theme.Agent.Terminal" parent="Theme.Agent">
+        <item name="android:windowBackground">#FF000000</item>
+    </style>
+
+    <style name="Theme.Agent" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F9F8FE</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
