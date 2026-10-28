@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mingmem"
+version = "0.3.3"
+requires-python = ">=3.10"
+description = "Local-first memory kernel (offline; stdlib-only core, optional dense channel)"
+
+[project.optional-dependencies]
+dense = ["onnxruntime>=1.18", "numpy>=1.24"]
+
+[project.scripts]
+mingmem = "mingmem.cli:entry"
+
+[tool.setuptools]
+packages = ["mingmem"]

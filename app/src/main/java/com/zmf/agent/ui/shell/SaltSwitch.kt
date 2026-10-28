@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -35,7 +36,9 @@ import com.zmf.agent.ui.theme.Palette
  * - 开：滑块用近白 0xFFF7F7FA（不用 colorScheme.surface，深色主题下深灰压绿轨显脏）；
  *   关：滑块仍是 colorScheme.surface，靠下面那圈 1dp 描边分边界
  * - 关着时滑块和底色容易糊在一起，补一圈 1dp 描边（按底色亮度在 Light/DarkStroke 里选）
- * - 位移走 Motion.spring() 弹簧，indication 置空，不要 Material 的 ripple
+ * - 位移走 Motion.spring() 弹簧；开关本体也有涟漪（开与关两个方向都要有按压反馈）：
+ *   形状由轨道自己的 16dp 圆角裁，颜色同 `saltCardRow`
+ *   （onSurface 10%），不要 Material 默认那层带品牌色的 ripple
  * - 无障碍：clickable 带 role = Role.Switch，再补 toggleableState，
  *   悬浮朗读是「开关，已关闭 / 已开启」。
  *   这里没用 Modifier.toggleable(...)：本工程当前 foundation 1.12.1 里
@@ -75,10 +78,15 @@ fun SaltSwitch(
             .alpha(if (enabled) 1f else 0.35f)
             .clip(RoundedCornerShape(16.dp))
             .background(trackColor)
-            // 轨道和滑块都在这个盒子里，点哪都算点到开关
+            // 轨道和滑块都在这个盒子里，点哪都算点到开关；
+            // 涟漪用 ripple(bounded) 而不是默认 indication：形状被上面的 clip(16dp) 裁，
+            // 颜色跟整行统一（onSurface 10%），开关开着关着都有反馈
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
-                indication = null,
+                indication = ripple(
+                    bounded = true,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
+                ),
                 enabled = enabled,
                 role = Role.Switch,
                 onClick = { onCheckedChange(!checked) }

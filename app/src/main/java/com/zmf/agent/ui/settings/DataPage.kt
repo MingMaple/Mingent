@@ -36,6 +36,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.terminal.TerminalEnv
+import com.zmf.agent.tools.file.TrashStore
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
 import com.zmf.agent.ui.common.saltRowClickable
 import com.zmf.agent.ui.theme.Palette
@@ -46,7 +48,7 @@ import kotlinx.coroutines.withContext
 /**
  * 「数据」页（二级）：导入导出、附件占用与清理、日志、归档会话。
  *
- * 原来是分类页里的一页，现在入口挪到设置首页的那一行；行序、文案、可用条件全部照搬，
+ * 入口在设置首页的那一行；行序、文案、可用条件跟分类页时代保持一致，
  * 免得用户按老位置点空。附件占用要数目录，进页面先刷一次，真正读盘交给 ViewModel 在 IO 里做。
  */
 @Composable
@@ -56,6 +58,9 @@ fun DataSettingsPage(
     onImport: () -> Unit,
     onLogs: () -> Unit,
     onArchive: () -> Unit,
+    onTrash: () -> Unit,
+    /** 回收站页返回时自增：DataPage 一直挂在这层下面，不换 key 就不会重新统计。 */
+    trashRefreshKey: Int = 0,
     archivedCount: Int,
     attachmentUsage: String?,
     backupStatus: String?,
@@ -73,6 +78,14 @@ fun DataSettingsPage(
     var terminalInstalled by remember { mutableStateOf(TerminalEnv.isInstalled(context)) }
     var confirmReinstall by remember { mutableStateOf(false) }
     var reinstallNote by remember { mutableStateOf<String?>(null) }
+    // 回收站的条数与占用：进页面时在 IO 里数一次（条目数受 512 MB 上限约束，扫一遍很便宜）
+    var trashSummary by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(trashRefreshKey) {
+        trashSummary = withContext(Dispatchers.IO) {
+            val (count, bytes) = TrashStore.summary(context)
+            if (count == 0) "空" else count.toString() + " 项 · " + trashSizeText(bytes)
+        }
+    }
 
     Surface(
         // 铺满且不透明；最外层吞掉点击，避免穿透点到下面的页面
@@ -137,6 +150,12 @@ fun DataSettingsPage(
                     )
                 }
                 DataCard {
+                    DataRow(
+                        title = "回收站",
+                        value = trashSummary ?: "统计中…",
+                        onClick = onTrash
+                    )
+                    DataDivider()
                     DataRow(title = "日志", onClick = onLogs)
                     DataDivider()
                     DataRow(
@@ -146,7 +165,7 @@ fun DataSettingsPage(
                     )
                 }
                 orphanStatus?.let { message -> DataNote(message = message) }
-                // 导出/导入的进度与结果就落在底部这行小字里（2026-10-25 用户：不要单独开一个模块）
+                // 导出/导入的进度与结果就落在底部这行小字里（不单独开一个模块）
                 backupStatus?.let { status -> DataNote(message = status) }
                 backupNotice?.let { notice -> DataNote(message = notice) }
                 reinstallNote?.let { message -> DataNote(message = message) }
@@ -189,17 +208,17 @@ fun DataSettingsPage(
     }
 }
 
-/** 分组卡片：Salt 的圆角 22dp，卡片底走 colorScheme.surface，不描边。 */
+/** 分组卡片：Salt 的圆角 16dp，卡片底走 colorScheme.surface，不描边。 */
 @Composable
 private fun DataCard(content: @Composable () -> Unit) {
     Surface(
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(16.dp))
     ) {
-        Column(modifier = Modifier.padding(vertical = 2.dp)) {
+        Column(modifier = Modifier) {
             content()
         }
     }
@@ -209,7 +228,6 @@ private fun DataCard(content: @Composable () -> Unit) {
 @Composable
 private fun DataDivider() {
     HorizontalDivider(
-        modifier = Modifier.padding(start = 16.dp),
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
     )
 }
@@ -229,7 +247,7 @@ private fun DataRow(
             // 只读行（value 那几行）根本不挂点击，也就没有按压反馈
             .then(
                 if (onClick != null) {
-                    Modifier.saltRowClickable(RoundedCornerShape(0.dp), enabled = enabled, onClick = onClick)
+                    Modifier.saltCardRow(enabled = enabled, onClick = onClick)
                 } else {
                     Modifier
                 }

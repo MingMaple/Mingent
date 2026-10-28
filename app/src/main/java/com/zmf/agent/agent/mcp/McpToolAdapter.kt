@@ -62,12 +62,14 @@ class McpToolAdapter(
         /** 只保留 [A-Za-z0-9_-]，其它字符（中文、空格、点、冒号）统一换成 _。 */
         fun safe(raw: String): String = raw.trim().replace(ILLEGAL, "_")
 
+        /** 拼注册名：mcp__服务__工具；超长时保前缀 + 内容哈希尾，避免和别的工具撞名。 */
         fun buildName(serverName: String, toolName: String): String {
             val base = "mcp__" + safe(serverName) + "__" + safe(toolName)
             if (base.length <= MAX_NAME_CHARS) return base
             return base.take(PREFIX_CHARS) + "__" + sha256(base).take(HASH_CHARS)
         }
 
+        /** 十六进制摘要，只给超长工具名做稳定后缀，不做安全用途。 */
         fun sha256(text: String): String {
             val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
             val out = StringBuilder(digest.size * 2)

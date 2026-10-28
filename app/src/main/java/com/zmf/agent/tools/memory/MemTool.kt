@@ -8,19 +8,19 @@ import com.zmf.agent.tools.ToolResult
 import org.json.JSONObject
 
 /**
- * mem —— 记忆内核（mem-core）的唯一工具入口。
+ * mem：记忆内核（mem-core）的唯一工具入口。
  *
  * 为什么只有一个工具，而不是「记忆写入 / 记忆检索 / 记忆维护」三个：
  * 内核本来就是一个 CLI 的九个子命令；拆成三个工具，模型得先猜「这句话算写入还是检索」，
- * 而子命令语义（以及 private/ask 的读不出、append-only 的不可改）本来就写在内核的 RULES.md 里。
+ * 而子命令语义（以及 private/ask 的读不出、append-only 的不可改）由内核自己保证。
  * 一个工具 + 一个 command 枚举，等于把那份规则原样搬到工具描述里，不引入第二套判断。
  *
  * 为什么只做「必填项 / 枚举 / limit 夹取」这三类本地校验，其余交给内核：
- * 内核只认 CLI + --json；在 Kotlin 里再复制一遍参数语义，迟早会和 mem.py 对不上。
+ * 内核只认 CLI + --json；在 Kotlin 里再复制一遍参数语义，迟早会和内核 CLI 对不上。
  * 本地能明确说清的（缺 text、kind 用错命令、ns 给 status）先拦下来省一次往返；
  * 真正涉及数据/格式的（id 不存在、来源已巩固）一律让内核退出码 2 报，再原文转给模型。
  *
- * 权限档 READ_ONLY：库是 App 自己铺在工作区里的运行时资产（_Scripts/mem.py + _Data/），
+ * 权限档 READ_ONLY：库是 App 自己铺在工作区里的运行时资产（mingmem 包 + _Data/），
  * 用户文件一个都不碰；只读档下模型也该能回忆、能写入自己的长期记忆，不该被「写文件」拦住。
  */
 class MemTool : Tool {
@@ -93,6 +93,15 @@ class MemTool : Tool {
 
     override val minPermission = PermissionLevel.READ_ONLY
 
+    /**
+     * 读写一体：recall / search / status / export / doctor 只读，其余都会写记忆库。
+     *
+     * 只读档下只放行读的那几个：只读就是只读，不分 App 内部还是外部，
+     * 所以记忆库写入也算越权。
+     */
+    override fun mutatesWith(args: JSONObject): Boolean =
+        args.optString("command", "").trim().lowercase() in WRITE_COMMANDS
+
     override suspend fun invoke(args: JSONObject, ctx: ToolContext): ToolResult {
         val command = str(args, "command")
         if (command.isEmpty()) {
@@ -103,7 +112,7 @@ class MemTool : Tool {
             is Plan.Fail -> return ToolResult.Error(built.message)
         }
         // MemoryKernel.run 的失败信息里已经写明「卡在第几步 + 原文」，直接转给模型，
-        // 不再包一层「工具执行失败」把关键信息挤掉（RULES §7：卡在哪一步、为什么、需要什么都得说清）。
+        // 不再包一层「工具执行失败」把关键信息挤掉（卡在哪一步、为什么、缺什么都要说清）。
         return MemoryKernel.run(ctx.context, ctx.workspaceRoot, argv).fold(
             onSuccess = { ToolResult.Ok(it) },
             onFailure = { error -> ToolResult.Error(error.message ?: ("记忆内核调用失败：" + error.javaClass.simpleName)) },
@@ -144,7 +153,7 @@ class MemTool : Tool {
         if (ns == NS_GLOBAL && command !in NS_COMMANDS) {
             return Plan.Fail(command + " 没有命名空间参数，不能指定 ns（支持 ns 的子命令：" + NS_COMMANDS.joinToString(" / ") + "）")
         }
-        // ns=project 时故意不传 --ns：MEM_NS 已经是 project:<工作区目录名>，
+        // ns=project 时故意不传 --ns：接入层已经用 MINGMEM_NS 设好 project:<工作区目录名>，
         // 在 Kotlin 里再拼一遍命名规则，工作区改名或内核换命名约定时就会对不上。
         val nsArg: List<String> = if (ns == NS_GLOBAL) listOf("--ns=" + NS_GLOBAL) else emptyList()
 
@@ -217,7 +226,7 @@ class MemTool : Tool {
 
     /**
      * limit 只有 recall / search 有；内核上限 50、越界自己也会夹取。
-     * 这里先夹一遍是为了「模型给 200 时不要靠内核的 stderr 警告才发现」——但那只是优化，
+     * 这里先夹一遍是为了「模型给 200 时不要靠内核的 stderr 警告才发现」，但那只是优化，
      * 数值范围语义仍以内核为准。
      */
     private fun limitOf(args: JSONObject): Int? {
@@ -236,6 +245,9 @@ class MemTool : Tool {
     }
 
     private companion object {
+        /** 会写记忆库的 command：只读档下按能力拒绝（读的那些不在里面）。 */
+        val WRITE_COMMANDS = setOf("add", "correct", "cycle", "consolidate")
+
         val COMMANDS = listOf(
             "add", "recall", "search", "status", "cycle", "correct", "consolidate", "export", "doctor"
         )
@@ -245,7 +257,7 @@ class MemTool : Tool {
 
         val CONSOLIDATE_KINDS = listOf("semantic", "preference", "skill")
 
-        /** 有 --ns 的子命令（status / doctor 没有，见 mem.py 的 argparse）。 */
+        /** 有 --ns 的子命令（status / doctor 没有，见 mingmem 的 argparse）。 */
         val NS_COMMANDS = listOf(
             "add", "recall", "search", "cycle", "correct", "consolidate", "export"
         )

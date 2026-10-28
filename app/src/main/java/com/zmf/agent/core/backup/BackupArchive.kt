@@ -30,7 +30,8 @@ import java.util.zip.ZipOutputStream
 /** 导出选项。 */
 data class BackupOptions(
     val includeTerminal: Boolean = false,
-    val includeLogs: Boolean = false
+    val includeLogs: Boolean = false,
+    val includeMemory: Boolean = false
 )
 
 /** 备份清单（zip 里的 backup-manifest.json）。 */
@@ -61,6 +62,7 @@ data class ImportReport(
  *   workspace/             默认工作区文件（externalFilesDir/workspace，递归全部子目录）
  *   workspaces/            自建工作区文件（externalFilesDir/workspaces，递归全部子目录）
  *   logs/                  文件日志（externalFilesDir/logs，递归全部子目录）
+ *   memory/                记忆数据（filesDir/mingmem/_Data，不含内核程序）
  *   terminal/              终端环境（filesDir/usr 递归全部子目录、common.sh、setup_fake_sysdata.sh）
  *
  * 原则：
@@ -85,6 +87,11 @@ object BackupArchive {
     private const val PREFIX_LOGS = "logs/"
     private const val PREFIX_TERMINAL = "terminal/"
     private const val PREFIX_SKILLS = "skills/"
+    private const val PREFIX_MEMORY = "memory/"
+
+    /** 记忆数据根：与 MemoryKernel 的 `filesDir/mingmem/_Data` 保持一致，只备份数据不备份程序。 */
+    private const val MEMORY_DATA_PATH = "mingmem/_Data"
+    private const val TEMP_MEMORY_DATA = "mingmem/_Data.importing"
 
     /** 应用自己的 JSON：都在 [AppPaths] 管的 appdata 目录里。mcp.json 是 1.1.0 新增（MCP 服务配置）。 */
     private val DATA_FILES =
@@ -107,7 +114,7 @@ object BackupArchive {
      *
      * 为什么改：zip 存不下软链接和权限位，Ubuntu 根文件系统靠这两样活着。上一版把 usr/ 里的
      * 每一个文件单独塞进 zip，导入后 /bin → usr/bin 变成普通目录、所有可执行位丢失，
-     * 表现就是「终端一片黑、加进程闪一下就没、记忆内核报 shell 起不来」（2026-10-25 实测）。
+     * 表现就是「终端一片黑、加进程闪一下就没、记忆内核报 shell 起不来」。
      * tar 这两样都能存，代价只是多一层解包。
      */
     private const val TERMINAL_TAR_ENTRY = PREFIX_TERMINAL + "usr.tar"
@@ -213,6 +220,13 @@ object BackupArchive {
         collectFiles(File(AppPaths.dataDir(app), "skills"), PREFIX_SKILLS, true, false, skillItems)
         addSection("skills", skillItems)
 
+        // ---- memory/：仅当用户勾选；只带事件流与投影，不带 mingmem 程序本体 ----
+        if (options.includeMemory) {
+            val memoryItems = ArrayList<PlanItem>()
+            collectFiles(File(app.filesDir, MEMORY_DATA_PATH), PREFIX_MEMORY, false, false, memoryItems)
+            addSection("memory", memoryItems)
+        }
+
         // ---- prefs/：shared_prefs 下所有 xml（app_prefs.xml 去掉 api_key）----
         val prefsItems = ArrayList<PlanItem>()
         val prefsDir = File(app.applicationInfo.dataDir, PREFS_DIR)
@@ -258,7 +272,7 @@ object BackupArchive {
 
         // ---- terminal/：仅当用户勾了；usr/ 整段打成 tar（见 TERMINAL_TAR_ENTRY 的注释）----
         // 先打到临时文件、成功之后才进 zip：根文件系统里有 PRoot 留下的挂载点目录读不了，
-        // 边打边塞进 zip 的话一旦中途失败，zip 里那一条就是截断的（2026-10-25 用户导出到 40% 提示直接消失）。
+        // 边打边塞进 zip 的话一旦中途失败，zip 里那一条就是截断的（曾经导出到 40% 时提示直接消失）。
         var terminalTar: File? = null
         var terminalNote: String? = null
         if (options.includeTerminal) {
@@ -294,6 +308,7 @@ object BackupArchive {
         var wroteEverything = false
         var lastPct = -2
         var label = "准备导出"
+        /** 按已完成量算百分比，只有整数百分比变化时才回调一次。 */
         fun emit() {
             val pct = if (totalUnits <= 0L) 100 else ((doneUnits * 100L) / totalUnits).toInt().coerceIn(0, 100)
             if (pct != lastPct) {
@@ -310,6 +325,7 @@ object BackupArchive {
         output.use { raw ->
             ZipOutputStream(BufferedOutputStream(raw, COPY_BUFFER)).use { zos ->
                 // 写一个条目（清单和普通文件共用同一套写法）
+        /** 写一个 zip 条目并推进进度；条目顺序由调用方的计划列表决定。 */
                 fun writeItem(item: PlanItem) {
                     label = "写入 " + item.zipName
                     val base = doneUnits
@@ -365,8 +381,8 @@ object BackupArchive {
         }
         } catch (e: Exception) {
             // 收尾异常（provider 侧 close/flush）**且**所有条目都已写完：数据确实落盘了，按成功处理。
-            // 写到一半炸了就不行——那是一个没有目录区的半截 zip，按成功报等于骗人
-            //（2026-10-25：终端环境 tar 中途报错，界面说「已导出」，文件其实打不开）。
+            // 写到一半炸了就不行：那是一个没有目录区的半截 zip，按成功报等于骗人
+            // （曾经终端环境 tar 中途报错，界面说「已导出」，文件其实打不开）。
             if (wroteEverything) {
                 val size = contentLength(app, uri)
                 if (size > 0L) {
@@ -453,11 +469,13 @@ object BackupArchive {
         val filesDir = app.filesDir
         val usrDir = File(filesDir, "usr")
         val usrTemp = File(filesDir, TEMP_USR)
+        val memoryTemp = File(filesDir, TEMP_MEMORY_DATA)
         val workspaceTemp = if (external != null) File(external, TEMP_WORKSPACE) else null
         val workspacesTemp = if (external != null) File(external, TEMP_WORKSPACES) else null
 
         // 上次半途失败留下的临时目录先清掉，别把旧垃圾一起换上去
         deleteTree(usrTemp)
+        deleteTree(memoryTemp)
         if (workspaceTemp != null) deleteTree(workspaceTemp)
         if (workspacesTemp != null) deleteTree(workspacesTemp)
 
@@ -469,6 +487,7 @@ object BackupArchive {
         var workspacesFiles = 0
         var logFiles = 0
         var skillFiles = 0
+        var memoryFiles = 0
 
         // 进度：优先按「已读字节 / 包总大小」（zip 的压缩字节几乎线性推进）；
         // 拿不到总大小时退回按条目数估算（渐近到 95%，结束补 100），保证单调递增。
@@ -477,6 +496,7 @@ object BackupArchive {
         var entries = 0
         var lastPct = -2
         var label = "读取备份"
+        /** 按已读字节算百分比（拿不到总大小时按条目数渐近到 95%），只在变化时回调。 */
         fun emit() {
             val pct = if (totalBytes > 0L) {
                 ((readBytes * 100L) / totalBytes).toInt().coerceIn(0, 99)
@@ -589,6 +609,14 @@ object BackupArchive {
                                             skillFiles++
                                         }
 
+                                        name.startsWith(PREFIX_MEMORY) -> {
+                                            val rel = safeRelative(name.removePrefix(PREFIX_MEMORY))
+                                                ?: throw IllegalStateException("路径不合法")
+                                            if (memoryFiles == 0) deleteTree(memoryTemp)
+                                            writeEntryTo(zis, File(memoryTemp, rel))
+                                            memoryFiles++
+                                        }
+
                                         name == TERMINAL_TAR_ENTRY -> {
                                             // 整段 tar：解到 usr.importing 下，收尾阶段再整体换上去
                                             if (terminalUsrFromTar) {
@@ -657,6 +685,17 @@ object BackupArchive {
             }
         } else if (workspacesTemp != null) {
             deleteTree(workspacesTemp)
+        }
+
+        if (memoryFiles > 0) {
+            if (replaceDir(File(filesDir, MEMORY_DATA_PATH), memoryTemp)) {
+                restored.add("记忆数据 memory/：" + memoryFiles + " 个文件")
+            } else {
+                failed.add("记忆数据（memory/）：替换目录失败")
+                deleteTree(memoryTemp)
+            }
+        } else {
+            deleteTree(memoryTemp)
         }
 
         if (terminalUsrFromTar) {
@@ -981,11 +1020,11 @@ object BackupArchive {
      * （/bin → usr/bin 的链接、所有可执行位）。上一版逐文件塞进 zip，导入之后的终端必然黑屏。
      *
      * 为什么自己写 tar、不借 busybox：busybox 按 argv[0] 派发 applet，App 里能直接执行的那份
-     * 文件名是 libbusybox.so，跑起来只报 "applet not found"（2026-10-25 实测两次都折在这一步）。
+     * 文件名是 libbusybox.so，跑起来只报 "applet not found"（实测两次都折在这一步）。
      * 自己写还有个必需的好处：PRoot 留下的挂载点目录读不了，可以就地跳过，不会因为一个目录让整包失败。
      *
      * 为什么先落临时文件再进 zip：边打边塞进 zip 的话，中途失败时 zip 里那一条就是截断的，
-     * 整个备份跟着作废（用户看到的就是「导出到 40% 提示直接消失，文件打不开」）。
+     * 整个备份跟着作废（表现就是「导出到 40% 提示直接消失，文件打不开」）。
      */
     private fun packTerminalTar(app: Context, dir: File): Pair<File?, String?> {
         val tarFile = File(app.cacheDir, "terminal-usr.tar")
@@ -1162,7 +1201,7 @@ object BackupArchive {
      *
      * 优先 filesDir/usr/bin/busybox（终端启动时由 TerminalManager 建好的软链，名字对）；
      * 终端还没启动过（或刚重装被清掉）就没有这条软链，那就把 APK 里那份 libbusybox.so
-     * 复制到 cache/bin/busybox 再执行——2026-10-25 实测：直接用 .so 会让导入报 EPIPE。
+     * 复制到 cache/bin/busybox 再执行：直接用 .so 会让导入报 EPIPE（实测）。
      */
     private fun busyboxBinary(app: Context): File? {
         val linked = File(File(app.filesDir, "usr/bin"), "busybox")
@@ -1200,6 +1239,20 @@ object BackupArchive {
         total
     } catch (e: Exception) {
         0L
+    }
+
+    /**
+     * 终端环境段导出的真实体积（字节）：filesDir/usr 递归 + 两个根脚本，和 [export] 进包的内容一致。
+     *
+     * 界面上的体积注释按它显示，不再写死常量：用户 apt 装了多少，这里就报多少。
+     */
+    fun terminalSectionBytes(app: Context): Long {
+        var total = fileTreeSize(File(app.filesDir, "usr"))
+        TERMINAL_ROOT_FILES.forEach { name ->
+            val file = File(app.filesDir, name)
+            if (file.isFile) total += file.length()
+        }
+        return total
     }
 
     /**

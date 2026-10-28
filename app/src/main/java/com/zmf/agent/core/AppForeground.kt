@@ -7,7 +7,7 @@ package com.zmf.agent.core
  * 只有真正露在屏幕上的 Activity 才算「在看」；小窗/前台服务跑着但界面不在前台时，通知照发。
  *
  * [active] 由 MainActivity 的 onResume/onPause 加减，用 @Volatile 让通知侧（可能在别的线程
- * 的 finally 里）立刻看到新值——计数短暂不准最多多发/少发一条通知，不影响主流程。
+ * 的 finally 里）立刻看到新值：计数短暂不准最多多发/少发一条通知，不影响主流程。
  */
 object AppForeground {
 

@@ -1,23 +1,16 @@
 package com.zmf.agent.ui.chat
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -49,57 +42,29 @@ import com.zmf.agent.ui.common.Chevron
 import com.zmf.agent.ui.common.ChevronKind
 import com.zmf.agent.ui.common.ChevronSize
 import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.theme.Motion
 import com.zmf.agent.ui.theme.Palette
 import kotlinx.coroutines.delay
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
 
-/* ============================== 文件级 API 说明 ==============================
+/* ============================== 文件级说明 ==============================
  *
- * 通用工具块：主页聊天气泡里的一次工具调用、轨迹页展开后的一次工具调用，
- * 都渲染这一个 Composable。它不依赖 ToolCall / TraceLine 任何一方的数据类，
- * 只吃纯参数，所以两个页面都能直接用。
+ * 轨迹页专用的工具卡。参数、分区与「复制按钮」的入场方式与 [ToolBlock] 同源，
+ * 这里只记与它的差异（为什么另起一份见下面 [TraceToolCard] 的 KDoc）：
  *
- * 一、入口
+ * 一、与主页那份的差异
+ *   - 默认展开：轨迹页是「点进来看详情」，不需要「折成一行」这个动作；
+ *   - 多三个参数：stepLabel（标题行右侧「第 N 轮 · 第 M 步」）、imageRoot（把输出里的
+ *     相对路径解成工作区里的真文件）、onImageClick（点附件卡打开主页那一个查看器）；
+ *   - 输出区下面多一段图片附件（[ToolAttachmentRow]），没有图就整段不出。
  *
- *   @Composable fun TraceToolCard(
- *       toolName: String,           // 工具名（标题行，等宽字体）
- *       arguments: String,          // 参数原文（JSON 或纯文本）
- *       modifier: Modifier = Modifier,
- *       output: String? = null,     // 结果；null = 还在跑（标题行显示「执行中…」）
- *       ok: Boolean? = null,        // 结果成败；null = 不知道 / 还在跑
- *       code: String? = null,       // 可选的代码/命令区（给终端类工具用，没有就不占位）
- *       codeLang: String = "",      // 代码区的语言标签（空则显示「代码」）
- *       containerColor: Color = …,  // 卡片底色，默认用 onSurface 的低透明度
- *       outsideTapKey: Any? = null, // 父层「点了别处」的计数；值一变就收起复制按钮
- *       copyText: String? = null    // 自定义复制内容；null = 自动拼工具名/参数/代码/输出
- *   )
- *
- * 二、主页聊天气泡里替换现在的 ToolCard
- *
- *   TraceToolCard(
- *       toolName = call.name,
- *       arguments = call.arguments,
- *       output = toolResultOf(all, call),
- *       ok = toolOutcomes[call.id],
- *       containerColor = cardColor
- *   )
- *   和现在的 ToolCard 一一对应：call → toolName/arguments，result → output，ok → ok。
- *   区别：参数默认折叠成一行摘要（点摘要行展开），结果是常显的 240dp 内滚区，
- *   不再整个卡片折起来；如果仍想要「整卡折叠」，在外面套一层自己的开关即可。
- *
- * 三、轨迹页 Timeline 展开卡
- *
- *   TraceToolCard(toolName = call.name, arguments = call.arguments, output = result, ok = …)
- *   轨迹页的 TraceLine 已经有 args / result 原文，直接传进来就行。
- *
- * 四、位置约定
- *   - 参数区：折叠时一行摘要（[ARG_SUMMARY_LIMIT] 字截断），展开后 240dp 内滚；
+ * 二、位置约定
+ *   - 参数区：240dp 内滚，参数为空时整块不渲染；
  *   - 代码区：等宽 + 行号，默认单行横滑，点「缩进」换成完整换行，随整页滚动；
  *   - 输出区：240dp 内滚，滚到边界后继续滑不带动外层页面；
- *   - 复制按钮：默认不显示，块内任意手势后出现在右上角，见 [TraceToolCard] 的注释。
+ *   - 复制按钮：块内任意手势后出现在右上角，口径与 [ToolBlock] 相同。
  * ========================================================================== */
 
 /** 「复制」按钮的固定占位宽度：始终存在，按钮出现时只填进去，不挤动旁边任何东西。 */
@@ -122,27 +87,16 @@ private val ARG_SUMMARY_KEYS = listOf(
 )
 
 /**
- * 轨迹页工具卡（从主页那份派生，但默认展开、只服务详情页）。
+ * 轨迹页专用的工具卡（从主页那份派生，但默认展开、只服务详情页）。
  *
- * 结构：标题行（工具名 + 状态 + 复制）→ 参数区（折叠/展开）→ 代码区（可选）→ 输出区。
+ * 结构：标题行（工具名 + 状态 + 复制）→ 参数区（折叠/展开）→ 代码区（可选）→ 输出区 → 图片附件。
  *
- * 复制按钮的显隐（最终采用「计时」方案，不是全局点击代理）：
- *  - 默认不显示；
- *  - 块内**任意**手势（点击、长按、滑动，甚至只是按下）都会让它出现，并重置 4 秒计时；
- *  - 4 秒内没有新手势就自动收起；
- *  - 另外留了 [outsideTapKey] 钩子：父页面要是本来就有「点空白处」的事件，
- *    把它递增一下就能立刻收起（父层不接也完全可用）。
- *  为什么不做「全局点击代理」：那要求父层把根节点的点击事件按块分发下来，
- *  聊天页的根节点已经被长按选文、抽屉横滑占用，硬塞进去容易互相吃掉事件，
- *  而这个按钮本身就是「临时工具」，4 秒自动收起已经够用。
- */
-/**
- * 轨迹页专用的工具卡。
+ * 复制按钮的显隐与 [ToolBlock] 同口径：默认不显示，块内任意手势后出现、4 秒无新手势自动收起，
+ * 父层递增 [outsideTapKey] 还能立刻收回；不做「全局点击代理」的理由也是同一个（见该处说明）。
  *
- * 为什么另起一份而不是复用主页的 ToolBlock（用户明确要求）：
- * 两页的「工具卡」只是长得像，语义不同——主页那张是**过程**，默认折成一行、点开才看；
- * 轨迹页这张是**详情**，用户是专门点进来查这一步的，所以默认就是展开的，
- * 也不需要「折叠成一行」这个动作。放在同一个函数里加参数，两边会互相牵制。
+ * 为什么另起一份而不是复用主页的 ToolBlock：两页的「工具卡」只是长得像，
+ * 语义不同：主页那张是**过程**，默认折成一行、点开才看；轨迹页这张是**详情**，是专门点进来
+ * 查这一步的，所以默认展开，也不需要「折叠成一行」这个动作；放在同一函数里加参数会互相牵制。
  */
 @Composable
 fun TraceToolCard(
@@ -155,14 +109,19 @@ fun TraceToolCard(
     codeLang: String = "",
     containerColor: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
     outsideTapKey: Any? = null,
-    copyText: String? = null
+    copyText: String? = null,
+    /** 标题行右侧的「第 N 轮 · 第 M 步」；空串不显示（主页没有这一步的概念）。 */
+    stepLabel: String = "",
+    /** 工作区根：用来判断输出里的图片是否真实存在、以及拼缩略图。 */
+    imageRoot: File? = null,
+    /** 点附件卡打开查看器（沿用主页那一个）。 */
+    onImageClick: ((List<String>, Int) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val onSurface = MaterialTheme.colorScheme.onSurface
     // 参数 / 代码 / 输出共用同一份「代码块底色」，比卡片本身再浅一档
     val bodyBackground = onSurface.copy(alpha = 0.06f)
 
-    var argsExpanded by remember { mutableStateOf(false) }
     // 卡片默认折叠成一行（工具名 + 状态）：参数 / 代码 / 输出要点开才看。
     // 一轮里常常连着七八次工具调用，全摊开会把这一轮的回答挤到看不见。
     // 轨迹页是「点进来看详情」，进来就该是展开的
@@ -185,12 +144,17 @@ fun TraceToolCard(
     }
 
     val running = output == null
-    // 状态只留一个词（用户定的）：拿到结果就写「完成」，没拿到就先空着。
-    // 不再区分成功 / 失败 / 成败未知——调用结束就是结束，具体的错在输出里能看到，
+    // 状态只留一个词：拿到结果就写「完成」，没拿到就先空着。
+    // 不再区分成功 / 失败 / 成败未知：调用结束就是结束，具体的错在输出里能看到，
     // 卡片上多一个红字反而更吵。
     val statusColor = Palette.AccentGreen
     val statusText = if (running) "" else "完成"
-    val summary = remember(arguments) { toolArgSummary(arguments) }
+    // 一句话总结（「读取 test.txt」「运行命令 tail -c 20 …」）：标题行给用户看这条工具干了什么
+    val headline = remember(toolName, arguments) { toolSummary(toolName, arguments) }
+    // 参数等于没有（空串 / 空对象）时整块不渲染：避免「参数 缩进」下面只剩一个空花括号
+    val argsBlank = remember(arguments) { toolArgIsBlank(arguments) }
+    // 输出里真实存在的图片 → 附件卡（缩略图 + 文件名 + 类型/大小/尺寸）
+    val attachments = remember(output, imageRoot) { toolAttachments(output, imageRoot) }
     val codeBody = code?.takeIf { it.isNotBlank() }
     val fullText = remember(copyText, toolName, arguments, code, output) {
         copyText ?: buildToolCopyText(toolName, arguments, code, output)
@@ -201,11 +165,11 @@ fun TraceToolCard(
         shape = RoundedCornerShape(14.dp),
         modifier = modifier
             .fillMaxWidth()
-            // 展开着才参与「谁显示复制」的竞争：块内一摸就把按钮调出来，摸别的块就会挪走。
-            .then(if (open) Modifier.claimCopyOnGesture(copyKey) else Modifier)
+            // 复制归属挂在内容区（见下面那个 Column），不挂在整卡上：
+            // 以前点标题行那一下也算「摸过」，于是「点一下展开没有按钮、再点一下收起反而出现」。
     ) {
         // 内边距下放到每一块内容上：标题行要顶到卡片边缘，波纹才铺满整行
-        // （用户原话：反馈不该是行内一个小矩形）。
+        // （反馈不做成行内一个小矩形）。
         Column {
             /* -------------------------- 标题行 -------------------------- */
             Row(
@@ -225,17 +189,27 @@ fun TraceToolCard(
                     modifier = Modifier.size(13.dp)
                 )
                 Spacer(Modifier.width(5.dp))
+                // 标题行只放「这条工具干了什么」：工具名那行字删掉、简介语句移到前面，
+                // 图标保留。工具名仍进复制文本（buildToolCopyText），信息不丢。
+                // 12sp：这句是标题，不是附属小字。
                 Text(
-                    text = toolName,
+                    text = headline,
                     modifier = Modifier.weight(1f),
                     fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = onSurface.copy(alpha = 0.85f)
+                    color = onSurface.copy(alpha = 0.55f)
                 )
-                // 「复制」占一块固定宽度：出现 / 消失都不挪动任何别的元素，右侧
-                // 「完成 + 箭头」的位置永远是死的（用户原话：复制浮现时整块不能突变）。
+                if (stepLabel.isNotEmpty()) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = stepLabel,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        color = onSurface.copy(alpha = 0.4f)
+                    )
+                }
+                // 「复制」占一块固定宽度：出现 / 消失都不挪动任何别的元素（口径见 [ToolBlock] 的同段说明）。
                 Box(
                     modifier = Modifier
                         .width(CopySlot)
@@ -243,10 +217,7 @@ fun TraceToolCard(
                             if (copyVisible && fullText.isNotBlank()) {
                                 Modifier
                                     .clip(RoundedCornerShape(6.dp))
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) {
+                                    .clickable {
                                         copyCode(context, fullText, "工具调用")
                                         copied = true
                                     }
@@ -254,7 +225,7 @@ fun TraceToolCard(
                                 Modifier
                             }
                         ),
-                    contentAlignment = Alignment.CenterEnd
+                    contentAlignment = Alignment.Center
                 ) {
                     if (copyVisible && fullText.isNotBlank()) {
                         Text(
@@ -281,50 +252,17 @@ fun TraceToolCard(
 
             if (open) {
             Column(
-                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                modifier = Modifier
+                    .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
+                    // 展开后内容区任意位置按下 / 滑动都叫出复制（Initial 阶段，不消费事件）
+                    .claimCopyOnGesture(copyKey),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
             /* -------------------------- 参数区 -------------------------- */
-            // 折叠时只有一行摘要；整行可点，不额外占一行「展开」按钮
-            if (summary.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) {
-                            argsExpanded = !argsExpanded
-                        }
-                        .padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = summary,
-                        modifier = Modifier.weight(1f),
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        color = onSurface.copy(alpha = 0.55f)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = if (argsExpanded) "收起" else "展开",
-                        fontSize = 11.sp,
-                        color = Palette.AccentBlue
-                    )
-                }
-            }
-            AnimatedVisibility(
-                visible = argsExpanded && summary.isNotEmpty(),
-                enter = expandVertically(animationSpec = Motion.spring()) + fadeIn(Motion.fadeIn()),
-                exit = shrinkVertically(animationSpec = Motion.spring()) + fadeOut(Motion.fadeOut())
-            ) {
-                // 参数本就是 JSON / 命令，直接按代码块渲染：
-                // 等宽 + 行号关掉 + 「缩进」控制单行横滑还是完整换行。
-                // 240dp 上限交给 BoundedScrollColumn：装得下就随整页滚，真超了才在块内截住。
+            // 直接展示，不再有二级「展开 / 收起」：卡片本身已经是「点开才看」的那一层，
+            // 里面再折一层会让收起动效叠两段（表现为「收完又跳一下」）。
+            // 参数等于没有时整块不渲染（空对象不该画出一个空块）。
+            if (!argsBlank) {
                 BoundedScrollColumn(
                     maxHeight = BlockBodyMaxHeight,
                     modifier = Modifier.fillMaxWidth()
@@ -363,7 +301,7 @@ fun TraceToolCard(
             /* -------------------------- 输出区 -------------------------- */
             if (output != null) {
                 // 只有上面还有参数/代码时才加「输出」小标题，否则整块就是输出，不必标注
-                if (summary.isNotEmpty() || codeBody != null) {
+                if (!argsBlank || codeBody != null) {
                     Text(
                         text = "输出",
                         fontSize = 10.sp,
@@ -378,7 +316,7 @@ fun TraceToolCard(
                 ) {
                     Text(
                         text = output.ifBlank { "（无输出）" },
-                        // 内边距跟着正文一起滚，和改写前一致
+                        // 内边距给在正文上：让它跟着内容一起滚动，不占滚动区
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
@@ -386,6 +324,17 @@ fun TraceToolCard(
                         color = onSurface.copy(alpha = 0.72f)
                     )
                 }
+            }
+
+            /* -------------------------- 图片附件 -------------------------- */
+            // 输出里真实存在的图片单独排成附件卡（缩略图 + 文件名 + 类型/大小/尺寸），
+            // 点开交给主页同一套查看器。没有图就整段不出。
+            if (attachments.isNotEmpty()) {
+                ToolAttachmentRow(
+                    attachments = attachments,
+                    root = imageRoot,
+                    onOpen = onImageClick
+                )
             }
             }
             }
@@ -406,7 +355,7 @@ fun TraceToolCard(
  * 行内还有余量时一律不碰（滑动仍归 horizontalScroll），竖向为主的位移也不碰，
  * 所以竖着滑消息列表不受影响。
  *
- * 实现在本文件（不从 ChatScreen 拿，那份是 private）；MarkdownText 的代码块复用同一个实现。
+ * 实现在本文件（从 ChatScreen 的 private 实现里挪出）；同包另有 [blockHorizontalAtEdge] 供代码块与 TabStrip 复用。
  */
 private fun Modifier.traceCardHorizontalAtEdge(state: ScrollState): Modifier = pointerInput(state) {
     awaitEachGesture {
@@ -428,8 +377,8 @@ private fun Modifier.traceCardHorizontalAtEdge(state: ScrollState): Modifier = p
 }
 
 /**
- * 参数摘要：优先取 path / command 这类一眼能读懂的字段，取不到就把整串压成一行。
- * 统一截到 [ARG_SUMMARY_LIMIT] 字——路径和命令都太长，一行放不下。
+ * 参数摘要（与 ToolBlock.kt 里那份实现同口径）：取 path / command 这类字段，
+ * 取不到就压成一行，统一截到 [ARG_SUMMARY_LIMIT]。
  */
 private fun toolArgSummary(arguments: String): String {
     if (arguments.isBlank()) return ""

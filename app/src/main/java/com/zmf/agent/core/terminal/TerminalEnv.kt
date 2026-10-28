@@ -8,7 +8,7 @@ import java.io.File
  * 终端（PRoot Ubuntu）环境的体检与修复。
  *
  * 为什么需要「重装」这一手：Ubuntu 根文件系统里有成百上千个软链接（/bin → usr/bin、
- * /lib64/ld-linux-… 之类）和可执行位。备份包是 zip，而 zip **存不下软链接和权限位**——
+ * /lib64/ld-linux-… 之类）和可执行位。备份包是 zip，而 zip **存不下软链接和权限位**：
  * 导入之后那些链接变成普通文件、脚本全丢了 x 位，PRoot 起得来、bash 却一进来就退：
  * 表现就是「终端一片黑、加进程闪一下就没」「记忆内核报 Hidden exec shell exited before ready」。
  * 镜像本身在 APK 里（assets/ubuntu-noble-…tar.xz），所以修法很直接：把解压出来的那份删掉，
@@ -31,7 +31,7 @@ object TerminalEnv {
      * 看起来装好了没：/bin/bash 与 /etc/os-release 都在。
      *
      * 只做「在不在」这种粗判：这里要回答的是「终端能不能起来」，
-     * 不是校验每一个文件的哈希——那样的体检又慢又容易误报。
+     * 不是校验每一个文件的哈希：那样的体检又慢又容易误报。
      */
     fun isInstalled(context: Context): Boolean {
         val root = rootfsDir(context)
@@ -39,7 +39,7 @@ object TerminalEnv {
         // /bin 在 Ubuntu 里是 → usr/bin 的软链；软链坏了之后这里会退化成普通目录，
         // 所以两种落点都认一遍
         val bash = File(root, "bin/bash").takeIf { it.exists() } ?: File(root, "usr/bin/bash")
-        // 关键判据是**可执行位**：zip 导入把 x 位全丢了，文件还在、bash 却跑不起来——
+        // 关键判据是**可执行位**：zip 导入把 x 位全丢了，文件还在、bash 却跑不起来，
         // 只看 exist 会把坏环境报成「已安装」，用户照着点下去仍然是黑屏
         val runnable = bash.exists() && bash.canExecute()
         return runnable && File(root, "etc/os-release").exists()

@@ -14,7 +14,7 @@ enum class ContextEventKind { COMPRESS, CLEAR, FALLBACK }
  * 一条上下文事件（只读记录，给人看）。
  *
  * 为什么这些数都要留下来：用户看到水位下降时最想知道的不是「降了多少」，而是「折叠了多少条、从第几条起发原文、
- * 兜底留了几轮」——没有这几个数，「上下文被压掉了」就只是一句猜测。
+ * 兜底留了几轮」：没有这几个数，「上下文被压掉了」就只是一句猜测。
  *
  * @param at 事件发生时刻（毫秒）
  * @param ok 本次操作是否成功（只有 COMPRESS 会用到 false）
@@ -94,7 +94,7 @@ object ContextEventStore {
         }
     }
 
-    /** 追加一条；超过 [MAX_PER_SESSION] 条时丢最旧的。写失败只记日志——观察数据不值得让对话崩。 */
+    /** 追加一条；超过 [MAX_PER_SESSION] 条时丢最旧的。写失败只记日志：观察数据不值得让对话崩。 */
     @Synchronized
     fun append(context: Context, sessionId: String, event: ContextEvent) {
         val key = sessionKey(sessionId)

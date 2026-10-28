@@ -68,7 +68,7 @@ data class McpServer(
  *
  * 和 SessionStore / WorkSpaceStore 一样，整个文件一次覆盖写：
  * 服务配置是用户手工填的，几条到几十条，不需要数据库。
- * 所有读写失败都只记日志、不抛异常——配置坏了顶多是「没有 MCP 服务」，不能把 App 弄崩。
+ * 所有读写失败都只记日志、不抛异常：配置坏了顶多是「没有 MCP 服务」，不能把 App 弄崩。
  */
 object McpServerStore {
 

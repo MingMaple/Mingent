@@ -1,5 +1,7 @@
 package com.zmf.agent.ui.float
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -8,6 +10,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -40,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -48,20 +52,37 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.model.ChatMessage
+import com.zmf.agent.ui.chat.FoldToggle
+import com.zmf.agent.ui.chat.MarkdownText
 import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.ui.common.saltCursorBrush
 
 /** 小窗只读展示最近多少条消息（老消息不铺进 LazyColumn，省内存也省布局）。 */
 private const val MAX_SHOWN = 80
+
+/**
+ * 小窗折叠：正文完整高度超过**可视高**的这个比例才折。
+ *
+ * 用比例而不是写死的 dp：小窗的宽高由用户随便拖，同一段话在拉高的窗口里该整段铺开、
+ * 在压矮的窗口里才该折起来。主页按屏幕 45% 折，这里放宽到 62%：小窗本来就矮，
+ * 折得太早会只剩个标题，反而要看两遍。
+ */
+private const val FLOAT_FOLD_AT_RATIO = 0.62f
+
+/** 折叠态最多占可视高的比例：窗口压矮时跟着收，拉高时自动摊开。 */
+private const val FLOAT_FOLDED_RATIO = 0.42f
 
 /** 小窗整体留给阴影的内缩：窗口是服务给的精确像素（默认 240x320dp），阴影得画在窗口里面才看得见。 */
 private val SHADOW_PADDING = 5.dp
@@ -99,7 +120,7 @@ private const val HANDLE_BORDER_DRAG = 0.45f
  * 输入框焦点变化的对外钩子。
  *
  * 服务侧只用它做一件事：输入框**真正获得焦点**的那一刻请求一次 IME（200ms 防抖）。
- * 窗口的 flags 在展开时就一次性设成可获焦，**不随焦点变化** —— 上一版正是这里
+ * 窗口的 flags 在展开时就一次性设成可获焦，**不随焦点变化**：上一版正是这里
  * 反复改 flags，窗口一失焦系统就收键盘、代码又去 showSoftInput，键盘来回闪。
  * Composable 的形参是定死的，所以用一个 CompositionLocal 把这件事回传给服务，
  * 默认实现是空操作（单独预览也不会崩）。
@@ -109,7 +130,7 @@ val LocalFloatInputFocus = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 /**
  * 系统小窗里的对话面板（尺寸由服务给，默认 240x320dp，圆角 12dp，八级阴影）。
  *
- * 顶部 48dp 工具条：左边会话名（超长省略），右边三个 30dp 圆按钮 ——
+ * 顶部 48dp 工具条：左边会话名（超长省略），右边三个 30dp 圆按钮：
  * 「回主页」把 App 拉到前台、「∨」折叠回球、「✕」关掉整套悬浮窗。
  * 中间只读展示当前会话消息，底部一行输入（surface 面片 + 圆角，**不描白边**），
  * 回车 / 点发送都走 [onSend]。历史、放大/全屏这些入口本轮都不做。
@@ -117,7 +138,7 @@ val LocalFloatInputFocus = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
  * 图标：工程里没有 material-icons 依赖（也不许新增），所以三个图标用 Canvas 手画，
  * 不新增任何资源文件，任何系统字体下都能渲染。
  *
- * 手势（热区与换算照 Operit 逆向结论，锚点都是窗口左上角）：
+ * 手势（锚点都是窗口左上角，热区与换算跟 Operit 的逆向结论一致）：
  * - 移动：**只有标题与按钮组之间那块空白**能拖（[onMoveBy]，位移直接透传 px）；
  * - 调宽：右边缘一条 16dp 宽 × 满高的竖条（[onResizeWidth]），只改宽、x 不动；
  * - 调高：底边一条 满宽 × 12dp 的横条（[onResizeHeight]），在输入行下方，只改高、y 不动；
@@ -159,9 +180,9 @@ fun FloatingChatWindow(
 
     /*
      * 贴底：两个触发条件共用这一段。
-     * 1) 消息条数变了 —— 新回复进来，小窗就这么点高，不跟到底等于看不见最新回复；
-     * 2) 消息区尺寸变了 —— 拖底边把窗口往下压时视口变矮，原来的滚动量不再贴底，
-     *    消息会卡在上一格、不跟输入框一起上移（真机反馈③）。尺寸变化后重新「滚到最后一项」，
+     * 1) 消息条数变了：新回复进来，小窗就这么点高，不跟到底等于看不见最新回复；
+     * 2) 消息区尺寸变了：拖底边把窗口往下压时视口变矮，原来的滚动量不再贴底，
+     *    消息会卡在上一格、不跟输入框一起上移。尺寸变化后重新「滚到最后一项」，
      *    LazyListState 会把这次滚动夹到内容末尾，视觉上就是最后一条贴着输入框往上走。
      * 触发点在 LazyColumn 的 onSizeChanged（布局阶段写 state，重组后这个 effect 才跑，不抢布局）。
      */
@@ -189,7 +210,10 @@ fun FloatingChatWindow(
                 .fillMaxSize()
                 .shadow(elevation = 8.dp, shape = RoundedCornerShape(WINDOW_CORNER), clip = false),
             shape = RoundedCornerShape(WINDOW_CORNER),
-            color = MaterialTheme.colorScheme.surface
+            // 画布用**页面底色**而不是 surface：surface 正好等于 AI 气泡色，
+            // 那样气泡会糊在背景里。换成页面底色后，小窗里的三层（底 / AI 气泡 / 用户气泡）
+            // 与主页对话页是同一套层次。
+            color = MaterialTheme.colorScheme.background
         ) {
             // 内容 + 两个贴边手柄：手柄画在窗口**里面**，贴着「会动的那条边」
             Box(Modifier.fillMaxSize()) {
@@ -217,17 +241,26 @@ fun FloatingChatWindow(
                             )
                         }
                     } else {
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth()
-                                // 尺寸一变就记下来（同一个值写进去不会触发重组），交给上面的贴底 effect
-                                .onSizeChanged { messageAreaSize = it },
-                            contentPadding = PaddingValues(vertical = 6.dp)
-                        ) {
-                            items(visible.size) { index ->
-                                MessageBubble(visible[index])
+                        // 折叠阈值按**当前可视高**现算：窗口是用户随便拖的，同一段话
+                        // 拉高时摊开、压矮时才折，写死的 dp 在很矮的窗口里会一折到底。
+                        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            val foldAt = maxHeight * FLOAT_FOLD_AT_RATIO
+                            val foldedHeight = maxHeight * FLOAT_FOLDED_RATIO
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    // 尺寸一变就记下来（同一个值写进去不会触发重组），交给上面的贴底 effect
+                                    .onSizeChanged { messageAreaSize = it },
+                                contentPadding = PaddingValues(vertical = 6.dp)
+                            ) {
+                                items(visible.size) { index ->
+                                    MessageBubble(
+                                        message = visible[index],
+                                        foldAt = foldAt,
+                                        foldedHeight = foldedHeight
+                                    )
+                                }
                             }
                         }
                     }
@@ -262,7 +295,7 @@ fun FloatingChatWindow(
 /**
  * 顶部 48dp 工具条：会话名 + 中间可拖空白 + 「回主页」/「∨ 折叠」/「✕ 关闭」。
  *
- * 可拖热区只有标题与按钮组之间那段空白（Operit 的移动热区就是这一段）：
+ * 可拖热区只有标题与按钮组之间那段空白（参考实现的移动热区也是这一段）：
  * 拖标题文字、拖按钮都不挪窗口，免得「想点 ✕ 结果窗口被拖走」。
  */
 @Composable
@@ -485,36 +518,69 @@ private fun CloseIcon(color: Color) {
 }
 
 /**
- * 一条消息气泡：只读、最多 14 行、超了省略。
+ * 一条消息气泡：只读、走**和主页同一套** [MarkdownText]（代码块、列表、粗体都一样）。
  *
  * 气泡**占满左右**（左右各 12dp 内边距）：窗口拉宽以后正文要跟着一起变宽。
- * 上一版有两处把它钉死在了旧尺寸上 —— 外层 widthIn(max = 215dp) 卡着宽度上限、
- * 内层 Row 的 Arrangement 按角色靠左/靠右，于是窗口变宽后右边空一大截（真机反馈②）。
+ * 上一版有两处把它钉死在了旧尺寸上：外层 widthIn(max = 215dp) 卡着宽度上限、
+ * 内层 Row 的 Arrangement 按角色靠左/靠右，于是窗口变宽后右边空一大截。
  * 现在左右对齐没有意义了（气泡已经占满整行），角色只决定底色。
+ *
+ * 不用带 `shape` 的 `Surface`：小窗能拉得很高，一条长回复的气泡也会长到几千像素，
+ * 而 `Surface` 的裁剪图层长到那个尺寸后，里面代码块的「缩进 / 复制」就收不到点击
+ * （主页的气泡也踩过同一个坑：长到几千像素后，里面代码块的按钮收不到点击）。
+ * `Box + background(color, shape)` 视觉一致、但不建裁剪图层。
+ *
+ * 原先这里写死 `maxLines = 14` 省略超长回复；改用 Markdown 后不能按行截断
+ * （截在一半会把代码块切坏），改为**按块折叠**：超过当前可视高就到整段末尾折起来，
+ * 右下角压一枚和主页同一款的 [FoldToggle]，展开 / 收起只动本气泡的高度。
  */
 @Composable
-private fun MessageBubble(message: ChatMessage) {
+private fun MessageBubble(message: ChatMessage, foldAt: Dp, foldedHeight: Dp) {
     val isUser = message.role == "user"
-    Surface(
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    // 与主页气泡同一套配色：用户气泡 Palette.BubbleUser*（最亮）、AI 气泡 Palette.BubbleAi*
+    // （比画布深一档）。窗口画布也换成了页面底色，所以这里直接用不透明的气泡色即可，
+    // 折叠遮罩也能真的盖住最后一行。小窗原来用户气泡是 primary 的 14%：主题 primary 是
+    // AccentBlue，整屏单色里就那两块是浅蓝，跟全局配色对不上。
+    val bubbleColor = if (isUser) {
+        if (isDark) Palette.BubbleUserDark else Palette.BubbleUserLight
+    } else {
+        if (isDark) Palette.BubbleAiDark else Palette.BubbleAiLight
+    }
+    // 展开态只活在这一屏：滑出小窗视口再回来重新折起（与主页口径一致）
+    var expanded by remember { mutableStateOf(false) }
+    Box(
         // fillMaxWidth 之后 padding：底色/圆角画在内缩 12dp 的区域里，气泡本身吃满可用宽度
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 3.dp),
-        shape = RoundedCornerShape(12.dp),
-        color = if (isUser) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-        } else {
-            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
-        }
+            .padding(horizontal = 12.dp, vertical = 3.dp)
+            // 展开 / 收起只动气泡高度，不重新折行
+            .animateContentSize(animationSpec = tween(180), alignment = Alignment.TopStart)
+            .background(color = bubbleColor, shape = RoundedCornerShape(12.dp))
     ) {
-        Text(
+        MarkdownText(
             text = message.content,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            // 小窗比主页窄，正文字号跟着收一档（代码块字号由 MarkdownText 按 0.88 等比缩）
             fontSize = 13.sp,
-            lineHeight = 18.sp,
-            maxLines = 14,
-            overflow = TextOverflow.Ellipsis,
-            color = MaterialTheme.colorScheme.onSurface
+            color = MaterialTheme.colorScheme.onSurface,
+            codeBackground = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f),
+            // 用户自己排的换行照主页口径保留：用户气泡留空行，AI 气泡收起连续空行
+            keepBlankLines = isUser,
+            // 折叠只服务用户的长消息：AI 气泡与主页口径一致，始终整段铺开、永不折叠。
+            // 不传阈值与按钮，MarkdownText 就走「不限高」的直铺分支。
+            foldAt = if (isUser) foldAt else Dp.Unspecified,
+            foldedHeight = if (isUser) foldedHeight else Dp.Unspecified,
+            expanded = expanded,
+            foldColor = bubbleColor,
+            // 按钮落点按小窗自己的内边距（10 / 7dp）算，否则会被推到气泡外面
+            foldToggleInsetX = 10.dp,
+            foldToggleInsetY = 7.dp,
+            foldToggle = if (isUser) {
+                { FoldToggle(expanded = expanded, onClick = { expanded = !expanded }) }
+            } else {
+                null
+            }
         )
     }
 }
@@ -551,7 +617,7 @@ private fun InputRow(
                     .padding(horizontal = 12.dp, vertical = 9.dp)
                     .onFocusChanged { onFocusChanged(it.isFocused) },
                 textStyle = TextStyle(fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface),
-                cursorBrush = SolidColor(Palette.AccentBlue),
+                cursorBrush = saltCursorBrush(),
                 maxLines = 3,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { onSubmit() }),
@@ -570,17 +636,24 @@ private fun InputRow(
             )
         }
         Spacer(Modifier.width(8.dp))
+        // 发送键跟主页 Composer 同一套配色：底色 Palette.AccentGreen（本主题的强调色是
+        // 灰阶单色，不是 Material 的 primary 蓝），图标用 Palette.LightText，不可发时压到 35%。
+        // 小窗原来直接刷 AccentBlue，是整屏里唯一一块饱和蓝，跟全局配色对不上。
         Box(
             modifier = Modifier
                 .size(36.dp)
                 .background(
-                    color = if (canSend) Palette.AccentBlue else Palette.AccentBlue.copy(alpha = 0.35f),
+                    color = if (canSend) {
+                        Palette.AccentGreen
+                    } else {
+                        Palette.AccentGreen.copy(alpha = 0.35f)
+                    },
                     shape = CircleShape
                 )
                 .clickable(enabled = canSend, onClick = onSubmit),
             contentAlignment = Alignment.Center
         ) {
-            Text(text = "↑", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text(text = "↑", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Palette.LightText)
         }
     }
 }

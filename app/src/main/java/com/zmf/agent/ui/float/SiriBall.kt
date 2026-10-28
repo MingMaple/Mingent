@@ -28,7 +28,7 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** 慢旋转一圈：30s（Operit 的节奏偏快，我们放慢一档，不盯着看注意不到）。 */
+/** 慢旋转一圈：30s（参考实现的节奏偏快，放慢一档才不扎眼）。 */
 private const val SPIN_MS = 30_000
 
 /** 呼吸一次：4.5s，半径只在 0.975~1.00 之间轻轻起伏。 */
@@ -47,7 +47,7 @@ private const val RIPPLE_CYCLE_MS = 3_600
 private const val PRESS_SCALE = 0.85f
 private const val PRESS_MS = 200
 
-/** Operit 球体的四个色块（蓝 / 紫 / 粉 / 青）。 */
+/** 球体的四个色块（蓝 / 紫 / 粉 / 青，取自 Operit 的球体配色）。 */
 private val BallColors = listOf(
     Color(0xFF0A84FF),
     Color(0xFFBF5AF2),
@@ -65,8 +65,8 @@ private val BallColors = listOf(
  * 光晕、涟漪全部靠画布里的渐变实现，**不靠放大 View**（外层窗口会直接裁掉）。
  *
  * 什么时候动：球**看得见**就跑完整动效，看不见（息屏 / 折叠成小窗 / 窗口被系统藏起来）
- * 就一次帧都不请求。动效本身一个字没改 —— 30s 自转、4.5s 呼吸、2 道 3.6s 涟漪，
- * 用户盯着球看时与改动前逐帧一致，变的只是「还要不要继续跑」。
+ * 就一次帧都不请求。动效本身一个字没改：30s 自转、4.5s 呼吸、2 道 3.6s 涟漪，
+ * 盯着球看时与改动前逐帧一致，变的只是「还要不要继续跑」。
  *
  * @param pressed 按压态（由服务在 ACTION_DOWN / MOVE / UP 里派发），按下时整体缩到 0.85
  * @param visible 球此刻是否真的看得见（服务给：屏幕亮着 + 窗口可见 + 处于球态）。
@@ -83,9 +83,9 @@ fun SiriBall(pressed: Boolean, visible: Boolean, onClick: () -> Unit) {
     )
 
     // 动效：慢旋转 + 呼吸 + 涟漪，全部由同一个 InfiniteTransition 驱动。
-    // 只有 visible 时才注册它 —— 它只要在，就会一直请求帧、一直重绘整块 Canvas。
+    // 只有 visible 时才注册它：它只要在，就会一直请求帧、一直重绘整块 Canvas。
     // 看不见的时候（息屏 / 折叠成小窗 / 窗口被系统藏起来）这些帧没人看得见，纯功耗。
-    // 恢复可见时是新 remember 出来的 transition，时钟从 0 重新开始 —— 所以第一帧就是正常
+    // 恢复可见时是新 remember 出来的 transition，时钟从 0 重新开始，所以第一帧就是正常
     // 相位（0° / 满半径 / 涟漪空档），不会接在「上次停在哪」那一帧上。
     val clock = if (visible) rememberInfiniteTransition(label = "siri-ball") else null
     val spinState = clock?.animateFloat(
@@ -122,7 +122,7 @@ fun SiriBall(pressed: Boolean, visible: Boolean, onClick: () -> Unit) {
             // 三个动效值故意留到 draw 阶段才读：以前在组合期读 .value，球每帧都会重组一次、
             // 连带重走一遍布局，而画面其实只需要重绘这张 52dp 画布。
             // 挪进 draw 后每帧只失效 draw phase，像素结果完全一样（同样的值、同样的帧）。
-            // clock 为 null（不可见）时用动画起点的常量画一帧 —— 反正没人看得见。
+            // clock 为 null（不可见）时用动画起点的常量画一帧，反正没人看得见。
             drawSiriBall(
                 spin = spinState?.value ?: 0f,
                 breath = breathState?.value ?: 1f,
@@ -132,7 +132,7 @@ fun SiriBall(pressed: Boolean, visible: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** 画一帧球体：玻璃底 → 4 个 Screen 混合的色块 → 3 道涟漪 → 边缘高光。 */
+/** 画一帧球体：玻璃底 → 4 个 Screen 混合的色块 → 2 道涟漪 → 边缘高光。 */
 private fun DrawScope.drawSiriBall(spin: Float, breath: Float, rippleClock: Float) {
     val maxRadius = size.minDimension / 2f
     val center = Offset(size.width / 2f, size.height / 2f)
@@ -151,7 +151,7 @@ private fun DrawScope.drawSiriBall(spin: Float, breath: Float, rippleClock: Floa
     )
 
     // 2) 四个径向渐变色块：各自在半径 26% 的轨道上绕中心慢转
-    //    BlendMode.Screen 让它们互相「加亮」而不是互相盖住 —— 玻璃珠的层次全在这一步
+    //    BlendMode.Screen 让它们互相「加亮」而不是互相盖住：玻璃珠的层次全在这一步
     val blobRadius = ballRadius * 0.78f
     val orbit = ballRadius * 0.26f
     BallColors.forEachIndexed { index, color ->
@@ -177,7 +177,7 @@ private fun DrawScope.drawSiriBall(spin: Float, breath: Float, rippleClock: Floa
         )
     }
 
-    // 3) 三道涟漪：错开 0 / 833 / 1666ms，每道 500ms，从球面扩散到画布边缘
+    // 3) 两道涟漪：错开 0 / 1100ms，每道 700ms，从球面扩散到画布边缘
     for (index in 0 until 2) {
         var elapsed = rippleClock - index * RIPPLE_STEP_MS
         if (elapsed < 0f) elapsed += RIPPLE_CYCLE_MS
@@ -193,7 +193,7 @@ private fun DrawScope.drawSiriBall(spin: Float, breath: Float, rippleClock: Floa
         )
     }
 
-    // 4) 左上方一点柔和高光（不带整圈白色描边：那圈白线在壁纸上太跳，用户点名去掉）
+    // 4) 左上方一点柔和高光（不画整圈白色描边：那圈白线在壁纸上太跳）
     drawCircle(
         brush = Brush.radialGradient(
             colors = listOf(Color.White.copy(alpha = 0.14f), Color.Transparent),

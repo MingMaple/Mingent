@@ -25,33 +25,45 @@ object ApiConfig {
      */
     const val DEFAULT_API_KEY = ""
 
+    /**
+     * 调试开关：非 null 时把**每一条真正发出的请求 JSON** 落盘到这个目录（只留最近 12 份）。
+     *
+     * 为什么要有：前缀缓存只在「两个请求从第 0 个 token 起逐字节相同」时命中，光看命中百分比
+     * 永远分不清「输入侧哪里变了」和「提供方侧行为」。存下真实请求，离线 diff 就能定位第一处差异。
+     * App 启动时按 pref `wire_dump` 设一次，默认关闭。
+     */
+    @Volatile
+    var wireDumpDir: java.io.File? = null
+
+    /** 内置 DeepSeek 模板的对话端点，也是 baseUrl 留空时的回落值。 */
     const val BASE_URL = "https://api.deepseek.com"
 
     /**
      * 官方检索端点（Anthropic Messages 兼容）。
      *
-     * 实测（2026-10-22，本机）：POST /messages + x-api-key + anthropic-version: 2023-06-01，
+     * 实测口径：POST /messages + x-api-key + anthropic-version: 2023-06-01，
      * body 里带 tools:[{type:"web_search_20250305",name:"web_search"}] 即可拿到
-     * web_search_tool_result；返回 10 条 title/url/page_age。DSH 的 dsh-web-search-deepseek 同款。
+     * web_search_tool_result；返回 10 条 title/url/page_age，与同类检索实现的结果结构一致。
      */
     const val SEARCH_BASE_URL = "https://api.deepseek.com/anthropic/v1"
 
     /** 检索用的模型（Anthropic 格式的名字，和对话模型不是一套 id）。 */
     const val SEARCH_MODEL = "deepseek-v4-flash"
 
+    /** 默认对话模型名，也是 provider 没记过模型且可选列表为空时的回落值。 */
     const val MODEL = "deepseek-flash"
 
     /**
      * 模型上下文窗口（token 数），统计页拿它当「上下文水位」的分母。
      *
-     * 官方实测 2026-10-21：context_window 1,048,576、max_output 393,216。
+     * 官方接口值：context_window 1,048,576、max_output 393,216。
      */
     const val CONTEXT_WINDOW = 1_048_576
 
     /**
      * 可选模型：第一个是接口里的 model 名，第二个是设置页显示的名字。
      *
-     * 官方接口实测（2026-10-21 GET https://api.deepseek.com/models）：两个模型 context_window
+     * 官方接口（GET https://api.deepseek.com/models）：两个模型 context_window
      * 1,048,576、max_output 393,216，思考强度支持 low / high / max；deepseek-flash 另支持图片输入。
      */
     val MODELS: List<Pair<String, String>> = listOf(
@@ -72,7 +84,7 @@ object ApiConfig {
     /**
      * 思考强度可选项：直接用接口取值（官方 reasoning_effort 支持 low / high / max，默认 high）。
      *
-     * 界面上也原样显示这三个词，不再翻成「低/中/高」——中文标签和接口值对不上，排查时容易看错。
+     * 界面上也原样显示这三个词，不再翻成「低/中/高」：中文标签和接口值对不上，排查时容易看错。
      */
     val EFFORTS: List<String> = listOf("low", "high", "max")
 
@@ -108,6 +120,7 @@ object ApiConfig {
         return if (saved.isEmpty() && cfg.id == ProviderStore.DEEPSEEK_ID) BASE_URL else saved
     }
 
+    /** 写回当前 provider 的对话端点，末尾斜杠统一去掉。 */
     fun saveBaseUrl(context: Context, url: String) {
         val cfg = ProviderStore.current(context)
         ProviderStore.upsert(context, cfg.copy(baseUrl = url.trim().trimEnd('/')))
@@ -123,6 +136,7 @@ object ApiConfig {
         return if (saved.isNullOrBlank()) SEARCH_BASE_URL else saved.trimEnd('/')
     }
 
+    /** 写回检索端点；保存空串即恢复使用 [SEARCH_BASE_URL]。 */
     fun saveSearchBaseUrl(context: Context, url: String) {
         val clean = url.trim().trimEnd('/')
         prefs(context).edit().putString(KEY_SEARCH_BASE_URL, clean).apply()
@@ -147,6 +161,7 @@ object ApiConfig {
         }
     }
 
+    /** 记住当前 provider 使用的模型（按 provider id 分开存放）。 */
     fun saveModel(context: Context, model: String) {
         ProviderStore.saveModel(context, ProviderStore.currentId(context), model.trim())
     }
@@ -155,6 +170,7 @@ object ApiConfig {
     fun loadThinkingEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_THINKING, true)
 
+    /** 写入思考开关；只影响之后的请求，正在跑的那一轮不再改。 */
     fun saveThinkingEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_THINKING, enabled).apply()
     }
@@ -165,6 +181,7 @@ object ApiConfig {
         return if (saved.isNullOrBlank()) DEFAULT_EFFORT else saved
     }
 
+    /** 保存思考强度；非法值由 [loadThinkingEffort] 与 [effortLabel] 负责回落。 */
     fun saveThinkingEffort(context: Context, effort: String) {
         prefs(context).edit().putString(KEY_EFFORT, effort).apply()
     }

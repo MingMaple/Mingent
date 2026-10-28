@@ -5,6 +5,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -44,6 +45,9 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,6 +58,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -64,14 +71,22 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import com.zmf.agent.agent.session.ChatSession
 import com.zmf.agent.agent.session.SessionStore
 import com.zmf.agent.agent.workspace.WorkSpace
 import com.zmf.agent.agent.workspace.WorkSpaceStore
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.chat.DshIcons
 import com.zmf.agent.ui.chat.FolderIcon
 import com.zmf.agent.ui.chat.PlusIcon
@@ -84,6 +99,22 @@ import com.zmf.agent.ui.theme.ThemeMode
 /** 工作区展开后先只显示这么多条会话。 */
 private const val SESSION_PREVIEW = 5
 
+/**
+ * 抽屉树的行高口径：单个模块的上下留白要收住，整列才不散。
+ *
+ * 参照物是上面「主页／终端／设置」三行：13dp 上下内距 + 一行 16sp ≈ 50dp。
+ * 会话行是两行文字，所以把两行的 lineHeight 显式压住（原来继承 bodyLarge 的 24sp 行高，
+ * 连 10sp 的相对时间也被撑成 24dp 空档，行高因此比导航行高出一大截）：
+ * `17 + 1 + 13 + 2×10 = 51dp`，只比导航行高 1dp：小字读得开，整列又不散。
+ * 工作区行用同一个内容高度 + 同一个内距，两行仍然等高。
+ */
+private val TREE_ROW_PAD = 10.dp
+private val SESSION_INSET = 34.dp
+private val SESSION_TITLE_LINE = 17.dp
+private val SESSION_TIME_LINE = 13.dp
+private val SESSION_TIME_GAP = 1.dp
+private val TREE_CONTENT_HEIGHT = SESSION_TITLE_LINE + SESSION_TIME_GAP + SESSION_TIME_LINE
+
 /** 展开状态表的键：null（未分类）用空串占位，工作区 id 不会是空串。 */
 private const val NO_WORKSPACE_KEY = ""
 
@@ -93,7 +124,7 @@ private data class WorkspaceGroup(val space: WorkSpace?, val sessions: List<Chat
 /**
  * 侧边栏，仿 DSH 左侧工作区栏：回到主页 / 终端 / 设置三行常驻，下面是可折叠的工作区与会话树。
  *
- * 层级口径（用户反馈的重点）：工作区是分组标题（14sp 半粗 + 文件夹图标），
+ * 层级口径：工作区是分组标题（14sp 半粗 + 文件夹图标），
  * 会话是它的子项（13sp 常规、整体再缩进 14dp、字色更淡），这样深浅色下都能一眼看出从属关系。
  */
 @Composable
@@ -143,8 +174,12 @@ fun AppDrawerContent(
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
     val showAll = remember { mutableStateMapOf<String, Boolean>() }
     var themeExpanded by remember { mutableStateOf(false) }
+    // 「⋯」走伴随面板而不是弹窗（理由见 DrawerMenuPopover）：工作区与会话两个层级同一套。
+    // anchor 记的是那一行「⋯」在窗口里的矩形，面板据此贴左下/左上弹出；点空白处或返回键收。
     var sessionMenu by remember { mutableStateOf<ChatSession?>(null) }
+    var sessionMenuAnchor by remember { mutableStateOf(Rect.Zero) }
     var workspaceMenu by remember { mutableStateOf<WorkSpace?>(null) }
+    var workspaceMenuAnchor by remember { mutableStateOf(Rect.Zero) }
     var renamingSession by remember { mutableStateOf<ChatSession?>(null) }
     var renamingWorkspace by remember { mutableStateOf<WorkSpace?>(null) }
     var deletingSession by remember { mutableStateOf<ChatSession?>(null) }
@@ -313,14 +348,13 @@ fun AppDrawerContent(
 
         Surface(
             color = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(16.dp),
             modifier = Modifier.fillMaxWidth().weight(1f)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxHeight()
                     .verticalScroll(rememberScrollState())
-                    .padding(vertical = 6.dp)
             ) {
                 groups.forEach { group ->
                     val space = group.space
@@ -337,23 +371,30 @@ fun AppDrawerContent(
                         onToggle = { expanded[key] = !open },
                         onShowAllChange = { showAll[key] = it },
                         onPickSession = onPickSession,
-                        onSessionMenu = { sessionMenu = it },
+                        onSessionMenu = { session, anchor ->
+                            sessionMenuAnchor = anchor
+                            sessionMenu = session
+                        },
                         onCreateSession = { onCreateSession(space?.id) },
                         // 未分类不是一个工作区：没有重命名 / 删除的对象，右侧「⋯」整块不出现
-                        onWorkspaceMenu = space?.let { target -> { workspaceMenu = target } }
+                        onWorkspaceMenu = if (space != null) {
+                            { anchor: Rect ->
+                                workspaceMenuAnchor = anchor
+                                workspaceMenu = space
+                            }
+                        } else {
+                            null
+                        }
                     )
                 }
             }
         }
     }
 
-    // 会话窗口：六项，顺序与文案照 DSH
+    // 会话伴随面板：五项。置顶/取消置顶不在这里做：列表本身已按 pinned 排序体现，
+    // 菜单里再挂一个开关只是多一层状态
     sessionMenu?.let { session ->
-        MinimalDialog(onDismiss = { sessionMenu = null }) {
-            MenuRow(text = if (session.pinned) "取消置顶" else "置顶会话") {
-                sessionMenu = null
-                onPinSession(session.id, !session.pinned)
-            }
+        DrawerMenuPopover(anchor = sessionMenuAnchor, onDismiss = { sessionMenu = null }) {
             MenuRow(text = "重命名") {
                 sessionMenu = null
                 renamingSession = session
@@ -377,9 +418,9 @@ fun AppDrawerContent(
         }
     }
 
-    // 工作区窗口：只有当前工作区行才挂「⋯」，所以不会出现点了没反应的分组
+    // 工作区伴随面板：只有当前工作区行才挂「⋯」，所以不会出现点了没反应的分组
     workspaceMenu?.let { space ->
-        MinimalDialog(onDismiss = { workspaceMenu = null }) {
+        DrawerMenuPopover(anchor = workspaceMenuAnchor, onDismiss = { workspaceMenu = null }) {
             MenuRow(text = "重命名工作区") {
                 workspaceMenu = null
                 renamingWorkspace = space
@@ -409,7 +450,7 @@ fun AppDrawerContent(
     renamingSession?.let { session ->
         RenameDialog(
             title = "重命名会话",
-            // 界面上一律显示「新会话」，输入框里也得是用户看到的那个名字，否则像是丢字
+            // 界面上一律显示「新会话」，输入框里也得是同一个名字，否则改完像是丢了字
             initial = session.title.ifBlank { "新会话" },
             onDismiss = { renamingSession = null },
             onSave = { name ->
@@ -470,7 +511,7 @@ fun AppDrawerContent(
 @Composable
 private fun ThemePickRow(mode: ThemeMode, selected: Boolean, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(12.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -499,7 +540,7 @@ private fun ThemePickRow(mode: ThemeMode, selected: Boolean, onClick: () -> Unit
 /**
  * 一个工作区：标题行（文件夹图标 + 名称 + 折叠箭头 + 右侧图标区）加它展开后的会话。
  *
- * 点标题行只做展开/折叠，绝不切当前工作区——切换由用户点会话或右侧「＋」决定，
+ * 点标题行只做展开/折叠，绝不切当前工作区：切换由点会话或右侧「＋」决定，
  * 否则在抽屉里「看别的工作区有什么」会顺带改掉当前上下文。
  */
 @Composable
@@ -513,23 +554,32 @@ private fun WorkspaceSection(
     onToggle: () -> Unit,
     onShowAllChange: (Boolean) -> Unit,
     onPickSession: (String) -> Unit,
-    onSessionMenu: (ChatSession) -> Unit,
+    onSessionMenu: (ChatSession, Rect) -> Unit,
     onCreateSession: () -> Unit,
-    onWorkspaceMenu: (() -> Unit)?
+    onWorkspaceMenu: ((Rect) -> Unit)?
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
+    // 「⋯」自己的窗口坐标：伴随面板要贴着这个按钮弹，不能靠猜
+    var menuAnchor by remember { mutableStateOf(Rect.Zero) }
+
+    // 行高口径见文件头的 TREE_ROW_PAD 一组常量：模块间距收住，整列才不散
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 6.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onToggle)
-            // 纵向内距从 8dp 收到 4dp：右侧 32dp 命中区会把行撑到 48dp 高，
-            // 收紧一点后整行约 40dp，跟原来的 35dp 接近，抽屉里的分组节奏不至于被拉散
-            .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            .saltCardRow { onToggle() }
+            .padding(start = 8.dp, end = 6.dp, top = TREE_ROW_PAD, bottom = TREE_ROW_PAD),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // 折叠箭头放在行首：它原来在行尾，和「⋯」「＋」挤成一排三个图标，行尾像工具栏。
+        // 挪到文件夹前面之后，左半边读作「一个可展开的分组」，右边只剩动作；
+        // 整行仍然可点，箭头本身不再挂热区。
+        Chevron(
+            expanded = expanded,
+            size = ChevronSize.SMALL,
+            tint = onSurface.copy(alpha = if (expanded) 0.5f else 0.38f)
+        )
+        Spacer(Modifier.width(6.dp))
         // 折叠时图标压淡一档：不展开的分组在视觉上往后退，展开的分组是当前在读的
         Icon(
             imageVector = FolderIcon,
@@ -537,48 +587,44 @@ private fun WorkspaceSection(
             modifier = Modifier.size(16.dp),
             tint = onSurface.copy(alpha = if (expanded) 0.78f else 0.42f)
         )
-        Spacer(Modifier.width(10.dp))
-        Text(
-            text = name,
-            modifier = Modifier.weight(1f),
-            fontSize = 14.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            fontWeight = FontWeight.SemiBold,
-            color = onSurface.copy(alpha = if (isCurrentWorkspace) 1f else 0.76f)
-        )
-        Spacer(Modifier.width(2.dp))
-        // 右侧三个命中区：折叠箭头 / 「⋯」/「＋」一律 32dp、间距 8dp、整体贴右。
-        // 后两个只给当前工作区——不是当前工作区时整块不出现，行尾干净
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Spacer(Modifier.width(8.dp))
+        // 标题单独居中在「标题行 + 时间行」那么高的盒子里。
+        // 原来是把标题塞进 Column、下面垫一个等高空行把行撑高：整块内容居中后，
+        // 标题就落在上半边，看起来像「文字整体向上偏移」。
+        // 现在盒子高度与会话行的文字块一致（行高仍与会话行等高），只是把那一行文字摆到中心。
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(TREE_CONTENT_HEIGHT),
+            contentAlignment = Alignment.CenterStart
         ) {
-            IconHit(32.dp, onToggle) {
-                Chevron(
-                    expanded = expanded,
-                    size = ChevronSize.SMALL,
-                    tint = onSurface.copy(alpha = 0.4f)
-                )
-            }
-            if (isCurrentWorkspace) {
-                if (onWorkspaceMenu != null) {
-                    IconHit(32.dp, onWorkspaceMenu) {
-                        Text(
-                            text = "⋯",
-                            fontSize = 15.sp,
-                            color = onSurface.copy(alpha = 0.55f)
-                        )
-                    }
-                }
-                IconHit(32.dp, onCreateSession) {
-                    Icon(
-                        imageVector = PlusIcon,
-                        contentDescription = null,
-                        modifier = Modifier.size(13.dp),
-                        tint = Palette.Neutral
+            Text(
+                text = name,
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.SemiBold,
+                color = onSurface.copy(alpha = if (isCurrentWorkspace) 1f else 0.72f)
+            )
+        }
+        // 右侧动作：⋯ 只在当前工作区；＋ 在当前工作区或展开时出现（折叠的分组不占位）
+        if (isCurrentWorkspace || expanded) {
+            if (isCurrentWorkspace && onWorkspaceMenu != null) {
+                IconHit(30.dp, onClick = { onWorkspaceMenu(menuAnchor) }, onBounds = { menuAnchor = it }) {
+                    Text(
+                        text = "⋯",
+                        fontSize = 15.sp,
+                        color = onSurface.copy(alpha = 0.55f)
                     )
                 }
+            }
+            IconHit(30.dp, onCreateSession) {
+                Icon(
+                    imageVector = PlusIcon,
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp),
+                    tint = Palette.Neutral
+                )
             }
         }
     }
@@ -594,7 +640,7 @@ private fun WorkspaceSection(
                 session = session,
                 isCurrent = session.id == currentSessionId,
                 onClick = { onPickSession(session.id) },
-                onMenu = { onSessionMenu(session) }
+                onMenu = { anchor -> onSessionMenu(session, anchor) }
             )
         }
         if (sessions.size > SESSION_PREVIEW) {
@@ -602,76 +648,197 @@ private fun WorkspaceSection(
                 text = if (showAll) "收起" else "展开其余 " + (sessions.size - SESSION_PREVIEW) + " 个会话",
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onShowAllChange(!showAll) }
-                    .padding(start = 40.dp, end = 16.dp, top = 4.dp, bottom = 6.dp),
+                    .saltCardRow() { onShowAllChange(!showAll) }
+                    .padding(start = 46.dp, end = 16.dp, top = 4.dp, bottom = 6.dp),
                 fontSize = 12.sp,
                 color = Palette.AccentGreen.copy(alpha = 0.9f)
             )
         }
-        Spacer(Modifier.height(2.dp))
     }
 }
 
 /**
- * 树里的一行会话：标题 + 相对时间 + 常显的「⋯」。
+ * 树里的一行会话：标题（第一行）+ 相对时间（第二行小字）+ 仅当前行显示的「⋯」。
  *
- * 内缩 14dp（相对工作区行的左内距）再配小一号的字和更淡的字色，
- * 是「会话属于上面的工作区」这件事唯一的视觉线索，所以不能省。
+ * 时间从「右侧同一行」挪到标题下方变小字：抽屉只有 304dp 宽，标题和时间抢同一行时，
+ * 稍长的标题一律被截成省略号，时间却还占着六十多 dp。分两行之后标题能多露七八个字，
+ * 时间只是往后退一档，不影响扫读。
+ *
+ * 选中态：整行淡绿底 + 标题用满不透明正文色 + 时间不再压到 30%；未选中标题 62%。
+ * 层级仍靠左内距 30dp 表达（比工作区行再缩进一个文件夹图标的宽度）。
  */
 @Composable
 private fun SessionTreeRow(
     session: ChatSession,
     isCurrent: Boolean,
     onClick: () -> Unit,
-    onMenu: () -> Unit
+    onMenu: (Rect) -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    Row(
+    var anchor by remember { mutableStateOf(Rect.Zero) }
+    // 左右内距对称：左边缩进 34dp，右边也留 34dp，文字不再一路顶到卡片右缘。
+    // 「⋯」画在这 34dp 里、不额外占宽，所以有没有「⋯」，两行文字的右边界都是同一条线。
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 6.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (isCurrent) Palette.AccentGreen.copy(alpha = 0.14f) else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(start = 24.dp, end = 2.dp, top = 7.dp, bottom = 7.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .background(if (isCurrent) Palette.AccentGreen.copy(alpha = 0.13f) else Color.Transparent)
+            .saltCardRow { onClick() }
     ) {
-        Text(
-            text = session.title.ifBlank { "新会话" },
-            modifier = Modifier.weight(1f),
-            fontSize = 13.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = if (isCurrent) onSurface else onSurface.copy(alpha = 0.62f)
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = SessionStore.relativeTime(session.updatedAt),
-            fontSize = 10.sp,
-            maxLines = 1,
-            color = if (isCurrent) onSurface.copy(alpha = 0.72f) else onSurface.copy(alpha = 0.3f)
-        )
-        IconHit(36.dp, onMenu) {
-            Text(
-                text = "⋯",
-                fontSize = 15.sp,
-                color = if (isCurrent) onSurface.copy(alpha = 0.9f) else onSurface.copy(alpha = 0.35f)
-            )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = SESSION_INSET,
+                    end = SESSION_INSET,
+                    top = TREE_ROW_PAD,
+                    bottom = TREE_ROW_PAD
+                ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = session.title.ifBlank { "新会话" },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    // 行高显式给定：继承下来的 24sp 会把 13sp 的标题撑进一个 24dp 的框，
+                    // 两行加起来比「主页/终端/设置」那行高出一大截
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 13.sp,
+                        lineHeight = SESSION_TITLE_LINE.value.sp
+                    ),
+                    fontWeight = if (isCurrent) FontWeight.Medium else FontWeight.Normal,
+                    color = if (isCurrent) onSurface else onSurface.copy(alpha = 0.62f)
+                )
+                Text(
+                    text = SessionStore.relativeTime(session.updatedAt),
+                    modifier = Modifier.padding(top = SESSION_TIME_GAP),
+                    maxLines = 1,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 10.sp,
+                        lineHeight = SESSION_TIME_LINE.value.sp
+                    ),
+                    color = if (isCurrent) onSurface.copy(alpha = 0.5f) else onSurface.copy(alpha = 0.3f)
+                )
+            }
+        }
+        // 「⋯」只在当前会话这一行出现：每行都挂一个，右侧会竖着一条点线，太吵。
+        // 它和工作区行的「⋯ 只在当前工作区出现」同一条口径：当前那个才是正在动的对象。
+        if (isCurrent) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 2.dp)
+            ) {
+                IconHit(30.dp, onClick = { onMenu(anchor) }, onBounds = { anchor = it }) {
+                    Text(
+                        text = "⋯",
+                        fontSize = 15.sp,
+                        color = onSurface.copy(alpha = 0.9f)
+                    )
+                }
+            }
         }
     }
 }
 
-/** 行内小图标的热区：图形小、热区大，免得手指点不准（36dp 是可稳定点中的下限）。 */
+/** 行内小图标的热区：图形小、热区大，免得手指点不准（30dp 是抽屉里能点中的下限）。
+ *  [onBounds] 回调自己在窗口里的矩形：伴随面板要贴着这个按钮弹出，不能靠猜。 */
 @Composable
-private fun IconHit(size: Dp, onClick: () -> Unit, content: @Composable () -> Unit) {
+private fun IconHit(
+    size: Dp,
+    onClick: () -> Unit,
+    onBounds: ((Rect) -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
     Box(
         modifier = Modifier
             .size(size)
             .clip(CircleShape)
+            .then(
+                if (onBounds != null) {
+                    Modifier.onGloballyPositioned { onBounds(it.boundsInWindow()) }
+                } else {
+                    Modifier
+                }
+            )
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         content()
+    }
+}
+
+/**
+ * 抽屉里的伴随面板：贴着触发它的那一行弹出，不遮整屏。
+ *
+ * 用 Popup 而不是 Dialog / 内联 Box：
+ * - Dialog 会把整屏压黑、抽屉被盖住，读不出「这个菜单属于哪一行」；
+ * - 内联 Box 会被列表的 verticalScroll 裁掉（菜单常要探出可见区）；
+ * - Popup 有自己的窗口，能直接按 anchor 的窗口坐标贴边，点外面自动 dismiss。
+ *
+ * 观感跟输入框上方那六张伴随面板同源：面板底色（LightPanel / DarkPanel）、8dp 阴影、
+ * 只缩放不淡入：带 alpha 的节点 Android 不画 elevation 阴影。
+ * 圆角这里取 18dp 而不是 24dp：菜单块小，24dp 会显得过于圆润。
+ */
+@Composable
+private fun DrawerMenuPopover(
+    anchor: Rect,
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val gap = with(LocalDensity.current) { 6.dp.toPx() }.toInt()
+    val provider = remember(anchor, gap) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                // 右边缘与「⋯」的右边缘对齐（抽屉贴左，菜单往左长才不出画）；下面放不下就翻到上方
+                val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
+                val x = (anchor.right.toInt() - popupContentSize.width).coerceIn(0, maxX)
+                val below = anchor.bottom.toInt() + gap
+                val y = if (below + popupContentSize.height <= windowSize.height) {
+                    below
+                } else {
+                    (anchor.top.toInt() - popupContentSize.height - gap).coerceAtLeast(gap)
+                }
+                return IntOffset(x, y)
+            }
+        }
+    }
+    Popup(
+        popupPositionProvider = provider,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true)
+    ) {
+        val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+        var shown by remember { mutableStateOf(false) }
+        val scale by animateFloatAsState(
+            targetValue = if (shown) 1f else 0.92f,
+            animationSpec = Motion.spring(),
+            label = "drawerMenuScale"
+        )
+        LaunchedEffect(Unit) { shown = true }
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = if (isDark) Palette.DarkPanel else Palette.LightPanel,
+            shadowElevation = 8.dp,
+            modifier = Modifier
+                // 菜单按内容宽走：曾经给到 max 236dp，单条「重命名工作区」会撑出一大片空白，
+                // 看着像一张卡片而不是菜单
+                .widthIn(min = 148.dp, max = 184.dp)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    // 从右上角长出来：贴着「⋯」那一侧，视觉上就是「这一行的菜单」
+                    transformOrigin = TransformOrigin(1f, 0f)
+                }
+        ) {
+            // 行自己带上下内距，Column 不再垫一层：首/末行的波纹才能贴到 18dp 圆弧上被裁成圆角
+            Column(content = content)
+        }
     }
 }
 
@@ -695,22 +862,23 @@ private fun MinimalDialog(onDismiss: () -> Unit, content: @Composable ColumnScop
     }
 }
 
-/** 弹窗里的一行。 */
+/** 伴随面板里的一行：14sp、左右 14dp、上下 11dp（菜单块小，内距跟着收一档）。 */
 @Composable
 private fun MenuRow(text: String, color: Color? = null, onClick: () -> Unit) {
     Text(
         text = text,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 13.dp),
-        fontSize = 15.sp,
+            // 面板里同样走通栏波纹：18dp 圆角由 Surface 自己裁，行自己不再各裁一次
+            .saltCardRow() { onClick() }
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        fontSize = 14.sp,
         color = color ?: MaterialTheme.colorScheme.onSurface
     )
 }
 
 /**
- * 重命名用的悬浮输入框：预填原名、全部选中（用户一打字就是整段替换），
+ * 重命名用的悬浮输入框：预填原名、全部选中（一打字就是整段替换），
  * 右边对勾保存、左边叉号放弃。不做标题栏，跟其它悬浮卡同一套观感。
  */
 @Composable
@@ -735,7 +903,7 @@ private fun RenameDialog(
         Spacer(Modifier.height(10.dp))
         Surface(
             color = onSurface.copy(alpha = 0.06f),
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(16.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             BasicTextField(
@@ -774,10 +942,10 @@ private fun RenameDialog(
 private fun DrawerCard(content: @Composable () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(vertical = 6.dp)) { content() }
+        Column(modifier = Modifier) { content() }
     }
 }
 
@@ -792,7 +960,9 @@ private fun DrawerRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick)
+            // 抽屉里这几行原来用裸 clickable：默认水波纹是矩形，铺在圆角卡里显得方。
+            // 统一走 saltCardRow，形状交给卡片自身的 clip 去裁
+            .saltCardRow(enabled = enabled) { onClick() }
             .padding(horizontal = 16.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

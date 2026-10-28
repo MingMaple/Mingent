@@ -53,6 +53,9 @@ import com.ai.assistance.operit.terminal.provider.type.LocalTerminalProvider
 import com.ai.assistance.operit.terminal.provider.type.SSHTerminalProvider
 import com.ai.assistance.operit.terminal.data.TerminalSessionData
 import com.ai.assistance.operit.terminal.view.domain.ansi.AnsiTerminalEmulator
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class TerminalManager private constructor(
     private val context: Context
@@ -127,7 +130,8 @@ class TerminalManager private constructor(
             }
         }
 
-        private const val TAG = "TerminalManager"
+        private const val TAG_TIMING = "MingentTiming"
+private const val TAG = "TerminalManager"
         private const val UBUNTU_FILENAME = "ubuntu-noble-aarch64-pd-v4.18.0.tar.xz"
         private const val MAX_HISTORY_ITEMS = 500
         private const val MAX_OUTPUT_LINES_PER_ITEM = 1000
@@ -551,7 +555,9 @@ class TerminalManager private constructor(
     }
 
     suspend fun initializeEnvironment(): Boolean {
+        val timingStart = System.currentTimeMillis()
         if (isEnvInitialized) {
+            timingLog("环境初始化：已就绪，跳过（仅刷新启动脚本）")
             return withContext(Dispatchers.IO) {
                 try {
                     val startScript = generateStartScript()
@@ -564,9 +570,12 @@ class TerminalManager private constructor(
             }
         }
 
+        timingLog("环境初始化：需要重新初始化，开始等锁")
         envInitMutex.lock()
+        timingLog("环境初始化：拿到锁（等锁 " + (System.currentTimeMillis() - timingStart) + " 毫秒）")
         try {
             if (isEnvInitialized) {
+                timingLog("环境初始化：等锁期间已被其他调用完成，直接返回")
                 return true
             }
 
@@ -602,6 +611,26 @@ class TerminalManager private constructor(
             return success
         } finally {
             envInitMutex.unlock()
+            timingLog("环境初始化：结束（本轮总耗时 " + (System.currentTimeMillis() - timingStart) + " 毫秒）")
+        }
+    }
+
+    /**
+     * 计时日志：用来定位「隐藏执行长时间不返回」。
+     *
+     * 为什么同时写文件：logcat 的环形缓冲会在复现前滚掉，而这类问题恰恰是
+     * 「过了很久才发现」；因此追加到外部存储的 logs/terminal.log，随时可 adb 取回。
+     * 只在隐藏执行与环境初始化这两条路径上调用，量很小。
+     */
+    private fun timingLog(message: String) {
+        Log.d(TAG_TIMING, message)
+        try {
+            val dir = File(context.getExternalFilesDir(null), "logs")
+            if (!dir.exists()) dir.mkdirs()
+            val stamp = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+            File(dir, "terminal.log").appendText(stamp + " " + message + "\n")
+        } catch (e: Exception) {
+            Log.w(TAG_TIMING, "写入计时日志失败", e)
         }
     }
 
@@ -1197,21 +1226,21 @@ EOF
           "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/sys" 2>/dev/null || true
           "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/proc" 2>/dev/null || true
           "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH${'$'}HOME_DIR" 2>/dev/null || true
-          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH$currentUserDataRootPath" 2>/dev/null || true
-          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/data/data" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH$operitUserDataMountPath" 2>/dev/null || true
+          "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH$operitLegacyDataMountPath" 2>/dev/null || true
           "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/data/local/tmp" 2>/dev/null || true
           "${'$'}BIN/busybox" umount "${'$'}UBUNTU_PATH/sdcard" 2>/dev/null || true
         }
         cleanup_mounts
 
-        "${'$'}BIN/busybox" mkdir -p "${'$'}UBUNTU_PATH/proc" "${'$'}UBUNTU_PATH/sys" "${'$'}UBUNTU_PATH/dev" "${'$'}UBUNTU_PATH/dev/pts" "${'$'}UBUNTU_PATH/sdcard" "${'$'}UBUNTU_PATH$currentUserDataRootPath" "${'$'}UBUNTU_PATH/data/data" "${'$'}UBUNTU_PATH/data/local/tmp" "${'$'}UBUNTU_PATH${'$'}HOME_DIR" 2>/dev/null
+        "${'$'}BIN/busybox" mkdir -p "${'$'}UBUNTU_PATH/proc" "${'$'}UBUNTU_PATH/sys" "${'$'}UBUNTU_PATH/dev" "${'$'}UBUNTU_PATH/dev/pts" "${'$'}UBUNTU_PATH/sdcard" "${'$'}UBUNTU_PATH$operitUserDataMountPath" "${'$'}UBUNTU_PATH$operitLegacyDataMountPath" "${'$'}UBUNTU_PATH/data/local/tmp" "${'$'}UBUNTU_PATH${'$'}HOME_DIR" 2>/dev/null
         "${'$'}BIN/busybox" mount -t proc proc "${'$'}UBUNTU_PATH/proc" 2>/dev/null || true
         "${'$'}BIN/busybox" mount --bind /dev "${'$'}UBUNTU_PATH/dev" 2>/dev/null || true
         "${'$'}BIN/busybox" mount --bind /sys "${'$'}UBUNTU_PATH/sys" 2>/dev/null || true
         "${'$'}BIN/busybox" mount --bind /dev/pts "${'$'}UBUNTU_PATH/dev/pts" 2>/dev/null || true
         "${'$'}BIN/busybox" mount --bind $currentEmulatedStoragePath "${'$'}UBUNTU_PATH/sdcard" 2>/dev/null || true
-        "${'$'}BIN/busybox" mount --bind $currentUserDataRootPath "${'$'}UBUNTU_PATH$currentUserDataRootPath" 2>/dev/null || true
-        "${'$'}BIN/busybox" mount --bind /data/data "${'$'}UBUNTU_PATH/data/data" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind $operitDataDir "${'$'}UBUNTU_PATH$operitUserDataMountPath" 2>/dev/null || true
+        "${'$'}BIN/busybox" mount --bind $operitDataDir "${'$'}UBUNTU_PATH$operitLegacyDataMountPath" 2>/dev/null || true
         "${'$'}BIN/busybox" mount --bind /data/local/tmp "${'$'}UBUNTU_PATH/data/local/tmp" 2>/dev/null || true
         "${'$'}BIN/busybox" mount --bind "${'$'}HOME_DIR" "${'$'}UBUNTU_PATH${'$'}HOME_DIR" 2>/dev/null || true
         COMMAND_TO_EXEC="$(cat "${'$'}CMD_FILE" 2>/dev/null)"
@@ -1380,7 +1409,12 @@ $prootBindSetup
         executorKey: String = "default",
         timeoutMs: Long = 120000L
     ): HiddenExecResult {
+        val execStart = System.currentTimeMillis()
         val initialized = initializeEnvironment()
+        timingLog(
+            "隐藏执行：环境就绪=" + initialized + "（准备耗时 " +
+                (System.currentTimeMillis() - execStart) + " 毫秒）"
+        )
         if (!initialized) {
             return HiddenExecResult(
                 output = "",
@@ -1390,11 +1424,16 @@ $prootBindSetup
             )
         }
 
-        return getTerminalProvider().executeHiddenCommand(
+        val result = getTerminalProvider().executeHiddenCommand(
             command = command,
             executorKey = executorKey,
             timeoutMs = timeoutMs
         )
+        timingLog(
+            "隐藏执行：返回 state=" + result.state + " exit=" + result.exitCode +
+                "（总耗时 " + (System.currentTimeMillis() - execStart) + " 毫秒）"
+        )
+        return result
     }
 
     /**

@@ -31,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -60,6 +61,7 @@ import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.agent.provider.ProviderConfig
 import com.zmf.agent.agent.provider.ProviderStore
 import com.zmf.agent.core.api.BalanceResult
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
 import com.zmf.agent.ui.common.saltRowClickable
 import com.zmf.agent.ui.shell.SaltSwitch
@@ -210,7 +212,6 @@ fun ModelSettingsPage(
                         ) {
                             Column {
                                 HorizontalDivider(
-                                    modifier = Modifier.padding(start = 16.dp),
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
                                 )
                                 Row(
@@ -266,7 +267,6 @@ fun ModelSettingsPage(
                         ) {
                             Column {
                                 HorizontalDivider(
-                                    modifier = Modifier.padding(start = 16.dp),
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
                                 )
                                 Column(modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)) {
@@ -300,16 +300,30 @@ fun ModelSettingsPage(
 }
 
 /**
- * 目录模板 → 编辑草稿。
+ * 目录模板映射为编辑草稿。
  *
- * 列表里已经有同 id 的提供商就直接编辑那一条（保存即覆盖它，不会凭空多出一个同名项）；
- * 否则按模板新建：自定义模板的 id 只是占位符，落盘前必须换成 newCustomId()，
- * 不然第二家自定义会顶着同一个 id 把第一家顶掉。
+ * 同一厂商允许多份配置并存（例如两把不同的密钥，或一个直连地址与一个中转地址），
+ * 因此目标 id 已被占用时**新建一条**，而不是回落到既有那条：否则「添加」会变成
+ * 编辑现有配置，保存后覆盖原有内容。
  */
 private fun draftFrom(template: ProviderConfig, providers: List<ProviderConfig>): ProviderConfig {
-    val existing = providers.firstOrNull { it.id == template.id }
-    if (existing != null) return existing
-    return if (template.builtIn) template else template.copy(id = ProviderStore.newCustomId())
+    if (providers.none { it.id == template.id }) return template
+    // 克隆内置模板时同时解除 builtIn 标记：新的一份配置需要能与原配置区分命名
+    // （例如「GLM-直连」与「GLM-中转」），否则名称字段会被锁定为模板名。
+    return template.copy(
+        id = ProviderStore.newCustomId(),
+        name = uniqueProviderName(template.name, providers),
+        builtIn = false
+    )
+}
+
+/** 在既有配置中取一个不重复的显示名：GLM-4.6、GLM-4.6 2、GLM-4.6 3…… */
+private fun uniqueProviderName(base: String, providers: List<ProviderConfig>): String {
+    val used = providers.map { it.name }.toSet()
+    if (base !in used) return base
+    var index = 2
+    while ("$base $index" in used) index++
+    return "$base $index"
 }
 
 /** 单个提供商的一行：名字 + 状态点 + 编辑胶囊；选中时套一圈 Salt 绿描边。 */
@@ -331,7 +345,7 @@ private fun ProviderRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .saltRowClickable(RoundedCornerShape(0.dp)) { onSelect() }
+                .saltCardRow() { onSelect() }
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -388,6 +402,24 @@ private fun ProviderFormCard(
     var keyVisible by remember(initial.id) { mutableStateOf(false) }
     // 地址为空时直接摊开自定义设置：必填项藏在折叠区里，人会以为「保存按不动」是坏了
     var advancedOpen by remember(initial.id) { mutableStateOf(initial.baseUrl.isBlank()) }
+    // 「＋ 添加模型」点开才出现输入行：默认只有列表 + 一个按钮，
+    // 不再让「候选 chips / 输入框 / 已添加列表」三套东西同时铺在屏幕上。
+    var addingModel by remember(initial.id) { mutableStateOf(false) }
+
+    // 输入框配色统一走这里：Material 默认把焦点边框和光标刷成 colorScheme.primary（蓝色），
+    // 在这个灰阶主题里非常跳：每个可点的输入框一点下去就冒出一圈蓝。
+    // 改成 onSurface 的深/浅两档，光标跟随正文色。
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = onSurface.copy(alpha = 0.45f),
+        unfocusedBorderColor = onSurface.copy(alpha = 0.15f),
+        focusedTextColor = onSurface,
+        unfocusedTextColor = onSurface.copy(alpha = 0.9f),
+        cursorColor = onSurface,
+        focusedContainerColor = Color.Transparent,
+        unfocusedContainerColor = Color.Transparent,
+        focusedPlaceholderColor = onSurface.copy(alpha = 0.35f),
+        unfocusedPlaceholderColor = onSurface.copy(alpha = 0.35f)
+    )
 
     SettingsCard {
         Column(
@@ -420,6 +452,7 @@ private fun ProviderFormCard(
                 onValueChange = { name = it },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                colors = fieldColors,
                 enabled = customMode,
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                 placeholder = { Text("例如：我的中转 API", fontSize = 13.sp) }
@@ -431,6 +464,7 @@ private fun ProviderFormCard(
                 onValueChange = { apiKey = it },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                colors = fieldColors,
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                 placeholder = { Text("未填写", fontSize = 13.sp) },
                 visualTransformation = if (keyVisible) {
@@ -453,7 +487,7 @@ private fun ProviderFormCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .saltRowClickable(RoundedCornerShape(0.dp)) { advancedOpen = !advancedOpen }
+                    .saltCardRow() { advancedOpen = !advancedOpen }
                     .padding(vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -476,76 +510,108 @@ private fun ProviderFormCard(
                         onValueChange = { baseUrl = it },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
+                        colors = fieldColors,
                         textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                         placeholder = { Text("https://...", fontSize = 13.sp) }
                     )
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        FormLabel(text = "模型目录", modifier = Modifier.weight(1f))
-                        Text(
-                            text = "＋ 添加模型",
-                            modifier = Modifier
-                                .saltRowClickable(RoundedCornerShape(8.dp)) {
-                                    val parts = modelInput.split(',', '\n')
-                                        .map { it.trim() }
-                                        .filter { it.isNotEmpty() }
-                                    if (parts.isNotEmpty()) {
-                                        modelList = (modelList + parts).distinct()
-                                        modelInput = ""
-                                    }
-                                }
-                                .padding(horizontal = 4.dp, vertical = 4.dp),
-                            fontSize = 12.sp,
-                            color = Palette.Neutral
-                        )
-                    }
+                    FormLabel(text = "模型目录")
 
-                    // 候选模型：来自当前 provider 已有的模型列表，点一下直接进目录
-                    if (candidates.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            candidates.forEach { (id, label) ->
-                                Chip(text = "＋ " + label) {
-                                    modelList = (modelList + id).distinct()
-                                }
+                    // 已添加的模型：一行一个（参考 DeepSeek 的信息结构：左边 id、右边删除），
+                    // 空态给一句人话，而不是留一片空白让人猜。
+                    if (modelList.isEmpty()) {
+                        Text(
+                            text = "还没有模型。点下面的「＋ 添加模型」加一个。",
+                            fontSize = 12.sp,
+                            color = onSurface.copy(alpha = 0.45f)
+                        )
+                    } else {
+                        modelList.forEach { model ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(onSurface.copy(alpha = 0.05f), RoundedCornerShape(10.dp))
+                                    .padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = model,
+                                    modifier = Modifier.weight(1f),
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = onSurface.copy(alpha = 0.85f)
+                                )
+                                Text(
+                                    text = "×",
+                                    modifier = Modifier
+                                        .saltRowClickable(RoundedCornerShape(50)) {
+                                            modelList = modelList - model
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                                    fontSize = 15.sp,
+                                    color = onSurface.copy(alpha = 0.4f)
+                                )
                             }
                         }
                     }
 
-                    OutlinedTextField(
-                        value = modelInput,
-                        onValueChange = { modelInput = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                        placeholder = { Text("模型 id，多个用逗号分隔", fontSize = 13.sp) }
-                    )
-
-                    modelList.forEach { model ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = model,
+                    // 添加：默认只是一个按钮；点开才出现输入行（可一次贴多个，逗号分隔）
+                    if (!addingModel) {
+                        Text(
+                            text = "＋ 添加模型",
+                            modifier = Modifier
+                                .saltRowClickable(RoundedCornerShape(8.dp)) { addingModel = true }
+                                .padding(vertical = 6.dp),
+                            fontSize = 13.sp,
+                            color = Palette.Neutral
+                        )
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = modelInput,
+                                onValueChange = { modelInput = it },
                                 modifier = Modifier.weight(1f),
-                                fontSize = 13.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = onSurface.copy(alpha = 0.8f)
+                                singleLine = true,
+                                colors = fieldColors,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                                placeholder = { Text("模型 id，多个用逗号分隔", fontSize = 13.sp) }
                             )
                             Text(
-                                text = "×",
+                                text = "添加",
                                 modifier = Modifier
-                                    .saltRowClickable(RoundedCornerShape(50)) { modelList = modelList - model }
-                                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                                fontSize = 15.sp,
-                                color = onSurface.copy(alpha = 0.4f)
+                                    .saltRowClickable(RoundedCornerShape(8.dp)) {
+                                        val parts = modelInput.split(',', '\n')
+                                            .map { it.trim() }
+                                            .filter { it.isNotEmpty() }
+                                        if (parts.isNotEmpty()) {
+                                            modelList = (modelList + parts).distinct()
+                                            modelInput = ""
+                                            addingModel = false
+                                        }
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                fontSize = 13.sp,
+                                color = Palette.Neutral
                             )
+                        }
+                        // 候选模型：只有正在添加时才露出来，作为快捷选择（平时不占版面）。
+                        // 已经加进目录的不再出现在候选里，否则会出现「上面是 glm-4.6、下面又建议
+                        // ＋ glm-4.6」这种重复。
+                        val remaining = candidates.filter { it.first !in modelList }
+                        if (remaining.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                remaining.forEach { (id, label) ->
+                                    Chip(text = "＋ " + label) {
+                                        modelList = (modelList + id).distinct()
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -624,7 +690,7 @@ private fun CatalogPickerDialog(
                         text = template.name,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .saltRowClickable(RoundedCornerShape(0.dp)) { onPick(template) }
+                            .saltCardRow() { onPick(template) }
                             .padding(vertical = 13.dp),
                         fontSize = 15.sp,
                         color = MaterialTheme.colorScheme.onSurface
@@ -635,16 +701,16 @@ private fun CatalogPickerDialog(
     }
 }
 
-/** 分组卡片：Salt 的圆角 22dp，卡片底走 colorScheme.surface，不描边。 */
+/** 分组卡片：Salt 的圆角 16dp，卡片底走 colorScheme.surface，不描边。 */
 @Composable
 private fun SettingsCard(content: @Composable () -> Unit) {
     Surface(
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
-        // 卡片自己裁一刀：行里的方波即使铺到边界，也只会出现在 22dp 的弧里
+        // 卡片自己裁一刀：行里的方波即使铺到边界，也只会出现在 16dp 的弧里
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(16.dp))
     ) {
         content()
     }
@@ -673,7 +739,7 @@ private fun ExpandRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .saltRowClickable(RoundedCornerShape(0.dp), enabled = enabled, onClick = onClick)
+            .saltCardRow(enabled = enabled, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -717,7 +783,7 @@ private fun EffortRow(
         modifier = Modifier
             .fillMaxWidth()
             .height(48.dp)
-            .saltRowClickable(RoundedCornerShape(0.dp), enabled = enabled, onClick = onClick)
+            .saltCardRow(enabled = enabled, onClick = onClick)
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -812,9 +878,9 @@ private fun SegmentChip(
 private fun Chip(text: String, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         color = onSurface.copy(alpha = 0.06f),
-        modifier = Modifier.saltRowClickable(RoundedCornerShape(12.dp), onClick = onClick)
+        modifier = Modifier.saltCardRow(onClick = onClick)
     ) {
         Text(
             text = text,

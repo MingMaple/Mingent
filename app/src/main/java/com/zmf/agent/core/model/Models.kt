@@ -1,11 +1,18 @@
 package com.zmf.agent.core.model
 
+/** 模型发起的一次工具调用：[arguments] 是模型给出的原始 JSON 字符串，由执行层再解析。 */
 data class ToolCall(
     val id: String,
     val name: String,
     val arguments: String
 )
 
+/**
+ * 会话里的一条消息，user / assistant / tool / system 四种角色共用。
+ *
+ * 字段即落盘格式（[imageDataUrls] 这类请求期数据例外，见各自说明），
+ * 各字段的取值口径直接决定请求前缀是否与上一轮逐字节一致。
+ */
 data class ChatMessage(
     val role: String,                 // user / assistant / tool / system
     val content: String = "",
@@ -38,7 +45,52 @@ data class ChatMessage(
     val promptTokens: Int = 0,
     /** 这一轮收下来的输出 tokens；口径同 [promptTokens]。 */
     val completionTokens: Int = 0,
-    val createdAt: Long = System.currentTimeMillis()
+    /**
+     * 这一轮输入里命中提示词缓存的 tokens；口径同 [promptTokens]（只写在最后一条 assistant 上）。
+     *
+     * 单条消息自己存一份，是为了「本轮用量」面板：面板上要拆成未缓存输入 / 缓存读取两行，
+     * 只有会话级的累计值不够：用户看的是**这一轮**花了多少、命中多少。
+     */
+    val cachedTokens: Int = 0,
+    /**
+     * 服务端这一次到底报没报缓存字段。
+     *
+     * false 时面板的「缓存命中」写「—」：编一个 0% 出来，用户会以为缓存一次都没命中，
+     * 而事实只是这家服务商不给这项。
+     */
+    val usageCacheReported: Boolean = false,
+    /** 未缓存输入（服务商口径已归一化）：面板上「未缓存输入」那一行就用它。 */
+    val uncachedInputTokens: Int = 0,
+    /** 写入缓存的 tokens；null = 这家服务商没有这一项，面板上不显示这一行。 */
+    val cacheWriteTokens: Int? = null,
+    /** 输出里的推理 tokens；null = 不报，面板上不显示括号里那句。 */
+    val reasoningTokens: Int? = null,
+    /**
+     * 这一轮的「提供方/模型」（写成 `deepseek/deepseek-flash` 这种形态，用量面板按它显示）。
+     *
+     * 写完就定格：之后切成别的模型，回看历史时面板里仍应是当时用的那个。
+     */
+    val usageModel: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    /**
+     * 这条 user 消息是不是 App 代发的。
+     *
+     * 高危操作的一次性确认只认真实用户输入：模型生成的是 assistant 消息，无法伪造 user 消息；
+     * 但 App 自己会以 user 角色代发内容（例如计划页的「按计划开始执行」），
+     * 把它和用户亲手输入的内容分开，确认码校验才不会把程序文本当成用户授权。
+     * 老会话读回来是 false（历史里只有用户自己的输入）。
+     */
+    val programmatic: Boolean = false,
+    /**
+     * 这条 user 消息发出时附带的「运行时快照」正文（权限档 / 工作区 / 计划模式 / 时间）。
+     *
+     * **不渲染到界面**，但它会随消息落盘、并在每次组装请求时原样拼回这条消息的末尾：
+     * 它为的是让「上一轮实际发出去的字节」与「这一轮读到的历史前缀」完全一致：
+     * DeepSeek 的提示词缓存按前缀完整匹配，差一个字节，那一整段就白丢。
+     * 老会话读回来是空串，等于没有快照，不拼。
+     */
+    val runtimeSnapshot: String = ""
 )
 
+/** 权限档：只读、工作区、完全；高低顺序见 tools 包的 rank()，不要依赖枚举声明顺序。 */
 enum class PermissionLevel { READ_ONLY, WORKSPACE, FULL }

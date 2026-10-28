@@ -2,7 +2,7 @@ package com.zmf.agent.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-/** 取自用户提供的 Salt Player 浅/深色截图。 */
+/** 取自 Salt Player 的浅/深色截图。 */
 object Palette {
     // 浅色
     val LightBackground = Color(0xFFF9F8FE)
@@ -20,6 +20,15 @@ object Palette {
     val DarkSubText = Color(0xFF9A9AA5)
     val DarkStroke = Color(0x1FFFFFFF)
 
+    /**
+     * 伴随面板的底色：比页面底色、比助手气泡都亮一档。
+     *
+     * 单独定而不是复用 `surface`，因为 `surface` 恰好等于助手气泡色（#EDEBF6），
+     * 面板弹出来和气泡融成一片，就看不出这是一层浮在上面的东西。
+     */
+    val LightPanel = Color(0xFFF5F5F7)
+    val DarkPanel = Color(0xFF2B2B31)
+
     // 对话气泡的层次：用户气泡（最亮）> AI 气泡 > 思考窗口 > 页面底色
     val BubbleUserLight = Color(0xFFFFFFFF)
     val BubbleAiLight = Color(0xFFEDEBF6)
@@ -32,21 +41,25 @@ object Palette {
     val BubbleCardDark = Color(0xFF262A34)
 
     /**
-     * 强调色（原名品牌绿，已按用户要求**全局去绿**）。
+     * 强调色（原名品牌绿，全局去绿后留下了这个名字）。
      *
      * 现在是比 [Neutral] 深一档的中性灰，全 App 只用这两级灰：
      * 图标与次要文字 → [Neutral]；需要「更重」的地方（发送键、开关「开」态、勾选、强调字）→ 这一支。
      * 保留这个名字只为不动 100+ 处引用；想恢复绿色改回 `Color(0xFF8BCF00)`。
      */
     val AccentGreen = Color(0xFF6E6E78)
+
+    /** 品牌蓝：仅作为 Material colorScheme 的 primary 与 Salt 的 highlight 使用。 */
     val AccentBlue = Color(0xFF0078FF)
+
+    /** 紫色强调：Salt 配色里承担 warning 语义，另用于上下文页的注入内容色。 */
     val AccentPurple = Color(0xFF8B7CF6)
 
     /** Shizuku 可用时的状态点青色：和「正常绿」区分开，但不抢眼。 */
     val AccentCyan = Color(0xFF22D3EE)
 
     /**
-     * 状态点四态（2026-10-24 用户从 A/B/C 三案里审批了 A）：忙=蓝、错=红（error）、就绪=青（AccentCyan）、空闲=绿。
+     * 状态点四态：忙=蓝、错=红（error）、就绪=青（AccentCyan）、空闲=绿。
      * 原来的「绿」是 0xFF6E6E78 灰（全局去绿留下的），四态在 8dp 圆点上分不出来，因此单开这两支。
      */
     val StatusBusy = Color(0xFF4C8DFF)
@@ -55,7 +68,7 @@ object Palette {
     /**
      * 图标与次要文字的统一色（中性灰）。
      *
-     * 用户明确要「全 App 图标只一种颜色、不要绿灰混用」，所以图标和设置页里的值文本
+     * 全 App 图标只用一种颜色、不要绿灰混用，所以图标和设置页里的值文本
      * 一律用这一支；强调绿只留给选中态 / 开关 / 主操作按钮这类「状态」。
      */
     val Neutral = Color(0xFF9A9AA5)

@@ -1,0 +1,30 @@
+{"id":"c01","ns":"project:A","query":"评测语料为什么不用自增 id？","gold":["a-dec-001"],"must_not":[],"note":"考固定 id 的可复现约束"}
+{"id":"c02","ns":"project:A","query":"向量通道关着时检索走哪条路径？","gold":["a-eps-002"],"must_not":[],"note":"考 BM25+图扩散+RRF 的现行路径"}
+{"id":"c03","ns":"project:A","query":"selftest 一共有多少项？","gold":["a-eps-003"],"must_not":[],"note":"考自测规模这一事实"}
+{"id":"c04","ns":"project:A","query":"release 之前要在仓根跑什么命令？","gold":["a-note-002"],"must_not":[],"note":"考英文笔记的召回"}
+{"id":"c05","ns":"project:A","query":"临时数据根用什么创建？","gold":["a-eps-004"],"must_not":[],"note":"考 tempfile 临时根"}
+{"id":"c06","ns":"project:A","query":"briefing 的六段分别是什么？","gold":["a-note-004"],"must_not":[],"note":"考简报结构"}
+{"id":"c07","ns":"project:A","query":"门禁先卡哪些指标？","gold":["a-eps-006"],"must_not":[],"note":"考门禁范围"}
+{"id":"c08","ns":"project:A","query":"baseline.json 要怎么管理？","gold":["a-dec-002"],"must_not":[],"note":"考基线提交规则"}
+{"id":"c09","ns":"project:A","query":"RRF_K 取多少？","gold":["a-eps-007"],"must_not":[],"note":"考检索参数"}
+{"id":"c10","ns":"project:A","query":"图扩散从种子出发走几跳？","gold":["a-eps-008"],"must_not":[],"note":"考图扩散参数"}
+{"id":"c11","ns":"global","query":"回答风格有什么要求？","gold":["g-pref-001"],"must_not":[],"note":"考全局沟通偏好"}
+{"id":"c12","ns":"global","query":"写代码默认用什么语言？","gold":["g-pref-002"],"must_not":[],"note":"考默认语言偏好"}
+{"id":"c13","ns":"global","query":"记忆的真相源到底是什么？","gold":["g-dec-001"],"must_not":[],"note":"考事件流优先的架构决定"}
+{"id":"c14","ns":"global","query":"When does the weekly review happen?","gold":["g-note-001"],"must_not":[],"note":"考英文例行笔记"}
+{"id":"c15","ns":"global","query":"Windows 下怎么避免中文乱码？","gold":["g-pref-003"],"must_not":[],"note":"考 PYTHONUTF8 习惯"}
+{"id":"c16","ns":"global","query":"跨时区数据怎么比较？","gold":["g-note-002"],"must_not":[],"note":"考绝对时刻比较"}
+{"id":"c17","ns":"project:B","query":"Mingent 的包名是什么？","gold":["b-eps-001"],"must_not":[],"note":"考项目标识"}
+{"id":"c18","ns":"project:B","query":"Android 构建用哪个 Gradle 和 JDK？","gold":["b-note-001"],"must_not":[],"note":"考构建环境"}
+{"id":"c19","ns":"project:B","query":"APK 发布前怎么做验收？","gold":["b-eps-002"],"must_not":[],"note":"考发布流程"}
+{"id":"c20","ns":"project:B","query":"签名密钥会放进仓库吗？","gold":["b-dec-001"],"must_not":[],"note":"考密钥保管决定"}
+{"id":"c21","ns":"project:A","query":"报价底线是多少？","gold":[],"must_not":["a-ask-001"],"note":"ask 级：未同意不得出现"}
+{"id":"c22","ns":"project:B","query":"Mingent 测试机是谁的？","gold":[],"must_not":["b-ask-001"],"note":"ask 级：未同意不得出现"}
+{"id":"c23","ns":"project:A","query":"工资卡号是多少？","gold":[],"must_not":["a-priv-001"],"note":"private：任何检索都不得出现"}
+{"id":"c24","ns":"global","query":"家里门锁密码是什么？","gold":[],"must_not":["g-priv-001"],"note":"private：任何检索都不得出现"}
+{"id":"c25","ns":"project:A","query":"评测报告默认写到哪里？","gold":[],"must_not":["a-eps-009"],"note":"旧事实已被 correction 置 superseded，不得再召回"}
+{"id":"c26","ns":"project:A","query":"评测报告临时目录路径？","gold":[],"must_not":["a-eps-009"],"note":"同上，换一种问法验证 superseded 过滤"}
+{"id":"c27","ns":"project:A","query":"评测会不会读写真实数据根？","gold":["a-dup-001","a-dup-002","a-dup-003","a-dup-004","a-dup-005"],"must_not":[],"note":"冗余敏感：5 条同义改写，top5 同簇不得超过 2；gold 为同义簇，任一命中即算对"}
+{"id":"c28","ns":"project:A","query":"离线评测用不用临时目录？","gold":["a-dup-001","a-dup-002","a-dup-003","a-dup-004","a-dup-005"],"must_not":[],"note":"冗余敏感：同簇近重复竞争；gold 为同义簇，任一命中即算对"}
+{"id":"c29","ns":"project:A","query":"跑评测时语料从哪里重建？","gold":["a-dup-001","a-dup-002","a-dup-003","a-dup-004","a-dup-005"],"must_not":[],"note":"冗余敏感：同簇近重复竞争；gold 为同义簇，任一命中即算对"}
+{"id":"c30","ns":"project:A","query":"tempfile 数据根怎么保证不碰真库？","gold":["a-dup-001","a-dup-002","a-dup-003","a-dup-004","a-dup-005"],"must_not":[],"note":"冗余敏感：同簇近重复竞争；gold 为同义簇，任一命中即算对"}

@@ -2,7 +2,6 @@ package com.zmf.agent.ui.chat
 import com.zmf.agent.ui.common.blockTapsOnly
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,13 +17,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.tools.displayName
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.theme.Palette
 
 /** 三档各一句最短说明，超过一行会被省略号截掉：用户要的是「这一档能干什么」，不是一段原理。 */
@@ -80,7 +79,8 @@ fun PermissionTierPage(
                 shape = RoundedCornerShape(22.dp),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
             ) {
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                // 行自己带内距：卡片 Column 不垫上下留白，首/末行的波纹才能贴到 22dp 圆弧上
+                Column(modifier = Modifier) {
                     PermissionLevel.entries.forEach { level ->
                         PermissionTierRow(
                             title = level.displayName(),
@@ -108,7 +108,7 @@ private fun PermissionTierRow(
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
-            .clickable(onClick = onClick)
+            .saltCardRow { onClick() }
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

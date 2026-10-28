@@ -1,13 +1,12 @@
 package com.zmf.agent.ui.chat
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.common.saltRowClickable
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -52,7 +51,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,6 +65,7 @@ import com.zmf.agent.ui.theme.Motion
 import com.zmf.agent.ui.theme.Palette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import com.zmf.agent.ui.common.saltFieldColors
 
 /**
  * 「会话列表」页（侧边栏一级页面）：上面两个 tab「会话」「归档」，左右滑动切换。
@@ -117,6 +116,7 @@ fun SessionListPage(
 
     // 工作区名查表：workspaceId 为 null 归「未分类」
     val names = remember(workspaces) { workspaces.associate { it.id to it.name } }
+    /** 工作区 id → 显示名；null（未关联工作区）归「未分类」。 */
     fun workspaceNameOf(id: String?): String = id?.let { names[it] } ?: "未分类"
 
     Surface(
@@ -308,7 +308,7 @@ private fun SessionTab(
     Box(
         modifier = modifier
             .height(44.dp)
-            .saltRowClickable(RoundedCornerShape(10.dp), onClick = onClick),
+            .saltCardRow(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -572,7 +572,7 @@ private fun SessionRow(
 }
 
 /**
- * 行菜单：跟首页的极简弹窗同一套观感——没有标题、没有按钮，只有可点的行。
+ * 行菜单：跟首页的极简弹窗同一套观感，没有标题、没有按钮，只有可点的行。
  *
  * 「归档」这一项在归档 tab 里换成「移回会话」，其余三项两种 tab 一样。
  */
@@ -611,7 +611,7 @@ private fun SessionActionSheet(
     }
 }
 
-/** 菜单里的一行。 */
+/** 菜单里的一行：整行可点，[color] 传 null 用正文色（删除项传错误色）。 */
 @Composable
 private fun SheetRow(
     text: String,
@@ -647,6 +647,7 @@ private fun RenameSessionDialog(
                 // 聚焦跟输入框放在同一层组合里：先组合、后 attach，请求焦点才不会落空
                 LaunchedEffect(Unit) { focusRequester.requestFocus() }
                 OutlinedTextField(
+                colors = saltFieldColors(),
                     value = value,
                     onValueChange = { value = it },
                     modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),

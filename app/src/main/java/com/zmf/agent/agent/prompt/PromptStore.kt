@@ -21,6 +21,7 @@ object PromptStore {
     fun loadExtra(context: Context): String =
         prefs(context).getString(KEY_EXTRA, "").orEmpty()
 
+    /** 保存附加指令；空文本即清空该项。 */
     fun saveExtra(context: Context, text: String) {
         prefs(context).edit().putString(KEY_EXTRA, text).apply()
     }
@@ -29,6 +30,7 @@ object PromptStore {
     fun loadOverride(context: Context): String? =
         prefs(context).getString(KEY_OVERRIDE, null)?.takeIf { it.isNotBlank() }
 
+    /** 保存整份覆盖；null 或空白即删除该键，回到默认提示词。 */
     fun saveOverride(context: Context, text: String?) {
         val editor = prefs(context).edit()
         if (text.isNullOrBlank()) editor.remove(KEY_OVERRIDE) else editor.putString(KEY_OVERRIDE, text)
@@ -39,6 +41,7 @@ object PromptStore {
     fun loadSkillsEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_SKILLS_ENABLED, true)
 
+    /** 写入 Skill 目录开关；下次组装提示词时生效。 */
     fun saveSkillsEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_SKILLS_ENABLED, enabled).apply()
     }

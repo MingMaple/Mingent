@@ -30,15 +30,15 @@ import com.zmf.agent.ui.common.blockTapsOnly
 import com.zmf.agent.ui.theme.Palette
 
 /**
- * 全屏浏览页（2026-10-25 用户裁定：真浏览器、多标签，逻辑与计划页对齐）。
+ * 全屏浏览页：真浏览器、多标签，逻辑与计划页对齐。
  *
  * 布局是两层：
  *   顶栏   ← 回主页（**不关网页**）｜当前标签的标题 + 域名｜‹ 网页内后退｜⟳ 刷新
  *   标签栏 一个地址一枚标签，点标签切过去（切走的页面不重载、登录态不丢），点 × 才真的关掉。
- *          标签多了左右滑——和计划页那条计划条同一套手势（[blockHorizontalAtEdge]）。
+ *          标签多了左右滑，和计划页那条计划条同一套手势（[blockHorizontalAtEdge]）。
  *
  * 为什么 AndroidView 的 onRelease 是空的：Compose 把这页从窗口摘下来时，默认行为会把
- * WebView 一起带走；用户明确要求「返回不关闭网页」，所以这里禁止销毁，只让壳和窗口脱钩。
+ * WebView 一起带走；而口径是「返回不关闭网页」，所以这里禁止销毁，只让壳和窗口脱钩。
  * 真正销毁只发生在用户点 × 关闭标签时。
  */
 @Composable
@@ -125,7 +125,7 @@ fun BrowserPage(onBack: () -> Unit) {
 
             // 标签栏常驻：只有一个页面时也保留这一行（条目只有一个），
             // 这样「页面设计」在多页与单页时是同一套，不会因为少一个标签整块布局往上跳。
-            // 样式与行为都来自 TabStrip —— 和计划页的计划条是同一份实现（含选中项自动入视野）。
+            // 样式与行为都来自 TabStrip：和计划页的计划条是同一份实现（含选中项自动入视野）。
             if (tabs.isNotEmpty()) {
                 TabStrip(
                     items = tabs.map { tab ->
@@ -167,7 +167,7 @@ fun BrowserPage(onBack: () -> Unit) {
                             .fillMaxSize()
                             .navigationBarsPadding(),
                         factory = { BrowserHolder.frameFor(active) },
-                        // 空实现是故意的：页面离开窗口时保留 WebView 实例（用户要求「返回不关闭网页」）
+                        // 空实现是故意的：页面离开窗口时保留 WebView 实例（返回不关闭网页）
                         onRelease = { }
                     )
                 }

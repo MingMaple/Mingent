@@ -28,7 +28,7 @@ import java.util.Locale
  * 正好抵消上面那条唯一的优势。要批量就得自己攒，攒就有窗口，所以不攒。
  *
  * 代价：常驻一个 fd；轮转时先 close 再 rename 再重开（见 rotateLocked）。写操作全在一把对象锁里串行化，
- * 但锁里只做页缓存写，绝不做 fsync——fsync 只在 [flush] 里出现，且只给崩溃处理器 / onStop / 日志页用。
+ * 但锁里只做页缓存写，绝不做 fsync：fsync 只在 [flush] 里出现，且只给崩溃处理器 / onStop / 日志页用。
  */
 object FileLog {
 
@@ -50,7 +50,7 @@ object FileLog {
     /**
      * 当前文件里已写的字节数（自己累加，不每行 stat）。
      *
-     * 只在该文件被打开 / 轮转时用 file.length() 对齐一次，之后纯加法——
+     * 只在该文件被打开 / 轮转时用 file.length() 对齐一次，之后纯加法：
      * 这是「每行只剩一次 write」的关键：stat 也要进内核，和省下的 open/close 是同一种成本。
      */
     private var writtenBytes = 0L
@@ -59,11 +59,12 @@ object FileLog {
      * 下一次允许尝试轮转的字节数（初始 = MAX_BYTES）。
      *
      * 为什么要可变：rename 失败（目录只读、被外部占用）时文件不会变小，下一个行还会满足「超了」的条件，
-     * 于是每记一行就白做一次 close/rename/open —— 日志模块自己变成热点，比不轮转还糟。
+     * 于是每记一行就白做一次 close/rename/open，日志模块自己变成热点，比不轮转还糟。
      * 失败后把阈值往后推一个 MAX_BYTES，最多每 512KB 重试一次。
      */
     private var rotateLimit = MAX_BYTES
 
+    /** 绑定日志文件（files/logs/agent.log）；重复调用无副作用，未 init 时 [log] 静默丢弃。 */
     fun init(context: Context) {
         if (logFile != null) return
         logFile = File(logDir(context), FILE_NAME)
@@ -72,7 +73,7 @@ object FileLog {
     /**
      * 日志目录：外部私有目录 files/logs/（不存在就建）。
      *
-     * 目录随取随建，因为日志页可能在任何时刻被打开，不能假设 init() 已经跑过——
+     * 目录随取随建，因为日志页可能在任何时刻被打开，不能假设 init() 已经跑过：
      * 页面要的是一个能读的目录，而不是空指针或运行目录 "/logs"。
      * getExternalFilesDir 在外部存储没挂载时返回 null，此时退回内部 filesDir：
      * 宁可日志落到内部空间，也不要落到 File(null, "logs") 解析出来的相对路径上。
@@ -88,7 +89,7 @@ object FileLog {
      * 记一条日志：拼行 → 编码 → 一次 write，返回。
      *
      * 主线程可以放心调：锁内只有内存拼装 + 一次页缓存写（微秒级），没有 open/close/fsync。
-     * 唯一的例外是「这一刻正好要轮转」——那次会 close/rename/reopen，512KB 才发生一次，
+     * 唯一的例外是「这一刻正好要轮转」：那次会 close/rename/reopen，512KB 才发生一次，
      * 摊到几千行上可以忽略；真要更平滑，可以把轮转挪到后台，但那会引入「轮转期间写哪」的状态机，不值得。
      */
     @Synchronized
@@ -165,7 +166,7 @@ object FileLog {
     /**
      * 清空日志：先关流再删文件。
      *
-     * 顺序不能反：流开着删文件的话，后续 write 会写进那个已被 unlink 的 inode——
+     * 顺序不能反：流开着删文件的话，后续 write 会写进那个已被 unlink 的 inode，
      * 用户在文件系统里看不到，日志却还在占空间，是最难查的那种「日志写成功但打不开」。
      * 故意不重置 logFile：下一次 log() 会惰性重开并重建 agent.log，不用重启进程。
      */
@@ -199,7 +200,7 @@ object FileLog {
      * 轮转：close → 删旧备份 → rename → reopen。
      *
      * 顺序不能反：流开着改名的话，写会继续落到那个已改名的旧 inode 上，新文件一直是空的，
-     * 表现就是「日志看着停了」——所以必须关掉旧句柄再换个路径重新打开。
+     * 表现就是「日志看着停了」，所以必须关掉旧句柄再换个路径重新打开。
      */
     private fun rotateLocked(file: File) {
         closeLocked()

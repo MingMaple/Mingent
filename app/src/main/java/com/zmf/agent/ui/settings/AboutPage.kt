@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
 import com.zmf.agent.ui.common.saltRowClickable
 
@@ -52,7 +53,7 @@ private object AboutLinks {
  * 「关于」页：版本、开源地址、第三方组件与致谢。
  *
  * 单独成页而不是塞进通用设置：这里全是只读信息，混进可改的设置项里会让人以为能点。
- * 版式沿用设置层的卡片列表（22dp 圆角、surface 底、不描边），与 Salt 风格保持一致。
+ * 版式沿用设置层的卡片列表（16dp 圆角、surface 底、不描边），与 Salt 风格保持一致。
  */
 @Composable
 fun AboutPage(onBack: () -> Unit) {
@@ -221,13 +222,14 @@ private fun openLink(context: Context, url: String) {
 @Composable
 private fun AboutCard(title: String, content: @Composable () -> Unit) {
     Surface(
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(16.dp))
     ) {
-        Column(modifier = Modifier.padding(vertical = 6.dp)) {
+        // 行自己带内距：卡片 Column 不垫上下留白，末行的波纹才能贴到 16dp 圆弧上被裁成圆角
+        Column(modifier = Modifier) {
             Text(
                 text = title,
                 modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
@@ -242,7 +244,6 @@ private fun AboutCard(title: String, content: @Composable () -> Unit) {
 @Composable
 private fun AboutDivider() {
     HorizontalDivider(
-        modifier = Modifier.padding(start = 16.dp),
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
     )
 }
@@ -260,7 +261,7 @@ private fun AboutRow(
     val modifier = if (onClick != null) {
         Modifier
             .fillMaxWidth()
-            .saltRowClickable(RoundedCornerShape(0.dp)) { onClick() }
+            .saltCardRow() { onClick() }
     } else {
         Modifier.fillMaxWidth()
     }

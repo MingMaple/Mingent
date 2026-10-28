@@ -29,8 +29,8 @@ import com.zmf.agent.ui.theme.Palette
 /**
  * 「目标」页：看当前会话的长期目标，并按阶段给动作。
  *
- * 版式照 StatsPage / SchedulePage：Surface 铺满 + blockTapsOnly，左上角「←」返回。
- * 页面本身不读写盘，目标从参数进来、动作全部回调出去——
+ * 版式与 SchedulePage 等一级页面一致：Surface 铺满 + blockTapsOnly，左上角「←」返回。
+ * 页面本身不读写盘，目标从参数进来、动作全部回调出去：
  * 谁持有 ChatViewModel 谁去改它，页面只负责显示，避免两个地方各存一份目标。
  */
 @Composable
@@ -159,7 +159,7 @@ fun GoalPage(
     }
 }
 
-/** 底部动作：主操作用 Salt 绿，次要操作淡化，删除用错误色——和 SchedulePage 的行内按钮同一套观感。 */
+/** 底部动作：主操作用 Salt 绿，次要操作淡化，删除用错误色；和 SchedulePage 的行内按钮同一套观感。 */
 @Composable
 private fun GoalAction(
     text: String,

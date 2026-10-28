@@ -16,22 +16,19 @@ import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.Settings
-import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -39,18 +36,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -69,8 +63,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.relocation.BringIntoViewRequester
-import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -104,28 +96,34 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.animateContentSize
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -133,12 +131,12 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -154,15 +152,13 @@ import com.zmf.agent.agent.session.TodoStore
 import com.zmf.agent.agent.subagent.SubAgentRegistry
 import com.zmf.agent.agent.workspace.WorkSpace
 import com.zmf.agent.agent.workspace.WorkSpaceStore
-import com.zmf.agent.ui.common.saltLongPress
 import com.zmf.agent.core.api.BalanceClient
 import com.zmf.agent.core.api.BalanceResult
+import com.zmf.agent.core.backup.BackupArchive
 import com.zmf.agent.core.backup.BackupOptions
 import com.zmf.agent.core.capability.ShizukuBridge
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
-import com.zmf.agent.core.model.PermissionLevel
-import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.service.FloatingBallService
 import com.zmf.agent.tools.displayName
 import com.zmf.agent.ui.float.ChatBridge
@@ -170,6 +166,7 @@ import com.zmf.agent.ui.settings.AboutPage
 import com.zmf.agent.ui.settings.CreateWorkspaceDialog
 import com.zmf.agent.ui.settings.LogsPage
 import com.zmf.agent.ui.settings.ArchivePage
+import com.zmf.agent.ui.settings.TrashPage
 import com.zmf.agent.ui.settings.PackagePage
 import com.zmf.agent.ui.settings.PermissionPage
 import com.zmf.agent.ui.settings.SchedulePage
@@ -178,7 +175,6 @@ import com.zmf.agent.ui.settings.ContextHubPage
 import com.zmf.agent.ui.settings.ContextInsight
 import com.zmf.agent.ui.settings.MemoryPage
 import com.zmf.agent.ui.settings.DataSettingsPage
-import com.zmf.agent.ui.settings.GeneralPrefs
 import com.zmf.agent.ui.settings.GeneralSettingsPage
 import com.zmf.agent.ui.settings.ModelSettingsPage
 import com.zmf.agent.ui.settings.SettingsHomePage
@@ -210,20 +206,15 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
-/** 长按菜单要展示的内容与锚点。 */
-private data class MenuTarget(
-    val isUser: Boolean,
-    /** 这条消息所属那一轮的 user 消息下标（user 消息就是它自己）；-1 = 前面还没有提问。 */
-    val userIndex: Int,
-    /** 被长按的那一条消息的下标：删除与编辑都按这一条定位，不按整轮。 */
-    val messageIndex: Int,
-    val text: String,
-    val reasoning: String,
-    val anchor: Offset
-)
+/**
+ * 「本轮用量」伴随面板的入参：[anchor] 是那枚用量按钮在窗口里的位置，[usage] 是这一轮的账。
+ *
+ * 两者必须一起传：面板上的数字与「贴着哪一枚按钮」是同一次点击的产物，分开存会错位。
+ */
+private data class TurnUsageTarget(val usage: TurnUsageInfo, val anchor: Offset)
 
 /**
- * 长按已发送图片时的小窗：只这两件事——存下这一张、回到这条提问。
+ * 长按已发送图片时的小窗：只这两件事：存下这一张、回到这条提问。
  * 带上 relPath 是因为「长按哪张就保存哪张」，不能拿整条的图片列表糊过去。
  */
 private data class ImageMenuTarget(
@@ -253,7 +244,7 @@ private data class SelectionTarget(
 private enum class AppPage {
     SETTINGS, WORKSPACE, SETTINGS_DATA, SESSIONS,
     PERMISSION_TIER,
-    MODEL, PERMISSION, PACKAGE, LOGS, SCHEDULE, SUBAGENT, ARCHIVE,
+    MODEL, PERMISSION, PACKAGE, LOGS, SCHEDULE, SUBAGENT, ARCHIVE, TRASH,
     // 设置首页（SETTINGS）→ 通用设置（GENERAL）/ 模型（MODEL）/ 长期记忆（MEMORY）/
     // 上下文洞察（CONTEXT_HUB）/ 上下文配置（CONTEXT_CONFIG）/ 包管理（PACKAGE）/ 数据（SETTINGS_DATA）；
     // 轨迹是由主页左滑进入的全屏页，不属于设置层。
@@ -264,11 +255,21 @@ private enum class AppPage {
     // 计划是主页右上角那枚按钮进的独立页（不挂在设置层下），返回即回主页。
     // 目标没有预览页：/goal 走命令解析，状态只看输入框右侧那枚只读图标
     PLAN,
-    // 内置浏览器：回复里的链接点开进这里。返回（侧滑/返回键）只回主页，**页面不关**——
+    // 内置浏览器：回复里的链接点开进这里。返回（侧滑/返回键）只回主页，**页面不关**：
     // 顶栏会多出一枚网页图标，点回来接着用（页面实例留在 BrowserHolder 里，登录态不丢）。
     BROWSER
 }
 
+/**
+ * 主页：消息流 + 底部输入区，以及抽屉与各二级全屏页的唯一宿主。
+ *
+ * 页面状态全在内部：会话与模型状态来自自建的 [ChatViewModel]，页面层级由 [AppPage] 表达，
+ * 二次确认、查看器、长按小窗等瞬时状态用局部 remember。父层只传主题、字号与启动会话 id。
+ *
+ * @param themeMode 当前主题模式；由外部持有并落盘
+ * @param uiScale 全局界面字号倍率（只放大 sp，不动 dp）
+ * @param initialSessionId 从通知点进来要切换到的会话；消费一次后自行清空
+ */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
@@ -288,13 +289,15 @@ fun ChatScreen(
     val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var page by remember { mutableStateOf<AppPage?>(null) }
+    // 回收站页返回时自增：数据页一直挂在这层下面，不换 key 那行统计就不会刷新
+    var trashRefreshKey by remember { mutableStateOf(0) }
     var drawerOpen by remember { mutableStateOf(false) }
     // 上下文洞察页是从哪进来的：主页输入框那条路要退回主页，设置首页那条要退回设置。
     // 只记一个来源就够，不必为每个二级页都备一套返回栈（页面上只有它有两个入口）。
     var contextHubFromHome by remember { mutableStateOf(false) }
     // 抽屉里的「＋ 新建工作区」：抽屉没有输入框，弹一个极简输入框
     var showCreateWorkspace by remember { mutableStateOf(false) }
-    // 轨迹页固定显示代码块：「显示工作代码视图」开关按用户要求移除，不再可关
+    // 轨迹页固定显示代码块，不受「显示工作代码视图」开关影响
     val traceView = true
     // 输入框弹出面板的「开着没 / 关掉」把手：面板状态仍归 Composer，父层只借它铺遮罩
     val composerPanel = remember { ComposerPanelHost() }
@@ -318,7 +321,7 @@ fun ChatScreen(
 
     // 子任务面板：Registry 是内存 object（子智能体在 IO 协程里写）。
     // 以前这里是 300ms 轮询：空闲、一个子智能体都没有时也在每 300ms 醒一次并分配一份快照。
-    // 现在改成订阅版本号——没有子智能体在跑时，那条 Flow 一条都不会发，主线程一次都不会被叫醒。
+    // 现在改成订阅版本号：没有子智能体在跑时，那条 Flow 一条都不会发，主线程一次都不会被叫醒。
     var subAgentPanelOpen by remember { mutableStateOf(false) }
     var subAgentDetailId by remember { mutableStateOf<String?>(null) }
     val subAgentVersion by SubAgentRegistry.version.collectAsState()
@@ -336,6 +339,15 @@ fun ChatScreen(
     var showExportDialog by remember { mutableStateOf(false) }
     var includeTerminal by remember { mutableStateOf(false) }
     var includeLogs by remember { mutableStateOf(false) }
+    var includeMemory by remember { mutableStateOf(false) }
+    // Ubuntu 环境段的真实体积（字节）：0 表示还没量出来（弹窗刚开、盘上文件多时要走一两秒）
+    var terminalBytes by remember { mutableStateOf(0L) }
+    // 每次打开弹窗都重量一次：用户可能在两次导出之间用 apt 装了不少东西
+    LaunchedEffect(showExportDialog) {
+        if (showExportDialog) {
+            terminalBytes = withContext(Dispatchers.IO) { BackupArchive.terminalSectionBytes(context) }
+        }
+    }
     var importUri by remember { mutableStateOf<Uri?>(null) }
 
     // 「清理未引用附件」的结果：只在这一层显示，页面关掉就没了
@@ -345,8 +357,27 @@ fun ChatScreen(
     var balance by remember { mutableStateOf<BalanceResult?>(null) }
     var balanceBusy by remember { mutableStateOf(false) }
 
-    var menuTarget by remember { mutableStateOf<MenuTarget?>(null) }
-    var menuVisible by remember { mutableStateOf(false) }
+    // 分叉会话的「瞬灭再加载」：分叉完屏幕内容要闪一下，
+    // 否则复制整条会话时画面纹丝不动，看不出已经分叉成功。
+    var forkReloading by remember { mutableStateOf(false) }
+    val forkReloadAlpha by animateFloatAsState(
+        targetValue = if (forkReloading) 1f else 0f,
+        animationSpec = tween(durationMillis = if (forkReloading) 70 else 140),
+        label = "forkReload"
+    )
+    // 所有「分叉」入口都走它：遮罩盖住 → 真正切会话 → 淡出，露出重新加载后的内容
+    val forkWithReload: (() -> Unit) -> Unit = { action ->
+        scope.launch {
+            forkReloading = true
+            // 等遮罩盖实了再换数据，避免用户看见中间态
+            delay(80)
+            action()
+            delay(110)
+            forkReloading = false
+        }
+    }
+    // 「本轮用量」伴随面板：贴着被点的那枚用量按钮弹出，点面板以外任何地方收掉
+    var turnUsage by remember { mutableStateOf<TurnUsageTarget?>(null) }
     var selectionTarget by remember { mutableStateOf<SelectionTarget?>(null) }
     var selectionVisible by remember { mutableStateOf(false) }
     // 图片长按小窗：内容与可见性分开存，收起那 140ms 里内容还得留在场上播淡出
@@ -364,6 +395,10 @@ fun ChatScreen(
     LaunchedEffect(pendingSession) {
         val id = pendingSession
         if (id != null) {
+            // 点通知要先回主页：用户可能正停在设置 / 轨迹 / 浏览器这些子页上，
+            // 只切会话不换页的话，看到的仍然是原来那一屏
+            page = null
+            drawerOpen = false
             viewModel.switchSession(id)
             pendingSession = null
         }
@@ -372,8 +407,12 @@ fun ChatScreen(
     // 回前台从盘上重读会话；输入法故意不在这里收，切后台再回来时它应该还在输入框上等着。
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.reloadSessionsFromDisk()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.reloadSessionsFromDisk()
+                // 退到后台就落一次盘：用户口径是「按返回只进后台、永不杀后台」，
+                // 但系统照样可能在后台回收进程，所以这一刻要把会话写进去。
+                Lifecycle.Event.ON_STOP -> viewModel.persistForBackground("on-stop")
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -416,7 +455,11 @@ fun ChatScreen(
         if (uri != null) {
             viewModel.exportData(
                 uri = uri,
-                options = BackupOptions(includeTerminal = includeTerminal, includeLogs = includeLogs),
+                options = BackupOptions(
+                    includeTerminal = includeTerminal,
+                    includeLogs = includeLogs,
+                    includeMemory = includeMemory
+                ),
                 scope = scope
             )
         }
@@ -483,7 +526,7 @@ fun ChatScreen(
     val imeBottomDp = with(density) { WindowInsets.ime.getBottom(this).toDp() }
     // Android 11 起系统按动画逐帧上报 ime inset：直接跟它走，输入框上移与键盘上滑就是同一段运动，
     // 不滞后也不提前。更早的系统只在最后给一次终点值（等于瞬移），才退回一段 tween 兜底；
-    // 两条路只走一条，绝不叠加——叠加就是先被 tween 拖着走、再被真实值拽一下。
+    // 两条路只走一条，绝不叠加：叠加就是先被 tween 拖着走、再被真实值拽一下。
     val imePad = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         imeBottomDp
     } else {
@@ -517,8 +560,8 @@ fun ChatScreen(
 
     // 冷启动 / 切会话的第一次落位：必须直接落在最后一条，而不是列表顶部。
     // 为什么不能只靠上面那条跟随逻辑：它要问 wasAtBottom，而 wasAtBottom 是由下面那条
-    // 「是否贴底」采样写进去的——重开 App 那一刻列表还在顶部，采样先跑出 false，
-    // 跟随逻辑就被自己让位掉了，于是停在最顶上（2026-10-25 用户报的现象）。
+    // 「是否贴底」采样写进去的：重开 App 那一刻列表还在顶部，采样先跑出 false，
+    // 跟随逻辑就被自己让位掉了，于是停在最顶上。
     // 这里单独一条一次性锚定：不管当下停在哪，先落到最后一条并恢复「贴底」这个前提。
     var anchoredInitialPosition by remember(viewModel.currentSessionId) { mutableStateOf(false) }
     LaunchedEffect(items.size, viewModel.currentSessionId) {
@@ -528,11 +571,11 @@ fun ChatScreen(
         followBottom(listState, items.lastIndex)
     }
 
-    // 键盘动画期间逐帧跟住底部：视口每矮 Δ，列表就同步滚 Δ，最后一条消息在屏幕上原地不动——
-    // 这就是用户要的「输入框与列表同一段运动」。只在本来就贴着底部时跟，翻着历史看的时候不打断。
+    // 键盘动画期间逐帧跟住底部：视口每矮 Δ，列表就同步滚 Δ，最后一条消息在屏幕上原地不动。
+    // 效果就是「输入框与列表同一段运动」。只在本来就贴着底部时跟，翻着历史看的时候不打断。
     //
     // 只跟「视口变矮」这一侧。键盘收起时视口是变高的，那时候再按 Δ 滚（Δ 为负）等于把内容
-    // 往下推，最后一条连同气泡底部的用量胶囊就被推到输入框和待办条底下去了——用户报的遮挡正是它。
+    // 往下推，最后一条连同气泡底部的用量胶囊就被推到输入框和待办条底下去了：遮挡就是这么来的。
     var appliedImePadPx by remember { mutableStateOf(0f) }
     LaunchedEffect(listState, imePad) {
         val targetPx = with(density) { imePad.toPx() }
@@ -549,7 +592,7 @@ fun ChatScreen(
     // 所以「贴底」这件事不能只在键盘动画里做一次，得跟着视口的变化重算。
     // 视口落定后再对一次底部（键盘开合、待办条、待发附件行都会改视口）。
     // 这里绝不能把 imePad / 视口值放进 effect 的 key：键盘动画期间它们逐帧变化，
-    // effect 会被取消并重启几十次，等于每帧都排一次「等一会儿再吸附」——这就是掉帧主因。
+    // effect 会被取消并重启几十次，等于每帧都排一次「等一会儿再吸附」：这就是掉帧主因。
     // 用 collectLatest 只在视口安静 120ms 之后执行一次。
     val lastItemIndex = rememberUpdatedState(items.lastIndex)
     LaunchedEffect(listState) {
@@ -562,7 +605,7 @@ fun ChatScreen(
 
     /**
      * 选文件 / 选图片走同一个入口：回到页面时输入法要跟「进去之前」一致。
-     * 进去前是收着的，光靠系统是收不住的——输入框一直握着焦点，回到前台系统会把键盘重新弹出来，
+     * 进去前是收着的，光靠系统是收不住的：输入框一直握着焦点，回到前台系统会把键盘重新弹出来，
      * 所以先把焦点和键盘收掉；进去前是展开的就什么都不碰，回来它自己还贴在输入框上。
      */
     fun launchPicker(pick: () -> Unit) {
@@ -573,12 +616,6 @@ fun ChatScreen(
         pick()
     }
 
-    /**
-     * 打开系统文稿页。
-     *
-     * 初始目录只在「同一会话 + 距上次不到 30 分钟」时指定；其余一律不给 EXTRA_INITIAL_URI（回到顶层），
-     * 否则上次（甚至十天前、别的会话里）选过的目录会一直把人困在深处。
-     */
     /** 进上下文洞察页；[fromHome] 决定返回落到哪一层（主页 / 设置首页）。 */
     fun openContextHub(fromHome: Boolean) {
         contextHubFromHome = fromHome
@@ -586,6 +623,12 @@ fun ChatScreen(
         page = AppPage.CONTEXT_HUB
     }
 
+    /**
+     * 打开系统文稿页。
+     *
+     * 初始目录只在「同一会话 + 距上次不到 30 分钟」时指定；其余一律不给 EXTRA_INITIAL_URI（回到顶层），
+     * 否则上次（甚至十天前、别的会话里）选过的目录会一直把人困在深处。
+     */
     fun openFilePicker() {
         launchPicker {
             val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
@@ -607,13 +650,6 @@ fun ChatScreen(
     // 这时候弹「复制 / 选择文本 / 分支」纯是打断。
     fun longPressAllowed(): Boolean = !listState.isScrollInProgress
 
-    fun openMenu(target: MenuTarget) {
-        if (!longPressAllowed()) return
-        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-        menuTarget = target
-        menuVisible = true
-    }
-
     // 抽屉与任何二级页都不该留着输入法：进来之前先把焦点和键盘收掉
     LaunchedEffect(drawerOpen, page) {
         if (drawerOpen || page != null) {
@@ -627,9 +663,9 @@ fun ChatScreen(
         if (page == AppPage.PLAN && viewModel.plans.isEmpty()) page = null
     }
 
-    // 模型刚交出一份新计划：本轮跑完就直接进计划页（2026-10-25 用户：不该还要自己去点右上角）。
+    // 模型刚交出一份新计划：本轮跑完就直接进计划页，不用再自己去点右上角。
     // 两条 effect 分工：planIdsKnown 负责认出「这次真的多了新计划」，
-    // pendingPlanJump 把跳转压到本轮结束那一刻——工具调用的中途跳页会把还在流式的回复切走。
+    // pendingPlanJump 把跳转压到本轮结束那一刻：工具调用的中途跳页会把还在流式的回复切走。
     var planIdsKnown by remember(viewModel.currentSessionId) { mutableStateOf<Set<String>?>(null) }
     var pendingPlanJump by remember(viewModel.currentSessionId) { mutableStateOf(false) }
     LaunchedEffect(viewModel.plans, viewModel.currentSessionId) {
@@ -651,7 +687,7 @@ fun ChatScreen(
     }
 
     // 链接的落点：注册期间，回复里（含用户气泡、子智能体页）所有 http/https 链接
-    // 都进内置浏览页。没注册时 LinkRouter.open 返回 false，什么也不会发生——
+    // 都进内置浏览页。没注册时 LinkRouter.open 返回 false，什么也不会发生：
     // 不能退回去弹系统浏览器，那等于把用户扔出 App。
     DisposableEffect(Unit) {
         LinkRouter.onOpen = { url ->
@@ -662,9 +698,31 @@ fun ChatScreen(
         onDispose { LinkRouter.onOpen = null }
     }
 
+    // 主页按返回 = **只退到桌面（进后台），绝不结束 Activity**。
+    // 为什么不能让它按系统默认结束 Activity：ChatViewModel 是 remember 在 Compose 里的普通对象，
+    // Activity 一销毁它就没了，内存里还没落盘的消息跟着丢：正是之前「按返回键丢尾部」的真因。
+    // 注册位置说明：这条在**最前面**注册 = 优先级最低；下面那些更具体的返回（抽屉 / 二级页 / 浮层）
+    // 仍然先拦，它们都不拦的时候才轮到这条。
+    BackHandler(enabled = true) {
+        viewModel.persistForBackground("back-to-home")
+        val activity = findActivity(context)
+        if (activity != null) {
+            activity.moveTaskToBack(true)
+        } else {
+            // 拿不到 Activity（极端情况）就发 HOME intent，效果一样：回桌面、进程留着
+            runCatching {
+                context.startActivity(
+                    Intent(Intent.ACTION_MAIN)
+                        .addCategory(Intent.CATEGORY_HOME)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        }
+    }
+
     // 返回键按「最具体」到「最宽」的顺序拦截，最后注册的优先级最高：
-    // 选择页 > 长按小窗 > 抽屉 > 二级页（回各自上一级）> 设置首页 > 一级页 > 不拦截（正常退出 App）
-    // 浏览页的返回只回主页：网页实例留着（用户要求「返回不关闭网页」），顶栏网页图标再点回来
+    // 选择页 > 长按小窗 > 抽屉 > 二级页（回各自上一级）> 设置首页 > 一级页 > 主页时退到桌面
+    // 浏览页的返回只回主页：网页实例留着（返回不关闭网页），顶栏网页图标再点回来
     BackHandler(enabled = page == AppPage.BROWSER) { page = null }
     BackHandler(enabled = page == AppPage.WORKSPACE) { page = null }
     BackHandler(enabled = page == AppPage.SESSIONS) { page = null }
@@ -676,6 +734,10 @@ fun ChatScreen(
     BackHandler(enabled = page == AppPage.PERMISSION_TIER) { page = AppPage.GENERAL }
     BackHandler(enabled = page == AppPage.MODEL) { page = AppPage.SETTINGS }
     BackHandler(enabled = page == AppPage.ARCHIVE) { page = AppPage.SETTINGS_DATA }
+    BackHandler(enabled = page == AppPage.TRASH) {
+        trashRefreshKey++
+        page = AppPage.SETTINGS_DATA
+    }
     BackHandler(enabled = page == AppPage.PERMISSION) { page = AppPage.GENERAL }
     BackHandler(enabled = page == AppPage.PACKAGE) { page = AppPage.SETTINGS }
     BackHandler(enabled = page == AppPage.LOGS) { page = AppPage.SETTINGS_DATA }
@@ -694,7 +756,7 @@ fun ChatScreen(
     BackHandler(enabled = subAgentPanelOpen) { subAgentPanelOpen = false }
     BackHandler(enabled = viewer != null) { viewer = null }
     BackHandler(enabled = drawerOpen) { drawerOpen = false }
-    BackHandler(enabled = menuVisible) { menuVisible = false }
+    BackHandler(enabled = turnUsage != null) { turnUsage = null }
     BackHandler(enabled = imageMenuVisible) { imageMenuVisible = false }
     BackHandler(enabled = selectionVisible) { selectionVisible = false }
 
@@ -710,11 +772,13 @@ fun ChatScreen(
             // 顶栏那条路：pager 滑到第一页还继续往右拖时，多余位移由 SaltDrawer 内部的
             // nestedScroll 接住变成抽屉的 progress（见 SaltDrawer.kt 的 connection）；
             // 这两页的顶栏 / tab 行不在 pager 里，横滑仍由根 Box 的整屏 draggable 直接拉起。
-            // 2026-10-24 用户裁定：二级页（计划页 / 将来的内置浏览器）不再「向右滑开抽屉」——
+            // 二级页（计划页 / 将来的内置浏览器）不开「向右滑开抽屉」：
             // 浏览器内部自己就有横滑内容，一滑就开抽屉没法用。回主页只能点返回或系统侧滑返回。
             // 包管理 / 会话列表是 pager，本来就靠 nestedScroll 衔接，保留；抽屉开着时允许滑回。
+            // 设置层的一级页、二级页全都要能右滑出抽屉；
+            // 只有计划页与内置浏览器例外（浏览器内部自己横滑内容，一滑就开抽屉没法用）。
             gestureEnabled = drawerOpen || page == null ||
-                page == AppPage.PACKAGE || page == AppPage.SESSIONS,
+                (page != AppPage.PLAN && page != AppPage.BROWSER),
             // 主页左滑进轨迹页；开关关着就不传回调，左滑完全没反应
             onSwipeLeft = null,
             // 只有「当前就在包管理 / 会话列表、且它停在第一页」时，才让抽屉抢向右的位移
@@ -763,8 +827,10 @@ fun ChatScreen(
                     onForkSession = { id ->
                         drawerOpen = false
                         page = null
-                        viewModel.switchSession(id)
-                        viewModel.forkSession()
+                        forkWithReload {
+                            viewModel.switchSession(id)
+                            viewModel.forkSession()
+                        }
                     },
                     onArchiveSession = { id -> viewModel.archiveSession(id) },
                     onPinSession = { id, pinned -> viewModel.pinSession(id, pinned) },
@@ -923,19 +989,18 @@ fun ChatScreen(
                             when (val item = items[position]) {
                                 is ChatItem.UserItem -> UserRow(
                                     message = item.message,
+                                    roundsFromEnd = item.roundsFromEnd,
                                     imageRoot = imageRoot,
-                                    onLongPress = { anchor ->
-                                        openMenu(
-                                            MenuTarget(
-                                                isUser = true,
-                                                userIndex = item.index,
-                                                messageIndex = item.index,
-                                                text = item.message.content,
-                                                reasoning = "",
-                                                anchor = anchor
-                                            )
+                                    onCopy = { text -> copyToClipboard(context, text) },
+                                    onSelectText = { text ->
+                                        selectionTarget = SelectionTarget(
+                                            title = "选择文本",
+                                            text = text,
+                                            reasoning = ""
                                         )
+                                        selectionVisible = true
                                     },
+                                    onRollback = { rollbackUserIndex = item.index },
                                     onImageClick = { paths, index -> viewer = ViewerTarget(paths, index) },
                                     onImageLongPress = { rel, anchor ->
                                         // 同 openMenu：惯性还没停就按住的那一下不算长按
@@ -956,31 +1021,40 @@ fun ChatScreen(
                                     streaming = viewModel.isStreaming &&
                                         item.indices.lastOrNull() == viewModel.messages.lastIndex,
                                     toolOutcomes = viewModel.toolOutcomes,
-                                    onLongPress = { index, text, reasoning, anchor ->
-                                        openMenu(
-                                            MenuTarget(
-                                                isUser = false,
-                                                userIndex = item.userIndex,
-                                                messageIndex = index,
-                                                text = text,
-                                                reasoning = reasoning,
-                                                anchor = anchor
-                                            )
+                                    onCopy = { text -> copyToClipboard(context, text) },
+                                    onSelectText = { text, reasoning ->
+                                        selectionTarget = SelectionTarget(
+                                            title = "选择文本",
+                                            text = text,
+                                            reasoning = reasoning
                                         )
+                                        selectionVisible = true
+                                    },
+                                    onFork = { boundary -> forkWithReload { viewModel.forkSession(boundary) } },
+                                    onUsage = { usage, anchor ->
+                                        turnUsage = TurnUsageTarget(usage = usage, anchor = anchor)
                                     }
                                 )
                             }
                         }
                     }
 
-
                     // 面板打开时铺一层透明遮罩：点/划「输入条以外的区域」就收面板。
                     // 必须是消息区 Box 的最后一个孩子位：输入条与面板浮层都在它上层，点面板不会走到这里。
-                    // 早先误放进「待办条可见」的 if 分支里，没有待办的会话整个就没有遮罩——面板开着仍能
-                    // 滚列表、还能点开折叠条，面板赖着不走（R3 的真正原因）。
+                    // 早先误放进「待办条可见」的 if 分支里，没有待办的会话整个就没有遮罩：面板开着仍能
+                    // 滚列表、还能点开折叠条，面板赖着不走。
                     ComposerScrim(
                         visible = composerPanel.open,
                         onDismiss = { composerPanel.dismiss() }
+                    )
+
+                    // 分叉时的「瞬灭再加载」：用页面底色盖住消息区再淡出。
+                    // 放在这一层最后：要盖住列表与上面的透明遮罩；不挂手势，闪完就透明。
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { alpha = forkReloadAlpha }
+                            .background(MaterialTheme.colorScheme.background)
                     )
                     }
 
@@ -1024,7 +1098,7 @@ fun ChatScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                // 拦截器排在 horizontalScroll 之前（= 外层），才看得见行内还剩没剩位移
+                                // blockHorizontalAtEdge 必须先挂（更外层），否则边界余量收不到
                                 .blockHorizontalAtEdge(pendingScroll)
                                 .horizontalScroll(pendingScroll)
                                 .padding(horizontal = 16.dp),
@@ -1132,7 +1206,7 @@ fun ChatScreen(
                         // 我们没有 @ 会话/文件 的补全列表，「@」先等同「选文件」
                         onMention = { openFilePicker() },
                         onSend = {
-                            // 用户主动发送 = 他想回到对话底部（2026-10-24 报的 bug：翻在上面发消息后停在原地）
+                            // 用户主动发送 = 要回到对话底部；否则翻在上面发消息后会停在原地
                             wasAtBottom = true
                             val text = viewModel.inputText.text
                             if (text.isNotBlank() || viewModel.attachments.isNotEmpty() ||
@@ -1166,15 +1240,26 @@ fun ChatScreen(
                             }
                         },
                         status = ComposerStatus(
-                            // 只认 ViewModel 里那份实时状态：stats 里的轮数 / 步数要等进统计页才刷，
+                            // 轮数 / 步数只认 ViewModel 里那份实时状态：stats 里那两个要等进统计页才刷，
                             // 用户看到的就是「发完下一句数字才动」
                             rounds = statusRounds,
                             steps = statusSteps,
-                            tokensPerSec = null,
-                            // 水位与 token 只认 contextSnapshot：它每轮收尾、每次请求回来、切会话都会重算；
-                            // stats 里那两项要等进统计页才刷，用户得切会话再切回来才看到数字动
-                            totalTokens = viewModel.contextSnapshot.estimatedTokens,
-                            waterPercent = (viewModel.contextSnapshot.ratio * 100).toInt()
+                            // 速度、累计 token、缓存命中全部来自本会话的 timing 快照（会落盘，重启不丢）；
+                            // 水位不在这行了：「上下文」按钮的浮窗里本来就有百分比
+                            tokensPerSec = viewModel.sessionTiming.tokensPerSec,
+                            totalTokens = viewModel.sessionTiming.promptTokens +
+                                viewModel.sessionTiming.completionTokens,
+                            cacheHitPercent = viewModel.sessionTiming.cacheHitPercent
+                        ),
+                        stats = ComposerStatsInfo(
+                            modelMillis = viewModel.sessionTiming.modelMillis,
+                            toolMillis = viewModel.sessionTiming.toolMillis,
+                            ttftAverageMillis = viewModel.sessionTiming.ttftAverageMillis,
+                            tokensPerSec = viewModel.sessionTiming.tokensPerSec,
+                            cacheHitTokens = viewModel.sessionTiming.cacheHitTokens,
+                            cacheMissTokens = viewModel.sessionTiming.cacheMissTokens,
+                            cacheHitPercent = viewModel.sessionTiming.cacheHitPercent,
+                            outputTokens = viewModel.sessionTiming.completionTokens
                         ),
                         usage = ContextUsageInfo(
                             used = viewModel.contextSnapshot.estimatedTokens,
@@ -1245,7 +1330,6 @@ fun ChatScreen(
             )
         }
 
-
         // 设置 / 工作区 / 会话列表与设置下的所有页面都是独立全屏页，每页各一层 AnimatedVisibility：
         // 下层页原地留着，中间不会闪出一帧主页；页面自身不透明，所以只做横向滑动。
         AnimatedVisibility(
@@ -1277,7 +1361,8 @@ fun ChatScreen(
         // 数据层要一直留到它的三级页（日志 / 归档）之上：这一层若跟着 SETTINGS_DATA 一起滑走，
         // 三级页滑入的那一下会把下面的「数据」页一起带走，中途露出的就是主页。
         AnimatedVisibility(
-            visible = page == AppPage.SETTINGS_DATA || page == AppPage.ARCHIVE || page == AppPage.LOGS,
+            visible = page == AppPage.SETTINGS_DATA || page == AppPage.ARCHIVE ||
+                page == AppPage.LOGS || page == AppPage.TRASH,
             enter = slideInHorizontally(Motion.spring()) { it },
             exit = slideOutHorizontally(tween(220)) { it },
             modifier = Modifier.fillMaxSize()
@@ -1288,10 +1373,12 @@ fun ChatScreen(
                 onImport = { importLauncher.launch(arrayOf("application/zip", "application/octet-stream")) },
                 onLogs = { page = AppPage.LOGS },
                 onArchive = { page = AppPage.ARCHIVE },
+                onTrash = { page = AppPage.TRASH },
+                trashRefreshKey = trashRefreshKey,
                 archivedCount = viewModel.sessionList.count { it.archived },
                 attachmentUsage = viewModel.attachmentUsageText,
                 backupStatus = viewModel.backupStatus,
-                // 导出/导入的结果显示在数据页（2026-10-25 用户：别再挂到主页那条状态行上）
+                // 导出/导入的结果显示在数据页，不挂到主页那条状态行上
                 backupNotice = viewModel.backupNotice,
                 orphanStatus = orphanStatus,
                 onRefreshAttachment = { viewModel.refreshAttachmentUsage() },
@@ -1311,6 +1398,21 @@ fun ChatScreen(
                 onBack = { page = AppPage.SETTINGS_DATA },
                 onRestore = { id -> viewModel.unarchiveSession(id) },
                 onDelete = { id -> viewModel.deleteSession(id) }
+            )
+        }
+
+        // 回收站只对用户开放（D3 主体分离）：它没有对应的 Agent 工具，恢复/清空全在这一页
+        AnimatedVisibility(
+            visible = page == AppPage.TRASH,
+            enter = slideInHorizontally(Motion.spring()) { it },
+            exit = slideOutHorizontally(tween(220)) { it },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            TrashPage(
+                onBack = {
+                    trashRefreshKey++
+                    page = AppPage.SETTINGS_DATA
+                }
             )
         }
 
@@ -1349,7 +1451,13 @@ fun ChatScreen(
                 onRefresh = viewModel::refreshMemory,
                 onSearch = viewModel::searchMemory,
                 onRunCycle = viewModel::runMemoryCycle,
-                onExport = viewModel::exportMemory
+                onExport = { path -> viewModel.exportMemory(path) },
+                vectorEnabled = viewModel.memoryVectorEnabled,
+                vectorBusy = viewModel.memoryVectorBusy,
+                vectorStatus = viewModel.memoryVectorStatus,
+                vectorFailed = viewModel.memoryVectorFailed,
+                onVectorToggle = viewModel::toggleMemoryVector,
+                onVectorPanelOpened = viewModel::clearMemoryVectorStatus
             )
         }
 
@@ -1472,11 +1580,13 @@ fun ChatScreen(
                 },
                 onDelete = { id -> viewModel.deleteSession(id) },
                 onFork = { id ->
-                    // forkSession 只作用于当前会话：从别的会话行进来时先切过去
-                    if (id != viewModel.currentSessionId) viewModel.switchSession(id)
-                    viewModel.forkSession()
                     // 落回对话页：用户要接着在分支上说话，不该停在列表里
                     page = null
+                    forkWithReload {
+                        // forkSession 只作用于当前会话：从别的会话行进来时先切过去
+                        if (id != viewModel.currentSessionId) viewModel.switchSession(id)
+                        viewModel.forkSession()
+                    }
                 },
                 onBack = { page = null }
             )
@@ -1657,60 +1767,17 @@ fun ChatScreen(
             )
         }
 
-            // 长按小窗：淡入淡出，卡片在按压位置缩放出现
-            AnimatedVisibility(
-                visible = menuVisible,
-                enter = fadeIn(tween(140)),
-                exit = fadeOut(tween(140)),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                menuTarget?.let { target ->
-                    // 诊断用：面板真的被显示时才写这一行。跟 AssistantRow 的 hit 日志对照，
-                    // 就能看出是「长按手势没触发」还是「面板弹到看不见的地方」
-                    LaunchedEffect(target) {
-                        FileLog.log("longpress", "menu shown anchor=" + target.anchor)
-                    }
-                    val actions = buildList {
-                        add(
-                            MenuAction("复制") {
-                                copyToClipboard(context, target.text)
-                                menuVisible = false
-                            }
-                        )
-                        add(
-                            MenuAction("选择文本") {
-                                selectionTarget = SelectionTarget(
-                                    title = "选择文本",
-                                    text = target.text,
-                                    reasoning = target.reasoning
-                                )
-                                selectionVisible = true
-                                menuVisible = false
-                            }
-                        )
-                        // 用户消息三项、助手消息三项；分支只对助手消息有意义
-                        if (target.isUser) {
-                            add(
-                                MenuAction("回滚到此处") {
-                                    rollbackUserIndex = target.userIndex
-                                    menuVisible = false
-                                }
-                            )
-                        } else {
-                            add(
-                                MenuAction("在新会话中分支") {
-                                    // 保留被长按的这一条及其以上：messageIndex 是它自己的下标，所以 +1
-                                    viewModel.forkSession(target.messageIndex + 1)
-                                    menuVisible = false
-                                }
-                            )
-                        }
-                    }
-                    MessageContextMenu(
-                        anchor = target.anchor,
-                        actions = actions,
-                        onDismiss = { menuVisible = false }
-                    )
+            // 「本轮用量」伴随面板：贴着被点的用量按钮弹出，点面板以外任何地方关闭。
+            // 不用弹窗（Dialog）：那会把视线从「这条回复花了多少」拉到屏幕中央，也不跟按钮走。
+            turnUsage?.let { target ->
+                SaltPopover(
+                    anchor = target.anchor,
+                    // 宽度取「屏宽减两侧留白」的量级：用量面板要装下「提供方 / 模型」这种长值，
+                    // 太窄会贴着气泡右缘被看成一截
+                    widthDp = 300.dp,
+                    onDismiss = { turnUsage = null }
+                ) {
+                    TurnUsagePanel(usage = target.usage)
                 }
             }
 
@@ -1801,7 +1868,9 @@ fun ChatScreen(
             Spacer(Modifier.height(12.dp))
             BackupToggleRow(
                 title = "包含 Ubuntu 环境",
-                hint = "约 300MB，导出会久一点",
+                // 体积跟着盘上装了多少走：量出来之前只说「会久一点」，不写死常量
+                hint = if (terminalBytes > 0L) "当前约 " + exportSizeText(terminalBytes) + "，导出会久一点"
+                else "导出会久一点",
                 checked = includeTerminal,
                 onToggle = { includeTerminal = !includeTerminal }
             )
@@ -1811,9 +1880,15 @@ fun ChatScreen(
                 checked = includeLogs,
                 onToggle = { includeLogs = !includeLogs }
             )
+            BackupToggleRow(
+                title = "包含记忆数据",
+                hint = "记忆事件与索引，不含内核程序",
+                checked = includeMemory,
+                onToggle = { includeMemory = !includeMemory }
+            )
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "会话、工作区文件、模型与权限设置都会打包；API Key 不会写进备份。",
+                text = "会话、工作区文件、模型与权限设置默认打包；记忆数据需单独勾选；API Key 不会写进备份。",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
             )
@@ -1869,6 +1944,7 @@ fun ChatScreen(
             Text(
                 text = "导入将覆盖当前数据且不可撤销" +
                     (if (manifest.sections.contains("terminal")) "；备份包含 Ubuntu 环境，请先退出终端页面" else "") +
+                    (if (manifest.sections.contains("memory")) "；记忆数据将被整体替换" else "") +
                     "。API 密钥保留本机原有设置，不受覆盖影响。",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.error.copy(alpha = 0.85f)
@@ -2037,7 +2113,7 @@ private fun ChatTopBar(
     browserOpen: Boolean,
     onBrowserClick: () -> Unit
 ) {
-    // 状态点四态（2026-10-24 A 方案）：请求中蓝 / 出错红 / 就绪青 / 空闲绿
+    // 状态点四态：请求中蓝 / 出错红 / 就绪青 / 空闲绿
     val shizukuState by ShizukuBridge.state.collectAsState()
     val dotColor = when {
         viewModel.isStreaming -> Palette.StatusBusy
@@ -2162,7 +2238,7 @@ private fun PlanGlyph(onClick: () -> Unit) {
  * 右上角的「网页」图标：一个小窗口（外框 + 顶部工具栏 + 一颗小圆点）。
  *
  * 只在浏览器里真有页面时出现。用户从浏览页返回主页之后，这枚图标就是「网页还开着，点我回去」
- * 的唯一入口——所以画成窗口而不是链接符号；和 PlanGlyph 同一套线宽，排在一行里不打架。
+ * 的唯一入口，所以画成窗口而不是链接符号；和 PlanGlyph 同一套线宽，排在一行里不打架。
  */
 @Composable
 private fun BrowserGlyph(onClick: () -> Unit) {
@@ -2198,7 +2274,7 @@ private fun BrowserGlyph(onClick: () -> Unit) {
                 end = Offset(w - half, barY),
                 strokeWidth = strokeWidth
             )
-            // 工具栏左侧那颗小圆点（标签页的示意），别画多了——这么小的地方只放得下一颗
+            // 工具栏左侧那颗小圆点（标签页的示意），别画多了：这么小的地方只放得下一颗
             drawCircle(color = color, radius = 1.dp.toPx(), center = Offset(w * 0.2f, barY * 0.52f))
         }
     }
@@ -2291,7 +2367,7 @@ private fun SubAgentPanel(
     }
 }
 
-/** 面板里的状态文字。 */
+/** 子智能体状态的显示文案：运行中 / 完成 / 失败。 */
 private fun subAgentStateText(state: String): String = when (state) {
     SubAgentRegistry.RUNNING -> "运行中"
     SubAgentRegistry.DONE -> "完成"
@@ -2375,6 +2451,18 @@ private fun NameInputDialog(
     }
 }
 
+/**
+ * 体积文案：按量级给 KB / MB / GB，MB 以上取整：这里只是让人判断「这包大不大」，
+ * 精确到小数点反而读不出差别（同 SentFileCard 的口径，但那一处是单个附件，保留一位小数）。
+ */
+private fun exportSizeText(bytes: Long): String = when {
+    bytes >= 1024L * 1024L * 1024L ->
+        "%.1f".format(Locale.US, bytes / 1024.0 / 1024.0 / 1024.0) + "GB"
+    bytes >= 1024L * 1024L -> ((bytes + 1024L * 1024L / 2L) / (1024L * 1024L)).toString() + "MB"
+    bytes >= 1024L -> ((bytes + 512L) / 1024L).toString() + "KB"
+    else -> bytes.toString() + "B"
+}
+
 /** 导出选项的一行：左边标题+一句提示，右边 Salt 风开关。 */
 @Composable
 private fun BackupToggleRow(
@@ -2444,7 +2532,7 @@ private fun stampOf(root: File, pending: PendingFile): Long =
  * 待发送图片的缩略图：固定 64dp 见方、圆角 12dp。
  *
  * 尺寸写死而不是按原图比例：这一行里还混着文件 chip，比例尺寸会让整行高矮不齐；
- * 也不再铺任何白色/半透明白底——之前那层底把手边的文件 chip 盖住，看着像两个层次。
+ * 也不再铺任何白色/半透明白底：之前那层底把手边的文件 chip 盖住，看着像两个层次。
  * 解码只在 bitmaps 为空（文件没了 / 不是图片）时才画一块占位灰，仍能 ✕ 删掉。
  */
 @Composable
@@ -2540,7 +2628,7 @@ private fun WorkSpacePage(
     var pendingDelete by remember { mutableStateOf<WorkSpace?>(null) }
 
     Surface(
-        // 页面铺满且不透明；最外层吞掉点击，避免穿透点到下面的聊天界面
+        // 工作区页：铺满不透明，最外层吞点击，避免穿透到下面的聊天界面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -2692,9 +2780,19 @@ private fun WorkSpaceRow(
     }
 }
 
-/** 列表项：用户消息单独一行；一个助手回合 = 到下一条提问之前的全部内容。 */
+/**
+ * 列表项：用户消息单独一行；一个助手回合 = 到下一条提问之前的全部内容。
+ *
+ * [UserItem.roundsFromEnd] 是这条提问距离最新一轮的轮次差（最新一条为 0）：
+ * 气泡折叠阈值按它分两档，比每次都从后往前数一遍消息省事，也能在列表复用后保持稳定。
+ */
 private sealed interface ChatItem {
-    data class UserItem(val index: Int, val message: ChatMessage) : ChatItem
+    data class UserItem(
+        val index: Int,
+        val message: ChatMessage,
+        val roundsFromEnd: Int = 0
+    ) : ChatItem
+
     data class AssistantItem(val indices: List<Int>, val userIndex: Int) : ChatItem
 }
 
@@ -2702,11 +2800,15 @@ private fun buildChatItems(all: List<ChatMessage>): List<ChatItem> {
     val out = ArrayList<ChatItem>()
     var i = 0
     var lastUserIndex = -1
+    // 先数一遍总轮数：轮次差 = 总数 - 当前序号 - 1，单次遍历即可，不必每条消息再扫一次
+    val totalRounds = all.count { it.role == "user" }
+    var roundOrdinal = 0
     while (i < all.size) {
         when (all[i].role) {
             "user" -> {
                 lastUserIndex = i
-                out.add(ChatItem.UserItem(i, all[i]))
+                out.add(ChatItem.UserItem(i, all[i], totalRounds - roundOrdinal - 1))
+                roundOrdinal++
                 i++
             }
 
@@ -2725,7 +2827,7 @@ private fun buildChatItems(all: List<ChatMessage>): List<ChatItem> {
     return out
 }
 
-/** 已发送图片缩略图的边长：恒定值——不管原图多大、长宽比多少，发出去都占同样大的一块。 */
+/** 已发送图片缩略图的边长：恒定值，不管原图多大、长宽比多少，发出去都占同样大的一块。 */
 private val SentThumbSide = 96.dp
 
 /** 缩略图与文件卡共用的圆角。 */
@@ -2738,20 +2840,31 @@ private val SentFileCardWidth = 168.dp
  * 一条用户消息 = 竖排两块：上面是附件卡行（文件卡 + 图片缩略图，超出横滑），下面是文字气泡。
  *
  * 卡片在前、文字在后，是照 DeepSeek 手机端的顺序：图片和文件是「随这条消息递过去的东西」，
- * 不是气泡里的内容。没有字就整块不画气泡——纯图片消息不再留一个空白气泡。
+ * 不是气泡里的内容。没有字就整块不画气泡：纯图片消息不再留一个空白气泡。
  */
 @Composable
 private fun UserRow(
     message: ChatMessage,
+    // 距离最新一轮的轮次差：0 = 最新一条提问。折叠阈值按它分两档
+    roundsFromEnd: Int,
     imageRoot: File,
-    onLongPress: (Offset) -> Unit,
+    onCopy: (String) -> Unit,
+    onSelectText: (String) -> Unit,
+    onRollback: () -> Unit,
     onImageClick: (List<String>, Int) -> Unit,
     onImageLongPress: (String, Offset) -> Unit
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val bubbleColor = if (isDark) Palette.BubbleUserDark else Palette.BubbleUserLight
-    var textOrigin by remember { mutableStateOf(Offset.Zero) }
     val text = userBubbleText(message)
+    // 折叠口径：近三轮完全铺开，刚发出去的消息正是用户在读的那条，不该被收起来；
+    // 更早的历史按屏幕 45% 折。折叠点落在整段末尾（由 MarkdownText 按块取整），
+    // 不会出现「最后一行只剩半个字」。展开态只活在这一屏，列表滚走再回来回到折叠态。
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val foldAt = if (roundsFromEnd < 3) Dp.Unspecified else screenHeight * 0.45f
+    // 折叠后最多约九行（15sp × 1.5 行高）：够看清开头，也不至于只剩一条缝
+    val foldedHeight = with(LocalDensity.current) { (15f * 1.5f * 9f).sp.toDp() }
+    var expanded by rememberSaveable { mutableStateOf(false) }
     // 附件从正文那段说明反向解析：发送时「附件在前、图片在后」拼进 prompt，这里保持同一顺序
     val files = remember(message.content) { attachmentPaths(message) }
     val images = message.images
@@ -2793,29 +2906,55 @@ private fun UserRow(
             }
             if (text.isNotEmpty()) {
                 if (files.isNotEmpty() || images.isNotEmpty()) Spacer(Modifier.height(8.dp))
-                // 长按只挂在文字气泡上：卡片与缩略图有自己的长按菜单（保存 / 回滚），别互相抢
-                Surface(
-                    color = bubbleColor,
-                    shape = bubbleShape,
+                // 动作按钮摆在气泡尾巴上，不再靠长按弹窗：
+                // 用户看到那一行图标就知道能做什么，不用先猜「可以长按」
+                // 不用 Surface：它的 shape 会挂一层裁剪图层（graphicsLayer + clip），
+                // 气泡展开到十几屏高时这层图层的尺寸也涨到几万像素，那之后的子节点
+                // 连点击都收不到（27187px 的气泡实测：按钮看得见、点不动）。
+                // background(color, shape) 画出来的圆角与 Surface 一致，且不建图层。
+                Box(
+                    // 展开 / 收起只动气泡高度：正文按整份排版好再逐步露出，不会重新折行
                     modifier = Modifier
-                        .onGloballyPositioned { textOrigin = it.positionInRoot() }
-                        .saltLongPress { local -> onLongPress(textOrigin + local) }
+                        .animateContentSize(
+                        animationSpec = tween(180),
+                        alignment = Alignment.TopStart
+                    ).background(bubbleColor, bubbleShape)
                 ) {
-                    // 长消息限高：装得下时滑动照常交给整页；超过 320dp 才在气泡里滚，
-                    // 滚到边界也不带动列表（贴了一整屏的文本不会把页面顶飞）
-                    BoundedScrollColumn(
-                        maxHeight = 320.dp,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-                    ) {
-                        MarkdownText(
-                            text = text,
-                            fontSize = 15.sp,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            codeBackground = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-                        )
-                    }
+                    // 不在气泡里开竖向滚动：文字正常铺开，阅读交给整页列表。
+                    // 超过 foldAt 时才折叠，折叠点取整段末尾（见 MarkdownText 的按块折叠）。
+                    MarkdownText(
+                        text = text,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        codeBackground = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                        // 用户自己按的换行算他的排版：空行要看得见（发送时已压成一个）
+                        keepBlankLines = true,
+                        foldAt = foldAt,
+                        foldedHeight = foldedHeight,
+                        expanded = expanded,
+                        foldColor = bubbleColor,
+                        foldToggle = {
+                            FoldToggle(expanded = expanded, onClick = { expanded = !expanded })
+                        }
+                    )
                 }
             }
+            // 尾部动作行：右对齐贴着自己那条气泡，时间在最右
+            MessageTailRow(
+                at = clockText(message.createdAt),
+                alignEnd = true,
+                icons = listOf(TailIcon.COPY, TailIcon.SELECT_TEXT, TailIcon.ROLLBACK),
+                onAction = { kind ->
+                    when (kind) {
+                        TailIcon.COPY -> onCopy(text)
+                        TailIcon.SELECT_TEXT -> onSelectText(text)
+                        TailIcon.ROLLBACK -> onRollback()
+                        else -> Unit
+                    }
+                },
+                usageAnchor = {}
+            )
         }
     }
 }
@@ -2825,7 +2964,7 @@ private fun UserRow(
  *
  * 这两段只写给模型看（模型靠这些相对路径 read_file 读文件），界面用卡片与缩略图表达。
  * 用户自己写的正文永远在两段说明之前，所以只能按标记各切一刀：
- * 从第一个标记一把切到末尾，会把夹在中间的正文一起吞掉——agent 收到了那句话，界面上却一个字没有。
+ * 从第一个标记一把切到末尾，会把夹在中间的正文一起吞掉：agent 收到了那句话，界面上却一个字没有。
  */
 private fun userBubbleText(message: ChatMessage): String {
     var text = message.content
@@ -2838,6 +2977,45 @@ private fun userBubbleText(message: ChatMessage): String {
     val planCut = text.indexOf(PLAN_DETAIL_MARKER)
     if (planCut >= 0) text = text.substring(0, planCut)
     return text.trimEnd()
+}
+
+/**
+ * 气泡右下角的展开 / 收起按钮：圆角小条 + 一枚细箭头，底色取气泡本身的一层淡色。
+ *
+ * 不做圆片也不加外圈：那圈环状阴影和气泡的平面语言不搭，拆成圆角矩形后像气泡自己的一个角标。
+ *
+ * 悬浮小窗复用同一枚（所以是 internal 而不是 private）：两处的折叠观感必须是同一个东西。
+ */
+@Composable
+internal fun FoldToggle(expanded: Boolean, onClick: () -> Unit) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = Modifier
+            .size(width = 40.dp, height = 24.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(onSurface.copy(alpha = 0.06f))
+            .clickable(onClickLabel = if (expanded) "收起" else "展开", onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(14.dp)) {
+            val path = Path().apply {
+                if (expanded) {
+                    moveTo(size.width * 0.18f, size.height * 0.64f)
+                    lineTo(size.width * 0.5f, size.height * 0.34f)
+                    lineTo(size.width * 0.82f, size.height * 0.64f)
+                } else {
+                    moveTo(size.width * 0.18f, size.height * 0.36f)
+                    lineTo(size.width * 0.5f, size.height * 0.66f)
+                    lineTo(size.width * 0.82f, size.height * 0.36f)
+                }
+            }
+            drawPath(
+                path = path,
+                color = onSurface.copy(alpha = 0.55f),
+                style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+        }
+    }
 }
 
 /**
@@ -2858,7 +3036,7 @@ private fun attachmentPaths(message: ChatMessage): List<String> {
 }
 
 /**
- * 已发送的文件卡：固定宽度的小卡——图标 + 文件名单行省略 + 类型/大小副行。
+ * 已发送的文件卡：固定宽度，图标 + 文件名单行省略 + 类型/大小副行。
  *
  * 大小取盘上的真实字节数（文件已经在工作区里），读不到就只写类型，不显示「0 B」：
  * 用户清理过附件之后，那张卡还在老会话里，写 0 B 会像「文件坏了」。
@@ -3036,7 +3214,14 @@ private fun AssistantRow(
     indices: List<Int>,
     streaming: Boolean,
     toolOutcomes: Map<String, Boolean>,
-    onLongPress: (index: Int, text: String, reasoning: String, anchor: Offset) -> Unit
+    /** 复制本轮全部正文（用户在气泡里能看全的那些文字）。 */
+    onCopy: (String) -> Unit,
+    /** 选择文本：正文与思考一起交出去，选择页里再分两段。 */
+    onSelectText: (String, String) -> Unit,
+    /** 以这一轮为终点开一个新会话（分支）。 */
+    onFork: (Int) -> Unit,
+    /** 打开「本轮用量」伴随面板，第二个参数是那枚按钮在窗口里的位置。 */
+    onUsage: (TurnUsageInfo, Offset) -> Unit
 ) {
     // 一轮按「到达顺序」摊平：每条消息里的思考 → 正文 → 它的工具调用，接着下一条。
     // 旧实现把所有思考拼成一整段提到最上面、把工具卡全塞进同一个气泡，界面顺序跟真实
@@ -3051,46 +3236,66 @@ private fun AssistantRow(
     val bubbleColor = if (isDark) Palette.BubbleAiDark else Palette.BubbleAiLight
     val thinkColor = if (isDark) Palette.BubbleThinkDark else Palette.BubbleThinkLight
     val cardColor = if (isDark) Palette.BubbleCardDark else Palette.BubbleCardLight
-    var rowOrigin by remember { mutableStateOf(Offset.Zero) }
     val menuIndex = indices.firstOrNull() ?: 0
     // 本轮用量：只有最后一条 assistant 带数字（ChatViewModel.writeTurnUsage 只写那一条），
-    // 所以扫一遍取那个非零的；流式途中还没写，这里就是 0，胶囊不会闪出来。
-    var tokensPrompt = 0
-    var tokensCompletion = 0
-    var tokensAt = 0L
+    // 所以扫一遍取那个非零的；流式途中还没写，这里就是 null，用量按钮不会闪出来。
+    var turnUsage: TurnUsageInfo? = null
+    // 时间默认取本轮最后一条消息的时间。以前从 0 起算：定时任务产出的答复没有用量数字，
+    // 0 经「HH:mm」格式化正好是东八区的 08:00（纪元零点），看起来像时间停在早上八点。
+    var tokensAt = all.getOrNull(indices.lastOrNull() ?: -1)?.createdAt ?: 0L
     for (index in indices) {
         val message = all.getOrNull(index) ?: continue
         if (message.promptTokens > 0 || message.completionTokens > 0) {
-            tokensPrompt = message.promptTokens
-            tokensCompletion = message.completionTokens
+            turnUsage = turnUsageOf(message)
             tokensAt = message.createdAt
         }
     }
 
-    val thinkCount = segments.count { it is TurnSegment.Think }
-    val callCount = segments.count { it is TurnSegment.Call }
+    // 「最终回答」与「过程」的分界：
+    // 最终回答 = 本轮的**最后一条** assistant 消息，且必须同时满足
+    //   ① 有回复内容（正文或思考非空）② 不含任何工具调用 ③ 是最后一步。
+    // 任一不满足 ⇒ 这一轮**没有最终回答**：整轮都算过程，折叠后只剩那行计数
+    // （此时过程起点直接取本轮起点）。
+    // 注意这条口径的后果：过程里有没有文字，完全取决于模型自己说不说，
+    // 不靠提示词逼它「每步先说一句」。
+    val answerIndex = indices.lastOrNull()?.takeIf { index ->
+        val message = all.getOrNull(index)
+        message != null &&
+            message.role == "assistant" &&
+            message.toolCalls.isEmpty() &&
+            (message.content.isNotBlank() || !message.reasoningContent.isNullOrBlank())
+    }
+    val finalSegment = if (answerIndex == null) {
+        null
+    } else {
+        all.getOrNull(answerIndex)?.content?.takeIf { it.isNotBlank() }?.let {
+            TurnSegment.Body(answerIndex, it)
+        }
+    }
+    // 过程 = 除「最终回答那段正文」以外的全部片段；最终回答那条消息的**思考**留在过程里
+    // （折叠收起时藏、展开时看得到），这样展开后仍能看到收口时想了什么。
+    val processSegments = if (answerIndex == null) {
+        segments
+    } else {
+        segments.filterNot { it is TurnSegment.Body && it.messageIndex == answerIndex }
+    }
+    val thinkCount = processSegments.count { it is TurnSegment.Think }
+    val callCount = processSegments.count { it is TurnSegment.Call }
     val hasProcess = thinkCount > 0 || callCount > 0
     // 折叠态只在「这一轮已经跑完」之后才成立：流式中途折起来，用户就看不见正在做的事了。
-    // 用户手动展开之后保持展开——只有下一轮流式结束（streaming 由 true 变 false）才会重新折回去。
+    // 用户手动展开之后保持展开：只有下一轮流式结束（streaming 由 true 变 false）才会重新折回去。
     var expanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(streaming) { if (!streaming) expanded = false }
     val collapsed = hasProcess && !streaming && !expanded
-    // 折叠时只留正文：过程收成上面那行计数，正文是这一轮的产出，必须留在眼皮底下
-    val shown = if (collapsed) segments.filterIsInstance<TurnSegment.Body>() else segments
+    // 折叠时只留最终回答；本轮没有最终回答（模型以工具调用收尾 / 一句话没说）时什么都不留，
+    // 只剩上面那行计数。流式途中不折，看得见正在做什么。
+    val shown = if (collapsed) listOfNotNull(finalSegment) else segments
+    // 展开态：过程装进底板，最终回复留在底板外面
+    val showPanel = expanded && hasProcess && !streaming
 
-    // 长按挂在整块回合上：正文、代码块、工具卡之间的空白都能命中；手势不消费事件，卡片照常点击
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .onGloballyPositioned { rowOrigin = it.positionInRoot() }
-            .saltLongPress { local ->
-                FileLog.log(
-                    "longpress",
-                    "hit index=" + menuIndex + " local=" + local + " origin=" + rowOrigin
-                )
-                onLongPress(menuIndex, wholeText, reasoning, rowOrigin + local)
-            }
-    ) {
+    // 动作按钮在气泡尾巴上（见下方），这一整轮不再挂长按手势：
+    // 长按不消费事件，工具卡照常点击这一点本来就只是为了给弹窗让路
+    Column(modifier = Modifier.fillMaxWidth()) {
         if (hasProcess && !streaming) {
             TurnProcessSummary(
                 thinkCount = thinkCount,
@@ -3099,29 +3304,79 @@ private fun AssistantRow(
                 onToggle = { expanded = !expanded }
             )
         }
-        TurnStream(
-            segments = shown,
-            all = all,
-            streaming = streaming,
-            lastMessageIndex = lastIndex,
-            toolOutcomes = toolOutcomes,
-            thinkColor = thinkColor,
-            bubbleColor = bubbleColor,
-            cardColor = cardColor
-        )
-        // 用量内嵌在回合底部：用户要的是「这条回复花了多少」跟着回复走，
-        // 而不是画在消息列表外面的某一行。点开才是明细。
-        if (tokensPrompt > 0 || tokensCompletion > 0) {
-            Spacer(Modifier.height(6.dp))
-            UsageCapsule(
-                promptTokens = tokensPrompt,
-                completionTokens = tokensCompletion,
-                at = clockText(tokensAt)
+        if (showPanel) {
+            // 过程区：浅灰底板 + 内缩，读作「打开的一堆底层日志」
+            if (processSegments.isNotEmpty()) {
+                TurnProcessPanel {
+                    TurnStream(
+                        segments = processSegments,
+                        all = all,
+                        streaming = false,
+                        lastMessageIndex = lastIndex,
+                        toolOutcomes = toolOutcomes,
+                        thinkColor = thinkColor,
+                        bubbleColor = bubbleColor,
+                        cardColor = cardColor,
+                        inPanel = true
+                    )
+                }
+            }
+            // 最终区：底板之外、之下，正常聊天气泡，视觉权重最高
+            if (finalSegment != null) {
+                if (processSegments.isNotEmpty()) Spacer(Modifier.height(10.dp))
+                TurnStream(
+                    segments = listOf(finalSegment),
+                    all = all,
+                    streaming = false,
+                    lastMessageIndex = lastIndex,
+                    toolOutcomes = toolOutcomes,
+                    thinkColor = thinkColor,
+                    bubbleColor = bubbleColor,
+                    cardColor = cardColor
+                )
+            }
+        } else {
+            TurnStream(
+                segments = shown,
+                all = all,
+                streaming = streaming,
+                lastMessageIndex = lastIndex,
+                toolOutcomes = toolOutcomes,
+                thinkColor = thinkColor,
+                bubbleColor = bubbleColor,
+                cardColor = cardColor
+            )
+        }
+        // 尾部动作行：复制 / 选择文本 / 分支 / 用量 + 时间，跟着这条回复走。
+        // 用量的明细仍然点开才看：数字本身不该占着一行。
+        if (!streaming && (turnUsage != null || wholeText.isNotEmpty())) {
+            MessageTailRow(
+                at = clockText(tokensAt),
+                alignEnd = false,
+                icons = buildList {
+                    add(TailIcon.COPY)
+                    add(TailIcon.SELECT_TEXT)
+                    add(TailIcon.FORK)
+                    if (turnUsage != null) add(TailIcon.USAGE)
+                },
+                onAction = { kind ->
+                    when (kind) {
+                        TailIcon.COPY -> onCopy(wholeText)
+                        TailIcon.SELECT_TEXT -> onSelectText(wholeText, reasoning)
+                        // 分支保留**这一轮整轮**及其以上：边界取本轮最后一条消息的下标 +1。
+                        // 以前传的是本轮第一条的下标 +1，正好把这一轮的其余消息（工具调用那几条）
+                        // 切掉，看起来就是「分支之后内容不全」（用户 10:06 报的回归）
+                        TailIcon.FORK -> onFork((lastIndex ?: menuIndex) + 1)
+                        else -> Unit
+                    }
+                },
+                usageAnchor = { anchor ->
+                    turnUsage?.let { usage -> onUsage(usage, anchor) }
+                }
             )
         }
     }
 }
-
 
 /**
  * 从 Compose 拿到的 Context 往上剥 ContextWrapper，找到真正的 Activity。
@@ -3261,7 +3516,7 @@ private fun pickerDirPrefs(context: Context) =
  * 这次文稿页该从哪一层打开；null = 不指定，系统自己回到顶层。
  *
  * 三条都要成立才回上次的目录：同一个会话、记过目录、距上次选择不到 30 分钟。
- * 少任何一条都从顶层开始——否则「十天前在别的会话里点进过的深层目录」会一直粘着。
+ * 少任何一条都从顶层开始，否则「十天前在别的会话里点进过的深层目录」会一直粘着。
  */
 private fun pickerInitialDir(context: Context, sessionId: String): Uri? {
     val prefs = pickerDirPrefs(context)
@@ -3287,7 +3542,7 @@ private fun rememberPickerDir(context: Context, uri: Uri, sessionId: String) {
  *
  * 选择器返回的是**文件** URI，而 EXTRA_INITIAL_URI 要的是**目录**，所以按 documentId
  * （形如 "primary:Download/微信/图.jpg"）去掉最后一段反推父目录；不在标准 provider
- * 口径里的（没有 "卷:路径" 形状）返回 null，调用方据此退化成「不记忆」。
+ * 口径里的（没有「卷:路径」形状）返回 null，调用方据此退化成「不记忆」。
  */
 private fun parentDirUri(uri: Uri): Uri? {
     val authority = uri.authority ?: return null
@@ -3301,7 +3556,6 @@ private fun parentDirUri(uri: Uri): Uri? {
     return runCatching { DocumentsContract.buildDocumentUri(authority, parentId) }.getOrNull()
 }
 
-/** 自动贴底：最后一条消息变高时，把它底部对齐到视口底部。 */
 /** 视口是否已经贴在列表底部（底部 200dp 容差由调用方给）：决定键盘弹出时要不要跟着抬高。 */
 private fun LazyListState.isNearBottom(tolerancePx: Int): Boolean {
     val info = layoutInfo
@@ -3311,6 +3565,7 @@ private fun LazyListState.isNearBottom(tolerancePx: Int): Boolean {
     return last.offset + last.size - info.viewportEndOffset <= tolerancePx
 }
 
+/** 自动贴底：最后一条消息变高时，把它底部对齐到视口底部。 */
 private suspend fun followBottom(state: LazyListState, lastIndex: Int) {
     if (lastIndex < 0) return
     val info = state.layoutInfo.visibleItemsInfo.lastOrNull { it.index == lastIndex }
@@ -3357,141 +3612,27 @@ private val usageClock = SimpleDateFormat("HH:mm", Locale.US)
 private fun clockText(at: Long): String = usageClock.format(Date(at))
 
 /**
- * tokens 缩写：12345 → 12.3K、1234567 → 1.2M。
+ * 一条消息的用量 → 「本轮用量」面板要的形状。
  *
- * 四舍五入到一位小数、全用整数算（避免浮点在界面上抖出 11.299999），口径跟输入栏状态行的
- * composerTokenText 一致：同一屏两处数字不能一个 12.9K 一个 13K。
+ * 兼容三种落盘：①本次改造之后（未缓存 / 缓存写入 / 推理都已经存下）；②只有「输入 / 输出 / 缓存命中」
+ * 的旧版；③连缓存都没有的更老会话。后两种按「没报缓存 = 整段输入都算未缓存」补，
+ * 面板不至于给出一行「未缓存输入 0 tok」这种明显错的数。
  */
-private fun tokenShort(n: Int): String {
-    if (n < 1_000) return n.toString()
-    val unit = if (n < 1_000_000) 1_000 else 1_000_000
-    val tenths = ((n.toLong() + unit / 20) / (unit / 10)).toInt()
-    val suffix = if (unit == 1_000) "K" else "M"
-    return if (tenths % 10 == 0) {
-        (tenths / 10).toString() + suffix
-    } else {
-        (tenths / 10).toString() + "." + (tenths % 10) + suffix
+private fun turnUsageOf(message: ChatMessage): TurnUsageInfo {
+    val reported = message.usageCacheReported
+    val uncached = when {
+        message.uncachedInputTokens > 0 -> message.uncachedInputTokens
+        reported -> (message.promptTokens - message.cachedTokens).coerceAtLeast(0)
+        else -> message.promptTokens
     }
-}
-
-/**
- * 气泡底部那一颗用量胶囊：数据库图标 +「用量 1.2K tok」+ 右侧时间，点开才是明细。
- *
- * 数字写在本轮最后一条 assistant 上（见 ChatViewModel.writeTurnUsage），所以这里一有值
- * 就说明这一轮已经跑完，不需要另外判「是否还在生成」。
- */
-@Composable
-private fun UsageCapsule(promptTokens: Int, completionTokens: Int, at: String) {
-    val secondary = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-    var detailVisible by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            // 显式给 interactionSource + indication = null：跟工具卡一样，这一行只负责「打开明细」，
-            // 不在气泡里留一圈水波纹
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { detailVisible = true },
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        TokenCylinder(tint = Palette.AccentGreen.copy(alpha = 0.85f), iconSize = 11.dp)
-        Spacer(Modifier.width(5.dp))
-        Text(
-            text = "用量 " + tokenShort(promptTokens + completionTokens) + " tok",
-            fontSize = 12.sp,
-            color = secondary
-        )
-        Spacer(Modifier.weight(1f))
-        Text(text = at, fontSize = 12.sp, color = secondary)
-    }
-    if (detailVisible) {
-        UsageDialog(
-            promptTokens = promptTokens,
-            completionTokens = completionTokens,
-            onDismiss = { detailVisible = false }
-        )
-    }
-}
-
-/**
- * 用量前面那个小圆柱（数据库图标）。
- *
- * 故意不复用 Composer.kt 里的 CylinderGlyph：那个线宽是按 16dp 调的，缩到 11dp 会糊成一团。
- */
-@Composable
-private fun TokenCylinder(tint: Color, iconSize: Dp) {
-    Canvas(modifier = Modifier.size(iconSize)) {
-        val w = size.width
-        val h = size.height
-        val line = w * 0.11f
-        val left = w * 0.2f
-        val bodyWidth = w * 0.6f
-        val capHeight = h * 0.26f
-        drawOval(
-            color = tint,
-            topLeft = Offset(left, h * 0.12f),
-            size = Size(bodyWidth, capHeight),
-            style = Stroke(width = line)
-        )
-        drawLine(tint, Offset(left, h * 0.25f), Offset(left, h * 0.75f), strokeWidth = line)
-        drawLine(
-            tint,
-            Offset(left + bodyWidth, h * 0.25f),
-            Offset(left + bodyWidth, h * 0.75f),
-            strokeWidth = line
-        )
-        drawArc(
-            color = tint,
-            startAngle = 0f,
-            sweepAngle = 180f,
-            useCenter = false,
-            topLeft = Offset(left, h * 0.62f),
-            size = Size(bodyWidth, capHeight),
-            style = Stroke(width = line)
-        )
-    }
-}
-
-/** 用量明细：只报三个数，不解释——数字本身就是全部信息；点外部关闭。 */
-@Composable
-private fun UsageDialog(promptTokens: Int, completionTokens: Int, onDismiss: () -> Unit) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxWidth(0.82f),
-            shape = RoundedCornerShape(22.dp),
-            color = MaterialTheme.colorScheme.surface
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                UsageLine(label = "输入", tokens = promptTokens)
-                UsageLine(label = "输出", tokens = completionTokens)
-                UsageLine(label = "合计", tokens = promptTokens + completionTokens)
-            }
-        }
-    }
-}
-
-@Composable
-private fun UsageLine(label: String, tokens: Int) {
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = label,
-            fontSize = 14.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = String.format(Locale.US, "%,d", tokens),
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-    }
+    return TurnUsageInfo(
+        uncachedInputTokens = uncached,
+        cacheReadTokens = if (reported) message.cachedTokens else 0,
+        cacheReadReported = reported,
+        // 服务商没有「缓存写入」这一项（含所有 v0.9.5 之前的会话）时写 0，与参考图一致
+        cacheWriteTokens = message.cacheWriteTokens ?: 0,
+        completionTokens = message.completionTokens,
+        reasoningTokens = message.reasoningTokens,
+        model = message.usageModel
+    )
 }

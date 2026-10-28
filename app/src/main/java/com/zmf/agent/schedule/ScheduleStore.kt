@@ -164,7 +164,7 @@ object ScheduleStore {
     /**
      * 按任务自身规则算「[now] 之后」的下一次触发时刻；算不出来返回 0。
      *
-     * 这里刻意不看 [ScheduleTask.nextAt]：调用方要么在新建 / 重排，要么刚跑完，
+     * 这里刻意不看 [ScheduleTask.nextAt] 之外的东西：调用方要么在新建 / 重排，要么刚跑完，
      * 都需要「从现在起下一次」，而不是「上次排的那一次」。
      */
     fun nextAfter(task: ScheduleTask, now: Long = System.currentTimeMillis()): Long =
@@ -173,8 +173,33 @@ object ScheduleStore {
             // 一次性任务：到点之后就没有下一次了，返回 0 让调用方去停用
             KIND_ONCE -> if (task.atMillis > now) task.atMillis else 0L
             // 未知 kind 一律按 every 处理（读坏数据时至少还能跑）
-            else -> now + task.everyMinutes.coerceIn(MIN_EVERY_MINUTES, MAX_EVERY_MINUTES) * MINUTE
+            else -> nextEvery(task, now)
         }
+
+    /**
+     * 周期任务：**以「计划时刻」为锚**算下一次，而不是以「实际触发时刻」。
+     *
+     * 真机实测（`dumpsys alarm`）：`targetSdk 28` 在本机 ROM 上拿不到真正的精确闹钟，
+     * `setExactAndAllowWhileIdle` 被系统降成 45 秒窗口的模糊闹钟
+     * （`window=+44s999ms`、`exactAllowReason=compat`），实际稳定晚约 45 秒才响。
+     *
+     * 之前用「实际触发时刻 + 间隔」算下一次，每轮都把这段迟到累进去：
+     * 日志里「每 1 分钟」实测成 1 分 45 秒。锚定计划时刻后迟到不再累加，
+     * 周期恒等于配置值（单次触发仍可能晚 ≤45 秒，那是系统的窗口，改不了）。
+     *
+     * 设备长时间休眠会跨过很多个格子：只跳到 [now] 之后最近的那个，不补跑。
+     */
+    private fun nextEvery(task: ScheduleTask, now: Long): Long {
+        val step = task.everyMinutes.coerceIn(MIN_EVERY_MINUTES, MAX_EVERY_MINUTES) * MINUTE
+        // nextAt 为 0 = 新任务 / 重新启用，没有计划时刻可锚，就从现在起算一格
+        val anchor = if (task.nextAt > 0L) task.nextAt else now
+        var next = anchor + step
+        if (next <= now) {
+            // 差了不止一格（休眠 / 强停）：跳到现在之后最近的一格，别一口气补跑好几遍
+            next += ((now - next) / step + 1) * step
+        }
+        return next
+    }
 
     /**
      * "HH:mm" 的下一个到达时刻（今天的这一刻已经过了就顺延到明天）；格式非法返回 0。

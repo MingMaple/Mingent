@@ -47,11 +47,11 @@ import kotlinx.coroutines.launch
 /**
  * 选择文本的全屏页。
  *
- * 手势约定（用户 18:18 反馈）：
+ * 手势约定：
  * - 顶部「把手 + 标题」是固定栏目，也是唯一的拖拽把手：只有从这一条往下拉才会关闭整页；
  * - 正文区域随便上下滑，只滚动/选字，页面不会回退。
  *
- * 两个关键约定（用户 18:33 / 18:35 反馈）：
+ * 两个关键约定：
  * - 整页**只用一个** SelectionContainer：正文和思考过程共用一个选区，点任意文字都能取消复制栏；
  * - 退场**全程不透明**：只做位移，不做整体淡出，否则窗口半透明时文字会和主页文字叠在一起。
  *
@@ -75,6 +75,7 @@ fun TextSelectionOverlay(
     var offset by remember { mutableFloatStateOf(0f) }
     var closing by remember { mutableStateOf(false) }
 
+    /** 关闭整页：整块移出屏幕后回调 onDismiss；动画途中重复调用只生效一次。 */
     fun closeNow() {
         if (closing) return
         closing = true
@@ -89,6 +90,7 @@ fun TextSelectionOverlay(
         }
     }
 
+    /** 没过阈值：弹回原位，页面留在原地（offset 归零）。 */
     fun springBack() {
         scope.launch {
             animate(offset, 0f, animationSpec = Motion.spring()) { value, _ -> offset = value }

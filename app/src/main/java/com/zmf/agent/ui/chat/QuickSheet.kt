@@ -1,14 +1,11 @@
 package com.zmf.agent.ui.chat
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -20,12 +17,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.agent.ApiConfig
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.theme.Palette
 
 /*
  * 模型 / 推理等级的二级窗：点一级窗里的某一行，就在同一张卡片里展开可选项。
  *
- * 为什么不做成「跳设置页」：改个模型要离开对话、进设置、回来、再确认——一趟四步。
+ * 为什么不做成「跳设置页」：改个模型要离开对话、进设置、回来、再确认，一趟四步。
  * 为什么不做成「再叠一张浮窗」：一级窗已经贴在输入框上方，再叠一张会把键盘和输入区挤得更远，
  * 而且两张卡片的圆角、阴影、停靠方式都要各自对齐一次，只要有一处偏差看着就散。
  * 就地换内容最省事：卡片、宽度、阴影、动画全是同一套，只是里面换了一页。
@@ -62,7 +60,7 @@ internal const val EFFORT_OFF = "off"
 internal fun modelDisplayName(modelId: String): String =
     ApiConfig.MODELS.firstOrNull { it.first == modelId }?.second ?: modelId
 
-/** 强度显示名：2026-10-24 用户要求与 dsh 对齐，界面上一律用英文；接口取值仍只在数据层出现。 */
+/** 强度显示名：界面上一律用英文，接口取值（low / high / max）仍只在数据层出现。 */
 internal fun effortDisplayName(effort: String): String = when (effort) {
     EFFORT_OFF -> "Off"
     "low" -> "Low"
@@ -79,7 +77,7 @@ internal fun QuickOptionRow(label: String, selected: Boolean, onClick: () -> Uni
         modifier = Modifier
             .fillMaxWidth()
             .height(42.dp)
-            .clickable(onClick = onClick)
+            .saltCardRow { onClick() }
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -108,7 +106,7 @@ internal fun QuickModelPage(
     state: QuickSheetState,
     onPick: (providerId: String, modelId: String) -> Unit
 ) {
-    // 二级窗只列功能行：顶部不再有「‹ 模型」这类层级标题与返回键（用户口径：只设功能按钮）
+    // 二级窗只列功能行：顶部不再有「‹ 模型」这类层级标题与返回键（只设功能按钮）
     Column(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
@@ -132,7 +130,6 @@ internal fun QuickModelPage(
                     ) { onPick(provider.id, model) }
                 }
             }
-            Spacer(Modifier.height(6.dp))
         }
     }
 }
@@ -145,6 +142,5 @@ internal fun QuickEffortPage(state: QuickSheetState, onPick: (String) -> Unit) {
         for (key in listOf(EFFORT_OFF) + ApiConfig.EFFORTS) {
             QuickOptionRow(label = effortDisplayName(key), selected = key == current) { onPick(key) }
         }
-        Spacer(Modifier.height(6.dp))
     }
 }

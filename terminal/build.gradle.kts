@@ -18,7 +18,10 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            // 2026-10-27：补 x86_64，只为了让桌面模拟器（AVD mingent）能测到「记忆」这类要调 PTY 的页面。
+            // libpty 由 CMake 从 pty.c 编出来，纯 C 可移植；jniLibs 里那几个预编译的 arm64 二进制
+            // （proot/bash/busybox/sudo）不会进 x86_64 包，所以模拟器上终端/PRoot 仍不可用 —— 只保证 UI 能进。
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 

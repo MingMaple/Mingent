@@ -26,33 +26,25 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /*
- * 全窗口页（轨迹页这类）用的「连体平移」容器：和 SaltDrawer 同一套手感与判据，区别只是
- * 不展开抽屉，而是整窗换页 —— 内容层左移一个屏宽，面板从右侧等宽补进来，拼缝同样落在
+ * 全窗口页（轨迹页这类）用的「连体平移」容器：手感、判据，以及「手指 / 状态 / 弹簧三个写入方
+ * 靠时序互相让位」这套规矩全部沿用 SaltDrawer（见那边的文件头，这里不再抄一遍）。
+ * 区别是不展开抽屉，而是整窗换页：内容层左移一个屏宽，面板从右侧等宽补进来，拼缝同样落在
  * width * progress；无遮罩 / 无圆角 / 无阴影 / 无外边距，两块是同一张纸。
  *
- * progress 只有三个写入方，靠「谁在什么时候能写」互斥，别再往里加第四个：
+ * 本文件独有的两条约束：
+ * - 状态只「请求目标」、不直接写位移。状态自己写的话，状态、手指、弹簧三方会同时改同一个值，
+ *   跟手到一半突然被状态推一把；
+ * - 手指按下先 cancelSettle 把 progress 交还手指，抬手时若这次按下其实没拖拽就按当前状态把
+ *   弹簧补回来：既不会「弹簧和手指同时写」，也不会点一下空白就把正在开关的页面冻在半路。
  *
- * 1. 手指 —— 本文件里唯一的拖拽实现：起手过了触摸阈值且方向被允许后，逐事件 consume 位移，
- *    跟手期间独占 progress；
- * 2. 状态 —— LaunchedEffect(open) 只负责「请求目标」，不直接写 progress。状态自己写位移的话，
- *    状态、手指、弹簧三方会同时改同一个值，跟手到一半突然被状态推一把；
- * 3. 弹簧 —— PaneSettleSlot 里唯一的 animate 协程，只能由 requestSettle 启动；启动前先取消上一个，
- *    并用 epoch 挡掉被取消协程可能已经排进下一帧的那次写入。
- *
- * 规矩：任何路径都不许自己 scope.launch 一段 animate —— 要么直接写 progress（跟手），
- * 要么调 requestSettle（松手 / open 变化）。抽屉当初「过了阈值后平滑地变慢一下」，根因就是
- * 手指路径和状态路径各 settle 一次、两个弹簧从不同起点并发写同一个 progress。手指按下先
- * cancelSettle 把 progress 交还给手指；抬手时若这次按下其实没拖拽，就把弹簧按当前状态补回来，
- * 这样既不会「弹簧和手指同时写」，也不会点一下空白就把正在开关的页面冻在半路。
- *
- * 事件传递阶段：Initial 从根到叶，Main 从叶到根。接管挂在 Main 上 —— 附件行、多图气泡这些
+ * 事件传递阶段：Initial 从根到叶，Main 从叶到根。接管挂在 Main 上：附件行、多图气泡这些
  * horizontalScroll 和竖向列表在 Main 上先拿到同一个事件，它们 consume 了本层就整段让出去；
  * 只有子节点一个字节都没消费（这片内容根本没有横滑能力）时才轮到本层动 progress。
  * 挂 Initial 会反过来：父层先抢，子节点永远收不到横向拖拽，图片行就变成「一滑就进轨迹页」。
  *
  * 为什么只在「方向被允许」时 consume：
  * - 关闭态只接向左：向右的位移一个字节都不消费。这个面板挂在抽屉的内容层里，把向右的位移吃掉，
- *   外层抽屉就再也拉不出来了 —— 方向不让，就整段手势都不参与；
+ *   外层抽屉就再也拉不出来了：方向不让，就整段手势都不参与；
  * - 打开态只接向右：向左没有更远的内容可推，消费了没人受益，还会挡住面板内部的横向操作；
  * - 横向没占优、或还没过触摸阈值之前一律不 consume：竖向滚动和点击照旧由子节点处理，
  *   不消费就没有抢手势的问题。
@@ -62,18 +54,18 @@ import kotlin.math.abs
 private const val PANE_FLING_VELOCITY = 600f
 private const val PANE_SETTLE_THRESHOLD = 0.35f
 
-// 判定「这一下只是点了点」的 progress 容差：小于它就认为没有任何拖拽接管过
+// 同 SaltDrawer 的 TAP_SLOP 口径：小于它就认为没有任何拖拽接管过
 private const val PANE_TAP_SLOP = 0.002f
 
 // 抬起前手指已经停住多久就按「速度 0」算，免得慢慢推到一半松手被判成甩动
 private const val IDLE_VELOCITY_GAP_MS = 80L
 
-/** 吸附协程的唯一槽位；细节见文件顶部的互斥说明。 */
+/** 吸附协程的唯一槽位（与 SaltDrawer.SettleSlot 同构）。 */
 private class PaneSettleSlot {
     var job: Job? = null
     var target = 0f
 
-    // 旧协程被取消时可能已经排好下一帧的写入，用代次把它挡掉
+    // 同 SaltDrawer：用代次挡掉被取消协程已排进下一帧的写入
     var epoch = 0
 }
 
@@ -115,15 +107,15 @@ fun SaltFullPane(
     val currentOnOpenChange by rememberUpdatedState(onOpenChange)
     val currentOpen by rememberUpdatedState(open)
 
-    // 把 progress 交还给手指：手指按下或请求新目标时调用
+    // 同 SaltDrawer：把 progress 从弹簧手里交还给手指
     fun cancelSettle() {
         settleSlot.job?.cancel()
         settleSlot.job = null
         settleSlot.epoch++
     }
 
-    // 弹簧的唯一入口。同一个目标正在吸附时直接复用：松手路径和 LaunchedEffect(open) 会先后
-    // 各请求一次同一个 target，每次「取消 + 重启」都会把弹簧速度清零、轨迹重新起步，又是顿挫
+    // 弹簧的唯一入口（同 SaltDrawer）：同目标正在吸附时直接复用，
+    // 松手路径和 LaunchedEffect(open) 会先后各请求一次同一个 target，「取消 + 重启」会清掉速度，又是顿挫
     fun requestSettle(target: Float) {
         val running = settleSlot.job?.isActive == true
         if (running) {
@@ -147,7 +139,7 @@ fun SaltFullPane(
         }
     }
 
-    // 松手唯一出口：状态交给 onOpenChange 驱动 LaunchedEffect(open) 收口，同时请求一次吸附，
+    // 松手唯一出口（同 SaltDrawer）：状态交给 onOpenChange，同时请求一次吸附，
     // 覆盖「状态没变、LaunchedEffect 不会重跑」的情况（关着拉到一半又松回去，open 一直是 false）
     fun releaseTo(target: Float) {
         currentOnOpenChange(target == 1f)

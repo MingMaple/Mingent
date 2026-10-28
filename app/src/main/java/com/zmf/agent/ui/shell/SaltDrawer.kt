@@ -43,16 +43,16 @@ import kotlin.math.min
 /*
  * progress 只有三个写入方，靠「谁在什么时候能写」互斥，不要再往里加第四个：
  *
- * 1. 手指 —— 根 Box 在 Main pass 上接管的位移，以及关闭态向左的累计位移，跟手阶段独占 progress；
- * 2. nestedScroll —— pager 消费后的越界量（onPostScroll）与松手速度（onPostFling），
+ * 1. 手指：根 Box 在 Main pass 上接管的位移，以及关闭态向左的累计位移，跟手阶段独占 progress；
+ * 2. nestedScroll：pager 消费后的越界量（onPostScroll）与松手速度（onPostFling），
  *    只在弹簧没跑的时候按「还差的行程」封顶地改 progress，弹簧一起来就整体让位；
- * 3. 弹簧 —— SettleSlot 里唯一的 animate 协程，只能由 requestSettle 启动；启动前先取消上一个，
+ * 3. 弹簧：SettleSlot 里唯一的 animate 协程，只能由 requestSettle 启动；启动前先取消上一个，
  *    并用 epoch 丢弃被取消协程可能已排进下一帧的那次写入。
  *
  * 规矩：任何事件都不许自己 scope.launch 一段 animate。要么直接写 progress（跟手），
  * 要么调 requestSettle（松手 / open 变化）。以前手指和翻页两条路径各 settle 一次、又额外触发
  * LaunchedEffect(open) 里的 settle，两个弹簧从不同起点并发写同一个 progress，表现就是
- * 「过了阈值后平滑地变慢一下」——只出现在 pager 页，因为只有它两条路径都会走。
+ * 「过了阈值后平滑地变慢一下」，只出现在 pager 页，因为只有它两条路径都会走。
  * 手指按下先 cancelSettle 把 progress 交还给手指，抬手时若这次按下其实没拖拽就把弹簧补回来，
  * 这样既不会「弹簧和手指同时写」，也不会点一下空白就把正在开关的抽屉冻在半路。
  */
@@ -60,7 +60,7 @@ import kotlin.math.min
 /*
  * 事件传递阶段决定「谁先拿到横向位移」，本文件两条接管路径分别挂在两个阶段上，别混用：
  *
- * - Initial 从根到叶：父层先看到事件。只有「必须抢在子节点之前」的路径才挂这里 ——
+ * - Initial 从根到叶：父层先看到事件。只有「必须抢在子节点之前」的路径才挂这里：
  *   interceptRightSwipe 那一段（pager 在 Main 上必然先吃掉位移，不抢就永远是两段式）。
  * - Main 从叶到根：附件行、多图气泡、pager、竖向列表这些子节点先拿到事件并 consume。
  *   普通页的整屏横滑接管挂在这里，一看到 isConsumed 就整段让出去，只有子节点没消费时才动 progress。
@@ -127,7 +127,7 @@ private class LeftSwipeState {
  *
  * interceptRightSwipe = true 只给「内容区是 HorizontalPager 且当前停在第 1 页」的页面用。
  * 上面那条 nestedScroll 只能接到 pager 吃完之后的越界量，于是第一段位移全被 pager 吸掉、抽屉
- * 纹丝不动，等 pager 到底才开始动——行程翻倍且明显两段。这个开关让根 Box 在 Initial pass 上
+ * 纹丝不动，等 pager 到底才开始动，行程翻倍且明显两段。这个开关让根 Box 在 Initial pass 上
  * 抢在 pager 之前把「向右」的位移吃进 progress，从第一个像素起就跟手，全程一条连续手势；
  * 向左一个像素都不吃，翻页照旧。这是全文件唯一挂在 Initial 上的抢占：Initial 上父层先于所有
  * 子节点拿到事件，再挂一条就等于把那片区域的横向滚动全部废掉。
@@ -168,7 +168,7 @@ fun SaltDrawer(
 
     // 弹簧的唯一入口。同一个目标正在吸附时直接复用：松手路径和 LaunchedEffect(open) 会先后
     // 各请求一次同一个 target，如果每次都「取消 + 重启」，弹簧速度被清零、轨迹重新起步，
-    // 又变成用户看到的那一下顿挫。
+    // 又变成肉眼可见的那一下顿挫。
     fun requestSettle(target: Float) {
         val running = settleSlot.job?.isActive == true
         if (running) {
@@ -244,8 +244,8 @@ fun SaltDrawer(
             override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
                 // 这条连接只服务「子节点是 pager、横向拖拽被 pager 吃掉」的页面。
                 // 手势关掉的页面（设置 / 计划 / 工作区…）一个字节都不接：以前它无条件挂着，
-                // 结果计划页那条横向计划条慢慢推到边不会开抽屉，快速一甩却仍然进抽屉——
-                // 因为甩动的余量走的是这里，绕过了外层的手势开关（2026-10-25 用户报的现象）。
+                // 结果计划页那条横向计划条慢慢推到边不会开抽屉，快速一甩却仍然进抽屉：
+                // 因为甩动的余量走的是这里，绕过了外层的手势开关。
                 if (!currentGestureEnabled) return Offset.Zero
                 // 弹簧正在收口时整体让位：手指/翻页再叠增量就是两个写入方互相拉扯
                 if (settleSlot.job?.isActive == true) return Offset.Zero

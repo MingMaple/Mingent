@@ -20,12 +20,10 @@ import androidx.compose.runtime.setValue
 import com.zmf.agent.core.log.FileLog
 
 /**
- * 内置浏览器（2026-10-25 用户裁定，口径与「计划页」对齐）：一个地址一个标签，标签并列、可左右滑。
+ * 内置浏览器（与「计划页」对齐）：一个地址一个标签，标签并列、可左右滑。
  *
- * 用户原话：
- *  - 「点击了一个新链接，就创建一个新的模块，和上一个模块并列。可以直接点上一个模块去浏览上一个模块的页面。」
- *  - 「有多个模块、并排超出屏幕，那可以左右滑动模块查看，并且切换进去。」
- *  - 「和计划页一样：不删除旧网页，旧网页就保留。」
+ * 点开新链接就新建一个标签、与旧标签并列，可以点回去看旧页面；标签并排超出屏幕时左右滑动切换；
+ * 旧网页不删除（与计划页同一套行为）。
  *
  * 所以：**一个标签 = 一份 WebView**。标签切走时不销毁、不重载，登录态与滚动位置都留在实例里；
  * 只有用户点 × 才真的销毁。8 个是上限（每份 WebView 都是实打实的渲染进程，手机上 8 份已经不少），
@@ -45,6 +43,7 @@ internal class BrowserTab(
     var title by mutableStateOf("")
     var canGoBack by mutableStateOf(false)
     var loading by mutableStateOf(false)
+    /** 加载进度（0–100）：界面只在 1..99 时画进度条。 */
     var progress by mutableStateOf(0)
 
     /** 顶栏和标签上显示的名字：标题优先，拿不到就退回域名。 */
@@ -59,8 +58,10 @@ internal object BrowserState {
     /** 当前标签：activeId 对应的那份；id 失效（刚被关掉）时退回第一份。 */
     val active: BrowserTab? get() = tabs.firstOrNull { it.id == activeId } ?: tabs.firstOrNull()
 
+    /** 是否至少有一个标签：顶栏网页图标的显隐依据。 */
     val alive: Boolean get() = tabs.isNotEmpty()
 
+    /** 切到已经存在的标签；id 不在名单里时什么都不做。 */
     fun activate(id: Long) {
         if (tabs.any { it.id == id }) activeId = id
     }
@@ -84,6 +85,12 @@ internal object LinkRouter {
     }
 }
 
+/**
+ * 内置浏览器的进程级持有者：标签的新建 / 关闭 / 复用、WebView 的配置与回调都收在这里。
+ *
+ * 与 [BrowserState] 分工：状态放那边供界面订阅，这里只负责动作与 WebView 实例；
+ * 两者都是 object，因为 WebView 的生命周期必须长于任何 Activity。
+ */
 internal object BrowserHolder {
     /** 同时最多留几个标签：每个 WebView 都是真渲染进程，手机内存扛不住无上限。 */
     private const val MAX_TABS = 8
@@ -94,13 +101,13 @@ internal object BrowserHolder {
     /**
      * 打开一个新地址 = 新建一个标签，并切到它。
      *
-     * 为什么不复用已有标签：用户要的就是「新链接开新模块、旧网页留着」，
+     * 为什么不复用已有标签：新链接要开新模块、旧网页留着，复用会把上一个页面顶掉。
      * 复用会把上一个页面顶掉，那正是他要改掉的行为。
      */
     fun open(context: Context, url: String) {
-        // 同一个地址不重复开：已经在某个标签里就切回那一个（2026-10-25 用户：点同一个网址应该复用）。
+        // 同一个地址不重复开：已经在某个标签里就切回那一个。
         // 两边都要归一化再比：用户点的是 https://github.com，而标签里已经是 https://github.com/
-        // 或者被站内跳转成了别的地址——直接比字符串就永远不相等，上一版正是这样漏掉的。
+        // 或者被站内跳转成了别的地址：直接比字符串就永远不相等，上一版正是这样漏掉的。
         // 先比 originUrl（点开时的原始地址），再比当前地址（允许「已经在别处逛到这一页」时复用）。
         val key = urlKeyOf(url)
         BrowserState.tabs.firstOrNull { urlKeyOf(it.originUrl) == key || urlKeyOf(it.url) == key }
@@ -146,6 +153,7 @@ internal object BrowserHolder {
         return true
     }
 
+    /** 重新加载当前标签；没有标签时是空操作。 */
     fun reload() {
         BrowserState.active?.let { runCatching { it.web.reload() } }
     }
@@ -170,7 +178,7 @@ internal object BrowserHolder {
         return try {
             val web = WebView(context)
             web.settings.apply {
-                // 真浏览器：要能跑 JS、要能登录（这两条是用户明确要求的，静态预览不算数）
+                // 真浏览器：要能跑 JS、要能登录（静态预览不算数）
                 javaScriptEnabled = true
                 // localStorage / sessionStorage 都归这一条管，现代站的登录态一半在这儿
                 domStorageEnabled = true
@@ -219,7 +227,7 @@ internal object BrowserHolder {
                 override fun onPageFinished(view: WebView, pageUrl: String?) {
                     tab.loading = false
                     sync(tab, view, pageUrl)
-                    // 登录成功那一刻 cookie 只在内存里；这里刷一次盘，进程被杀再回来还认得你
+                    // 登录成功那一刻 cookie 只在内存里；这里刷一次盘，进程被杀再回来仍可复用
                     flushCookies()
                 }
             }
@@ -254,7 +262,7 @@ internal object BrowserHolder {
 
     /**
      * 只放行 http/https 在浏览器内加载；其余 scheme（intent: / market: / weixin: / mailto:）
-     * 丢给系统去处理，处理不了就什么也不做——绝不让未知 scheme 顶掉当前页面。
+     * 丢给系统去处理，处理不了就什么也不做：绝不让未知 scheme 顶掉当前页面。
      */
     private fun handleUrl(view: WebView, raw: String?): Boolean {
         if (raw.isNullOrBlank()) return true

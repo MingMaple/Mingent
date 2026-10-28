@@ -25,7 +25,8 @@ class SkillTool : Tool {
 
     override val description =
         "加载一个 Skill 的完整说明；Skill 名称见系统提示词里的 available_skills；" +
-            "不传 name 时列出全部可用 Skill。"
+            "不传 name 时列出全部可用 Skill。" +
+            "只在当前任务确实要用到某个 Skill 时才加载：目录里已经有一句话用途，先看一眼再决定，别逐个加载。"
 
     override val parametersJson = """
         {

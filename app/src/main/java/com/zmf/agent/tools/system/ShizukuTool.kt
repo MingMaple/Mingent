@@ -2,6 +2,7 @@ package com.zmf.agent.tools.system
 
 import com.zmf.agent.core.capability.ShizukuBridge
 import com.zmf.agent.core.model.PermissionLevel
+import com.zmf.agent.tools.HighRiskGate
 import com.zmf.agent.tools.Tool
 import com.zmf.agent.tools.ToolContext
 import com.zmf.agent.tools.ToolResult
@@ -19,6 +20,9 @@ import org.json.JSONObject
 class ShizukuTool : Tool {
 
     override val name = "shizuku"
+
+    /** 系统级操作（pm/am/settings）：只读档与计划模式都必须拒绝。 */
+    override val mutates = true
 
     override val description =
         "用 Shizuku 的 Android shell 执行一条系统命令（pm / am / settings / appops / dumpsys 等），" +
@@ -49,6 +53,12 @@ class ShizukuTool : Tool {
             )
         }
         val timeout = args.optLong("timeout_ms", 20_000L).coerceIn(2_000L, 120_000L)
+        // 高危闸门：这条通道的 uid 是 shell，权限比 App 大；不拦的话它就是「绕过删除闸门」的后门。
+        // 路径按宿主视角判（/sdcard 是真的共享存储），并额外覆盖 pm clear / pm uninstall。
+        val risk = HighRiskGate.checkHostCommand(ctx, command)
+        if (!risk.allowed) {
+            return ToolResult.Error(risk.message ?: "这条系统命令被高危闸门拒绝")
+        }
         val result = ShizukuBridge.exec(command, timeout)
         return if (result.ok) {
             ToolResult.Ok("exit=" + result.exitCode + "\n" + result.output.ifEmpty { "(无输出)" })

@@ -56,10 +56,14 @@ import kotlin.math.roundToLong
  * 不会因为缺一项就崩或显示 NaN。
  */
 data class ContextInsight(
+    /** 估算 token 占窗口的比例（0~1），水位条与档位色都按它取。 */
     val ratio: Float = 0f,
     val estimatedTokens: Int = 0,
+    /** 模型上下文窗口大小；0 表示未知，界面显示「—」。 */
     val window: Int = 0,
+    /** 已被摘要覆盖的消息条数。 */
     val coveredMessages: Int = 0,
+    /** 会话消息总条数。 */
     val totalMessages: Int = 0,
     /** 提示词正文（不含摘要）。 */
     val systemTokens: Int = 0,
@@ -69,21 +73,30 @@ data class ContextInsight(
     val userTokens: Int = 0,
     val assistantTokens: Int = 0,
     val toolResultTokens: Int = 0,
+    /** 本会话累计：输入 tokens / 输出 tokens / 请求次数。 */
     val sessionPromptTokens: Int = 0,
     val sessionCompletionTokens: Int = 0,
     val sessionRequests: Int = 0,
+    /** 今日累计：输入 tokens / 输出 tokens / 请求次数。 */
     val todayPrompt: Int = 0,
     val todayCompletion: Int = 0,
     val todayRequests: Int = 0,
+    /** 全局累计：输入 tokens / 输出 tokens / 请求次数。 */
     val globalPromptTokens: Int = 0,
     val globalCompletionTokens: Int = 0,
     val globalRequests: Int = 0,
+    /** 会话首末消息的时间差，与模型/工具耗时无关。 */
     val activeMillis: Long = 0,
+    /** 模型实际耗时合计；与 [toolMillis] 一起作为耗时占比的分母来源。 */
     val modelMillis: Long = 0,
+    /** 工具实际耗时合计。 */
     val toolMillis: Long = 0,
     val outputTokens: Int = 0,
+    /** 最近各次请求的上下文估算 tokens，趋势柱状图按它绘制。 */
     val trend: List<Int> = emptyList(),
+    /** 对话轮数。 */
     val rounds: Int = 0,
+    /** Agent 累计执行步数。 */
     val steps: Int = 0,
     /** 上一轮回复的模型耗时与输出 tokens（0 = 没有记录，速度显示「—」）。 */
     val lastTurnModelMillis: Long = 0,
@@ -98,7 +111,7 @@ data class ContextInsight(
  * 「上下文洞察」页：一屏说清「模型现在拿到多少、都由什么组成、花了多少、多快」。
  *
  * 每个数字只在一个地方出现（水位只在第 1 块、成分只在第 2 块、用量按范围分三组），
- * 不预测、不摘录摘要正文——那两件事各有专页，放这里会和真值混淆；
+ * 不预测、不摘录摘要正文：那两件事各有专页，放这里会和真值混淆；
  * 也不放提示词编辑：提示词是输入，不是上下文现状。
  */
 @Composable
@@ -177,7 +190,7 @@ fun ContextHubPage(
                     HubRow(label = "口径", value = "消息 + 摘要")
                 }
 
-                // 2 上下文成分：一条五段占比条 + 五行图例
+                // 2 上下文成分：一条六段占比条 + 六行图例
                 HubCard(title = "上下文成分") {
                     val composition = compositionParts(insight)
                     val compositionTotal = composition.sumOf { it.second }
@@ -286,7 +299,7 @@ fun ContextHubPage(
                     }
                 }
 
-                // 6 状态：本会话规模与全局使用时间分开列（原来四个数字混在一组，读者分不清哪个是本会话的）
+                // 6 状态：本会话规模与全局使用时间分开列（四个数字混在一组时，读者分不清哪个是本会话的）
                 HubCard(title = "状态") {
                     GroupLabel("本会话")
                     HubRow(label = "对话轮数", value = insight.rounds.toString() + " 轮")
@@ -311,11 +324,11 @@ private const val TREND_LIMIT = 20
 @Composable
 private fun HubCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(
-        // 卡片自己裁一刀：行内波纹是矩形，不裁的话波纹会在 22dp 圆角处露出方角
+        // 卡片自己裁一刀：行内波纹是矩形，不裁的话波纹会在 16dp 圆角处露出方角
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp)),
-        shape = RoundedCornerShape(22.dp),
+            .clip(RoundedCornerShape(16.dp)),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface
     ) {
         Column(
@@ -383,7 +396,7 @@ private fun DashLine() {
 }
 
 /**
- * 水位档取色：与 DSH「上下文洞察」插件一致的三档。
+ * 水位档取色：水位越高越警示，分三档取值。
  *
  * ratio 为 null（没有数据 / 分母未知）时回落描边色：宁可显示成灰，
  * 也不把「没数据」画成绿色的 0%。阈值用 90% / 70%。
@@ -426,9 +439,9 @@ private fun WaterBar(ratio: Float) {
 }
 
 /**
- * 五段成分条：各段按 token 数等比分宽。
+ * 六段成分条：各段按 token 数等比分宽。
  *
- * 用 clipPath 把整条裁成两端圆头，段与段之间不留缝——
+ * 用 clipPath 把整条裁成两端圆头，段与段之间不留缝：
  * 留缝会让各段加起来看着比实际少，跟下面图例的百分比对不上。
  */
 @Composable
@@ -564,10 +577,10 @@ private fun TrendChart(values: List<Int>, window: Int) {
 }
 
 /**
- * 五段成分的固定顺序与配色。
+ * 六段成分的固定顺序与配色。
  *
  * 顺序按「模型最先看到 → 最后看到」排；每段一个类别色（见 [Palette] 的 Ctx* 组），
- * 不再靠同一支灰的不同透明度区分——那种画法图例和色条对不上号。
+ * 不再靠同一支灰的不同透明度区分：那种画法图例和色条对不上号。
  */
 private fun compositionParts(insight: ContextInsight): List<Triple<String, Int, Color>> = listOf(
     Triple("提示词", insight.systemTokens, Palette.CtxSystem),
@@ -604,7 +617,7 @@ private fun oneDecimal(value: Double): String =
 /**
  * 时长按量级写成人话：不足 1 分钟按秒、不足 1 小时 mm:ss、再往上小时 / 天。
  *
- * 以前一律 mm:ss，13 小时的会话显示成「831:48」，读数的人得自己换算，也看不出是小时级。
+ * 一律 mm:ss 到底的话，13 小时的会话显示成「831:48」，读数的人得自己换算，也看不出是小时级。
  */
 private fun durationText(millis: Long): String {
     val totalSeconds = millis.coerceAtLeast(0L) / 1000L

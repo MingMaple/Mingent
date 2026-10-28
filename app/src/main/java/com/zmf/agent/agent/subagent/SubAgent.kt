@@ -6,6 +6,7 @@ import com.zmf.agent.agent.loop.AgentLoop
 import com.zmf.agent.agent.loop.AgentUi
 import com.zmf.agent.agent.prompt.PromptInput
 import com.zmf.agent.agent.provider.LlmProvider
+import com.zmf.agent.agent.provider.UsageBuckets
 import com.zmf.agent.core.AppForeground
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
@@ -72,7 +73,7 @@ object SubAgentRunner {
     private val LIMIT_TEXT =
         "subagent limit reached (active child limit: " + MAX_ACTIVE + "); wait for an existing child to finish"
 
-    /** 并发闸：用 tryAcquire，拿不到不排队，直接失败（DSH 的语义）。 */
+    /** 并发闸：用 tryAcquire，拿不到不排队，直接失败。 */
     private val semaphore = Semaphore(MAX_ACTIVE)
 
     /** 子智能体的系统提示词：它是独立执行者，不是聊天对象。 */
@@ -368,7 +369,7 @@ object SubAgentRunner {
 
         override fun onToolFinished(call: ToolCall, result: ToolResult) {}
 
-        override fun onUsage(promptTokens: Int, completionTokens: Int) {}
+        override fun onUsage(usage: UsageBuckets) {}
 
         override fun onError(message: String) {
             FileLog.log(TAG, "子智能体内部提示：" + message)

@@ -18,7 +18,7 @@ import org.json.JSONObject
  * 为什么需要它：普通回复是「一轮一问一答」，遇到要跨多轮推进的事（装环境、批量整理文件）
  * 模型很容易停在一半等人催。目标就是给这次会话挂一个「还在做的事」，
  * ACTIVE 时 AgentLoop 每轮结束会自动接着推进；模型要么推进、要么 pause/complete，
- * 不能挂着目标空转——空转会把自动续跑的轮次白白烧掉。
+ * 不能挂着目标空转，空转会把自动续跑的轮次白白烧掉。
  *
  * 只写自己的 appdata/goals.json，不碰工作区，所以权限档是 READ_ONLY。
  */
@@ -54,6 +54,9 @@ class GoalTool : Tool {
     """.trimIndent()
 
     override val minPermission = PermissionLevel.READ_ONLY
+
+    /** 五种动作（create / update / pause / resume / complete）都会写目标存储，都算副作用。 */
+    override val mutates = true
 
     override suspend fun invoke(args: JSONObject, ctx: ToolContext): ToolResult {
         val action = args.optString(ACTION, "").trim().lowercase()

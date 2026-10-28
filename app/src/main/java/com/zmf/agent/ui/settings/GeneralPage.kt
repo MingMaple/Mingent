@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
 import com.zmf.agent.ui.common.saltRowClickable
 import com.zmf.agent.ui.shell.SaltSwitch
@@ -178,17 +179,17 @@ private fun GeneralScaffold(
     }
 }
 
-/** 分组卡片：圆角 22dp，卡片底走 colorScheme.surface，不描边。 */
+/** 分组卡片：圆角 16dp，卡片底走 colorScheme.surface，不描边。 */
 @Composable
 private fun GeneralCard(content: @Composable () -> Unit) {
     Surface(
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(16.dp))
     ) {
-        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+        Column(modifier = Modifier) {
             content()
         }
     }
@@ -198,7 +199,6 @@ private fun GeneralCard(content: @Composable () -> Unit) {
 @Composable
 private fun GeneralDivider() {
     HorizontalDivider(
-        modifier = Modifier.padding(start = 16.dp),
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
     )
 }
@@ -214,7 +214,7 @@ private fun GeneralNavRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .saltRowClickable(RoundedCornerShape(0.dp)) { onClick() }
+            .saltCardRow() { onClick() }
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -263,7 +263,7 @@ private fun GeneralExpanderRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .saltRowClickable(RoundedCornerShape(0.dp)) { onClick() }
+            .saltCardRow() { onClick() }
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -292,7 +292,12 @@ private fun GeneralExpanderRow(
     }
 }
 
-/** 开关行：标题占满剩余宽度，开关贴右边，整行只有开关可点（和包管理页一致）。 */
+/**
+ * 开关行：标题占满剩余宽度，开关贴右边。
+ *
+ * 整行可点（Salt Player 的口径）：点行等于点开关，两个方向都有涟漪；
+ * 行本身只做开关这一件事，所以放心整行绑定；有点开详情等其它动作的行不要套这个。
+ */
 @Composable
 private fun GeneralSwitchRow(
     title: String,
@@ -302,6 +307,7 @@ private fun GeneralSwitchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .saltCardRow { onCheckedChange(!checked) }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -341,7 +347,7 @@ private fun GeneralOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .saltRowClickable(RoundedCornerShape(0.dp)) { onClick() }
+            .saltCardRow() { onClick() }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

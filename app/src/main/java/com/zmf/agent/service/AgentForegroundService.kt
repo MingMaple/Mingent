@@ -30,6 +30,7 @@ class AgentForegroundService : Service() {
         var isRunning: Boolean = false
             private set
 
+        /** 拉起前台服务；系统拒绝前台启动时退回普通 startService，不向上抛。 */
         fun start(context: Context) {
             val intent = Intent(context, AgentForegroundService::class.java)
             try {
@@ -40,6 +41,7 @@ class AgentForegroundService : Service() {
             }
         }
 
+        /** 停止前台服务（用户关掉「后台运行」时调用）；失败静默。 */
         fun stop(context: Context) {
             runCatching { context.stopService(Intent(context, AgentForegroundService::class.java)) }
         }

@@ -1,23 +1,13 @@
 package com.zmf.agent.ui.chat
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -37,8 +27,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,18 +37,15 @@ import com.zmf.agent.ui.common.Chevron
 import com.zmf.agent.ui.common.ChevronKind
 import com.zmf.agent.ui.common.ChevronSize
 import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.theme.Motion
 import com.zmf.agent.ui.theme.Palette
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.abs
 
 /* ============================== 文件级 API 说明 ==============================
  *
- * 通用工具块：主页聊天气泡里的一次工具调用、轨迹页展开后的一次工具调用，
- * 都渲染这一个 Composable。它不依赖 ToolCall / TraceLine 任何一方的数据类，
- * 只吃纯参数，所以两个页面都能直接用。
+ * 通用工具块：主页聊天气泡里的一次工具调用。它不依赖 ToolCall / TraceLine 任何一方的数据类，
+ * 只吃纯参数；轨迹页那张是从这里派生的另一份（[TraceToolCard]），参数与分区口径相同。
  *
  * 一、入口
  *
@@ -77,7 +62,7 @@ import kotlin.math.abs
  *       copyText: String? = null    // 自定义复制内容；null = 自动拼工具名/参数/代码/输出
  *   )
  *
- * 二、主页聊天气泡里替换现在的 ToolCard
+ * 二、主页聊天气泡里的调用方式
  *
  *   ToolBlock(
  *       toolName = call.name,
@@ -86,14 +71,14 @@ import kotlin.math.abs
  *       ok = toolOutcomes[call.id],
  *       containerColor = cardColor
  *   )
- *   和现在的 ToolCard 一一对应：call → toolName/arguments，result → output，ok → ok。
- *   区别：参数默认折叠成一行摘要（点摘要行展开），结果是常显的 240dp 内滚区，
- *   不再整个卡片折起来；如果仍想要「整卡折叠」，在外面套一层自己的开关即可。
+ *   数据来自一次工具调用：call.name → toolName，call.arguments → arguments，结果 → output。
+ *   行为：参数默认折叠成一行摘要（点摘要行展开），结果是常显的 240dp 内滚区，
+ *   整卡不折叠；如果仍想要「整卡折叠」，在外面套一层自己的开关即可。
  *
- * 三、轨迹页 Timeline 展开卡
+ * 三、轨迹页
  *
- *   ToolBlock(toolName = call.name, arguments = call.arguments, output = result, ok = …)
- *   轨迹页的 TraceLine 已经有 args / result 原文，直接传进来就行。
+ *   轨迹页用 [TraceToolCard]（从这里派生的另一份，默认展开）；参数同名同义，
+ *   TraceLine 的 args / result 原文直接传进来就行。
  *
  * 四、位置约定
  *   - 参数区：折叠时一行摘要（[ARG_SUMMARY_LIMIT] 字截断），展开后 240dp 内滚；
@@ -154,7 +139,6 @@ fun ToolBlock(
     // 参数 / 代码 / 输出共用同一份「代码块底色」，比卡片本身再浅一档
     val bodyBackground = onSurface.copy(alpha = 0.06f)
 
-    var argsExpanded by remember { mutableStateOf(false) }
     // 卡片默认折叠成一行（工具名 + 状态）：参数 / 代码 / 输出要点开才看。
     // 一轮里常常连着七八次工具调用，全摊开会把这一轮的回答挤到看不见。
     var open by rememberSaveable { mutableStateOf(false) }
@@ -176,12 +160,15 @@ fun ToolBlock(
     }
 
     val running = output == null
-    // 状态只留一个词（用户定的）：拿到结果就写「完成」，没拿到就先空着。
-    // 不再区分成功 / 失败 / 成败未知——调用结束就是结束，具体的错在输出里能看到，
+    // 状态只留一个词：拿到结果就写「完成」，没拿到就先空着。
+    // 不再区分成功 / 失败 / 成败未知：调用结束就是结束，具体的错在输出里能看到，
     // 卡片上多一个红字反而更吵。
     val statusColor = Palette.AccentGreen
     val statusText = if (running) "" else "完成"
-    val summary = remember(arguments) { toolArgSummary(arguments) }
+    // 一句话总结（「读取 test.txt」「运行命令 tail -c 20 …」）：标题行告诉用户这条工具干了什么
+    val headline = remember(toolName, arguments) { toolSummary(toolName, arguments) }
+    // 参数等于没有（空串 / 空对象）时整块不渲染：避免「参数 缩进」下面只剩一个空花括号
+    val argsBlank = remember(arguments) { toolArgIsBlank(arguments) }
     val codeBody = code?.takeIf { it.isNotBlank() }
     val fullText = remember(copyText, toolName, arguments, code, output) {
         copyText ?: buildToolCopyText(toolName, arguments, code, output)
@@ -192,11 +179,11 @@ fun ToolBlock(
         shape = RoundedCornerShape(14.dp),
         modifier = modifier
             .fillMaxWidth()
-            // 展开着才参与「谁显示复制」的竞争：块内一摸就把按钮调出来，摸别的块就会挪走。
-            .then(if (open) Modifier.claimCopyOnGesture(copyKey) else Modifier)
+            // 复制归属挂在内容区（见下面那个 Column），不挂在整卡上：
+            // 以前点标题行那一下也算「摸过」，于是「点一下展开没有按钮、再点一下收起反而出现」。
     ) {
         // 内边距下放到每一块内容上：标题行要顶到卡片边缘，波纹才铺满整行
-        // （用户原话：反馈不该是行内一个小矩形）。
+        // （反馈不做成行内一个小矩形）。
         Column {
             /* -------------------------- 标题行 -------------------------- */
             Row(
@@ -216,36 +203,37 @@ fun ToolBlock(
                     modifier = Modifier.size(13.dp)
                 )
                 Spacer(Modifier.width(5.dp))
+                // 标题行只放「这条工具干了什么」：工具名那行字删掉、简介语句移到前面，
+                // 图标保留。工具名仍进复制文本（buildToolCopyText），信息不丢。
+                // 12sp：这句是标题，不是附属小字。
                 Text(
-                    text = toolName,
+                    text = headline,
                     modifier = Modifier.weight(1f),
                     fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = onSurface.copy(alpha = 0.85f)
+                    color = onSurface.copy(alpha = 0.55f)
                 )
                 // 「复制」占一块固定宽度：出现 / 消失都不挪动任何别的元素，右侧
-                // 「完成 + 箭头」的位置永远是死的（用户原话：复制浮现时整块不能突变）。
+                // 「完成 + 箭头」的位置永远是死的（复制浮现时整块不能突变）。
+                // 这块 46dp 就是**虚拟区域**（界面上看不见）：「复制 / 已复制」都在这块里居中，
+                // 涟漪铺满整块、和字同心（别管「已」多出来的宽度，只调这块区域）。
+                // 别把这里改成 indication = null：那样就没有涟漪了，必须走默认涟漪。
                 Box(
                     modifier = Modifier
                         .width(CopySlot)
+                        .clip(RoundedCornerShape(6.dp))
                         .then(
                             if (copyVisible && fullText.isNotBlank()) {
-                                Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) {
-                                        copyCode(context, fullText, "工具调用")
-                                        copied = true
-                                    }
+                                Modifier.clickable {
+                                    copyCode(context, fullText, "工具调用")
+                                    copied = true
+                                }
                             } else {
                                 Modifier
                             }
                         ),
-                    contentAlignment = Alignment.CenterEnd
+                    contentAlignment = Alignment.Center
                 ) {
                     if (copyVisible && fullText.isNotBlank()) {
                         Text(
@@ -272,50 +260,16 @@ fun ToolBlock(
 
             if (open) {
             Column(
-                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                modifier = Modifier
+                    .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
+                    // 展开后内容区任意位置按下 / 滑动都叫出复制（Initial 阶段，不消费事件）
+                    .claimCopyOnGesture(copyKey),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
             /* -------------------------- 参数区 -------------------------- */
-            // 折叠时只有一行摘要；整行可点，不额外占一行「展开」按钮
-            if (summary.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) {
-                            argsExpanded = !argsExpanded
-                        }
-                        .padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = summary,
-                        modifier = Modifier.weight(1f),
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        color = onSurface.copy(alpha = 0.55f)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = if (argsExpanded) "收起" else "展开",
-                        fontSize = 11.sp,
-                        color = Palette.AccentBlue
-                    )
-                }
-            }
-            AnimatedVisibility(
-                visible = argsExpanded && summary.isNotEmpty(),
-                enter = expandVertically(animationSpec = Motion.spring()) + fadeIn(Motion.fadeIn()),
-                exit = shrinkVertically(animationSpec = Motion.spring()) + fadeOut(Motion.fadeOut())
-            ) {
-                // 参数本就是 JSON / 命令，直接按代码块渲染：
-                // 等宽 + 行号关掉 + 「缩进」控制单行横滑还是完整换行。
-                // 240dp 上限交给 BoundedScrollColumn：装得下就随整页滚，真超了才在块内截住。
+            // 直接展示，不再有二级「展开 / 收起」：主页只要「参数 / 结果」两段
+            // （把杂乱内容砍掉，只展示参数 / 结果或代码 / 输出）。参数为空时整块不渲染。
+            if (!argsBlank) {
                 BoundedScrollColumn(
                     maxHeight = BlockBodyMaxHeight,
                     modifier = Modifier.fillMaxWidth()
@@ -354,7 +308,7 @@ fun ToolBlock(
             /* -------------------------- 输出区 -------------------------- */
             if (output != null) {
                 // 只有上面还有参数/代码时才加「输出」小标题，否则整块就是输出，不必标注
-                if (summary.isNotEmpty() || codeBody != null) {
+                if (!argsBlank || codeBody != null) {
                     Text(
                         text = "输出",
                         fontSize = 10.sp,
@@ -369,7 +323,7 @@ fun ToolBlock(
                 ) {
                     Text(
                         text = output.ifBlank { "（无输出）" },
-                        // 内边距跟着正文一起滚，和改写前一致
+                        // 内边距给在正文上：让它跟着内容一起滚动，不占滚动区
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
@@ -387,40 +341,8 @@ fun ToolBlock(
 /* ------------------------------ 内部实现 ------------------------------ */
 
 /**
- * 横向行滑到头之后，把剩下那点横向位移就地吃掉，不让外层抽屉 / 轨迹页接手。
- *
- * 为什么不用 nestedScroll：horizontalScroll 到边界时既不再消费、也不把余量交给
- * onPostScroll，所以 onPostScroll 根本收不到；再往外推就是「把抽屉拉出来」。
- *
- * 为什么走 Initial 阶段逐帧判：到边界之后子节点本身已经不再消费，等 Main 阶段看到时
- * 外层可能已经接走；这里只问「贴没贴到这一侧 + 方向是不是往外」，贴住了就 consume，
- * 行内还有余量时一律不碰（滑动仍归 horizontalScroll），竖向为主的位移也不碰，
- * 所以竖着滑消息列表不受影响。
- *
- * 实现在本文件（不从 ChatScreen 拿，那份是 private）；MarkdownText 的代码块复用同一个实现。
- */
-internal fun Modifier.toolBlockHorizontalAtEdge(state: ScrollState): Modifier = pointerInput(state) {
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        // 累计位移判方向：只看单帧的话，慢速拖动一帧不过几像素，永远判不出横向
-        var dx = 0f
-        var dy = 0f
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
-            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-            dx += change.position.x - change.previousPosition.x
-            dy += change.position.y - change.previousPosition.y
-            val atStart = state.value == 0 && dx > 0
-            val atEnd = state.value >= state.maxValue && dx < 0
-            if (change.pressed && (atStart || atEnd) && abs(dx) > abs(dy)) change.consume()
-            if (!change.pressed) break
-        }
-    }
-}
-
-/**
  * 参数摘要：优先取 path / command 这类一眼能读懂的字段，取不到就把整串压成一行。
- * 统一截到 [ARG_SUMMARY_LIMIT] 字——路径和命令都太长，一行放不下。
+ * 统一截到 [ARG_SUMMARY_LIMIT] 字：路径和命令都太长，一行放不下。
  */
 private fun toolArgSummary(arguments: String): String {
     if (arguments.isBlank()) return ""

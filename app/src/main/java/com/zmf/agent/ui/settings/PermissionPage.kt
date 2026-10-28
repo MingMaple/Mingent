@@ -1,4 +1,5 @@
 package com.zmf.agent.ui.settings
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
 
 import android.Manifest
@@ -8,7 +9,6 @@ import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,7 +34,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -233,19 +232,19 @@ fun PermissionPage(onBack: () -> Unit) {
     }
 }
 
-/** 分组卡片：Surface + 22dp 圆角，跟侧边栏的卡片同一套观感。 */
+/** 分组卡片：Surface + 16dp 圆角，跟侧边栏的卡片同一套观感。 */
 @Composable
 private fun PermissionCard(content: @Composable () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
-            // 卡片自己裁到 22dp：行用的是矩形波纹，越界部分由这层裁掉
-            .clip(RoundedCornerShape(22.dp))
+            // 卡片自己裁到 16dp：行用的是矩形波纹，越界部分由这层裁掉
+            .clip(RoundedCornerShape(16.dp))
     ) {
-        Column(modifier = Modifier.padding(vertical = 6.dp)) { content() }
+        Column(modifier = Modifier) { content() }
     }
 }
 
@@ -268,7 +267,7 @@ private fun PermissionRow(
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
-            .saltRowClickable(RoundedCornerShape(0.dp), enabled = !granted, onClick = onClick)
+            .saltCardRow(enabled = !granted, onClick = onClick)
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

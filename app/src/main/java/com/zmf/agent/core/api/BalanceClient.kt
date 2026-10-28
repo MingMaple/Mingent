@@ -25,7 +25,7 @@ data class BalanceInfo(
  * 一次余额查询的结果。
  *
  * 失败不抛异常：网络/鉴权/解析出问题时 [ok] 为 false、[error] 里是一句能直接显示给人看的话，
- * 设置页拿它画一行红字就行，不必再套 try——「查不到余额」不该让设置页崩掉。
+ * 设置页拿它画一行红字就行，不必再套 try：「查不到余额」不该让设置页崩掉。
  */
 data class BalanceResult(
     val ok: Boolean,

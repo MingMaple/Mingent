@@ -27,7 +27,8 @@ class TaskTool : Tool {
             "不传都默认继承父会话当前设置。" +
             "multi_turn（是否多轮，默认 false）：单轮子智能体执行完不能再发消息，需要后续追问时传 true。" +
             "可以同时开多个子任务，但同时最多 2 个在跑，拿不到名额会直接报错，等已有子任务结束再试。" +
-            "多轮任务的执行结果末尾会有一行 agent_id=，之后可用 send_message 让它继续。"
+            "多轮任务的执行结果末尾会有一行 agent_id=，之后可用 send_message 让它继续。" +
+            "两三步就能做完的事不要拆出去：自己做完更快，也没有交接损耗。"
 
     override val parametersJson = """
         {

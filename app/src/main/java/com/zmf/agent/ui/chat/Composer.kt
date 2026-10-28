@@ -1,8 +1,13 @@
 package com.zmf.agent.ui.chat
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -10,11 +15,13 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -43,7 +50,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -51,7 +57,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
@@ -66,17 +74,45 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.ui.common.blockTapsOnly
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.settings.BusySendMode
 import com.zmf.agent.ui.theme.Motion
+import kotlin.math.roundToInt
 import com.zmf.agent.ui.theme.Palette
 
-/** 输入框下面那行状态：第几轮第几步、生成速度、累计 token 与上下文水位。 */
+/**
+ * 输入框下面那行状态：左「轮 / 步 / 速度」、右「累计 token / 缓存命中」，两枚都可点开明细。
+ *
+ * 这一格不再显示上下文水位：水位在「上下文」那枚按钮的浮窗里本来就有，
+ * 一屏两处报同一个百分比只是噪音。
+ */
 data class ComposerStatus(
     val rounds: Int = 0,
     val steps: Int = 0,
+    /** 输出速度（tok/s）；没有样本时为 null，这一格就不占位置。 */
     val tokensPerSec: Int? = null,
+    /** 本会话累计处理过的 tokens（输入 + 输出）。 */
     val totalTokens: Int = 0,
-    val waterPercent: Int = 0
+    /** 提示词缓存命中率（0–100）；服务端没报过这项就是 null，界面显示「—」。 */
+    val cacheHitPercent: Float? = null
+)
+
+/**
+ * 两枚状态胶囊点开的那两张浮窗要的明细。
+ *
+ * 全部来自本会话累计（[com.zmf.agent.ui.chat.TimingSnapshot]）：换会话就换一套数，
+ * 用户看的是「这条会话到底花了多少」。没有样本的项给 null，界面写「—」，绝不写 0。
+ */
+data class ComposerStatsInfo(
+    val modelMillis: Long = 0,
+    val toolMillis: Long = 0,
+    /** 首 token 平均等待；一次都没等到过就是 null。 */
+    val ttftAverageMillis: Long? = null,
+    val tokensPerSec: Int? = null,
+    val cacheHitTokens: Int = 0,
+    val cacheMissTokens: Int = 0,
+    val cacheHitPercent: Float? = null,
+    val outputTokens: Int = 0
 )
 
 /** 上下文浮窗要显示的三段明细；窗口大小单独给，百分比在这里算，不麻烦调用方。 */
@@ -103,14 +139,14 @@ enum class ComposerCommand {
 }
 
 /** 当前开着哪一层浮窗。只有输入框自己关心，外面不用传。 */
-private enum class ComposerPanelKind { NONE, PLUS, PERMISSION, CONTEXT, MODEL }
+private enum class ComposerPanelKind { NONE, PLUS, PERMISSION, CONTEXT, MODEL, STATS, TOKEN }
 
 /**
  * 主页底部的输入区：排队消息 + 输入容器 + 状态行，四个浮窗浮在输入容器上方。
  *
  * 浮窗是纯浮层：自己只报 0 高度、向上溢出到输入框上方，所以它开合时消息列表和输入框一动不动。
  * 遮罩不归本组件管：父层在消息区之上、输入条之下铺一个 [ComposerScrim]，点到面板和输入条以外就收。
- * 面板开关只认三件事——点对应标签、点/划面板与输入条以外、返回键；键盘开合与焦点变化一律不动它。
+ * 面板开关只认三件事：点对应标签、点/划面板与输入条以外、返回键；键盘开合与焦点变化一律不动它。
  * 开关状态仍然全在这里 remember，父层只通过 [ComposerPanelHost] 拿「开着没」和「关掉」。
  */
 @Composable
@@ -137,6 +173,8 @@ fun ChatComposer(
     onComposerCommand: (ComposerCommand) -> Unit,
     onSkillPick: (String) -> Unit,
     status: ComposerStatus,
+    /** 两枚状态胶囊点开的明细（会话统计 / Token 用量）。 */
+    stats: ComposerStatsInfo,
     usage: ContextUsageInfo,
     onOpenContextPage: () -> Unit,
     modelLabel: String,
@@ -160,7 +198,7 @@ fun ChatComposer(
     val editingId = editingQueueId?.takeIf { id -> queue.any { it.id == id } }
 
     // 收面板只有三个入口：标签（上面那几个 clickable）、父层的 ComposerScrim、这里这条返回键。
-    // 键盘开合、焦点变化、点输入框、往框里打字都不许收——「点输入框面板就消失」就是这么来的 bug。
+    // 键盘开合、焦点变化、点输入框、往框里打字都不许收：「点输入框面板就消失」就是这么来的。
     val closePanel: () -> Unit = { panel = ComposerPanelKind.NONE }
     BackHandler(enabled = panelOpen) { closePanel() }
     // 对外只开一个把手：open 决定遮罩铺不铺，dismiss 收面板。外面不用知道现在是哪一层浮窗
@@ -210,21 +248,56 @@ fun ChatComposer(
         // 当前该显示哪一张面板：斜杠过滤优先复用「＋」那张
         val activePanel = if (commandPanelOpen) ComposerPanelKind.PLUS else panel
         ComposerPanelOverlay(onDismiss = closePanel) {
-            // 整个浮层只做一次进出动画，面板之间切换交给 Crossfade 换内容。
-            // 以前每张卡片各带一套上滑 + 淡入，切面板时旧卡片往下滑、新卡片往上滑，
-            // 两张同时在场互相穿过，看起来就是「切换不连贯」
-            AnimatedVisibility(
-                visible = activePanel != ComposerPanelKind.NONE,
-                enter = fadeIn(Motion.fadeIn()) +
-                    slideInVertically(Motion.spring()) { it / 6 } +
-                    scaleIn(Motion.spring(), initialScale = 0.96f),
-                exit = fadeOut(Motion.fadeOut()) +
-                    slideOutVertically(Motion.spring()) { it / 6 } +
-                    scaleOut(Motion.spring(), targetScale = 0.96f)
-            ) {
-                Crossfade(
+            // **只有一套动效**：弹出＝NONE → 某张面板，互切＝A → B，
+            // 在 AnimatedContent 眼里都是「换内容」，走同一个 transitionSpec。
+            // 外圈原来还套了一层 AnimatedVisibility 单独管开合（slide + fade + scale），
+            // 同一件事两套参数，且那层的 alpha 会把卡片的 14dp 阴影一起压掉（阴影看起来「最后才出现」），一并去掉。
+                // 面板之间换内容：AnimatedContent + SizeTransform，**尺寸跟着内容一起动**。
+                // 原来是 Crossfade：它只淡入淡出，两块内容尺寸不同的时候，外层高度要等旧内容退场
+                // 才突然变一次：「很长的那张和较短的那张相互切换会跳一下」就是这个突变。
+                AnimatedContent(
                     targetState = activePanel,
-                    animationSpec = Motion.fadeIn(),
+                    transitionSpec = {
+                        // 换面板时从「＋」切别的面板，仍会看到「先弹得很高再落回」。
+                        // 病根是旧面板按自身整高（＝「＋」那一长列）留在场里淡出，尺寸又贴在底部对齐，
+                        // 于是新面板已经落位、旧面板的顶边还在上面：读起来就是「弹过头」。
+                        // 现在：旧内容 80ms 内退干净（不给它机会「挂在上面」），新内容原地从 0.94 长到 1
+                        // （围绕自身底边，向上生长，单调不过冲），高度跟着 tween 走，全程没有弹簧。
+                        // 旧面板不只是淡出：围绕自身底边缩到 0.55 再消失，「高的那张挂在上面」
+                        // 之所以像「弹过头」，是因为它原地淡出时顶边一直停在很高的位置；
+                        // 让它可见地塌下去，才读得出「这张关了、另一张接着开」。
+                        // 面板**不做 alpha 淡入淡出**：只要节点带 alpha，
+                        // Android 就不给它画 elevation 阴影：阴影要等 alpha 到 1 才「啪」地出现，
+                        // 结果就是「面板固定下来那一瞬间阴影才出来」。
+                        // 卡片始终不透明，所以阴影从第一帧就在，并随 elevation 0→8dp 一起加深。
+                        //
+                        // **入场只剩缩放、不含任何向下位移**。
+                        // 原来这里是 slideInVertically { it / 5 }：位移量按「面板自身高度」算，
+                        // 于是越高的面板往下探得越深：加号面板那 500dp 的高度差就是 100dp，
+                        // 第一帧整张卡已经沉到输入条下方，再往上长出来，读起来就是
+                        // 「面板从输入框里往外跳、加号那张嵌得最深、甚至越过输入框下缘」。
+                        // 面板是贴在输入条上沿（8dp 间隙）的，任何向下位移都会钻进输入条，
+                        // 所以这里改成只缩放：**围绕自身底边**从 0.92 长到 1，底边始终不动，
+                        // 视觉上是「从输入条上沿往上展开」，与用量弹层那套（纯缩放）同源。
+                        val enter = scaleIn(
+                            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                            initialScale = 0.92f,
+                            transformOrigin = TransformOrigin(0.5f, 1f)
+                        )
+                        val exit = scaleOut(
+                            animationSpec = tween(durationMillis = 150, easing = FastOutLinearInEasing),
+                            targetScale = 0.55f,
+                            transformOrigin = TransformOrigin(0.5f, 1f)
+                        )
+                        // 六张面板（含底部那两枚胶囊的会话统计 / Token 用量）全走这一条，没有第二套逻辑
+                        (enter togetherWith exit)
+                            .using(
+                                SizeTransform(clip = false) { _, _ ->
+                                    tween(durationMillis = 200, easing = FastOutSlowInEasing)
+                                }
+                            )
+                    },
+                    contentAlignment = Alignment.BottomCenter,
                     label = "composerPanel"
                 ) { kind ->
                     when (kind) {
@@ -271,6 +344,12 @@ fun ChatComposer(
                             }
                         )
 
+                        // 状态行左胶囊：本会话的时间账与输出速度
+                        ComposerPanelKind.STATS -> ComposerStatsPanel(stats = stats)
+
+                        // 状态行右胶囊：token 总账与提示词缓存
+                        ComposerPanelKind.TOKEN -> ComposerTokenPanel(stats = stats)
+
                         // 模型 / 推理等级：一级窗两行「当前值 + ›」，点开在该卡片内就地展开二级列表
                         ComposerPanelKind.MODEL -> ComposerModelPanel(
                             modelLabel = modelLabel,
@@ -280,7 +359,6 @@ fun ChatComposer(
                         )
                     }
                 }
-            }
         }
 
         Column(
@@ -291,7 +369,7 @@ fun ChatComposer(
                 .padding(start = 14.dp, end = 8.dp, top = 12.dp, bottom = 8.dp)
         ) {
             // 这里以前挂过「按下就收面板」：键盘一弹、手指一碰输入框，面板就没了，写完还得再点一次标签。
-            // 现在点输入框、焦点进出、换行都不动面板——收面板只认标签、遮罩外点、返回键三件事。
+            // 现在点输入框、焦点进出、换行都不动面板：收面板只认标签、遮罩外点、返回键三件事。
             BasicTextField(
                 value = value,
                 onValueChange = { updated ->
@@ -407,7 +485,9 @@ fun ChatComposer(
                     contentAlignment = Alignment.Center
                 ) {
                     ContextRing(
-                        percent = status.waterPercent,
+                        // 跟上下文浮窗里那个百分号同一口径（同一个 used / window、同样「不足 1% 显示 1%」），
+                        // 圆环和浮窗两处报的必须是同一个数
+                        percent = contextPercent(usage),
                         iconSize = 22.dp,
                         trackTint = onSurface.copy(alpha = 0.12f),
                         progressTint = accent
@@ -451,31 +531,142 @@ fun ChatComposer(
                 }
             }
         }
+        // 状态行：两枚胶囊，各自点开一张浮窗（跟「＋」「权限」「模型」「上下文」同一套浮层机制）。
+        // 只是把只读的文字换成可点的胶囊，不新增任何高度，消息区一动不动。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = 4.dp, end = 4.dp, top = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            // 两枚胶囊直接贴着左右边缘排，中间不留「能抢权重」的空节点。
+            // 以前中间那个 Spacer 带 weight(1f)，三等分的结果是每枚胶囊只能拿到 1/3 屏宽，
+            // 右侧的百分比正好被压成省略号：用户看到的「数字跑出界面外」就是这么来的。
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            val left = buildString {
-                append(status.rounds).append(" 轮 ").append(status.steps).append(" 步")
-                // 没有速度就是没在生成，这段干脆不占位置
-                status.tokensPerSec?.let { append(" · ").append(it).append(" tok/s") }
-            }
-            Text(
-                text = left,
-                fontSize = 12.sp,
-                color = onSurface.copy(alpha = 0.4f),
-                maxLines = 1
+            StatusChip(
+                // 权重只用来在真不够宽时收缩：正常宽度下 fill=false 会让它按内容自适应
+                modifier = Modifier.weight(1f, fill = false),
+                glyph = { tint -> StepsGlyph(tint = tint, iconSize = 11.dp) },
+                text = statusLeftText(status),
+                onClick = {
+                    panel = if (panel == ComposerPanelKind.STATS) {
+                        ComposerPanelKind.NONE
+                    } else {
+                        ComposerPanelKind.STATS
+                    }
+                }
             )
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = composerTokenText(status.totalTokens) + " tok · 水位 " + status.waterPercent + "%",
-                fontSize = 12.sp,
-                color = onSurface.copy(alpha = 0.4f),
-                maxLines = 1
+            StatusChip(
+                modifier = Modifier.weight(1f, fill = false),
+                glyph = { tint -> CylinderGlyph(tint = tint, iconSize = 11.dp) },
+                text = statusRightText(status),
+                onClick = {
+                    panel = if (panel == ComposerPanelKind.TOKEN) {
+                        ComposerPanelKind.NONE
+                    } else {
+                        ComposerPanelKind.TOKEN
+                    }
+                }
             )
         }
+    }
+}
+
+/**
+ * 上下文圆环用的百分比：与 [ComposerContextPanel] 里的算法逐字相同。
+ *
+ * 两处各写一遍迟早会分叉：一个显示 12%、另一个 11%，用户只会以为某一个坏了。
+ */
+internal fun contextPercent(usage: ContextUsageInfo): Int {
+    val window = if (usage.window > 0) usage.window else 1
+    if (usage.used <= 0) return 0
+    return ((usage.used * 100 + window / 2) / window).coerceAtLeast(1)
+}
+
+/** 状态行左边那半句：轮数、步数、输出速度；没有速度样本时最后一段不占位置。 */
+private fun statusLeftText(status: ComposerStatus): String = buildString {
+    append(status.rounds).append(" 轮 ").append(status.steps).append(" 步")
+    status.tokensPerSec?.let { append(" · ").append(it).append(" tok/s") }
+}
+
+/** 状态行右边那半句：累计 tokens 与缓存命中率。服务商不报缓存就写「—」，不写 0%。 */
+private fun statusRightText(status: ComposerStatus): String = buildString {
+    // 百分比放最前：这一行最窄的时候一定会截尾巴，被截掉的应该是总数的零头，
+    // 而不是用户最关心的命中率（屏幕窄，顺序让位给可读性）
+    append("命中 ")
+    append(status.cacheHitPercent?.let { percentText(it) } ?: "—")
+    append(" · ")
+    append(composerTokenText(status.totalTokens)).append(" tok")
+}
+
+/** 百分比只留一位小数；整数时不写 .0（「99.6%」「100%」是同一套写法）。 */
+internal fun percentText(value: Float): String {
+    val tenths = (value * 10f).roundToInt()
+    return if (tenths % 10 == 0) {
+        (tenths / 10).toString() + "%"
+    } else {
+        (tenths / 10).toString() + "." + (tenths % 10) + "%"
+    }
+}
+
+/**
+ * 状态行上的一枚胶囊：小图标 + 一行浅灰字，整块可点、带涟漪。
+ *
+ * 内边距刻意小（左右 6dp、上下 2dp）：它占的是输入条下面那一行，点不到 36dp 也不该把行撑高。
+ */
+@Composable
+private fun StatusChip(
+    glyph: @Composable (Color) -> Unit,
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            // 左右 4dp：这一行本来就窄，内边距每省 2dp 就多一个字的位置
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        glyph(tint)
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = text,
+            // 11sp：这一行要装两段数字，12sp 在窄屏上必然截尾；11sp 让两段都完整
+            fontSize = 11.sp,
+            color = tint,
+            maxLines = 1,
+            // 宁可看到省略号，也不要被裁掉半截数字：用户要看到的是「命中 xx%」
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** 轮/步那一枚的小图标：一段开口圆环 + 箭头，读作「循环推进」。18×18 单位坐标。 */
+@Composable
+internal fun StepsGlyph(tint: Color, iconSize: Dp) {
+    UnitGlyph(iconSize = iconSize) {
+        drawArc(
+            color = tint,
+            startAngle = -50f,
+            sweepAngle = 300f,
+            useCenter = false,
+            topLeft = Offset(2.6f, 2.6f),
+            size = Size(12.8f, 12.8f),
+            style = Stroke(width = 1.6f, cap = StrokeCap.Round)
+        )
+        // 箭头压在弧的收口处：两笔短线就够，画三角形在这个尺寸会糊
+        drawPath(
+            path = unitPath {
+                moveTo(8.2f, 1.6f)
+                lineTo(11.6f, 3.2f)
+                lineTo(8.2f, 5.0f)
+            },
+            color = tint,
+            style = Stroke(width = 1.6f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
     }
 }
 
@@ -496,12 +687,27 @@ private fun ComposerModelPanel(
     // 一级窗两行入口 / 二级窗列表，就靠这一个状态切换：卡片、宽度、圆角全是同一套。
     // 面板收起时本组件整个离开组合，remember 自然归零，下次点开仍然是一级窗
     var page by remember { mutableStateOf(QuickSheetPage.ROOT) }
-    val shape = RoundedCornerShape(20.dp)
-    // 卡片本体不投影、不描边：投影按矩形包围盒落影，圆角外侧会露出一圈直角阴影，
-    // 看着像「圆弧贴在一张方卡上」；靠 surface 底色与页面底色区分就够了，也更符合这套扁平风格
+    // 六张面板必须是同一套观感与同一套动画：
+    // 这一张以前是独立 Surface、圆角 20dp、且**完全不投影**。
+    // 「投影按矩形包围盒落影，圆角外会露直角」是 elevation 阴影跟随形状之前的判断，早已不成立。
+    // 现在与 PanelCard 对齐：圆角 24dp、同底色、elevation 从 0 长到 14dp（与面板升起同步）。
+    val shape = RoundedCornerShape(24.dp)
+    var risen by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { risen = true }
+    val panelShadow by animateDpAsState(
+        targetValue = if (risen) 14.dp else 0.dp,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "modelPanelShadow"
+    )
     Surface(
         shape = shape,
-        color = MaterialTheme.colorScheme.surface,
+        // 与其它伴随面板同一底色：比页面与气泡亮一档
+        color = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+            Palette.DarkPanel
+        } else {
+            Palette.LightPanel
+        },
+        shadowElevation = panelShadow,
         // 卡片自己吃掉点击，不然点空白处会落到输入框上把键盘拉起来
         modifier = Modifier
             .fillMaxWidth()
@@ -509,9 +715,8 @@ private fun ComposerModelPanel(
     ) {
                 Column(
                     modifier = Modifier
-                        .padding(vertical = 6.dp)
-                        // 换页时高度跟着变，直接换会「啪」地跳一下：交给弹簧动画收尾
-                        .animateContentSize(Motion.spring())
+                        // 换页时高度跟着变，直接换会「啪」地跳一下：交给单调缓动收尾
+                        .animateContentSize(tween(durationMillis = 180, easing = FastOutSlowInEasing))
                 ) {
                     when (page) {
                         QuickSheetPage.ROOT -> {
@@ -555,7 +760,7 @@ private fun ModelPickRow(title: String, value: String, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .height(44.dp)
-            .clickable(onClick = onClick)
+            .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -578,7 +783,7 @@ private fun ModelPickRow(title: String, value: String, onClick: () -> Unit) {
 /**
  * 浮窗停靠层：浮窗**浮在**输入框正上方，左右各收 12dp，且不占任何布局高度。
  *
- * 这一版回到「上报同宽 × 0 高、内容往负方向画出去」：用户的口径很明确——面板是最上层窗口，
+ * 这一版回到「上报同宽 × 0 高、内容往负方向画出去」：面板是最上层窗口，
  * 消息区不该跟着上下移。曾经有一版改成上报真实高度，理由是「0 高节点收不到触摸」，
  * 那个判断**是错的**（当时点击坐标按缩放后的预览尺寸算，差了一倍）；旧版面板行本来就点得动。
  * 结论：0 高度只影响「本节点自己」的命中，溢出的子节点照常收事件，别拿这条当理由改成占高。
@@ -615,8 +820,14 @@ private fun ComposerPanelOverlay(
                     indication = null,
                     onClick = onDismiss
                 )
-                .padding(horizontal = 12.dp)
-                .animateContentSize(animationSpec = Motion.spring()),
+                .padding(horizontal = 12.dp),
+            // 这里**不能**再包 animateContentSize。
+            // 它会把自己的内容裁到「动画中的矩形」里，代价有两条，都被用户当场看见：
+            // ① 卡片 14dp 的柔和阴影被裁在矩形内 → 24dp 圆角之外、矩形之内的四角漏出一块方形黑影；
+            // ② 高度动画期间内容被逐帧裁开 → 换面板时「与旧面板等高的下半截先出来，
+            //    高出的上半截再向上伸长」，读起来就是两段式。
+            // 高度交给内层 AnimatedContent 的 SizeTransform 独自负责；本层只负责停靠，
+            // 内容贴底对齐，所以容器高度怎么变都不会带动内容位移。
             contentAlignment = Alignment.BottomCenter
         ) {
             content()
@@ -835,7 +1046,7 @@ private fun EditGlyph(tint: Color, iconSize: Dp) {
     }
 }
 
-/** 删除排队消息：垃圾桶。 */
+/** 垃圾桶图标：删除排队消息用。 */
 @Composable
 private fun TrashGlyph(tint: Color, iconSize: Dp) {
     UnitGlyph(iconSize = iconSize) {
@@ -937,7 +1148,7 @@ private fun ModelGlyph(tint: Color, iconSize: Dp) {
 /**
  * 上下文圆环：底环永远画满一圈（暗），进度弧从 12 点方向顺时针铺开，弧长就是占用百分比。
  *
- * 环内故意不写字——缩略态要的是「还剩多少」的一眼观感，写百分比在 22dp 里反而糊成一团。
+ * 环内故意不写字：缩略态要的是「还剩多少」的一眼观感，写百分比在 22dp 里反而糊成一团。
  * 满 100% 时直接画整圆：360° 的圆弧在部分设备上会因为起点终点重合而不出墨。
  */
 @Composable
@@ -1002,7 +1213,7 @@ internal fun UnitGlyph(iconSize: Dp, draw: DrawScope.() -> Unit) {
     }
 }
 
-/** 单位坐标系里的描边规格：端点、拐角都收圆，跟 DSH 图标的观感一致。 */
+/** 单位坐标系里的描边规格：端点与拐角都收圆，1.4 单位宽的线缩放后不显尖。 */
 private fun unitStroke(width: Float): Stroke =
     Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round)
 

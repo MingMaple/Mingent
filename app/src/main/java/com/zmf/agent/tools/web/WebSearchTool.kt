@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit
  * 三个硬约束：
  * - 一条 query 一次请求，coroutineScope + async 并发：串行会把 60 秒超时叠成 4 倍等待；
  * - 超时只能靠 OkHttp 的 callTimeout 掐断：阻塞在 socket 读上的调用，协程超时打断不了；
- * - 没有 web_search_tool_result 块、或结果为空一律报错——静默返回空文本，模型会当成「网上没有」。
+ * - 没有 web_search_tool_result 块、或结果为空一律报错：静默返回空文本，模型会当成「网上没有」。
  */
 class WebSearchTool : Tool {
 
@@ -41,7 +41,8 @@ class WebSearchTool : Tool {
 
     override val description =
         "联网检索。一次可给 1-4 个检索词（并发请求后合并去重），每条返回标题、链接和被引用的摘要段落；" +
-            "需要最新信息、具体事实或多个来源对照时用它。它只给结果列表，要网页正文得再用 web_fetch 抓链接。"
+            "需要最新信息、具体事实或多个来源对照时用它。它只给结果列表，要网页正文得再用 web_fetch 抓链接。" +
+            "已知确切网址就直接 web_fetch，不要先搜；同一个问题不要反复搜，换了说法再搜一次仍没有就说明情况。"
 
     override val parametersJson = """
         {

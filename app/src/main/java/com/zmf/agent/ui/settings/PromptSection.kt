@@ -9,21 +9,18 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -37,16 +34,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.agent.prompt.PromptBuilder
 import com.zmf.agent.agent.prompt.PromptInput
+import com.zmf.agent.ui.common.BoundedScrollColumn
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.saltRowClickable
 import com.zmf.agent.ui.theme.Motion
 import com.zmf.agent.ui.theme.Palette
@@ -81,7 +88,6 @@ fun PromptSection(
             PromptInput(extraInstructions = extraDraft, systemOverride = overrideDraft)
         ).orEmpty()
     }
-    val previewScroll = rememberScrollState()
 
     Column(
         modifier = Modifier
@@ -137,6 +143,8 @@ fun PromptSection(
             PromptEntryHeader(
                 label = "预览",
                 expanded = previewOpen,
+                // 这一行在折叠时就是卡片的末行：底部内距自己带，波纹才能贴到下圆弧
+                bottomPadding = 12.dp,
                 onToggle = { previewOpen = !previewOpen }
             )
             AnimatedVisibility(
@@ -144,19 +152,20 @@ fun PromptSection(
                 enter = expandVertically(Motion.spring()) + fadeIn(Motion.fadeIn()),
                 exit = shrinkVertically(Motion.spring()) + fadeOut(Motion.fadeOut())
             ) {
-                Box(
+                // 用 BoundedScrollColumn 而不是 heightIn + 裸 verticalScroll：
+                // 预览滚到最底部后不能再把余量交给外层页面（否则整页会跟着上滑）。
+                // 装得下时（短提示词）它又把滑动让给页面，和普通静态块一样。
+                BoundedScrollColumn(
+                    maxHeight = 260.dp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 14.dp)
-                        .heightIn(max = 260.dp)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 14.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(onSurface.copy(alpha = 0.04f))
                 ) {
                     Text(
                         text = preview,
-                        modifier = Modifier
-                            .verticalScroll(previewScroll)
-                            .padding(12.dp),
+                        modifier = Modifier.padding(12.dp),
                         fontSize = 12.sp,
                         fontFamily = FontFamily.Monospace,
                         color = onSurface.copy(alpha = 0.8f)
@@ -171,25 +180,27 @@ fun PromptSection(
 @Composable
 private fun PromptCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(
-        // 卡片自己裁一刀：内部行的波纹是矩形，不裁会在 22dp 圆角处露方角
+        // 卡片自己裁一刀：内部行的波纹是矩形，不裁会在 16dp 圆角处露方角
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp)),
-        shape = RoundedCornerShape(22.dp),
+            .clip(RoundedCornerShape(16.dp)),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp)
-        ) {
+        // 卡片 Column 不带横向内距：横向 16dp 由每一行自己带，
+        // 「追加提示词／覆盖提示词／预览」这三行才能通栏、波纹被卡片圆角裁出圆弧。
+        // 为什么内距要放进每一行，见 MemoryPage 卡片 Column 处的同一段说明。
+        // 行内自带内距再配 saltRowClickable 显式圆角，波纹会缩进一圈、四角自成圆角。
+        Column(modifier = Modifier.fillMaxWidth()) {
             Text(
                 text = title,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp),
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            Spacer(Modifier.height(4.dp))
+            // 末尾不再放固定 Spacer：卡片内距全部分配给最后一行自己，
+            // 折叠时「预览」这一行才能贴到卡片下缘、波纹被下圆弧裁成半圆。
             content()
         }
     }
@@ -197,7 +208,12 @@ private fun PromptCard(title: String, content: @Composable ColumnScope.() -> Uni
 
 /** 提示词条目头：一行 label + 右侧「▾」，展开时箭头弹簧翻转 180°。 */
 @Composable
-private fun PromptEntryHeader(label: String, expanded: Boolean, onToggle: () -> Unit) {
+private fun PromptEntryHeader(
+    label: String,
+    expanded: Boolean,
+    bottomPadding: Dp = 10.dp,
+    onToggle: () -> Unit
+) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val turn by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
@@ -207,9 +223,9 @@ private fun PromptEntryHeader(label: String, expanded: Boolean, onToggle: () -> 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // 形状交给卡片裁剪（中间行），行内不再自己定圆角，否则和 22dp 卡片对不齐
-            .saltRowClickable(RoundedCornerShape(0.dp)) { onToggle() }
-            .padding(start = 14.dp, top = 10.dp, bottom = 10.dp),
+            // 波纹通栏，形状交给卡片的 16dp 圆角去裁；行内不再自己定圆角。
+            .saltCardRow { onToggle() }
+            .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = bottomPadding),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -244,7 +260,7 @@ private fun PromptEditor(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 14.dp, bottom = 4.dp),
+            .padding(start = 16.dp, end = 16.dp, bottom = 4.dp),
         verticalAlignment = Alignment.Top
     ) {
         PromptField(
@@ -287,39 +303,72 @@ private fun PromptField(
     val onSurface = MaterialTheme.colorScheme.onSurface
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(16.dp)
-    BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
-        modifier = modifier
-            .height(fieldHeight)
-            .onFocusChanged { focused = it.isFocused },
-        textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, color = onSurface),
-        cursorBrush = SolidColor(Palette.AccentGreen),
-        keyboardOptions = KeyboardOptions(
-            capitalization = KeyboardCapitalization.None,
-            imeAction = ImeAction.Default
-        ),
-        decorationBox = { innerTextField ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(onSurface.copy(alpha = 0.04f), shape)
-                    .border(
-                        width = 1.dp,
-                        color = if (focused) Palette.AccentGreen else onSurface.copy(alpha = 0.12f),
-                        shape = shape
-                    )
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-            ) {
-                if (value.isEmpty()) {
-                    Text(
-                        text = placeholder,
-                        fontSize = 13.sp,
-                        color = onSurface.copy(alpha = 0.35f)
-                    )
-                }
-                innerTextField()
+    // 输入框的排版口径与下面的 textStyle 一致：量「超没超出」时用的是同一份样式
+    // （MaterialTheme.typography 是 @Composable 读取，必须先取出来再交给 remember）
+    val baseStyle = MaterialTheme.typography.bodyMedium
+    val textStyle = remember(baseStyle, onSurface) {
+        baseStyle.copy(fontSize = 13.sp, color = onSurface)
+    }
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    BoxWithConstraints(modifier = modifier.height(fieldHeight)) {
+        // 内容区 = 输入框去掉 decorationBox 里的内距（左右 12dp、上下 10dp）
+        val textWidthPx = with(density) { (maxWidth - 24.dp).toPx() }.toInt().coerceAtLeast(1)
+        val textHeightPx = with(density) { (maxHeight - 20.dp).toPx() }
+        // 文本是否真的装不下：只有装不下时，输入框滚到边界后的余量才该被吃掉。
+        // 装得下还把余量吃掉的话，手指划在短输入框上整页会滑不动（BoundedScroll 同一个口径）。
+        val overflows = remember(value, textWidthPx, textHeightPx, textStyle) {
+            measurer.measure(
+                text = AnnotatedString(value),
+                style = textStyle,
+                constraints = Constraints(maxWidth = textWidthPx)
+            ).size.height > textHeightPx
+        }
+        // BasicTextField 的滚动在它内部，nestedScroll 必须挂在它外层才收得到边界后的余量
+        val eater = remember(overflows) {
+            object : NestedScrollConnection {
+                override fun onPostScroll(
+                    consumed: Offset,
+                    available: Offset,
+                    source: NestedScrollSource
+                ): Offset = if (overflows) available else Offset.Zero
             }
         }
-    )
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier
+                .fillMaxSize()
+                .nestedScroll(eater)
+                .onFocusChanged { focused = it.isFocused },
+            textStyle = textStyle,
+            cursorBrush = SolidColor(Palette.AccentGreen),
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.None,
+                imeAction = ImeAction.Default
+            ),
+            decorationBox = { innerTextField ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(onSurface.copy(alpha = 0.04f), shape)
+                        .border(
+                            width = 1.dp,
+                            color = if (focused) Palette.AccentGreen else onSurface.copy(alpha = 0.12f),
+                            shape = shape
+                        )
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    if (value.isEmpty()) {
+                        Text(
+                            text = placeholder,
+                            fontSize = 13.sp,
+                            color = onSurface.copy(alpha = 0.35f)
+                        )
+                    }
+                    innerTextField()
+                }
+            }
+        )
+    }
 }

@@ -42,7 +42,7 @@ data class MemoryCycle(
  * 记忆页的整屏快照。
  *
  * 为什么所有字段都带默认值：页面是无状态的（state 由父会话持有），
- * 任何一次动作返回的都是**整体替换**——缺省的块会立刻退回这里的默认值，
+ * 任何一次动作返回的都是**整体替换**：缺省的块会立刻退回这里的默认值，
  * 所以 [doctorOk] 默认 true 只是「没数据时的占位」，真正的结论必须以一次 doctor 的结果覆盖（见 MemoryAdmin.snapshot）。
  */
 data class MemoryState(
@@ -65,33 +65,33 @@ data class MemoryState(
  * 为什么这里不缓存、不增量更新：内核的真相源是 append-only 事件流，任何一次写入都可能让状态、检索结果、
  * 待巩固批次一起变。缓存一半反而会出现「节点数变了但批次还是旧的」这种自相矛盾的界面，所以每次动作都整份重取。
  *
- * 为什么不在 Kotlin 里算任何东西：分数、衰减、批次判定都只认内核输出（RULES §1 第 5 条）。
+ * 为什么不在 Kotlin 里算任何东西：分数、衰减、批次判定都只认内核输出，不在这里重算一遍。
  * 这里做的只有「取 JSON → 映射字段」，解析失败就把内核原文塞进 error，不吞不编。
  *
- * 关于那两个「根」：本类对外收的是**库根**（<工作区>/记忆内核库，和页面、和库自己的说法一致），
- * 而 [MemoryKernel.run] 收的是**工作区根**（它内部还要再拼一级 LIB_DIR_NAME 才摸到库）。
- * 两个参数都是 File、都叫 root，传错的后果非常隐蔽：内核会在 <库根>/记忆内核库 下现铺一个空库，
- * doctor 照常「通过」、status 照常回 JSON，只是数字全 0、检索永远「没有命中」。所以入口统一换算，
- * 见 [workspaceRootOf]。
+ * 关于「根」：本类对外收的是**工作区根**（`currentWorkspaceRoot()`），只拿它当「默认命名空间名」的来源
+ * （`project:<工作区目录名>`）。内核本体与数据根都在 App 内部存储的 `filesDir/mingmem/` 下，
+ * 由 [MemoryKernel.ensureLibrary] 统一铺、统一定位：页面和调用方不关心、也不传库路径。
  */
 object MemoryAdmin {
 
     private const val TAG = "mem-admin"
 
     /** 概览 + 体检。进页面时调一次，也是其余动作的公共前置。 */
-    suspend fun refresh(context: Context, libraryRoot: File): MemoryState = snapshot(context, libraryRoot)
+    suspend fun refresh(context: Context, workspaceRoot: File): MemoryState = snapshot(context, workspaceRoot)
 
     /**
      * 检索记忆。空检索词不落到 CLI：内核会以退出码 2 报「--query 必填」，
      * 把本地就能说清的空输入变成一次往返，白等一轮。
      */
-    suspend fun search(context: Context, libraryRoot: File, query: String): MemoryState {
+    suspend fun search(context: Context, workspaceRoot: File, query: String): MemoryState {
         val text = query.trim()
         if (text.isEmpty()) {
-            return snapshot(context, libraryRoot).copy(query = "", briefing = "", hits = emptyList())
+            return snapshot(context, workspaceRoot).copy(query = "", briefing = "", hits = emptyList())
         }
-        val base = snapshot(context, libraryRoot)
-        return MemoryKernel.run(context, workspaceRootOf(libraryRoot), listOf("recall", "--query=" + text)).fold(
+        val base = snapshot(context, workspaceRoot)
+        // --dry-run：设置页的「检索」是只读预览，不带它内核会顺手写一条 access 事件（访问强化），
+        // 每搜一次就把 storage 往上抬一点，检索强度被设置页「看几眼」悄悄改掉。
+        return MemoryKernel.run(context, workspaceRoot, listOf("recall", "--query=" + text, "--dry-run")).fold(
             onSuccess = { raw ->
                 val payload = jsonObjectAt(raw)
                 if (payload == null) {
@@ -112,11 +112,11 @@ object MemoryAdmin {
      * 维护扫描。**必须带 --dry-run**：这个按钮只报数，绝不写库。
      *
      * 真正会写事件的那次 cycle（衰减 + 归档 + sweep 事件）留在对话里由模型显式跑；
-     * 用户在设置页点一下就把强度改了，等于绕过 RULES 里「不可逆动作的最小充分核验」。
+     * 用户在设置页点一下就把强度改了，等于绕过「不可逆动作的最小充分核验」这条约束。
      */
-    suspend fun cycle(context: Context, libraryRoot: File): MemoryState {
-        val base = snapshot(context, libraryRoot)
-        return MemoryKernel.run(context, workspaceRootOf(libraryRoot), listOf("cycle", "--dry-run")).fold(
+    suspend fun cycle(context: Context, workspaceRoot: File): MemoryState {
+        val base = snapshot(context, workspaceRoot)
+        return MemoryKernel.run(context, workspaceRoot, listOf("cycle", "--dry-run")).fold(
             onSuccess = { raw ->
                 val payload = jsonObjectAt(raw)
                 if (payload == null) {
@@ -130,12 +130,23 @@ object MemoryAdmin {
     }
 
     /**
-     * 导出给人看的视图（_Data/memory.md）。不传 --out，让它落回库自己的 _Data，避免散到工作区根。
+     * 导出给人看的视图。默认不传 --out，落回库自己的 _Data/memory.md。
+     *
+     * 界面可以指定目录：在「记忆 → 导出」里填一个绝对路径，这里就带 `--out=<路径>`。
+     * 为什么必须让用户指定：原来的固定落点是 App 私有目录（/sdcard/Android/data/<包名>/files/…），
+     * 文件管理器根本进不去，导出完拿不到东西。
+     *
      * 内核默认排除 private / ask，这里也不加 --include-*：设置页不该成为绕过披露等级的捷径。
      */
-    suspend fun export(context: Context, libraryRoot: File): MemoryState {
-        val base = snapshot(context, libraryRoot)
-        return MemoryKernel.run(context, workspaceRootOf(libraryRoot), listOf("export")).fold(
+    suspend fun export(context: Context, workspaceRoot: File, outPath: String = ""): MemoryState {
+        val base = snapshot(context, workspaceRoot)
+        val args = if (outPath.isBlank()) {
+            listOf("export")
+        } else {
+            // 路径一律走绝对路径：相对路径会把产物落在库根
+            listOf("export", "--out=" + outPath)
+        }
+        return MemoryKernel.run(context, workspaceRoot, args).fold(
             onSuccess = { raw ->
                 val payload = jsonObjectAt(raw)
                 if (payload == null) {
@@ -154,28 +165,15 @@ object MemoryAdmin {
     // ---------------------------------------------------------------- 内部
 
     /**
-     * 库根 → 工作区根（[MemoryKernel.run] 要的是后者，它自己拼一级 LIB_DIR_NAME）。
-     *
-     * 传进来已经是工作区根（名字不是 LIB_DIR_NAME）就原样用，所以调用方无论按哪种口径传都落在同一个库上；
-     * 唯一的歧义是「工作区目录本身就叫 记忆内核库」——那时候调用方传进来的库根名字仍然叫 记忆内核库，
-     * 换算照样正确（再往上退一级正好是工作区根）。
-     */
-    private fun workspaceRootOf(libraryRoot: File): File =
-        if (libraryRoot.name == MemoryKernel.LIB_DIR_NAME) libraryRoot.parentFile ?: libraryRoot
-        else libraryRoot
-
-    /**
      * 概览 + 体检的公共快照。
      *
      * 为什么每个动作都先跑这一遍：state 是整体替换的，只填自己那一块会让其余块退回默认值；
-     * 而 doctorOk 默认 true，那等于「没跑体检却显示通过」——正是 RULES §1 第 3 条禁止的伪造结果。
+     * 而 doctorOk 默认 true，那等于「没跑体检却显示通过」，这种伪造结果不能出现。
      * 两次 CLI 都是只读命令（doctor 只读；status 最多重建可丢弃的投影），不会碰事件流。
      */
-    private suspend fun snapshot(context: Context, libraryRoot: File): MemoryState {
+    private suspend fun snapshot(context: Context, workspaceRoot: File): MemoryState {
         var state = MemoryState()
         var error = ""
-        // status / doctor 都各自跑一遍内核，换算放在最前面，免得两处各写一次名字
-        val workspaceRoot = workspaceRootOf(libraryRoot)
 
         MemoryKernel.run(context, workspaceRoot, listOf("status")).fold(
             onSuccess = { raw ->
@@ -223,7 +221,7 @@ object MemoryAdmin {
      *
      * 注意 doctor 在「发现问题（坏行 / 投影损坏）」时退出码是 1，MemoryKernel 会按退出码把这个结果当失败，
      * 但 JSON 已经完整打在原文里（前面多一行「第 4 步…退出码 1」）。所以这里统一从文本里回捞 JSON：
-     * 能捞到就是「体检不通过」，捞不到才是「体检跑不起来」——两件事不能混成一句报错。
+     * 能捞到就是「体检不通过」，捞不到才是「体检跑不起来」：两件事不能混成一句报错。
      */
     private fun parseDoctor(text: String): Pair<Boolean, List<String>>? {
         val payload = jsonObjectAt(text) ?: return null

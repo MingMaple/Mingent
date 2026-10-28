@@ -16,7 +16,18 @@ object Motion {
     /** 更软的弹簧，用于小窗这种小元素。 */
     fun <T> softSpring() = spring<T>(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow)
 
+    /**
+     * 只给**高度**用的弹簧：临界阻尼，不冲过头。
+     *
+     * 通用 spring() 是欠阻尼（0.86），缩小高度时会先压到比目标小一点再弹回来，
+     * 看到的现象就是「收起的动效已经走完，又突地缩短了一下」。
+     * 位移/缩放类动画仍用 spring()，那里的一点回弹是想要的手感。
+     */
+    fun <T> heightSpring() = spring<T>(dampingRatio = 1.0f, stiffness = 420f)
+
+    /** 淡入规格：140ms，略长于淡出，避免出现时显得仓促。 */
     fun fadeIn() = tween<Float>(durationMillis = 140)
 
+    /** 淡出规格：120ms，比淡入短，让内容退场更利落。 */
     fun fadeOut() = tween<Float>(durationMillis = 120)
 }

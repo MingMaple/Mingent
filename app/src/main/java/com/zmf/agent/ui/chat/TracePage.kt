@@ -93,10 +93,10 @@ import kotlin.math.abs
  *
  * 全部从传入的 messages 现推，不落盘：轨迹只是历史的另一种视图，
  * 多存一份快照就多一处会和真实消息对不上的地方。
- * 但「现推」不等于「每帧重推」—— 只在条数或头尾内容量变了时重推一次，
+ * 但「现推」不等于「每帧重推」：只在条数或头尾内容量变了时重推一次，
  * 否则流式输出每来一个 token 都要把整段历史重新拼一遍字符串。
  *
- * 版式照用户的参考截图：每行 = 彩色类型标签 + 一行摘要 + 行尾结果预览。
+ * 版式：每行 = 彩色类型标签 + 一行摘要 + 行尾结果预览。
  * 用标签而不是「缩进 + 说明小字」，是因为一轮里助手 / 思考 / 工具会交替出现，
  * 缩进只能表达层级、表达不了「这一行是什么」，标签扫一眼就能分类。
  */
@@ -111,7 +111,7 @@ fun TracePage(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     // 不缓存「旧结果」，只缓存「同样的输入」：messages 是原地 append 的快照列表，
-    // 拿列表身份当 key 会永远命中第一帧；改看「条数 + 头尾两条的内容量」——
+    // 拿列表身份当 key 会永远命中第一帧；改看「条数 + 头尾两条的内容量」。
     // 流式时末条在涨、静止时不变，静止状态下展开行、滚动、框选都不再重推一遍字符串。
     // 头一条的对象身份也进 key：换会话时条数与长度都可能撞上，但对象不会是同一个
     val trace = remember(
@@ -133,8 +133,9 @@ fun TracePage(
     // 轮、条目、块三张表是同一次遍历的产物，所以一起缓存：分开缓存会各自失效、互相错位
     val entries = trace.entries
     val events = trace.events
-    // 展开卡片最多占屏高 55%，剩下的留给时间线本身，不然点开一条就看不见上下文了
-    val maxDetailHeight = LocalConfiguration.current.screenHeightDp.dp * DetailMaxScreenRatio
+    // 展开卡片最多占屏高 45%（含标题行）：剩下的留给时间线本身，不然点开一条就看不见上下文了
+    val maxDetailHeight = (LocalConfiguration.current.screenHeightDp.dp * DetailMaxScreenRatio - DetailCardChrome)
+        .coerceAtLeast(ThinkingDetailMaxHeight)
 
     // 首次组合后直接停在最新一轮：老会话几十轮，从第一轮开始看等于每次都得自己拖到底
     var jumpedToLatest by remember { mutableStateOf(false) }
@@ -157,7 +158,7 @@ fun TracePage(
     }
 
     Surface(
-        // 页面铺满且不透明；最外层吞掉点击，避免穿透点到下面的聊天界面
+        // 与工作区页同一套浮层口径：铺满不透明，最外层吞点击防穿透
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -254,7 +255,7 @@ fun TracePage(
                                         viewer = TraceViewerTarget(paths, start)
                                     },
                                     onToggle = {
-                                        // 点的是被压暗的行（框选之外的）：先展开它，再把框选收掉 ——
+                                        // 点的是被压暗的行（框选之外的）：先展开它，再把框选收掉。
                                         // 压暗与概览上的高亮都由 selection 推出来，清空 selection 就一起复原。
                                         // 这里只会被 TraceRow 的 clickable 调到：拖动 / 滑动一旦超过 touchSlop
                                         // 就会被滚动或外层手势吃掉，不会走进这个回调。
@@ -308,8 +309,17 @@ private val ThinkingDetailMaxHeight = 180.dp
 /** 「复制」按钮的固定占位宽度：宽度固定，出现/消失不会挤动旁边任何东西。 */
 private val TraceCopySlot = 46.dp
 
-/** 展开卡片占屏高的上限。 */
-private const val DetailMaxScreenRatio = 0.55f
+/**
+ * 展开卡片**整张卡**（含标题行）占屏高的上限。
+ *
+ * 旧值 0.55 只卡正文，卡片实际高 = 正文上限 + 标题行与内距（约 54dp）：
+ * 在 878dp 的可视高上量到整卡 537dp（占满屏 59%，用户看到的就是「一屏大半」）。
+ * 现在按整张卡算，把标题那截固定高扣掉，0.45 落到 395dp 上下（约满屏 43%）。
+ */
+private const val DetailMaxScreenRatio = 0.45f
+
+/** 展开卡里正文以外的固定高度：标题行约 18dp + 6dp 间隔 + 卡片上下内距 20dp + 卡片外距 10dp。 */
+private val DetailCardChrome = 54.dp
 
 /** 摘要字数：正文 40 字、结果预览 42 字、工具参数 36 字，都是一行放得下的量。 */
 private const val HeadLimit = 40
@@ -332,7 +342,7 @@ private val Spaces = Regex("[ \t]{2,}")
 /**
  * 时间线里一行的类型，同时也是行首标签的文字。
  *
- * 数据里没有「上下文」这种角色，它是用户消息里那一段图片 / 附件路径 ——
+ * 数据里没有「上下文」这种角色，它是用户消息里那一段图片 / 附件路径：
  * 那些是喂给模型的资料、不是人说的话，所以从提问正文里裁出来单独成行，
  * 也和截图里「上下文 图片 ×1 · <path>」那一行对得上。
  */
@@ -368,7 +378,9 @@ private data class TraceLine(
     /** 工具行展开卡的结果段。 */
     val result: String? = null,
     /** 这条消息用了多久；消息里没有这项数据就留 null，不编一个数字上去。 */
-    val durationMs: Long? = null
+    val durationMs: Long? = null,
+    /** 工具行的「第 N 轮 · 第 M 步」：只有工具行有，其他行留空。 */
+    val stepLabel: String = ""
 )
 
 /** 一轮：一条 user 消息开启，到下一条 user 之前都算这一轮。 */
@@ -393,12 +405,15 @@ private fun buildRounds(all: List<ChatMessage>): List<TraceRound> {
 
     val rounds = ArrayList<TraceRound>()
     var lines: MutableList<TraceLine>? = null
+    // 这一轮里第几次工具调用：每遇到一条 user 消息归零（「第 M 步」就是这个口径）
+    var stepInRound = 0
 
     all.forEachIndexed { index, message ->
         when (message.role) {
             "user" -> {
                 lines?.let { rounds.add(TraceRound(rounds.size + 1, it)) }
                 val fresh = ArrayList<TraceLine>()
+                stepInRound = 0
                 val body = askBody(message)
                 val head = headLine(body, HeadLimit)
                 fresh.add(
@@ -464,7 +479,16 @@ private fun buildRounds(all: List<ChatMessage>): List<TraceRound> {
                     )
                 }
                 message.toolCalls.forEachIndexed { slot, call ->
-                    target.add(callLine("k" + index + "_" + slot, call, results[call.id]))
+                    // 轮号取「正在拼的这一轮」：它还压在 lines 里，所以是已有轮数 + 1
+                    stepInRound++
+                    target.add(
+                        callLine(
+                            key = "k" + index + "_" + slot,
+                            call = call,
+                            result = results[call.id],
+                            stepLabel = "第 " + (rounds.size + 1) + " 轮 · 第 " + stepInRound + " 步"
+                        )
+                    )
                 }
             }
 
@@ -480,7 +504,7 @@ private fun buildRounds(all: List<ChatMessage>): List<TraceRound> {
  * 页面一次推导出来的三张表：轮 → 时间线条目 → 概览块。
  *
  * 三者必须是同一次遍历的产物（块的 order 就是条目里的先后），所以合成一个对象整体缓存；
- * 拆成三个 remember 会各自失效、互相错位，缓存反而成了 bug 的来源。
+ * 拆成三个 remember 会各自失效、互相错位，缓存反而成了问题的来源。
  */
 private class TraceModel(
     val rounds: List<TraceRound>,
@@ -517,27 +541,34 @@ private fun buildTrace(all: List<ChatMessage>): TraceModel {
  * 工具调用行。
  *
  * 「子工具」靠 mcp__ 前缀认：消息里没有嵌套调用的记录，唯一有父子关系的就是
- * MCP 工具（mcp__服务名__工具名）——它挂在某个服务下面，和截图里 run_code 下挂的子调用是同一层意思。
+ * MCP 工具（mcp__服务名__工具名）：它挂在某个服务下面，和截图里 run_code 下挂的子调用是同一层意思。
  */
-private fun callLine(key: String, call: ToolCall, result: String?): TraceLine {
+private fun callLine(
+    key: String,
+    call: ToolCall,
+    result: String?,
+    stepLabel: String = ""
+): TraceLine {
     val sub = call.name.startsWith("mcp__")
+    // 非 MCP 工具的行摘要改成「一句话干了什么」（读取 test.txt / 运行命令 …），
+    // 和卡片标题行用同一个纯函数，两处不会说出两种话。
     val headline = if (sub) {
         call.name + " " + oneLine(flat(call.arguments), ArgLimit)
     } else {
-        val summary = argSummary(call.arguments)
-        if (summary.isEmpty()) "# " + call.name else "# " + call.name + " " + summary
+        toolSummary(call.name, call.arguments)
     }
     return TraceLine(
         key = key,
         kind = if (sub) TraceKind.SubTool else TraceKind.Tool,
         headline = headline,
         tail = if (result == null) RunningText else oneLine(result, TailLimit),
-        mono = true,
+        mono = sub,
         running = result == null,
         name = call.name,
         // 参数只存原文：缩进美化要解析 JSON，绝大多数行根本不会展开，留到展开时再算
         args = call.arguments.ifBlank { null },
-        result = result ?: RunningText
+        result = result ?: RunningText,
+        stepLabel = stepLabel
     )
 }
 
@@ -633,10 +664,12 @@ private fun TraceRow(
         }
         AnimatedVisibility(
             visible = expanded,
-            enter = expandVertically(animationSpec = Motion.spring()) +
-                fadeIn(animationSpec = Motion.spring()),
-            exit = shrinkVertically(animationSpec = Motion.spring()) +
-                fadeOut(animationSpec = Motion.spring())
+            // 高度用临界阻尼（不走过头），淡入淡出仍用 tween：
+            // 欠阻尼弹簧收缩时会先压过头再弹回来，看上去像「动画结束后又跳一下」。
+            enter = expandVertically(animationSpec = Motion.heightSpring()) +
+                fadeIn(animationSpec = Motion.fadeIn()),
+            exit = shrinkVertically(animationSpec = Motion.heightSpring()) +
+                fadeOut(animationSpec = Motion.fadeOut())
         ) {
             DetailCard(
                 line = line,
@@ -686,7 +719,7 @@ private fun KindChip(kind: TraceKind) {
  * 不再自己画「参数 / 结果」两段自绘 UI。
  *
  * 其余行（用户 / 助手 / 思考 / 上下文）仍是原来的浮层：18dp 圆角、6dp 阴影、1dp 发丝边，
- * 标题钉住、正文滚 —— 翻一屏长思考的时候还得知道自己在看哪一行。
+ * 标题钉住、正文滚：翻一屏长思考的时候还得知道自己在看哪一行。
  */
 @Composable
 private fun DetailCard(
@@ -705,7 +738,12 @@ private fun DetailCard(
             output = if (line.running) null else line.result,
             // 消息里没有「这一步成功与否」这一项，拿不到就不编：传 null
             // （ToolBlock 对「结果已返回、成败未知」显示「完成」＝ 调用已返回，不是断言成功）
-            ok = null
+            ok = null,
+            // 卡片标题行右侧写明这是第几轮第几步
+            stepLabel = line.stepLabel,
+            // 输出里的图片要能点开看：root 与回调都从页面传下来（主页同一套查看器）
+            imageRoot = imageRoot,
+            onImageClick = onImageClick
         )
         return
     }
@@ -713,7 +751,13 @@ private fun DetailCard(
     // 非工具行：正文浮层，长文在卡片内滚。
     // 思考卡的限高单独收紧到 180dp（和主页的思考框同一口径）：整屏高的思考卡
     // 看着就像正文，用户要的是「一眼扫过过程」。
-    val cap = if (line.kind == TraceKind.Thinking) ThinkingDetailMaxHeight else maxHeight
+    // 思考与助手都收到同一档：助手正文常常很长，展开后一屏占满就没法「一眼扫过过程」
+    // 折叠阈值与思考块一致。
+    val cap = if (line.kind == TraceKind.Thinking || line.kind == TraceKind.Assistant) {
+        ThinkingDetailMaxHeight
+    } else {
+        maxHeight
+    }
     val onSurface = MaterialTheme.colorScheme.onSurface
     val context = LocalContext.current
     // 「复制」的全局唯一身份：摸别的块时按钮会从这张卡身上挪走（和主页同一口径）
@@ -765,7 +809,7 @@ private fun DetailCard(
                                 Modifier
                             }
                         ),
-                    contentAlignment = Alignment.CenterEnd
+                    contentAlignment = Alignment.Center
                 ) {
                     if (traceCopyVisible) {
                         Text(
@@ -788,7 +832,7 @@ private fun DetailCard(
             }
             Spacer(Modifier.height(6.dp))
             // 卡片自己滚到底就停：再带动整页会让人以为外面那层也动了。
-            // 光把 over-scroll 工厂关掉还不够——那只是去掉回弹光晕，滚到边界之后的位移照样会
+            // 光把 over-scroll 工厂关掉还不够：那只是去掉回弹光晕，滚到边界之后的位移照样会
             // 冒给外层列表。交给 BoundedScrollColumn：装得下时不挂拦截、超出时才认领边界余量。
             CompositionLocalProvider(LocalOverscrollFactory provides null) {
                 BoundedScrollColumn(maxHeight = cap) {
@@ -1147,7 +1191,7 @@ private fun LaneLabel(text: String) {
  *
  * 一块 = 时间线一行，三行共用同一条时间轴：框选的最小单位因此从「轮」变成「块」，
  * 一轮里那几条工具调用可以只挑一条看，不再被轮的边界绑住。
- * 模块上的手势只干一件事 —— 框选：按下点就是区间起点、拖动点就是终点；
+ * 模块上的手势只干一件事：框选。按下点就是区间起点、拖动点就是终点；
  * 横向平移平时交给下面那条细条，只有手指贴到左右边缘时才由框选自己带一段自动平移。
  */
 @Composable
@@ -1296,7 +1340,7 @@ private fun TraceOverview(
                     val left: Float
                     val right: Float
                     if (moving != null) {
-                        // 拖动中两侧压在按下点与当前手指上，不吸附块边 —— 点哪算哪
+                        // 拖动中两侧压在按下点与当前手指上，不吸附块边：点哪算哪
                         left = minOf(moving.startX, moving.endX) + pan
                         right = maxOf(moving.startX, moving.endX) + pan
                     } else {

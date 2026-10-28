@@ -51,6 +51,7 @@ class DeepSeekProvider(
 
         // 地址本身不合法（少了 https:// 之类）时 OkHttp 会在 build 阶段抛 IllegalArgumentException，
         // 这一句提前收住，用户看到的是「地址无效」而不是一条底层异常
+        dumpWireIfEnabled(request)
         val httpRequest = try {
             Request.Builder()
                 .url(base + "/chat/completions")
@@ -79,6 +80,15 @@ class DeepSeekProvider(
                 var finishReason: String? = null
                 var promptTokens = 0
                 var completionTokens = 0
+                // 命中提示词缓存的输入 tokens：DeepSeek 用 prompt_cache_hit_tokens，
+                // OpenAI 那一系放在 prompt_tokens_details.cached_tokens，两个都认
+                var cachedTokens = 0
+                var cacheReported = false
+                // 另外三家的差异：Anthropic 兼容端点报 cache_read / cache_creation_input_tokens，
+                // 且 input 只是未缓存部分；推理 tokens 在 completion_tokens_details 里（有的家放顶层）
+                var cacheWriteTokens: Int? = null
+                var reasoningTokens: Int? = null
+                var promptIncludesCache = true
 
                 while (!source.exhausted()) {
                     val line = source.readUtf8Line() ?: break
@@ -91,6 +101,43 @@ class DeepSeekProvider(
                     chunk.optJSONObject("usage")?.let { usage ->
                         promptTokens = usage.optInt("prompt_tokens", promptTokens)
                         completionTokens = usage.optInt("completion_tokens", completionTokens)
+
+                        // ① Anthropic 兼容端点：缓存读写各自成字段，且 prompt_tokens 里**不含**它们。
+                        //    先判这一支，否则下面按「总量含命中」算会把未缓存输入算成 0。
+                        val anthropicRead = usage.optIntOrNull("cache_read_input_tokens")
+                        val anthropicWrite = usage.optIntOrNull("cache_creation_input_tokens")
+                        if (anthropicRead != null || anthropicWrite != null) {
+                            cachedTokens = anthropicRead ?: 0
+                            cacheReported = anthropicRead != null
+                            cacheWriteTokens = anthropicWrite
+                            promptIncludesCache = false
+                        }
+
+                        // ② DeepSeek：命中放在顶层 prompt_cache_hit_tokens（总量含命中）
+                        if (usage.has("prompt_cache_hit_tokens")) {
+                            cachedTokens = usage.optInt("prompt_cache_hit_tokens", 0)
+                            cacheReported = true
+                            promptIncludesCache = true
+                        }
+
+                        // ③ OpenAI 系：命中放在 prompt_tokens_details.cached_tokens；
+                        //    有的兼容端点还会在这里补一份 cache_creation_tokens
+                        val details = usage.optJSONObject("prompt_tokens_details")
+                        if (details != null) {
+                            if (!cacheReported && details.has("cached_tokens")) {
+                                cachedTokens = details.optInt("cached_tokens", 0)
+                                cacheReported = true
+                                promptIncludesCache = true
+                            }
+                            if (cacheWriteTokens == null) {
+                                cacheWriteTokens = details.optIntOrNull("cache_creation_tokens")
+                            }
+                        }
+
+                        // ④ 推理 tokens：优先 completion_tokens_details.reasoning_tokens，其次顶层 reasoning_tokens
+                        val completionDetails = usage.optJSONObject("completion_tokens_details")
+                        reasoningTokens = completionDetails?.optIntOrNull("reasoning_tokens")
+                            ?: usage.optIntOrNull("reasoning_tokens")
                     }
 
                     val choices = chunk.optJSONArray("choices") ?: continue
@@ -129,12 +176,45 @@ class DeepSeekProvider(
                         }
                     }
                 }
-                emit(LlmEvent.Finished(finishReason, promptTokens, completionTokens))
+                emit(
+                    LlmEvent.Finished(
+                        finishReason = finishReason,
+                        promptTokens = promptTokens,
+                        completionTokens = completionTokens,
+                        cachedTokens = cachedTokens,
+                        cacheReported = cacheReported,
+                        cacheWriteTokens = cacheWriteTokens,
+                        reasoningTokens = reasoningTokens,
+                        promptIncludesCache = promptIncludesCache
+                    )
+                )
             }
         } catch (e: Exception) {
             emit(LlmEvent.Failed(-1, e.message ?: e.javaClass.simpleName))
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * 线上请求落盘（默认关，pref = `wire_dump`）。
+     *
+     * 为什么需要：前缀缓存只在「两个请求从第 0 个 token 起逐字节相同」时才命中；
+     * 光看日志里的命中百分比，永远说不清是「我们这边哪里变了」还是「提供方侧的行为」。
+     * 把真实发出的 JSON 存下来，离线 diff 两个连续请求，就能一眼看到第一处差异在哪一行。
+     * 只保留最近 [WIRE_KEEP] 份，避免占空间。
+     */
+    private fun dumpWireIfEnabled(request: ChatRequest) {
+        val dir = com.zmf.agent.agent.ApiConfig.wireDumpDir ?: return
+        try {
+            if (!dir.exists()) dir.mkdirs()
+            val stamp = System.currentTimeMillis()
+            val file = java.io.File(dir, stamp.toString() + ".json")
+            file.writeText(buildRequestJson(request).toString())
+            val all = dir.listFiles()?.sortedBy { it.name }.orEmpty()
+            for (i in 0 until (all.size - 12).coerceAtLeast(0)) all[i].delete()
+        } catch (e: Exception) {
+            com.zmf.agent.core.log.FileLog.log("wire", "落盘失败：" + e.message)
+        }
+    }
 
     private fun buildRequestJson(request: ChatRequest): JSONObject {
         val root = JSONObject()
@@ -150,7 +230,7 @@ class DeepSeekProvider(
         if (request.thinking && !request.reasoningEffort.isNullOrBlank()) {
             root.put("reasoning_effort", request.reasoningEffort)
         }
-        // 输出上限：只有摘要请求会带上（DSH 的 maxTokens 口径，含推理 token）。
+        // 输出上限：只有摘要请求会带上（口径含推理 token）。
         // 不设就一个字段都不加，对话请求的行为与改造前完全一致。
         request.maxTokens?.takeIf { it > 0 }?.let { root.put("max_tokens", it) }
 
@@ -234,4 +314,10 @@ class DeepSeekProvider(
     private companion object {
         val JSON = "application/json; charset=utf-8".toMediaType()
     }
+}
+
+/** 读可空整数：字段不存在或为 JSON null 时返回 null：「没报」和「报了 0」是两件事。 */
+private fun JSONObject.optIntOrNull(key: String): Int? {
+    if (!has(key) || isNull(key)) return null
+    return optInt(key, 0)
 }

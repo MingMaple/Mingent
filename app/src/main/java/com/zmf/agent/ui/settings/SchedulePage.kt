@@ -41,6 +41,7 @@ import com.zmf.agent.agent.workspace.WorkSpaceStore
 import com.zmf.agent.schedule.ScheduleRunner
 import com.zmf.agent.schedule.ScheduleStore
 import com.zmf.agent.schedule.ScheduleTask
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
 import com.zmf.agent.ui.common.saltRowClickable
 import com.zmf.agent.ui.shell.SaltSwitch
@@ -48,6 +49,7 @@ import com.zmf.agent.ui.theme.Palette
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.zmf.agent.ui.common.saltFieldColors
 
 /**
  * 「定时任务」页（设置下的二级页）：列表 / 新建 / 删除。
@@ -61,6 +63,8 @@ fun SchedulePage(onBack: () -> Unit) {
     val context = LocalContext.current
     var tasks by remember { mutableStateOf(ScheduleStore.load(context)) }
     var creating by remember { mutableStateOf(false) }
+    // 哪一条正在展开编辑（null = 全部折叠）。同一时刻只展开一条：两条表单叠在一起只会改错。
+    var editingId by remember { mutableStateOf<String?>(null) }
     var pendingDelete by remember { mutableStateOf<ScheduleTask?>(null) }
     val onSurface = MaterialTheme.colorScheme.onSurface
 
@@ -107,21 +111,40 @@ fun SchedulePage(onBack: () -> Unit) {
             for (task in tasks) {
                 ScheduleRow(
                     task = task,
+                    expanded = editingId == task.id,
                     onToggle = { on ->
                         // 开关改的是「要不要排期」：arm 里打开会算下一次并排闹钟，关闭会把 nextAt 归零并撤闹钟
                         ScheduleRunner.arm(context, task.copy(enabled = on))
                         tasks = ScheduleStore.load(context)
                     },
+                    // 点「编辑」展开成表单，再点一下收回（同一时刻只展开一条，两条表单叠着只会改错）
+                    onToggleExpand = {
+                        editingId = if (editingId == task.id) null else task.id
+                        creating = false
+                    },
                     onDelete = { pendingDelete = task }
                 )
+                if (editingId == task.id) {
+                    TaskForm(
+                        initial = task,
+                        onCancel = { editingId = null },
+                        onSave = { draft ->
+                            // arm 会按新规则重算 nextAt 并重排闹钟；id 相同即覆盖原任务
+                            ScheduleRunner.arm(context, draft)
+                            tasks = ScheduleStore.load(context)
+                            editingId = null
+                        }
+                    )
+                }
             }
 
             Spacer(Modifier.height(8.dp))
 
             if (creating) {
-                NewTaskForm(
+                TaskForm(
+                    initial = null,
                     onCancel = { creating = false },
-                    onCreate = { draft ->
+                    onSave = { draft ->
                         // arm 里统一算 nextAt / 落盘 / 排闹钟，页面只负责把原始字段给全
                         ScheduleRunner.arm(context, draft)
                         tasks = ScheduleStore.load(context)
@@ -132,7 +155,10 @@ fun SchedulePage(onBack: () -> Unit) {
                 Text(
                     text = "＋ 新建任务",
                     modifier = Modifier
-                        .saltRowClickable(RoundedCornerShape(10.dp)) { creating = true }
+                        .saltRowClickable(RoundedCornerShape(10.dp)) {
+                            creating = true
+                            editingId = null
+                        }
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     fontSize = 14.sp,
                     color = Palette.Neutral
@@ -140,8 +166,8 @@ fun SchedulePage(onBack: () -> Unit) {
             }
 
             Text(
-                text = "任务是系统闹钟触发的，不监听开机广播：重启后第一次打开 App 会自动重排。" +
-                    "每个任务只留一条通知，点通知回到结果所在会话。",
+                text = "定时任务由系统闹钟触发，不监听开机广播；应用重启后首次打开时会自动重新排期。" +
+                    "每个任务仅保留一条通知，点击通知可返回结果所在会话。",
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                 fontSize = 11.sp,
                 color = onSurface.copy(alpha = 0.35f)
@@ -170,22 +196,24 @@ fun SchedulePage(onBack: () -> Unit) {
     }
 }
 
-/** 列表一项：标题 / 类型 + 下次触发 / 开关；第二行右侧放删除。 */
+/** 列表一项：标题 / 类型 + 下次触发 / 开关；第二行放「编辑」与「删除」。 */
 @Composable
 private fun ScheduleRow(
     task: ScheduleTask,
+    expanded: Boolean,
     onToggle: (Boolean) -> Unit,
+    onToggleExpand: () -> Unit,
     onDelete: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Surface(
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
-            // 卡片自己裁到 22dp：行里的矩形波纹越界也不会露出方角
-            .clip(RoundedCornerShape(22.dp))
+            // 卡片自己裁到 16dp：行里的矩形波纹越界也不会露出方角
+            .clip(RoundedCornerShape(16.dp))
     ) {
         Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -204,11 +232,19 @@ private fun ScheduleRow(
                 }
                 SaltSwitch(checked = task.enabled, onCheckedChange = onToggle)
             }
-            // 删除单独占一行右对齐：跟开关挤在一起太容易误触
+            // 编辑与删除单独占一行右对齐：跟开关挤在一起太容易误触
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
             ) {
+                Text(
+                    text = if (expanded) "收起" else "编辑",
+                    modifier = Modifier
+                        .saltRowClickable(RoundedCornerShape(8.dp), onClick = onToggleExpand)
+                        .padding(top = 6.dp, start = 8.dp, end = 8.dp),
+                    fontSize = 13.sp,
+                    color = Palette.Neutral
+                )
                 Text(
                     text = "删除",
                     modifier = Modifier
@@ -229,21 +265,27 @@ private fun ScheduleRow(
  * 输入到一半退出去，不会在 files 里留下半条任务。
  */
 @Composable
-private fun NewTaskForm(
+private fun TaskForm(
+    initial: ScheduleTask?,
     onCancel: () -> Unit,
-    onCreate: (ScheduleTask) -> Unit
+    onSave: (ScheduleTask) -> Unit
 ) {
     val context = LocalContext.current
     val onSurface = MaterialTheme.colorScheme.onSurface
     val bodyStyle: TextStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp)
 
-    var title by remember { mutableStateOf("") }
-    var kind by remember { mutableStateOf(ScheduleStore.KIND_EVERY) }
-    var everyText by remember { mutableStateOf(ScheduleStore.DEFAULT_EVERY_MINUTES.toString()) }
-    var timeText by remember { mutableStateOf(ScheduleStore.DEFAULT_TIME_OF_DAY) }
-    var prompt by remember { mutableStateOf("") }
-    var targetNew by remember { mutableStateOf(true) }
-    var pickedSessionId by remember { mutableStateOf<String?>(null) }
+    // initial 非空＝编辑既有任务：字段按它的现值铺开，保存时沿用 id（让 arm 覆盖原任务）
+    var title by remember(initial) { mutableStateOf(initial?.title.orEmpty()) }
+    var kind by remember(initial) { mutableStateOf(initial?.kind ?: ScheduleStore.KIND_EVERY) }
+    var everyText by remember(initial) {
+        mutableStateOf((initial?.everyMinutes ?: ScheduleStore.DEFAULT_EVERY_MINUTES).toString())
+    }
+    var timeText by remember(initial) {
+        mutableStateOf(initial?.timeOfDay ?: ScheduleStore.DEFAULT_TIME_OF_DAY)
+    }
+    var prompt by remember(initial) { mutableStateOf(initial?.prompt.orEmpty()) }
+    var targetNew by remember(initial) { mutableStateOf(initial?.targetSessionId == null) }
+    var pickedSessionId by remember(initial) { mutableStateOf(initial?.targetSessionId) }
     var showPicker by remember { mutableStateOf(false) }
     var hint by remember { mutableStateOf("") }
     // 弹窗和「当前选择」共用这一份：只在进表单时读一次，避免每次重组都读文件
@@ -261,7 +303,7 @@ private fun NewTaskForm(
             taskPrompt.isEmpty() -> "指令不能为空"
             kind == ScheduleStore.KIND_EVERY && (minutes == null || minutes <= 0) -> "间隔要填正整数分钟"
             kind != ScheduleStore.KIND_EVERY && at <= 0L -> "时刻要写成 HH:mm"
-            !targetNew && pickedSessionId == null -> "请先选择会话"
+            !targetNew && pickedSessionId == null -> "请先选择目标会话"
             else -> ""
         }
         if (problem.isNotEmpty()) {
@@ -269,8 +311,10 @@ private fun NewTaskForm(
             return
         }
         hint = ""
-        onCreate(
+        onSave(
             ScheduleTask(
+                // 空 id＝新建（arm 里现发号）；有 id＝编辑，覆盖原任务
+                id = initial?.id.orEmpty(),
                 title = taskTitle,
                 kind = kind,
                 everyMinutes = minutes ?: ScheduleStore.DEFAULT_EVERY_MINUTES,
@@ -278,30 +322,34 @@ private fun NewTaskForm(
                 // once 存绝对毫秒：跨天 / 重启后仍然知道该在哪个时刻跑
                 atMillis = if (kind == ScheduleStore.KIND_ONCE) at else 0L,
                 prompt = taskPrompt,
-                targetSessionId = if (targetNew) null else pickedSessionId
+                targetSessionId = if (targetNew) null else pickedSessionId,
+                // 开关与「上次跑了没」不属于表单：编辑时原样带过去，别因为改个标题把任务停了
+                enabled = initial?.enabled ?: true,
+                lastRunAt = initial?.lastRunAt ?: 0L
             )
         )
     }
 
     Surface(
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
-            .clip(RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(16.dp))
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             OutlinedTextField(
+                colors = saltFieldColors(),
                 value = title,
                 onValueChange = { title = it },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 textStyle = bodyStyle,
-                placeholder = { Text("标题（侧边栏里靠它认任务）", fontSize = 12.sp) }
+                placeholder = { Text("标题（侧边栏以此识别任务）", fontSize = 12.sp) }
             )
 
             Text("类型", fontSize = 12.sp, color = onSurface.copy(alpha = 0.55f))
@@ -319,33 +367,36 @@ private fun NewTaskForm(
 
             if (kind == ScheduleStore.KIND_EVERY) {
                 OutlinedTextField(
+                colors = saltFieldColors(),
                     value = everyText,
                     onValueChange = { everyText = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     textStyle = bodyStyle,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    placeholder = { Text("间隔分钟，例如 60", fontSize = 12.sp) }
+                    placeholder = { Text("间隔分钟数，例如 60", fontSize = 12.sp) }
                 )
             } else {
                 OutlinedTextField(
+                colors = saltFieldColors(),
                     value = timeText,
                     onValueChange = { timeText = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     textStyle = bodyStyle,
-                    placeholder = { Text("时刻 HH:mm，例如 09:00", fontSize = 12.sp) }
+                    placeholder = { Text("触发时刻（HH:mm），例如 09:00", fontSize = 12.sp) }
                 )
             }
 
             OutlinedTextField(
+                colors = saltFieldColors(),
                 value = prompt,
                 onValueChange = { prompt = it },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(110.dp),
                 textStyle = bodyStyle,
-                placeholder = { Text("指令：到点发给模型的那句话", fontSize = 12.sp) }
+                placeholder = { Text("指令（到达触发时刻发送给模型的内容）", fontSize = 12.sp) }
             )
 
             Text("结果存到", fontSize = 12.sp, color = onSurface.copy(alpha = 0.55f))
@@ -456,13 +507,13 @@ private fun ScheduleChip(
     val onSurface = MaterialTheme.colorScheme.onSurface
     val alpha = if (enabled) 1f else 0.3f
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         color = if (selected) {
             Palette.AccentGreen.copy(alpha = 0.16f * alpha)
         } else {
             onSurface.copy(alpha = 0.06f * alpha)
         },
-        modifier = Modifier.saltRowClickable(RoundedCornerShape(12.dp), enabled = enabled, onClick = onClick)
+        modifier = Modifier.saltCardRow(enabled = enabled, onClick = onClick)
     ) {
         Text(
             text = text,

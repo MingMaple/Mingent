@@ -9,6 +9,7 @@ import com.zmf.agent.ui.chat.ChatViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * 悬浮球小窗 ↔ 聊天状态的数据桥。
@@ -75,6 +76,21 @@ object ChatBridge {
     fun title(): String {
         val target = current() ?: return "会话"
         return runCatching { target.currentTitle() }.getOrDefault("会话").ifBlank { "会话" }
+    }
+
+    /**
+     * 后台（定时任务）改过会话文件之后通知界面重读一次（2026-10-25）。
+     *
+     * 不加这个的话，后台追加的会话要等用户杀掉进程重进才看得见——界面的 sessionList 是内存快照。
+     * 切到主线程执行：reloadSessionsFromDisk 会写 Compose 状态。
+     */
+    fun notifySessionsChanged() {
+        if (bound == null) return
+        bridgeScope.launch {
+            val target = bound ?: return@launch
+            runCatching { target.reloadSessionsFromDisk() }
+                .onFailure { FileLog.log("float", "后台刷新会话失败：" + it) }
+        }
     }
 
     /** 读一次快照版本 + 拿引用：绑定/换绑能触发重组。 */

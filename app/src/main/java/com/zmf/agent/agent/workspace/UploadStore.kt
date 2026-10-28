@@ -225,7 +225,7 @@ object UploadStore {
      * [sessions] 引用到的相对路径集合。
      *
      * images 是结构化字段，直接读；普通附件没有字段，只写在提问正文的「【附件·…】」段里，
-     * 所以正文里出现过 "uploads/xxx" 也算引用——否则清理会把用户还在用的附件一起删掉。
+     * 所以正文里出现过 "uploads/xxx" 也算引用，否则清理会把用户还在用的附件一起删掉。
      * 工具调用的参数里也可能出现这些路径（模型自己往 uploads 里写过东西），一并算引用，宁少删不多删。
      */
     private fun referencedPaths(sessions: List<ChatSession>): Set<String> {

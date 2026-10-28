@@ -92,7 +92,7 @@ fun SetupScreen(
                     description = context.getString(com.ai.assistance.operit.terminal.R.string.category_nodejs_desc),
                     packages = listOf(
                         PackageItem("nodejs", context.getString(com.ai.assistance.operit.terminal.R.string.package_nodejs_name), "curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && apt install -y nodejs", context.getString(com.ai.assistance.operit.terminal.R.string.package_nodejs_desc)),
-                        PackageItem("pnpm", context.getString(com.ai.assistance.operit.terminal.R.string.package_pnpm_name), "typescript", context.getString(com.ai.assistance.operit.terminal.R.string.package_pnpm_desc))
+                        PackageItem("pnpm", context.getString(com.ai.assistance.operit.terminal.R.string.package_pnpm_name), "pnpm@10", context.getString(com.ai.assistance.operit.terminal.R.string.package_pnpm_desc))
                     )
                 ),
                 PackageCategory(
@@ -103,7 +103,7 @@ fun SetupScreen(
                         PackageItem("python-is-python3", context.getString(com.ai.assistance.operit.terminal.R.string.package_python_link_name), "python-is-python3", context.getString(com.ai.assistance.operit.terminal.R.string.package_python_link_desc)),
                         PackageItem("python3-venv", context.getString(com.ai.assistance.operit.terminal.R.string.package_python_venv_name), "python3-venv", context.getString(com.ai.assistance.operit.terminal.R.string.package_python_venv_desc)),
                         PackageItem("python3-pip", context.getString(com.ai.assistance.operit.terminal.R.string.package_python_pip_name), "python3-pip", context.getString(com.ai.assistance.operit.terminal.R.string.package_python_pip_desc)),
-                        PackageItem("uv", context.getString(com.ai.assistance.operit.terminal.R.string.package_uv_name), "pipx install uv", context.getString(com.ai.assistance.operit.terminal.R.string.package_uv_desc))
+                        PackageItem("uv", context.getString(com.ai.assistance.operit.terminal.R.string.package_uv_name), "{ pipx install uv || true; }", context.getString(com.ai.assistance.operit.terminal.R.string.package_uv_desc))
                     )
                 ),
                 PackageCategory(
@@ -363,19 +363,25 @@ fun SetupScreen(
                     // 系统升级
                     commands.add("apt upgrade -y")
                     
-                    // 为 pip/pipx 设置国内镜像（永久配置）
+                    // 为 pip/pipx 与 uv/uvx 设置镜像（永久配置）。
+                    //
+                    // 地址取自源设置中的「Pip/Uv 源」，新装机默认为中科大，与脚本启动时写入的
+                    // 配置同源，避免两处各写一份。2026-10-28 真机实测：清华的 pypi 镜像连 443
+                    // 端口都建立不了（curl 报 Failed to connect after 94 ms），会导致 pipx 安装
+                    // uv 时反复重试并最终报 No matching distribution found。
+                    val pipSource = sourceManager.getSelectedSource(PackageManagerType.PIP)
                     commands.add("mkdir -p ~/.config/pip")
                     commands.add("echo '[global]' > ~/.config/pip/pip.conf")
-                    commands.add("echo 'index-url = https://pypi.tuna.tsinghua.edu.cn/simple' >> ~/.config/pip/pip.conf")
-                    
-                    // 为 uv/uvx 设置国内镜像（永久配置）
+                    commands.add("echo 'index-url = ${pipSource.url}' >> ~/.config/pip/pip.conf")
                     commands.add("mkdir -p ~/.config/uv")
-                    commands.add("echo 'index-url = \"https://pypi.tuna.tsinghua.edu.cn/simple\"' > ~/.config/uv/uv.toml")
+                    commands.add("echo 'index-url = \"${pipSource.url}\"' > ~/.config/uv/uv.toml")
                     
                     // 收集选中的包
                     val selectedAptPackages = mutableListOf<String>()
                     val selectedNpmPackages = mutableListOf<String>()
                     val selectedCustomCommands = mutableListOf<String>()
+                    // 是否勾选了 PNPM：它除安装本体外还需补齐启动入口并写入配置，故单独标记。
+                    var selectedPnpm = false
                     
                     packageCategories.forEach { category ->
                         category.packages.forEach { pkg ->
@@ -391,6 +397,11 @@ fun SetupScreen(
                                     selectedCustomCommands.add(pkg.command)
                                 } else if (category.id == "nodejs" && pkg.id != "nodejs") {
                                     selectedNpmPackages.add(pkg.command)
+                                    // PNPM 一项的说明是「快速的包管理器和 TypeScript」，两者一并安装。
+                                    if (pkg.id == "pnpm") {
+                                        selectedPnpm = true
+                                        selectedNpmPackages.add("typescript")
+                                    }
                                 } else {
                                     selectedAptPackages.add(pkg.command)
                                 }
@@ -436,16 +447,56 @@ fun SetupScreen(
                         }
                     }
                     
-                    // 安装 NPM 包（如果 nodejs 已经安装或被选中）
+                    // NPM 全局包：只执行安装命令，不附加任何说明性文本。
+                    //
+                    // 安装使用 npm 而非 pnpm 自举：pnpm 的可执行入口依赖包自身的 install 脚本，
+                    // 而 npm 11（Node 24 自带）默认跳过依赖的 install 脚本，包体装完后
+                    // /usr/bin 下可能只有一个指向不存在目标的软链接，后续命令一律报
+                    // pnpm: command not found。
+                    //
+                    // 版本锁定在 10.x，不装最新版。pnpm 自 11 起把 bin 入口改成引导器
+                    // （bin/pnpm.mjs），首次运行还要再下载平台专用的 @pnpm/exe：在 PRoot 容器内
+                    // 该下载既报 could not reach ... fetch failed，也会长时间停住不动；而 10.x 是
+                    // 纯 JavaScript 入口（bin/pnpm.cjs），npm 建好软链接即可使用，没有第二次下载。
+                    // 实测同一台设备、同一个源：npm 安装 10.x 用时 37 秒，安装后 pnpm --version
+                    // 立即返回 10.34.9；而 12.x 停在 Downloading the pnpm ... binary 不再前进。
+                    //
+                    // 三个开关用于消除安装尾部的长时间等待：--no-audit 与 --no-fund 省掉
+                    // 两轮额外的网络往返；--no-update-notifier 关掉安装结束后的版本检查，
+                    // 该项会在网络较慢时让命令迟迟不收尾，表现为安装完成却一直转圈。
                     if (selectedNpmPackages.isNotEmpty()) {
-                        // 更换为淘宝源
-                        commands.add("npm config set registry https://registry.npmmirror.com/")
-                        // 清理 npm 缓存
-                        commands.add("npm cache clean --force")
-                        // 安装pnpm
-                        commands.add("npm install -g pnpm")
-                        // 使用 pnpm 安装其他包
-                        commands.add("pnpm add -g ${selectedNpmPackages.joinToString(" ")}")
+                        val pkgs = selectedNpmPackages.joinToString(" ")
+                        commands.add(
+                            "if command -v npm >/dev/null 2>&1; then " +
+                                "npm install -g $pkgs --no-audit --no-fund --no-update-notifier; fi"
+                        )
+                    }
+
+                    // PNPM 补齐启动入口。npm 未能建立 /usr/bin/pnpm 时，直接以包内的脚本
+                    // 本体生成一个转发脚本来补位，避免再走一次依赖 install 脚本的链路。
+                    // 写入前先删除同名文件，防止顺着失效的软链接写进包体内部。
+                    // 该脚本不含任何说明文字，仅转交参数。
+                    if (selectedPnpm) {
+                        commands.add(
+                            "if command -v npm >/dev/null 2>&1 && ! command -v pnpm >/dev/null 2>&1; then " +
+                                "P=\"\$(npm prefix -g)\"; " +
+                                "F=\"\$(ls \"\$P\"/lib/node_modules/pnpm/bin/pnpm.cjs " +
+                                "\"\$P\"/lib/node_modules/pnpm/bin/pnpm.mjs 2>/dev/null | head -n 1)\"; " +
+                                "if [ -n \"\$F\" ]; then " +
+                                "mkdir -p \"\$P\"/bin; rm -f \"\$P\"/bin/pnpm; " +
+                                "printf '#!/bin/sh\\nexec node \"%s\" \"\$@\"\\n' \"\$F\" > \"\$P\"/bin/pnpm; " +
+                                "chmod +x \"\$P\"/bin/pnpm; fi; fi"
+                        )
+                        // PNPM 的慢环节。PRoot 以 ptrace 转发每一条系统调用，逐个文件校验
+                        // 仓库完整性与联网检查新版本都会被放大成可感知的停顿，「下载完成、
+                        // 向本地导入时长时间无响应」多由此产生，故在此关闭这两项。
+                        // 版本号排在配置之前打印，配置项即使不被接受也不影响安装结果的可见性。
+                        commands.add(
+                            "if command -v pnpm >/dev/null 2>&1; then " +
+                                "pnpm --version; " +
+                                "pnpm config set update-notifier false; " +
+                                "pnpm config set verify-store-integrity false; fi"
+                        )
                     }
                     
                     commandsToRun.value = commands

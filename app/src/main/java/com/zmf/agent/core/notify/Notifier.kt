@@ -18,7 +18,7 @@ import com.zmf.agent.core.log.FileLog
  *
  * 三类通知走同一个 [post]，差别只是通知 id 与文案：
  * 同类新结果会顶掉旧的（固定 id），不同类可以并存，避免长跑任务把通知栏刷成一片。
- * 是否该发（比如用户正在前台看这个会话）由调用方判断——这里只管「安静地发出去」。
+ * 是否该发（比如用户正在前台看这个会话）由调用方判断：这里只管「安静地发出去」。
  */
 object Notifier {
 
@@ -31,7 +31,7 @@ object Notifier {
     /**
      * 旧的 IMPORTANCE_DEFAULT 渠道。
      *
-     * 渠道的 importance 建成即固定，代码改不了系统里已有的那条——想从「进通知栏」
+     * 渠道的 importance 建成即固定，代码改不了系统里已有的那条：想从「进通知栏」
      * 抬到「弹横幅」只能换一个新的渠道 id。老渠道顺手删掉，免得设置里留两条同名的。
      */
     private const val LEGACY_CHANNEL_ID = "agent_result"
@@ -61,15 +61,32 @@ object Notifier {
         post(context, ID_SUBAGENT, title, text, sessionId)
     }
 
-    /** 定时 / 计划任务触发。 */
+    /**
+     * 定时 / 计划任务触发。
+     *
+     * 每次给一个新 id：固定 id 会让后一条通知把前一条顶掉，
+     * 用户还没来得及看的内容就再也翻不到了。这里在 3001–3199 之间轮转，
+     * 与前台服务（1001）、回复（2001）、子代理（2002）都不冲突。
+     */
     fun notifySchedule(context: Context, title: String, text: String, sessionId: String = "") {
-        post(context, ID_SCHEDULE, title, text, sessionId)
+        post(context, nextScheduleId(), title, text, sessionId)
+    }
+
+    private val scheduleSeq = java.util.concurrent.atomic.AtomicInteger(ID_SCHEDULE)
+
+    private fun nextScheduleId(): Int {
+        val next = scheduleSeq.incrementAndGet()
+        if (next > ID_SCHEDULE + 199) {
+            scheduleSeq.set(ID_SCHEDULE)
+            return scheduleSeq.incrementAndGet()
+        }
+        return next
     }
 
     /**
      * 三个入口的公共实现。
      *
-     * 整段 runCatching：通知失败（权限被撤回、厂商魔改）绝不能把 Agent 循环带崩——
+     * 整段 runCatching：通知失败（权限被撤回、厂商魔改）绝不能把 Agent 循环带崩，
      * 通知只是顺带的提醒，丢了不影响回合结果。
      */
     private fun post(context: Context, id: Int, title: String, text: String, sessionId: String) {

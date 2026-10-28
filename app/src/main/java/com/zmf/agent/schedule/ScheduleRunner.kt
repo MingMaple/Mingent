@@ -10,6 +10,7 @@ import com.zmf.agent.agent.loop.AgentUi
 import com.zmf.agent.agent.permission.PermissionStore
 import com.zmf.agent.agent.prompt.PromptInput
 import com.zmf.agent.agent.provider.DeepSeekProvider
+import com.zmf.agent.agent.provider.UsageBuckets
 import com.zmf.agent.agent.session.ChatSession
 import com.zmf.agent.agent.session.SessionStore
 import com.zmf.agent.agent.workspace.WorkSpaceStore
@@ -19,6 +20,7 @@ import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.service.AgentForegroundService
 import com.zmf.agent.tools.ToolContext
+import com.zmf.agent.ui.float.ChatBridge
 import com.zmf.agent.tools.ToolRegistry
 import com.zmf.agent.tools.ToolResult
 import kotlinx.coroutines.CoroutineScope
@@ -53,6 +55,9 @@ object ScheduleRunner {
     /** 会话标题最长取任务名前多少个字（侧边栏一行放得下）。 */
     private const val TITLE_CHARS = 20
 
+    /** 后台一轮最多带多少条历史问答：够接上「第二次回二」这类上下文，又不至于把窗口吃满。 */
+    private const val HISTORY_MESSAGES = 20
+
     /** 已经错过的时间里的一律「马上」跑：等一个周期再跑，用户会以为任务丢了。 */
     private const val IMMEDIATE_DELAY_MS = 5_000L
 
@@ -65,7 +70,7 @@ object ScheduleRunner {
      * 按任务当前配置算下一次，落盘 + 排闹钟，返回落盘后的副本（界面直接拿它刷新列表）。
      *
      * 停用就只取消闹钟；算不出未来时刻（once 的时刻已经过了）就排到「马上」，
-     * 静默排不上比迟到更糟——用户开开关就是想让它跑。
+     * 静默排不上比迟到更糟：用户开开关就是想让它跑。
      */
     fun arm(context: Context, task: ScheduleTask): ScheduleTask {
         val app = context.applicationContext
@@ -74,7 +79,8 @@ object ScheduleRunner {
             return ScheduleStore.upsert(app, task.copy(nextAt = 0L))
         }
         val now = System.currentTimeMillis()
-        val computed = ScheduleStore.nextAfter(task, now)
+        // 新建 / 编辑 / 重新启用：从「现在」起算一格，不继承旧的计划时刻（拿旧 nextAt 作锚会让首次触发贴着旧节奏）
+        val computed = ScheduleStore.nextAfter(task.copy(nextAt = 0L), now)
         val nextAt = if (computed > now) computed else now + IMMEDIATE_DELAY_MS
         val stored = ScheduleStore.upsert(app, task.copy(nextAt = nextAt))
         schedule(app, stored)
@@ -180,6 +186,19 @@ object ScheduleRunner {
         )
         ScheduleStore.upsert(app, fired)
         if (keepRunning) schedule(app, fired) else cancel(app, taskId)
+        val startedAt = System.currentTimeMillis()
+        // 系统会把精确闹钟降成 45 秒窗口（见 ScheduleStore.nextEvery），迟到本身改不了；
+        // 记一行是为了排障时能分清「闹钟晚到」和「上一轮跑太久」
+        val lateMillis = if (task.nextAt > 0L) startedAt - task.nextAt else 0L
+        if (lateMillis >= 5_000L) {
+            FileLog.log(TAG, "「" + task.title + "」比计划晚 " + (lateMillis / 1000) + " 秒触发")
+        }
+        // 每次触发起一行：排期只说明「闹钟挂在几点」，真正开始跑、跑了多久要靠这一对起止行
+        FileLog.log(
+            TAG,
+            "开始执行「" + task.title + "」，开始于 " + timeText(startedAt) +
+                "，下一次 " + (if (keepRunning) timeText(computed) else "不再执行")
+        )
 
         val session = resolveSession(app, task)
         var content = ""
@@ -195,10 +214,17 @@ object ScheduleRunner {
 
         if (content.isNotEmpty()) {
             appendResult(app, session, task, content)
+            // 界面可能正开着：让它立刻重读，别等用户杀进程重进
+            ChatBridge.notifySessionsChanged()
             Notifier.notifySchedule(app, "定时任务完成", preview(content), session.id)
         } else {
             Notifier.notifySchedule(app, "定时任务失败", task.title + "：" + reason, session.id)
         }
+        FileLog.log(
+            TAG,
+            "执行结束「" + task.title + "」，耗时 " + (System.currentTimeMillis() - startedAt) +
+                " 毫秒，" + (if (content.isNotEmpty()) "成功 " + content.length + " 字" else "失败：" + reason)
+        )
     }
 
     /**
@@ -224,7 +250,9 @@ object ScheduleRunner {
             // 系统提示词其余项都吃 PromptInput 的默认值，只补真实的权限档与工作区路径
             promptProvider = { PromptInput(workspacePath = workspace.absolutePath, permission = permission) }
         )
-        val messages = mutableListOf<ChatMessage>()
+        // 带上目标会话已有的问答：否则每一轮都是「第一次见这句话」，
+        // 用户设的「第二次回二」永远只会回一。
+        val messages = historyOf(session)
         val ui = SilentUi()
         // 后台没人看思考过程：关掉思考省 token，也少一条「历史里必须回传 reasoning_content」的约束
         loop.run(
@@ -248,7 +276,25 @@ object ScheduleRunner {
         return RoundResult(content, "")
     }
 
-    /** 目标会话：有 id 就续那条（被删了退成新建），null 就每次新开一条。 */
+    /**
+     * 目标会话里「有正文的 user/assistant」逐条搬成一轮的上下文。
+     *
+     * 刻意丢掉 tool_calls 与 tool 结果：它们必须成对出现，后台单轮重放很容易造出非法请求；
+     * 定时任务需要的是「上次问到哪了」，而不是中间的工具细节。
+     */
+    private fun historyOf(session: ChatSession): MutableList<ChatMessage> =
+        session.messages
+            .filter { (it.role == "user" || it.role == "assistant") && it.content.isNotBlank() }
+            .takeLast(HISTORY_MESSAGES)
+            .mapTo(mutableListOf()) { ChatMessage(role = it.role, content = it.content) }
+
+    /**
+     * 目标会话：有 id 就续那条（被删了退成新建）。
+     *
+     * 选了「新会话」时**只在第一次触发时建一条，并把 id 写回任务**：
+     * 之前每次都新建，于是同一任务每轮的上下文都是从零开始，用户测「第二次回二」时永远只回一，
+     * 侧边栏还会越堆越多一次性会话。
+     */
     private fun resolveSession(app: Context, task: ScheduleTask): ChatSession {
         val targetId = task.targetSessionId?.takeIf { it.isNotEmpty() }
         if (targetId != null) {
@@ -257,7 +303,13 @@ object ScheduleRunner {
             FileLog.log(TAG, "目标会话已不存在，改为新建：" + targetId)
         }
         // 标题先用任务名：侧边栏一眼能认出这条会话是哪个定时任务产出的（有标题后聊天不会覆盖它）
-        return SessionStore.newSession().copy(title = task.title.take(TITLE_CHARS))
+        val created = SessionStore.newSession().copy(title = task.title.take(TITLE_CHARS))
+        // 立刻落盘并写回任务：下一轮才能接上这一轮的上下文
+        SessionStore.save(app, listOf(created) + SessionStore.load(app))
+        ScheduleStore.upsert(app, task.copy(targetSessionId = created.id))
+        ChatBridge.notifySessionsChanged()
+        FileLog.log(TAG, "为任务「" + task.title + "」建立结果会话：" + created.id)
+        return created
     }
 
     /**
@@ -273,6 +325,18 @@ object ScheduleRunner {
             ChatMessage(role = "user", content = task.prompt),
             ChatMessage(role = "assistant", content = content)
         )
+        // 只动目标那一条：整表读改写会跟界面抢快照，把刚追加的问答盖回去
+        if (SessionStore.appendMessages(app, session.id, added)) {
+            // 后台起的标题要补上（用户手动起的标题 appendMessages 不会动）
+            val stored = SessionStore.load(app).firstOrNull { it.id == session.id }
+            if (stored != null && stored.title.isBlank()) {
+                SessionStore.saveMerged(
+                    app,
+                    listOf(stored.copy(title = task.title.take(TITLE_CHARS)))
+                )
+            }
+            return
+        }
         val all = SessionStore.load(app)
         val index = all.indexOfFirst { it.id == session.id }
         val merged = if (index >= 0) {
@@ -337,7 +401,7 @@ object ScheduleRunner {
 
         override fun onToolFinished(call: ToolCall, result: ToolResult) = Unit
 
-        override fun onUsage(promptTokens: Int, completionTokens: Int) = Unit
+        override fun onUsage(usage: UsageBuckets) = Unit
 
         override fun onError(message: String) {
             errors.append(if (errors.isEmpty()) "" else "；").append(message)

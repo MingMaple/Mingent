@@ -15,7 +15,7 @@ import moe.shizuku.server.IShizukuService
 /**
  * Shizuku 通道：借 shell(uid 2000) 的身份执行 adb 级命令。
  *
- * 只用它做「一键授权 + 少量系统操作」，不做 Operit 那套四执行器体系。
+ * 只用它做「一键授权 + 少量系统操作」，不做多执行器那套体系。
  *
  * 三条硬规矩：
  * 1. **动态生效**：binder 到手/丢失、权限授予回调都会刷新 [state]，不需要重启 App；
@@ -41,9 +41,12 @@ object ShizukuBridge {
         READY
     }
 
+    /** 一次 shell 执行的结果：ok = 退出码为 0，output 是 stdout 与 stderr 合并后的文本。 */
     data class ExecResult(val ok: Boolean, val output: String, val exitCode: Int)
 
     private val _state = MutableStateFlow(State.NOT_INSTALLED)
+
+    /** 当前可用状态；binder 与授权变化时自动刷新，界面可直接收集。 */
     val state: StateFlow<State> = _state.asStateFlow()
 
     @Volatile private var appContext: Context? = null
@@ -95,11 +98,13 @@ object ShizukuBridge {
         return if (granted) State.READY else State.NO_PERMISSION
     }
 
+    /** 手机上是否装了 Shizuku（Sui 同包名，也算装了）。 */
     fun isInstalled(context: Context): Boolean = runCatching {
         context.packageManager.getPackageInfo(SHIZUKU_PACKAGE, 0)
         true
     }.getOrDefault(false)
 
+    /** 通道当前是否可用（状态为 [State.READY]）。 */
     fun isReady(): Boolean = _state.value == State.READY
 
     /** 申请授权；只能从 Activity 里调（Shizuku 会自己弹框）。 */

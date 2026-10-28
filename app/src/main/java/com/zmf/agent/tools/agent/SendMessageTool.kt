@@ -22,7 +22,8 @@ class SendMessageTool : Tool {
     override val description =
         "给已存在的子智能体追加一条消息并拿回它的新结论；agent_id 来自 subagent 工具结果里那行 agent_id=。" +
             "子智能体会带着之前的上下文继续干，适合在原任务上追加要求、接着查或接着改。" +
-            "只能发一条消息、拿一份结论；要它汇报详细过程就在 message 里写清楚。"
+            "只能发一条消息、拿一份结论；要它汇报详细过程就在 message 里写清楚。" +
+            "没有正在跑的子智能体时不要用它——它不能代替回复用户，也不能给用户发消息。"
 
     override val parametersJson = """
         {

@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * 全部 MCP 服务的连接/工具注册总闸。
  *
  * 一个服务的生命周期：读配置（[McpServerStore]）→ initialize → tools/list → 把每个工具包成
- * [McpToolAdapter] 注册进 [ToolRegistry]（来源名 "mcp:<服务名>"）。
+ * [McpToolAdapter] 注册进 [ToolRegistry]（来源名「mcp:<服务名>」）。
  *
  * 三条硬规则：
  * 1. **单个服务失败不影响别的服务**：谁失败谁标 FAILED 并记原因，其余的照旧 READY；

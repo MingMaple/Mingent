@@ -57,10 +57,10 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * 系统悬浮球 + 小窗（照 Operit 的做法重做）。
+ * 系统悬浮球 + 小窗（形态与手势借鉴常见悬浮窗产品，代码为本项目重写）。
  *
  * 只有一个窗口：一个 Service、一份 WindowManager.LayoutParams、一个 ComposeView。
- * 球和小窗是同一个窗口的两种形态 —— 原地改 width/height/x/y/flags，绝不给窗口尺寸做动画；
+ * 球和小窗是同一个窗口的两种形态：原地改 width/height/x/y/flags，绝不给窗口尺寸做动画；
  * 视觉过渡交给 Compose 的 AnimatedContent（球→窗 400ms / 窗→球 350ms）。
  *
  * 球态：52dp 精确像素，flags = NOT_FOCUSABLE | LAYOUT_NO_LIMITS；
@@ -69,18 +69,18 @@ import kotlin.math.roundToInt
  *       可拖右边缘 / 底边改宽高（锚点一律左上角：resize 只改 width/height，不碰 x/y）。
  *       展开时**一次性**把 flags 设成可获焦
  *       （NOT_TOUCH_MODAL | WATCH_OUTSIDE_TOUCH，清掉 NOT_FOCUSABLE），整个展开期不再随焦点改
- *       —— 上一版就是随焦点来回切 flags 才让输入法一闪一闪的，见 onInputFocusChanged。
+ *       上一版就是随焦点来回切 flags 才让输入法一闪一闪的，见 onInputFocusChanged。
  *
  * 位置的唯一真相是**球心**（ballCenterX/Y），球和小窗都不记自己的左上角：
- *       球态 —— 球画在球心，可自由拖动，松手落盘；
- *       展开 —— 以球心为中心反推窗口左上角（球心 - 尺寸/2），再把整个窗口夹进屏幕；
- *       折叠 —— 球心先对齐到小窗中心，球自然停在小窗正中（不再回到折叠前的旧位置）；
- *       首次启动没有记录 —— 球心取屏幕正中，于是小窗水平 + 竖直都居中。
+ *       球态：球画在球心，可自由拖动，松手落盘；
+ *       展开：以球心为中心反推窗口左上角（球心 - 尺寸/2），再把整个窗口夹进屏幕；
+ *       折叠：球心先对齐到小窗中心，球自然停在小窗正中（不再回到折叠前的旧位置）；
+ *       首次启动没有记录：球心取屏幕正中，于是小窗水平 + 竖直都居中。
  *       重启回原位靠的也是球心（ball_x / ball_y），window_x / window_y 已不再读。
  *
  * 窗口不依赖任何 Activity：App 退后台/被划掉都不影响它，进程活着窗口就在
  * （进程本身由 M7 的 AgentForegroundService 钉住，这里只负责开，不负责关）。
- * 本轮不做 onTaskRemoved 重拉、不做崩溃自愈、不加 wakeLock —— 用户不要后台兜底。
+ * 本轮不做 onTaskRemoved 重拉、不做崩溃自愈、不加 wakeLock：不做后台兜底。
  *
  * 与主 App 同进程直连：消息、标题、发送都走 ChatBridge（ChatViewModel 的引用），没有 AIDL。
  */
@@ -92,12 +92,12 @@ class FloatingBallService : Service() {
         var isRunning: Boolean = false
             private set
 
-        /** 球态尺寸：52dp（Operit 窗口 60dp 但内容只画到画布 86%，视觉更小；我们直接缩窗口）。 */
+        /** 球态尺寸：52dp（参考实现窗口 60dp 但内容只画到画布 86%，视觉更小；这里直接缩窗口）。 */
         private const val BALL_DP = 52
-        /** 小窗默认尺寸：240x320dp（= Operit 默认 300x400dp × 它的 scale 0.8；我们不做 scale）。 */
+        /** 小窗默认尺寸：240x320dp（= 参考实现默认 300x400dp × 它的 scale 0.8；这里不做 scale）。 */
         private const val WINDOW_W_DP = 240
         private const val WINDOW_H_DP = 320
-        /** 小窗最小尺寸：150x200dp（Operit 拖动 resize 用的那一套；它落盘那套 200/250 是 bug，不抄）。 */
+        /** 小窗最小尺寸：150x200dp（参考实现拖动 resize 用的那一套；它落盘那套 200/250 是 bug，不抄）。 */
         private const val WINDOW_MIN_W_DP = 150
         private const val WINDOW_MIN_H_DP = 200
         /**
@@ -105,7 +105,7 @@ class FloatingBallService : Service() {
          *
          * 只存两样：**球的位置**（用户拖完球 / 小窗折叠时都记成球心）和**小窗尺寸**。
          * 小窗的展开坐标不再存：它永远由「球心」当场反推（见 applyExpandedLayout），
-         * 所以 window_x / window_y 这条读路径已删 —— 老版本写进去的值留在 prefs 里不读，
+         * 所以 window_x / window_y 这条读路径已删：老版本写进去的值留在 prefs 里不读，
          * 既不会影响行为，也不用写迁移代码。
          */
         private const val PREF_NAME = "floating_window"
@@ -113,7 +113,7 @@ class FloatingBallService : Service() {
         private const val KEY_WINDOW_H = "window_height"
         private const val KEY_BALL_X = "ball_x"
         private const val KEY_BALL_Y = "ball_y"
-        /** 贴边留白。 */
+        /** 贴边留白：球与小窗离屏幕边缘的最小距离，clamp 系列的上界都从它推。 */
         private const val MARGIN_DP = 8
         /** 球→窗：Compose 动画先起，窗口参数晚 100ms 再改。 */
         private const val EXPAND_LAYOUT_DELAY_MS = 100L
@@ -157,6 +157,7 @@ class FloatingBallService : Service() {
         @Volatile
         private var pendingExpand = false
 
+        /** 停掉悬浮球服务（用户关闭悬浮窗时调用）；失败静默。 */
         fun stop(context: Context) {
             runCatching { context.stopService(Intent(context, FloatingBallService::class.java)) }
         }
@@ -211,7 +212,7 @@ class FloatingBallService : Service() {
     /** 小窗展开时的基准 x（左上角）。和 expandedBaseY 成对：折叠时用它反推球心。 */
     private var expandedLeftX = 0
     /**
-     * 球心（屏幕坐标）—— 球位置的**唯一真相**。
+     * 球心（屏幕坐标）：球位置的**唯一真相**。
      *
      * 布局时球的左上角 = 球心 - BALL/2，小窗左上角 = 球心 - 窗口尺寸/2，
      * 所以「折叠时球停在小窗正中」和「展开时窗口以球心为中心」这两条规则
@@ -260,7 +261,7 @@ class FloatingBallService : Service() {
         super.onCreate()
         isRunning = true
         // 从 App 里点「悬浮小窗」进来的这一路：**第一次加窗就按小窗尺寸加**，
-        // 不先挂一颗球再切 —— 否则会看到「球闪一下 → 变成小窗」。
+        // 不先挂一颗球再切，否则会看到「球闪一下 → 变成小窗」。
         val startsExpanded = pendingExpand
         pendingExpand = false
         startExpandedHandled = startsExpanded
@@ -284,7 +285,7 @@ class FloatingBallService : Service() {
             })
         }
         // 悬浮球自己是普通后台服务，Android 8+ 会在 App 退后台后回收它（球消失）。
-        // 加窗成功后顺手拉起常驻前台服务，让整个进程处于「前台服务」状态 —— 窗口才能一直在屏幕上。
+        // 加窗成功后顺手拉起常驻前台服务，让整个进程处于「前台服务」状态，窗口才能一直在屏幕上。
         // 只负责开不负责关：onDestroy 不停它，用户关球不该连带关掉「后台运行」。
         if (!AgentForegroundService.isRunning) AgentForegroundService.start(this)
         FileLog.log("float", "悬浮窗已挂上，球态 " + ballSizePx + "px")
@@ -305,7 +306,7 @@ class FloatingBallService : Service() {
     override fun onDestroy() {
         isRunning = false
         // 注册可能没成功过（onCreate 里的 runCatching 兜住的失败路径），unregister 会抛
-        // IllegalArgumentException —— 销毁路径不该因为收尾失败而崩
+        // IllegalArgumentException：销毁路径不该因为收尾失败而崩
         runCatching { unregisterReceiver(screenReceiver) }
         handler.removeCallbacksAndMessages(null)
         removeRoot()
@@ -479,21 +480,21 @@ class FloatingBallService : Service() {
                     title = ChatBridge.title(),
                     onSend = { text -> ChatBridge.send(text) },
                     // 「回主页」：先把主界面拉到前台（NEW_TASK 复用已有任务，不重建），
-                    // 再把整套悬浮窗收掉 —— 回到主页后小窗和球一起消失
+                    // 再把整套悬浮窗收掉：回到主页后小窗和球一起消失
                     onHome = {
                         openApp()
                         closeEverything()
                     },
                     // 「∨」折叠：窗口原地缩回球，服务不停
                     onCollapse = { collapseChat() },
-                    // 「✕」关闭：按用户口径是整套收掉（窗口移除 + 服务停止，球也不留）
+                    // 「✕」关闭：整套收掉（窗口移除 + 服务停止，球也不留）
                     onClose = { closeEverything() },
                     // 标题栏中间空白拖出来的位移（px，1:1 跟手）→ 服务只改 x/y，松手才落盘
                     onMoveBy = { dx, dy -> moveWindowBy(dx, dy) },
                     // 右边缘竖条 → 只改 width；底边横条 → 只改 height（锚点都是左上角）
                     onResizeWidth = { dx -> resizeWindowWidth(dx) },
                     onResizeHeight = { dy -> resizeWindowHeight(dy) },
-                    // 一次手势松手：服务在这里写一次 prefs（不学 Operit 每帧写盘）
+                    // 一次手势松手：服务在这里写一次 prefs（不学参考实现每帧写盘）
                     onGestureEnd = { onWindowGestureEnd() }
                 )
             } else {
@@ -532,7 +533,7 @@ class FloatingBallService : Service() {
     /**
      * 球态触摸派发（**兜底路径**）。
      *
-     * 注意：ComposeView 的 setOnTouchListener 在球态其实**收不到事件** —— ViewGroup 先把触摸
+     * 注意：ComposeView 的 setOnTouchListener 在球态其实**收不到事件**：ViewGroup 先把触摸
      * 派给子 View（AndroidComposeView），SiriBall 的 clickable 消费掉 DOWN 之后，父 View 的
      * listener 就不会被调用了。所以真正的球拖动在 FloatRoot 的 pointerInput 里
      * （见 moveBallBy / saveBallPosition），这里保留是为了：
@@ -602,7 +603,7 @@ class FloatingBallService : Service() {
     /**
      * 首次启动（prefs 里没有球坐标）时的球心 X：屏幕水平正中。
      *
-     * 旧版是「贴右侧边」，但新规则下小窗位置由球心反推 —— 球心居中才得到居中的小窗。
+     * 旧版是「贴右侧边」，但新规则下小窗位置由球心反推，球心居中才得到居中的小窗。
      */
     private fun defaultBallCenterX(): Int = clampBallCenterX(screenW / 2)
 
@@ -653,7 +654,7 @@ class FloatingBallService : Service() {
      * 折叠回球：立刻切 Compose 形态，窗口参数延后 150ms 改。
      *
      * 球心在**切换这一瞬间**对齐到小窗中心（不是每帧算，也不回折叠前的旧位置），
-     * 顺手落一次盘 —— 于是「拖完小窗再折叠」之后重启，球还在那一处。
+     * 顺手落一次盘，于是「拖完小窗再折叠」之后重启，球还在那一处。
      */
     private fun collapseChat() {
         if (!expanded) return
@@ -669,7 +670,7 @@ class FloatingBallService : Service() {
     }
 
     /**
-     * 以球心反推小窗左上角并夹进屏幕 —— 纯计算，不写窗口参数。
+     * 以球心反推小窗左上角并夹进屏幕：纯计算，不写窗口参数。
      *
      *     左 = 球心X - 窗口宽/2
      *     上 = 球心Y - 窗口高/2
@@ -688,7 +689,7 @@ class FloatingBallService : Service() {
      *
      * 用 expandedLeftX / expandedBaseY / windowWidthPx / windowHeightPx 这四个**逻辑值**，
      * 而不是直接读 lp：lp 里可能还是球尺寸（展开参数延后 100ms 才写），
-     * 也可能带着 IME 顶起的临时 y 偏移 —— 读取它们会把球心算歪。
+     * 也可能带着 IME 顶起的临时 y 偏移，读取它们会把球心算歪。
      */
     private fun syncBallCenterToWindowCenter() {
         ballCenterX = clampBallCenterX(expandedLeftX + windowWidthPx / 2)
@@ -698,7 +699,7 @@ class FloatingBallService : Service() {
     /**
      * 改成小窗尺寸与位置。
      *
-     * 位置：**不读历史坐标**，一律以球心为中心反推左上角 ——
+     * 位置：**不读历史坐标**，一律以球心为中心反推左上角：
      *       winLeft = 球心X - 宽/2，winTop = 球心Y - 高/2，
      *       再把左上角夹到 [margin, 屏幕 - 尺寸 - margin]，夹完整个窗口仍在屏内
      *       （窄屏上界可能小于下界，那时落在贴 margin 处，见 clampWindowLeftInScreen）。
@@ -722,7 +723,7 @@ class FloatingBallService : Service() {
         noMoveAnimation(lp)
         updateLayout()
         // 窗口此时已经是可获焦的，直接把焦点要到窗口上（只此一次）。
-        // 不再用「改 flags 间接拿焦点」——那条路每次都连带把 IME 收掉，键盘就闪。
+        // 不再用「改 flags 间接拿焦点」：那条路每次都连带把 IME 收掉，键盘就闪。
         root?.post { runCatching { root?.requestFocus() } }
         // 小窗铺开了，球在淡出：把球的无限动画关掉（它随后就不再参与组成了）
         updateBallAnimation()
@@ -755,8 +756,8 @@ class FloatingBallService : Service() {
     /**
      * 小窗整体移动：dx/dy 是手指位移的 px（热区是标题栏中间那块空白）。
      *
-     * 我们没有 scale，所以 Operit 的 x += dx * s 在这里就是 x += dx（1:1 跟手）。
-     * 每帧只改 LayoutParams、**不落盘**；位置也不再持久化 —— 折叠那一刻球心记成窗口中心，
+     * 没有 scale，所以参考实现的 x += dx * s 在这里就是 x += dx（1:1 跟手）。
+     * 每帧只改 LayoutParams、**不落盘**；位置也不再持久化：折叠那一刻球心记成窗口中心，
      * 重启后小窗位置由球心反推回来，所以「拖过的小窗」照样回原位。
      */
     private fun moveWindowBy(dx: Float, dy: Float) {
@@ -779,7 +780,7 @@ class FloatingBallService : Service() {
     }
 
     /**
-     * 右侧手柄：**只改宽**，锚点左上角 —— 绝不碰 x/y（左边缘固定，右边缘向右长）。
+     * 右侧手柄：**只改宽**，锚点左上角：绝不碰 x/y（左边缘固定，右边缘向右长）。
      * 每帧夹到 [150dp, 屏宽 − 8dp]；松手才落盘。
      */
     private fun resizeWindowWidth(dx: Float) {
@@ -801,7 +802,7 @@ class FloatingBallService : Service() {
     }
 
     /**
-     * 底部手柄：**只改高**，锚点左上角 —— 上边缘固定，下边缘向下长。
+     * 底部手柄：**只改高**，锚点左上角：上边缘固定，下边缘向下长。
      * 每帧夹到 [200dp, 屏高 − 8dp]；松手才落盘。
      */
     private fun resizeWindowHeight(dy: Float) {
@@ -823,7 +824,7 @@ class FloatingBallService : Service() {
 
     /**
      * Compose 侧一次手势（移动 / 调宽 / 调高）松手：到这里才写一次 prefs。
-     * Operit 是每个 drag 帧都 apply() 一次（拖 1 秒写 60 次），这条**不抄**。
+     * 参考实现是每个 drag 帧都 apply() 一次（拖 1 秒写 60 次），这条**不抄**。
      */
     private fun onWindowGestureEnd() {
         // 残量清零：下一次手势从头累积，别把上一段的零头带过去
@@ -874,7 +875,7 @@ class FloatingBallService : Service() {
      * 存小窗尺寸：只在一次手势松手时调用一次。
      *
      * 位置**不存了**（window_x / window_y 这条读路径已删）：小窗位置永远由球心反推，
-     * 而球心在折叠那一下才落盘 —— 用户拖完小窗、折叠、重启，位置照样回得来。
+     * 而球心在折叠那一下才落盘：拖完小窗、折叠、重启，位置照样回得来。
      */
     private fun persistWindowState() {
         if (!expanded) return
@@ -905,11 +906,11 @@ class FloatingBallService : Service() {
      * addRoot 时读回上次的小窗尺寸 / 球心；读到的值一律再夹一次。
      *
      * 小窗位置完全不读：它由球心当场反推（applyExpandedLayout）。
-     * 球心没存过（首次启动）就取屏幕正中 —— 于是小窗也是水平 + 竖直居中。
+     * 球心没存过（首次启动）就取屏幕正中，于是小窗也是水平 + 竖直居中。
      */
     private fun restoreWindowState() {
         val p = prefs()
-        // 尺寸：与拖动时同一套 min/max（不学 Operit「拖到 150dp、存进去变 200dp」的两套上下限）；
+        // 尺寸：与拖动时同一套 min/max（不学参考实现「拖到 150dp、存进去变 200dp」的两套上下限）；
         // 上限现在是「屏幕 − 8dp」，旧版本按 0.8 屏存下的尺寸读到这里会被新上限夹一次
         windowWidthPx = p.getInt(KEY_WINDOW_W, windowWidthPx)
             .coerceIn(minWindowWidthPx(), maxWindowWidthPx())
@@ -933,7 +934,7 @@ class FloatingBallService : Service() {
     // ---- 焦点 / 键盘 ----
 
     /**
-     * 输入框获焦/失焦 —— 这里**只负责在真获焦时补一次 IME，绝不改窗口 flags**。
+     * 输入框获焦/失焦：这里**只负责在真获焦时补一次 IME，绝不改窗口 flags**。
      *
      * 上一版的闪烁循环正是出在这里：焦点一变就把窗口在 NOT_FOCUSABLE ↔ 可获焦之间来回切，
      * 窗口一失焦系统立刻把键盘收掉，代码随后又 showSoftInput 把它叫起来，于是
@@ -973,7 +974,7 @@ class FloatingBallService : Service() {
 
     /**
      * IME inset：系统按 SOFT_INPUT_ADJUST_NOTHING 不会动窗口，位置只能自己顶上去。
-     * 取不到（immer 为 0 / 系统不给 overlay 窗口发 inset）就原地不动 —— 绝不能因为取不到而崩。
+     * 取不到（inset 为 0 / 系统不给 overlay 窗口发 inset）就原地不动，绝不能因为取不到而崩。
      */
     private fun bindImeInsets(view: ComposeView) {
         runCatching {
@@ -1008,7 +1009,7 @@ class FloatingBallService : Service() {
 
     /**
      * 小窗尺寸：默认 240x320dp；已经有尺寸（用户拖过 / 转屏前算过）就沿用，
-     * 只按当前屏幕重新夹一遍 —— 转屏后不会把用户拖到的大小忘掉。
+     * 只按当前屏幕重新夹一遍：转屏后不会把拖到的大小忘掉。
      */
     private fun computeExpandedSize() {
         val defW = (WINDOW_W_DP * density).roundToInt()
@@ -1060,7 +1061,7 @@ class FloatingBallService : Service() {
     }
 
     /**
-     * 小窗左上角横向夹取：x ∈ [margin, screenW - w - margin] —— **整个窗口**留在屏内。
+     * 小窗左上角横向夹取：x ∈ [margin, screenW - w - margin]，**整个窗口**留在屏内。
      *
      * 窄屏（窗口比屏幕还宽）时上界会小于下界，这里用 maxOf 抬到下界，
      * 结果是「贴 margin、右边超出屏幕」，至少不会算出负坐标或反向区间。
@@ -1077,7 +1078,7 @@ class FloatingBallService : Service() {
  * 把 LifecycleOwner / SavedStateRegistryOwner 挂到 View 树上。
  *
  * 这两个类的 set 在本工程**编译期解析不到**（androidx.lifecycle.ViewTreeLifecycleOwner
- * 在运行期类路径上存在，Kotlin 编译器却看不到，见 Changelog 22:16 那条），所以用反射调用；
+ * 在运行期类路径上存在，Kotlin 编译器却看不到），所以用反射调用；
  * 反射失败不抛，交给上层兜（加窗失败会 stopSelf，不会留空转服务）。
  */
 private fun attachLifecycleOwner(view: android.view.View, owner: Any) {

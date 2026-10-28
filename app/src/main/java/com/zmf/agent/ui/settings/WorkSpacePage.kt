@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.saltRowClickable
 import com.zmf.agent.ui.theme.Motion
 import com.zmf.agent.ui.theme.Palette
@@ -115,7 +116,7 @@ fun CreateWorkspaceDialog(
                     .verticalScroll(rememberScrollState())
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 名称：默认折叠时这就是整个弹窗的主体，跟原来的极简输入框一个手感
+                    // 名称：默认折叠时这就是整个弹窗的主体，和极简输入框一个手感
                     BasicTextField(
                         value = name,
                         onValueChange = {
@@ -223,7 +224,7 @@ private fun WorkspaceCustomHeader(expanded: Boolean, onToggle: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 10.dp)
-            .saltRowClickable(RoundedCornerShape(12.dp)) { onToggle() }
+            .saltCardRow() { onToggle() }
             .padding(horizontal = 4.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

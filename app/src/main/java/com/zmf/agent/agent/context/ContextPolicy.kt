@@ -19,7 +19,7 @@ data class ContextPolicy(
     /**
      * 闸门①：估算 tokens / 上下文窗口达到这个比例就摘要（0.1..0.95）。
      *
-     * 默认 0.4：DeepSeek 是 1M 窗口，0.4 约等于 419k tokens 才摘要 ——
+     * 默认 0.4：DeepSeek 是 1M 窗口，0.4 约等于 419k tokens 才摘要，
      * 太早摘要会白花一次模型请求，太晚又接近上限，40% 是留足余量的水位线。
      */
     val triggerRatio: Float = DEFAULT_TRIGGER_RATIO,
@@ -30,14 +30,14 @@ data class ContextPolicy(
     /** 保留轮数的下限（2..20）：预算再小，也至少留这么多轮原文；摘要失败时的兜底窗口同它。 */
     val fallbackKeepRounds: Int = DEFAULT_KEEP_ROUNDS,
     /**
-     * 逐字保留近期历史的预算比例（对齐 DSH 的 retainRatio，作用于 W − 输出预留）。
+     * 逐字保留近期历史的预算比例（作用于窗口减去输出预留下的可用量）。
      *
-     * 默认 0.16 就是 DSH 的默认值：它才是「留多少原文」的主口径，轮数只是下限。
+     * 默认 0.16：它才是「留多少原文」的主口径，轮数只是下限。
      * 取值 0.05..0.4，越界在 [ContextStore.normalize] 里夹住。
      */
     val retainRatio: Float = DEFAULT_RETAIN_RATIO,
     /**
-     * 逐字保留的绝对 token 预算（对齐 DSH 的 retainTokens）；> 0 时优先于 [retainRatio]。
+     * 逐字保留的绝对 token 预算；> 0 时优先于 [retainRatio]。
      *
      * 为什么两种都留：比例跟着窗口走，换小模型不用改设置；绝对值和阈值一样直观，
      * 用户想「就留 20k」时不用拿计算器算比例。
@@ -74,7 +74,7 @@ data class ContextPolicy(
         const val DEFAULT_TRIGGER_COUNT = 16
         const val DEFAULT_KEEP_ROUNDS = 8
 
-        /** 逐字保留的默认比例：对齐 DSH 的 retainRatio = 0.16。 */
+        /** 逐字保留的默认比例：0.16，约占可动窗口的六分之一。 */
         const val DEFAULT_RETAIN_RATIO = 0.16f
 
         /** 合法范围：读盘、落盘、设置页三处共用，越界一律夹住。 */
@@ -128,6 +128,7 @@ object ContextStore {
     private const val KEY_RETAIN_RATIO = "context_retain_ratio"
     private const val KEY_RETAIN_TOKENS = "context_retain_tokens"
 
+    /** 从 prefs 读策略并归一化；越界的保留预算会回落并记一条告警。 */
     fun load(context: Context): ContextPolicy {
         val p = prefs(context)
         val policy = normalize(
@@ -147,6 +148,7 @@ object ContextStore {
         return policy
     }
 
+    /** 归一化后写入 prefs：越界值在这一步被夹住，写盘后由调用方负责刷新界面。 */
     fun save(context: Context, policy: ContextPolicy) {
         val p = normalize(policy)
         prefs(context).edit()
@@ -190,10 +192,10 @@ object ContextStore {
     /**
      * 逐字保留预算（token），已按触发阈值校正。
      *
-     * DSH 的规则是「保留预算必须小于触发阈值」（否则永远压不动），并且在加载期直接拒绝。
-     * 我们选择回落 + 告警，别让 App 起不来：越界时按阈值的 80% 算。
+     * 规则是「保留预算必须小于触发阈值」，否则永远压不动。
+     * 这里选择回落 + 告警，不让 App 因此起不来：越界时按阈值的 80% 算。
      *
-     * @param outputReserveTokens 请求输出预留（DSH 的 O）。我们不给对话请求设 max_tokens，所以默认 0。
+     * @param outputReserveTokens 请求输出预留；对话请求不设 max_tokens，所以默认 0。
      */
     fun retainBudgetTokens(
         policy: ContextPolicy,
@@ -254,17 +256,19 @@ fun contextSummarySystemText(summary: String): String =
  *
  * 正常路径的请求视图是「摘要 + summaryUpTo 之后的原文」（见 AgentLoop）；
  * 摘要失败 / 超时 / 被关掉时才用这里的裁轮兜底：只发最近 [ContextPolicy.fallbackKeepRounds] 轮原文。
- * 删除粒度是「整轮」——一条 user 加它之后到下一个 user 之前的全部内容，
+ * 删除粒度是「整轮」：一条 user 加它之后到下一个 user 之前的全部内容，
  * 所以 assistant(tool_calls) 和它的 tool 结果永远一起存亡，不会断成孤儿消息触发 400。
  */
 object ContextCompactor {
 
+    /** 兜底裁轮的结果：留下的消息、被裁掉的轮数、按 [estimate] 估算的 tokens。 */
     data class Outcome(
         val messages: List<ChatMessage>,
         val droppedRounds: Int,
         val estimatedTokens: Int
     )
 
+    /** 按 [ContextPolicy.fallbackKeepRounds] 裁到最近几轮；压缩关掉或无需裁剪时原样返回。 */
     fun compact(history: List<ChatMessage>, policy: ContextPolicy): Outcome {
         if (!policy.enabled || history.isEmpty()) {
             return Outcome(history, 0, estimate(history))
@@ -322,7 +326,7 @@ object ContextCompactor {
     /**
      * 摘要分界 = 「逐字保留」的起点：token 预算与轮数下限取更靠前的那个。
      *
-     * 为什么两个条件都要：预算才是成本闸门（对齐 DSH 的 retainRatio），
+     * 为什么两个条件都要：预算才是成本闸门，
      * 轮数是老用户看得懂的下限（留 N 轮）；取更靠前的起点，等于「按预算留，但不低于 N 轮」。
      */
     fun retainStart(
@@ -345,8 +349,10 @@ object ContextCompactor {
         return if (count == 0) 1 else count
     }
 
+    /** 整段历史的估算 tokens：逐条累加，用于水位判断，不追求精确。 */
     fun estimate(messages: List<ChatMessage>): Int = messages.sumOf { estimate(it) }
 
+    /** 单条消息的估算 tokens：固定开销 + 正文 + 推理 + 工具名与参数。 */
     fun estimate(message: ChatMessage): Int {
         var tokens = 8 // 每条消息的固定开销（role 等）
         tokens += estimateText(message.content)

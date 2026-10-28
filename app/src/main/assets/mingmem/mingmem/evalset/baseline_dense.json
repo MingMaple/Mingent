@@ -1,0 +1,89 @@
+{
+  "cases": 159,
+  "counts": {
+    "by_cat": {
+      "alias": {
+        "cases": 21,
+        "leak": 0,
+        "mrr@5": 0.6484,
+        "recall@5": 0.9048
+      },
+      "core": {
+        "cases": 30,
+        "leak": 0,
+        "mrr@5": 0.9514,
+        "recall@5": 1.0
+      },
+      "direct": {
+        "cases": 34,
+        "leak": 0,
+        "mrr@5": 1.0,
+        "recall@5": 1.0
+      },
+      "multi": {
+        "cases": 15,
+        "leak": 0,
+        "mrr@5": 1.0,
+        "recall@5": 1.0
+      },
+      "namespace": {
+        "cases": 8,
+        "leak": 0,
+        "mrr@5": 1.0,
+        "recall@5": 1.0
+      },
+      "negative": {
+        "cases": 14,
+        "leak": 0,
+        "mrr@5": null,
+        "recall@5": null
+      },
+      "privacy": {
+        "cases": 10,
+        "leak": 0,
+        "mrr@5": null,
+        "recall@5": null
+      },
+      "redundancy": {
+        "cases": 8,
+        "leak": 0,
+        "mrr@5": 1.0,
+        "recall@5": 1.0
+      },
+      "short": {
+        "cases": 13,
+        "leak": 0,
+        "mrr@5": 0.9615,
+        "recall@5": 1.0
+      },
+      "time": {
+        "cases": 6,
+        "leak": 0,
+        "mrr@5": 1.0,
+        "recall@5": 1.0
+      }
+    },
+    "case_count": 159,
+    "gold_cases": 129,
+    "negative_cases": 30,
+    "redundancy_eligible": 141,
+    "redundant_cases": 0,
+    "seed_events": 236
+  },
+  "metrics": {
+    "avg_hits": 4.2956,
+    "current_rate": 0.1132,
+    "gold_all_rate": 0.876,
+    "leak_count": 0,
+    "mrr@5": 0.9298,
+    "neg_avg_hits": 4.7667,
+    "neg_empty_rate": 0.0,
+    "negative_pass": 1.0,
+    "recall@5": 0.9845,
+    "redundancy@5": 0.0,
+    "section_fill": 0.6656
+  },
+  "schema": 1,
+  "seed_events": 236,
+  "top_k": 5
+}

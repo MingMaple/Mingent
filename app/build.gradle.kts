@@ -38,10 +38,10 @@ android {
         manifestPlaceholders["appLabel"] = "Mingent"
         minSdk = 26
         targetSdk = 28
-        // 版本规则：加新功能中间位 +1，只修问题末位 +1，大重构首位 +1；
-        // 每次打包 versionCode 必须 +1，否则覆盖安装会因「版本未升高」被系统直接拒掉
-        versionCode = 1
-        versionName = "1.0.0"
+        // 版本规则（2026-10-26 定）：首位/中位由用户定（助手可推荐），末位由助手按改动程度自行 +1；
+        // 每次打包 versionCode 必须 +1（跨 versionName 也不重置），否则覆盖安装会因「版本未升高」被系统直接拒掉
+        versionCode = 51
+        versionName = "1.1.2"
     }
 
     signingConfigs {

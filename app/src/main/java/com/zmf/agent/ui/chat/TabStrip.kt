@@ -30,15 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.ui.theme.Palette
 
-/**
- * 一条可横滑的条目栏：**计划页的计划条和浏览页的网页条共用这一份**（2026-10-25 用户：两个页面的
- * 条目样式不一样，统一一下——那边选中是蓝色、这边是灰绿实心，看着像两个 App）。
- *
- * 行为口径：
- *  - 条目并排，超出屏幕就左右滑；滑到两端继续推时余量就地吃掉，不会把抽屉拉出来；
- *  - **选中项自动滚进视野**（新计划生成、切到新标签、进入页面时落在某一条上）；
- *  - 但**用户手滑后点的那一条不矫正**——他可能就是想看半截，再自动滚回去等于抢他的操作。
- */
+/** 条目栏里的一条：[key] 是稳定身份（选中 / 关闭都按它找），[label] 是显示名，[muted] 表示已消费。 */
 data class TabStripItem(
     val key: String,
     val label: String,
@@ -46,6 +38,19 @@ data class TabStripItem(
     val muted: Boolean = false
 )
 
+/**
+ * 一条可横滑的条目栏：**计划页的计划条和浏览页的网页条共用这一份**（两页原先各画一套，
+ * 一边选中是蓝色、一边是灰绿实心，看着像两个 App，所以统一成这一份）。
+ *
+ * 行为口径：
+ *  - 条目并排，超出屏幕就左右滑；滑到两端继续推时余量就地吃掉，不会把抽屉拉出来；
+ *  - **选中项自动滚进视野**（新计划生成、切到新标签、进入页面时落在某一条上）；
+ *  - 但**用户手滑后点的那一条不矫正**：他可能就是想看半截，再自动滚回去等于抢他的操作。
+ *
+ * @param selectedKey 当前选中条目的 [TabStripItem.key]；null 表示没有选中项
+ * @param onClose 点条目上的「×」时调用，只关闭不切换
+ * @param horizontalPadding 条带左右留白，默认 16dp 与页面内容边对齐
+ */
 @Composable
 fun TabStrip(
     items: List<TabStripItem>,

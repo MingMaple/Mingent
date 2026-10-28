@@ -105,7 +105,7 @@ class McpStdioClient(
                 val obj = array.optJSONObject(i) ?: continue
                 val name = obj.optString("name", "").trim()
                 if (name.isEmpty()) continue
-                // inputSchema 原样保留：模型要的是原始 JSON Schema，这里不解析不改写
+                // inputSchema 原样透传（模型要原始 JSON Schema），不解析、不改写
                 val schema = obj.opt("inputSchema")
                 val schemaJson = if (schema == null || schema === JSONObject.NULL) "" else schema.toString()
                 infos.add(
@@ -322,7 +322,7 @@ class McpStdioClient(
 
     private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
-    /** 拼 result.content 里所有 type=="text" 的文本。 */
+    /** 只拼 text 项，image/resource 一律忽略；多条之间补换行。 */
     private fun extractText(result: JSONObject): String {
         val array = result.optJSONArray("content") ?: return ""
         val builder = StringBuilder()
@@ -337,7 +337,7 @@ class McpStdioClient(
         return builder.toString()
     }
 
-    /** 统一把异常折成 Result.failure，message 是可读中文；取消原样抛出。 */
+    /** 协议 / 子进程异常折成带可读中文的 Result.failure；CancellationException 原样抛出。 */
     private suspend fun <T> guarded(action: String, block: suspend () -> T): Result<T> = try {
         Result.success(withContext(Dispatchers.IO) { block() })
     } catch (e: CancellationException) {

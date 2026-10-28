@@ -32,11 +32,12 @@ object UiScaleStore {
         return STEPS.firstOrNull { abs(it - raw) < 0.001f } ?: 1f
     }
 
+    /** 保存档位；不做校验，非 [STEPS] 内的值会在下次 [load] 时回落成 1f。 */
     fun save(context: Context, v: Float) {
         prefs(context).edit().putFloat(KEY_SCALE, v).apply()
     }
 
-    /** 档位显示名。 */
+    /** 档位 → 界面上的中文名；不在档位上（旧值 / 手改过 xml）时返回「标准」。 */
     fun label(v: Float): String = when {
         abs(v - 0.85f) < 0.001f -> "小"
         abs(v - 1.15f) < 0.001f -> "大"

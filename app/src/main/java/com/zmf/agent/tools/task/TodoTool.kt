@@ -19,15 +19,19 @@ import org.json.JSONObject
  * 「删了一半、改到一半」的中间态；持久化那边也就一次覆盖写。
  *
  * 只写自己的 appdata/todos.json，不碰工作区文件，所以权限档是 READ_ONLY
- * ——只读档下模型也该能整理自己的待办，不能因为「写清单」被拦。
+ * ：只读档下模型也该能整理自己的待办，不能因为「写清单」被拦。
  */
 class TodoTool : Tool {
 
     override val name = "todo_write"
 
+    /** 待办写的是 App 自己的状态，只读档下同样拒绝。 */
+    override val mutates = true
+
     override val description =
         "创建或更新本次会话的任务清单：每次调用都用传入的 todos 整表替换旧清单，未列出的任务会被丢弃。" +
-            "清单同时会显示给用户，做多步任务时用它让用户看到进度。"
+            "清单同时会显示给用户，做多步任务时用它让用户看到进度。" +
+            "两三步能做完的事不要建清单：清单是给自己防遗漏的，不是进度汇报。"
 
     override val parametersJson = """
         {
@@ -110,7 +114,7 @@ class TodoTool : Tool {
         return out
     }
 
-    /** 回给模型的文本照 DSH 的原样英文，和别家的 todo 工具输出对得上。 */
+    /** 回给模型的文本用英文：与主流 todo 工具的输出格式对得上。 */
     private fun summaryText(todos: List<Todo>): String {
         val pending = todos.count { it.status == TodoStore.PENDING }
         val inProgress = todos.count { it.status == TodoStore.IN_PROGRESS }

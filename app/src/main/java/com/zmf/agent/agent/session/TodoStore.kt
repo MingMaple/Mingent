@@ -30,7 +30,7 @@ data class Todo(
  */
 object TodoStore {
 
-    /** 三种合法状态，和 DSH 的 todo 工具取值保持一致（模型看到的就是这几个词）。 */
+    /** 三种合法状态，取值与模型看到的词一致。 */
     const val PENDING = "pending"
     const val IN_PROGRESS = "in_progress"
     const val COMPLETED = "completed"

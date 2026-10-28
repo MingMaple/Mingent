@@ -10,7 +10,7 @@ import java.util.zip.ZipInputStream
 /**
  * 一个 Skill：目录形态是 <root>/<id>/SKILL.md，也接受单文件 <root>/<id>.md。
  *
- * 格式对齐 DSH：YAML frontmatter 里必须有两个字段 name / description（name 用 kebab-case），
+ * 格式：YAML frontmatter 里必须有两个字段 name / description（name 用 kebab-case），
  * 正文就是给模型看的指令。我们不发明新格式。
  */
 data class SkillEntry(
@@ -26,8 +26,8 @@ data class SkillEntry(
 /**
  * Skill 的发现 / 加载 / 导入。
  *
- * 加载策略对齐 DSH：**目录不塞进系统提示词**，只把「名字 + 一句话描述」作为 available_skills
- * 列表注入；正文等模型用 skill 工具取——这样几十个 skill 也不会把上下文吃满。
+ * 加载策略：**目录不塞进系统提示词**，只把「名字 + 一句话描述」作为 available_skills
+ * 列表注入；正文等模型用 skill 工具取，这样几十个 skill 也不会把上下文吃满。
  */
 object SkillStore {
 
@@ -63,7 +63,7 @@ object SkillStore {
         return out.sortedBy { it.name.lowercase() }
     }
 
-    /** 只给提示词用的轻量目录：名字 + 描述（截 500 字符，对齐 DSH）。 */
+    /** 只给提示词用的轻量目录：名字 + 描述（截 500 字符）。 */
     fun catalog(context: Context): List<Pair<String, String>> =
         list(context).map { it.name to it.description.take(500) }
 
@@ -157,6 +157,7 @@ object SkillStore {
             parse(id, dir, File(dir, SKILL_FILE)) ?: error("解析失败")
         }.onFailure { FileLog.log(TAG, "创建失败：" + (it.message ?: it.javaClass.simpleName)) }
 
+    /** 按名称或 id 删除一个 skill（目录形态整目录递归移除）；找不到返回 false。 */
     fun delete(context: Context, key: String): Boolean {
         val entry = find(context, key) ?: return false
         val ok = if (entry.dir.isDirectory) entry.dir.deleteRecursively() else entry.skillFile.delete()
@@ -205,6 +206,7 @@ object SkillStore {
         return map to body
     }
 
+    /** 拼一份带 YAML frontmatter 的 SKILL.md 文本（由文本创建技能时用）。 */
     fun buildMarkdown(name: String, description: String, body: String): String =
         "---\nname: " + name + "\ndescription: " + description + "\n---\n\n" + body.trim() + "\n"
 

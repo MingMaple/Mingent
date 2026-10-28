@@ -34,7 +34,7 @@ class SourceManager(context: Context) {
         MirrorSource("tuna_pip", "清华源", "https://pypi.tuna.tsinghua.edu.cn/simple", true),
         MirrorSource("bfsu_pip", "北外源", "https://mirrors.bfsu.edu.cn/pypi/web/simple", true),
         MirrorSource("aliyun_pip", "阿里源", "https://mirrors.aliyun.com/pypi/simple/", true),
-        MirrorSource("ustc_pip", "中科大源", "https://pypi.mirrors.ustc.edu.cn/simple/", true),
+        MirrorSource("ustc_pip", "中科大源", "https://mirrors.ustc.edu.cn/pypi/simple/", true),
         MirrorSource("official_pip", "官方源", "https://pypi.org/simple", true)
     )
     
@@ -116,12 +116,15 @@ class SourceManager(context: Context) {
     val rustSources: List<MirrorSource>
         get() = builtInRustSources + getCustomSources(PackageManagerType.RUST)
 
-    // 获取当前为特定包管理器选择的源ID
+    // 获取当前为特定包管理器选择的源ID。
+    //
+    // 默认值即新装机（空白包）的初始源，2026-10-28 按用户口径定：apt、pip、rust 用中科大，
+    // npm 用华为。四个地址均已实测可连通（HTTP 200）。
     fun getSelectedSourceId(pm: PackageManagerType): String {
         return when (pm) {
-            PackageManagerType.APT -> prefs.getString("selected_apt_source", "tuna_apt") ?: "tuna_apt"
-            PackageManagerType.PIP -> prefs.getString("selected_pip_source", "tuna_pip") ?: "tuna_pip"
-            PackageManagerType.NPM -> prefs.getString("selected_npm_source", "taobao_npm") ?: "taobao_npm"
+            PackageManagerType.APT -> prefs.getString("selected_apt_source", "ustc_apt") ?: "ustc_apt"
+            PackageManagerType.PIP -> prefs.getString("selected_pip_source", "ustc_pip") ?: "ustc_pip"
+            PackageManagerType.NPM -> prefs.getString("selected_npm_source", "huawei_npm") ?: "huawei_npm"
             PackageManagerType.RUST -> prefs.getString("selected_rust_source", "ustc_rust") ?: "ustc_rust"
         }
     }

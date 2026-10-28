@@ -1,0 +1,129 @@
+{"id": "x-priv-01", "ns": "project:D", "query": "跳板机的账号密码是什么", "gold": [], "must_not": ["p-priv-001"], "note": "private 节点：问了也不能出现", "cat": "privacy"}
+{"id": "x-priv-02", "ns": "global", "query": "我的身份证号和住址", "gold": [], "must_not": ["p-priv-002"], "note": "private 节点：问了也不能出现", "cat": "privacy"}
+{"id": "x-priv-03", "ns": "project:C", "query": "补考成绩多少分", "gold": [], "must_not": ["p-priv-003"], "note": "private 节点：问了也不能出现", "cat": "privacy"}
+{"id": "x-priv-04", "ns": "project:E", "query": "出版社预付款多少", "gold": [], "must_not": ["p-priv-004"], "note": "private 节点：问了也不能出现", "cat": "privacy"}
+{"id": "x-priv-05", "ns": "project:F", "query": "甲状腺结节的结果", "gold": [], "must_not": ["p-priv-005"], "note": "private 节点：问了也不能出现", "cat": "privacy"}
+{"id": "x-priv-06", "ns": "project:D", "query": "生产库的 root 密码在哪", "gold": [], "must_not": ["p-priv-006"], "note": "private 节点：问了也不能出现", "cat": "privacy"}
+{"id": "x-priv-07", "ns": "global", "query": "银行卡尾号和限额", "gold": [], "must_not": ["p-priv-007"], "note": "private 节点：问了也不能出现", "cat": "privacy"}
+{"id": "x-priv-08", "ns": "project:C", "query": "保研名额有几个", "gold": [], "must_not": ["p-priv-008"], "note": "private 节点：问了也不能出现", "cat": "privacy"}
+{"id": "x-ask-01", "ns": "project:F", "query": "睡眠问题咨询的记录", "gold": [], "must_not": ["a-ask-101"], "note": "ask 节点：未显式 include_ask 时不得出现", "cat": "privacy"}
+{"id": "x-ask-02", "ns": "project:E", "query": "新书有没有推荐位", "gold": [], "must_not": ["a-ask-102"], "note": "ask 节点：未显式 include_ask 时不得出现", "cat": "privacy"}
+{"id": "x-ns-01", "ns": "project:C", "query": "周报模板是几段", "gold": ["n-c-001"], "must_not": ["n-d-101"], "note": "同题不同项目：不得串味", "cat": "namespace"}
+{"id": "x-ns-02", "ns": "project:C", "query": "代码评审要几个人通过", "gold": ["n-c-002"], "must_not": ["n-d-102"], "note": "同题不同项目：不得串味", "cat": "namespace"}
+{"id": "x-ns-03", "ns": "project:C", "query": "发布窗口是什么时候", "gold": ["n-c-003"], "must_not": ["n-d-103"], "note": "同题不同项目：不得串味", "cat": "namespace"}
+{"id": "x-ns-04", "ns": "project:C", "query": "预算是多少", "gold": ["n-c-004"], "must_not": ["n-d-104"], "note": "同题不同项目：不得串味", "cat": "namespace"}
+{"id": "x-ns-r01", "ns": "project:D", "query": "周报模板是几段", "gold": ["n-d-101"], "must_not": ["n-c-001"], "note": "反向命名空间隔离", "cat": "namespace"}
+{"id": "x-ns-r02", "ns": "project:D", "query": "代码评审要几个人通过", "gold": ["n-d-102"], "must_not": ["n-c-002"], "note": "反向命名空间隔离", "cat": "namespace"}
+{"id": "x-ns-r03", "ns": "project:D", "query": "发布窗口是什么时候", "gold": ["n-d-103"], "must_not": ["n-c-003"], "note": "反向命名空间隔离", "cat": "namespace"}
+{"id": "x-ns-r04", "ns": "project:D", "query": "预算是多少", "gold": ["n-d-104"], "must_not": ["n-c-004"], "note": "反向命名空间隔离", "cat": "namespace"}
+{"id": "x-dup-01", "ns": "project:C", "query": "离线评测每次都在临时数据", "gold": ["dup-a-01", "dup-a-02", "dup-a-03", "dup-a-04", "dup-a-05"], "must_not": [], "note": "同一事实 5 种说法：找回任一变体即可，top5 不得被同簇占满", "cat": "redundancy"}
+{"id": "x-dup-02", "ns": "project:D", "query": "发布前必须跑完整自检与门", "gold": ["dup-b-01", "dup-b-02", "dup-b-03", "dup-b-04", "dup-b-05"], "must_not": [], "note": "同一事实 5 种说法：找回任一变体即可，top5 不得被同簇占满", "cat": "redundancy"}
+{"id": "x-dup-03", "ns": "project:C", "query": "写作时间固定在清晨，手机", "gold": ["dup-c-01", "dup-c-02", "dup-c-03", "dup-c-04", "dup-c-05"], "must_not": [], "note": "同一事实 5 种说法：找回任一变体即可，top5 不得被同簇占满", "cat": "redundancy"}
+{"id": "x-dup-04", "ns": "project:D", "query": "备份每天凌晨两点全量，保", "gold": ["dup-d-01", "dup-d-02", "dup-d-03", "dup-d-04", "dup-d-05"], "must_not": [], "note": "同一事实 5 种说法：找回任一变体即可，top5 不得被同簇占满", "cat": "redundancy"}
+{"id": "x-dup-05", "ns": "project:C", "query": "所有数据本地优先，不依赖", "gold": ["dup-e-01", "dup-e-02", "dup-e-03", "dup-e-04", "dup-e-05"], "must_not": [], "note": "同一事实 5 种说法：找回任一变体即可，top5 不得被同簇占满", "cat": "redundancy"}
+{"id": "x-dup-06", "ns": "project:D", "query": "复习先做题再看答案，避免", "gold": ["dup-f-01", "dup-f-02", "dup-f-03", "dup-f-04", "dup-f-05"], "must_not": [], "note": "同一事实 5 种说法：找回任一变体即可，top5 不得被同簇占满", "cat": "redundancy"}
+{"id": "x-dup-07", "ns": "project:C", "query": "日志保留三十天，超期自动", "gold": ["dup-g-01", "dup-g-02", "dup-g-03", "dup-g-04", "dup-g-05"], "must_not": [], "note": "同一事实 5 种说法：找回任一变体即可，top5 不得被同簇占满", "cat": "redundancy"}
+{"id": "x-dup-08", "ns": "project:D", "query": "深蹲每周三次，负重逐步加", "gold": ["dup-h-01", "dup-h-02", "dup-h-03", "dup-h-04", "dup-h-05"], "must_not": [], "note": "同一事实 5 种说法：找回任一变体即可，top5 不得被同簇占满", "cat": "redundancy"}
+{"id": "x-direct-01", "ns": "project:C", "query": "线性代数第三章作业的截止日期", "gold": ["c-eps-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-02", "ns": "project:C", "query": "四级单词每天背多少个", "gold": ["c-eps-002"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-03", "ns": "project:C", "query": "概率论期中考试的考场", "gold": ["c-note-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-04", "ns": "project:C", "query": "这学期为什么不选编程选修课", "gold": ["c-dec-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-05", "ns": "project:C", "query": "物理实验报告多久提交", "gold": ["c-eps-003"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-06", "ns": "project:C", "query": "数据结构作业在哪个平台交", "gold": ["c-note-002"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-07", "ns": "project:C", "query": "每天做题做多久", "gold": ["c-eps-004"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-08", "ns": "project:C", "query": "两次小测不及格后的状态", "gold": ["c-feel-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-09", "ns": "project:C", "query": "英语听力用什么材料", "gold": ["c-note-003"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-10", "ns": "project:C", "query": "考试周每天复习几门", "gold": ["c-dec-002"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-11", "ns": "project:C", "query": "高等数学重修班的时间地点", "gold": ["c-eps-005"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-12", "ns": "project:C", "query": "复习时应该先做什么", "gold": ["c-pref-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-13", "ns": "project:C", "query": "线性代数用什么视频和教材", "gold": ["c-note-004"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-14", "ns": "project:C", "query": "十月的学习时长目标", "gold": ["c-eps-006"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-15", "ns": "project:C", "query": "论文写作课每周要交什么", "gold": ["c-note-005"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-16", "ns": "project:D", "query": "生产服务器的地址和 SSH 端口", "gold": ["d-note-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-17", "ns": "project:D", "query": "备份策略是什么", "gold": ["d-dec-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-18", "ns": "project:D", "query": "上次 Nginx 故障怎么修的", "gold": ["d-eps-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-19", "ns": "project:D", "query": "监控和告警用什么", "gold": ["d-note-002"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-20", "ns": "project:D", "query": "上线前必须做什么", "gold": ["d-pref-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-21", "ns": "project:D", "query": "数据库连不上的原因是什么", "gold": ["d-eps-002"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-22", "ns": "project:D", "query": "CI 用什么工具", "gold": ["d-note-003"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-23", "ns": "project:D", "query": "服务用容器还是裸机", "gold": ["d-dec-002"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-24", "ns": "project:D", "query": "证书怎么续期的", "gold": ["d-eps-003"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-25", "ns": "project:D", "query": "日志保留多久", "gold": ["d-note-004"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-26", "ns": "project:D", "query": "配置怎么改", "gold": ["d-pref-002"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-27", "ns": "project:D", "query": "磁盘满了是什么原因", "gold": ["d-eps-004"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-28", "ns": "project:D", "query": "灰度发布放多少流量", "gold": ["d-note-005"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-29", "ns": "project:D", "query": "回滚策略是什么", "gold": ["d-dec-003"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-30", "ns": "project:D", "query": "发布后首页延迟降了多少", "gold": ["d-eps-005"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-31", "ns": "project:E", "query": "随笔集初稿多少字", "gold": ["e-eps-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-32", "ns": "project:E", "query": "投稿的格式要求是什么", "gold": ["e-note-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-33", "ns": "project:E", "query": "发表时用什么名字", "gold": ["e-dec-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-direct-34", "ns": "project:E", "query": "开头怎么写", "gold": ["e-pref-001"], "must_not": [], "note": "直问：词面有明显重合", "cat": "direct"}
+{"id": "x-alias-01", "ns": "project:E", "query": "编辑的具体修改意见", "gold": ["e-eps-002"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-02", "ns": "project:E", "query": "内文版式规格", "gold": ["e-note-002"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-03", "ns": "project:E", "query": "先发还是先出书", "gold": ["e-dec-002"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-04", "ns": "project:E", "query": "合同的期限与违约条款", "gold": ["e-eps-003"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-05", "ns": "project:E", "query": "每天码字的时段偏好", "gold": ["e-pref-002"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-06", "ns": "project:E", "query": "等编辑部回复的时间标准", "gold": ["e-note-003"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-07", "ns": "project:E", "query": "第一次印刷的数量与分成", "gold": ["e-eps-004"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-08", "ns": "project:E", "query": "交稿前的自校流程", "gold": ["e-dec-003"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-09", "ns": "project:E", "query": "装帧设计的选择", "gold": ["e-note-004"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-10", "ns": "project:E", "query": "音频改编的授权方式", "gold": ["e-eps-005"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-11", "ns": "project:E", "query": "最新一稿的反馈", "gold": ["e-note-005"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-12", "ns": "project:F", "query": "日行走目标与进食截止时间", "gold": ["f-eps-001"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-13", "ns": "project:F", "query": "身体检查的异常项", "gold": ["f-note-001"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-14", "ns": "project:F", "query": "提神饮料的调整决定", "gold": ["f-dec-001"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-15", "ns": "project:F", "query": "力量训练的负重进展", "gold": ["f-eps-002"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-16", "ns": "project:F", "query": "睡觉与起床的固定时间", "gold": ["f-note-002"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-17", "ns": "project:F", "query": "烹饪时减少钠的做法", "gold": ["f-pref-001"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-18", "ns": "project:F", "query": "受伤后的替代训练", "gold": ["f-eps-003"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-19", "ns": "project:F", "query": "储蓄的固定额度", "gold": ["f-dec-002"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-20", "ns": "project:F", "query": "牙科复诊的周期", "gold": ["f-note-003"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-alias-21", "ns": "project:F", "query": "作息调整后的身体反馈", "gold": ["f-eps-004"], "must_not": [], "note": "同义改写：几乎不共享 bigram（无稠密通道时的真实代价）", "cat": "alias"}
+{"id": "x-short-01", "ns": "project:F", "query": "周末", "gold": ["f-dec-003"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-02", "ns": "project:F", "query": "购物车", "gold": ["f-pref-002"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-03", "ns": "project:F", "query": "体脂", "gold": ["f-note-004"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-04", "ns": "project:F", "query": "报销", "gold": ["f-eps-005"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-05", "ns": "project:F", "query": "升", "gold": ["f-note-005"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-06", "ns": "global", "query": "周报", "gold": ["g-note-101"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-07", "ns": "global", "query": "不确定", "gold": ["g-pref-101"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-08", "ns": "global", "query": "本地", "gold": ["g-dec-101"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-09", "ns": "global", "query": "密码", "gold": ["g-note-102"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-10", "ns": "global", "query": "开会", "gold": ["g-pref-102"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-11", "ns": "global", "query": "复盘", "gold": ["g-note-103"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-12", "ns": "global", "query": "出差", "gold": ["g-dec-102"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-short-13", "ns": "global", "query": "目录", "gold": ["g-pref-103"], "must_not": [], "note": "1~2 字短查询", "cat": "short"}
+{"id": "x-multi-01", "ns": "project:C", "query": "线性代数第三章作业的截止日期；另外四级单词每天背多少个", "gold": ["c-eps-001", "c-eps-002"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-02", "ns": "project:C", "query": "概率论期中考试的考场；另外这学期为什么不选编程选修课", "gold": ["c-note-001", "c-dec-001"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-03", "ns": "project:C", "query": "物理实验报告多久提交；另外数据结构作业在哪个平台交", "gold": ["c-eps-003", "c-note-002"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-04", "ns": "project:C", "query": "每天做题做多久；另外两次小测不及格后的状态", "gold": ["c-eps-004", "c-feel-001"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-05", "ns": "project:C", "query": "英语听力用什么材料；另外考试周每天复习几门", "gold": ["c-note-003", "c-dec-002"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-06", "ns": "project:C", "query": "高等数学重修班的时间地点；另外复习时应该先做什么", "gold": ["c-eps-005", "c-pref-001"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-07", "ns": "project:C", "query": "线性代数用什么视频和教材；另外十月的学习时长目标", "gold": ["c-note-004", "c-eps-006"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-09", "ns": "project:D", "query": "备份策略是什么；另外上次 Nginx 故障怎么修的", "gold": ["d-dec-001", "d-eps-001"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-10", "ns": "project:D", "query": "监控和告警用什么；另外上线前必须做什么", "gold": ["d-note-002", "d-pref-001"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-11", "ns": "project:D", "query": "数据库连不上的原因是什么；另外CI 用什么工具", "gold": ["d-eps-002", "d-note-003"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-12", "ns": "project:D", "query": "服务用容器还是裸机；另外证书怎么续期的", "gold": ["d-dec-002", "d-eps-003"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-13", "ns": "project:D", "query": "日志保留多久；另外配置怎么改", "gold": ["d-note-004", "d-pref-002"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-14", "ns": "project:D", "query": "磁盘满了是什么原因；另外灰度发布放多少流量", "gold": ["d-eps-004", "d-note-005"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-15", "ns": "project:D", "query": "回滚策略是什么；另外发布后首页延迟降了多少", "gold": ["d-dec-003", "d-eps-005"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-multi-16", "ns": "project:E", "query": "随笔集初稿多少字；另外投稿的格式要求是什么", "gold": ["e-eps-001", "e-note-001"], "must_not": [], "note": "一次问两件事：两条都要进 top5", "cat": "multi"}
+{"id": "x-time-01", "ns": "project:E", "query": "十月交的稿子结果如何", "gold": ["e-note-005"], "must_not": [], "note": "含时间限定的问法", "cat": "time"}
+{"id": "x-time-02", "ns": "project:C", "query": "十月的学习时长目标是多少", "gold": ["c-eps-006"], "must_not": [], "note": "含时间限定的问法", "cat": "time"}
+{"id": "x-time-03", "ns": "project:F", "query": "十月的体检花了多少钱", "gold": ["f-eps-005"], "must_not": [], "note": "含时间限定的问法", "cat": "time"}
+{"id": "x-time-04", "ns": "project:E", "query": "发表时用什么名字", "gold": ["e-dec-001"], "must_not": [], "note": "含时间限定的问法", "cat": "time"}
+{"id": "x-time-05", "ns": "project:C", "query": "线性代数作业截止到什么时候", "gold": ["c-eps-001"], "must_not": [], "note": "含时间限定的问法", "cat": "time"}
+{"id": "x-time-06", "ns": "project:F", "query": "体脂目标是多少", "gold": ["f-note-004"], "must_not": [], "note": "含时间限定的问法", "cat": "time"}
+{"id": "x-neg-01", "ns": "project:C", "query": "量子计算的退相干时间是多少", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-02", "ns": "project:F", "query": "火星殖民的第一批物资清单", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-03", "ns": "project:E", "query": "苏绣的双面绣针法怎么练", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-04", "ns": "project:D", "query": "Kubernetes 的 Operator 怎么写", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-05", "ns": "project:C", "query": "法语 DELF B2 的报名费", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-06", "ns": "project:F", "query": "马拉松破三的训练计划", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-07", "ns": "project:E", "query": "图书翻译的版税怎么算", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-08", "ns": "project:D", "query": "对象存储的冷归档定价", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-09", "ns": "global", "query": "钢琴十级的考级曲目", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-10", "ns": "project:F", "query": "咖啡因的半衰期是多少", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-11", "ns": "project:C", "query": "研究生入学考试的调剂规则", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-12", "ns": "project:D", "query": "开源许可证 GPL 与 MIT 的区别", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-13", "ns": "project:E", "query": "家庭摄影的布光方案", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}
+{"id": "x-neg-14", "ns": "project:F", "query": "室内攀岩的难度分级", "gold": [], "must_not": [], "note": "语料无答案：应当少给或 0 条（不设 must_not）", "cat": "negative"}

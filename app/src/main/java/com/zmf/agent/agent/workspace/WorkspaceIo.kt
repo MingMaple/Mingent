@@ -4,6 +4,7 @@ import android.content.Context
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 
@@ -16,6 +17,13 @@ data class WorkspaceEntry(
     val name: String,
     val isDirectory: Boolean,
     val size: Long
+)
+
+/** 复制到回收站时统计的规模；null 由调用方当作「复制不了」。 */
+data class CopyStats(
+    val files: Int,
+    val dirs: Int,
+    val bytes: Long
 )
 
 /**
@@ -43,8 +51,10 @@ interface WorkspaceIo {
     /** 这个工作区当前用不了的原因（授权失效 / 用户目录被删）；能用就是 null。 */
     val problem: String?
 
+    /** 路径是否存在；不存在按约定返回 false 而不是抛异常（[list] 同理返回空列表）。 */
     fun exists(rel: String): Boolean
 
+    /** 是否目录；不存在同样返回 false，调用方不必先 [exists]。 */
     fun isDirectory(rel: String): Boolean
 
     /** 字节数；未知返回 -1。 */
@@ -73,6 +83,19 @@ interface WorkspaceIo {
 
     /** 相对路径 → 回给模型看的那串路径。 */
     fun displayPath(rel: String): String
+
+    /**
+     * 回收站选卷用的本地根（普通目录就是根本身；SAF 尽量给本地路径，推不出来是 null）。
+     * null 表示这个工作区没有可用的同卷回收站，删除必须升为「不可恢复」的确认档。
+     */
+    val localRootFile: File? get() = null
+
+    /**
+     * 把 [rel] 指向的整棵条目复制到本地 [dest]（SAF 工作区进回收站用）。
+     *
+     * 普通目录走 rename，用不到它；不支持或超限/失败返回 null，调用方按不可恢复处理。
+     */
+    fun copyTo(dest: File, rel: String, maxEntries: Int, maxBytes: Long): CopyStats? = null
 }
 
 /** 普通目录实现：根就是一个 File，行为跟改造前的 java.io.File 完全一致。 */
@@ -131,13 +154,15 @@ class FileWorkspaceIo(val root: File) : WorkspaceIo {
     override fun relativePathOf(file: File): String? = relativeUnder(root, file)
 
     override fun displayPath(rel: String): String = target(rel).absolutePath
+
+    override val localRootFile: File get() = root
 }
 
 /**
  * SAF 授权目录实现：所有读写都走 [TreeRoot]（框架 DocumentsContract）。
  *
  * 三条路径口径：
- * - 相对路径按 [fallbackRoot]（dirOf 给的私有兜底目录）反推 —— 工具是拿它当根解析相对路径的；
+ * - 相对路径按 [fallbackRoot]（dirOf 给的私有兜底目录）反推，工具是拿它当根解析相对路径的；
  * - 绝对路径如果落在这棵树的本地可读路径（[localRoot]）下，也能反推成相对路径；
  * - 本地路径推不出来的（SD 卡等），只能用工具传来的相对路径，绝对路径一律判为「不在这个工作区」。
  */
@@ -280,13 +305,72 @@ class SafWorkspaceIo internal constructor(
         val uri = root.treeUri.toString()
         return if (clean.isEmpty()) uri else uri + "/" + clean
     }
+
+    override val localRootFile: File?
+        get() = localRoot?.let { File(it) }
+
+    /**
+     * 复制进回收站：SAF 没有 rename 可用（`DocumentsContract` 不提供跨父目录移动同卷的原子操作，
+     * 而按 File 写又可能被分区存储拒绝），所以只能在可承受的规模内「复制再删原物」。
+     *
+     * 超限（条目数 / 字节数）或任何一步失败都返回 null，调用方会把这次删除升为确认档：
+     * 宁可不做不可恢复的删除，也不静默丢数据。
+     */
+    override fun copyTo(dest: File, rel: String, maxEntries: Int, maxBytes: Long): CopyStats? {
+        val clean = cleanRel(rel)
+        if (clean.isEmpty()) return null
+        val located = locate(clean) ?: return null
+        val counter = CopyCounter(maxEntries, maxBytes)
+        return runCatching {
+            if (!copyNode(located.first, located.second, dest, counter)) null
+            else CopyStats(counter.files, counter.dirs, counter.bytes)
+        }.getOrNull()
+    }
+
+    private class CopyCounter(val maxEntries: Int, val maxBytes: Long) {
+        var entries = 0
+        var files = 0
+        var dirs = 0
+        var bytes = 0L
+    }
+
+    private fun copyNode(parent: TreeRoot, name: String, dest: File, counter: CopyCounter): Boolean {
+        val item = parent.find(name) ?: return false
+        if (++counter.entries > counter.maxEntries) return false
+        if (item.isDirectory) {
+            if (!dest.exists() && !dest.mkdirs()) return false
+            counter.dirs++
+            val child = parent.childDir(name) ?: return false
+            for (sub in child.listChildren()) {
+                if (!copyNode(child, sub.name, File(dest, sub.name), counter)) return false
+            }
+            return true
+        }
+        val input = parent.openInputStream(name) ?: return false
+        return runCatching {
+            input.use { source ->
+                FileOutputStream(dest).use { out ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = source.read(buffer)
+                        if (read < 0) break
+                        counter.bytes += read
+                        if (counter.bytes > counter.maxBytes) return false
+                        out.write(buffer, 0, read)
+                    }
+                }
+            }
+            counter.files++
+            true
+        }.getOrElse { false }
+    }
 }
 
 /**
  * 「空壳」实现：SAF 工作区的授权失效、或用户目录被删时用它，所有写/读都失败。
  *
  * 为什么不悄悄退回私有目录：那会让模型以为写进了用户选的目录，实际落在 App 私有沙盒里，
- * 用户在自己的文件夹里什么都看不到 —— 宁可直接报错，让用户重新选目录。
+ * 用户在自己的文件夹里什么都看不到：宁可直接报错，让用户重新选目录。
  */
 class UnavailableWorkspaceIo(private val reason: String) : WorkspaceIo {
 

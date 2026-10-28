@@ -26,6 +26,10 @@ import com.zmf.agent.ui.theme.ThemeMode
 import com.zmf.agent.ui.theme.ThemeStore
 import com.zmf.agent.ui.theme.UiScaleStore
 
+/**
+ * 主界面：承载聊天页，并负责进程级初始化（通知会话跳转、崩溃落盘、Shizuku 绑定、
+ * 定时任务重排、窗口底色）与前台状态计数。
+ */
 class MainActivity : ComponentActivity() {
 
     /** 从通知点进来要切到的会话；null = 这次不是从通知进来的。 */
@@ -35,6 +39,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 冷启动：通知带的会话 id 就在启动 Intent 上（空串按「没带」处理）
         notificationSessionId = sessionIdFrom(intent)
+        // 读完就摘掉：Activity 因配置变化重建时会复用同一个 Intent，
+        // 留着这条 extra 会把已经看过的通知会话再切一次，盖掉用户后来选的会话
+        intent?.removeExtra(Notifier.EXTRA_SESSION_ID)
         installCrashHandler()
         enableEdgeToEdge()
         // Shizuku 必须在 setContent 之前初始化：权限页一进来就要读 state，
@@ -76,7 +83,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 把窗口底色刷成当前主题的页面背景色。
+     * 窗口底色 = 当前主题的页面背景色，避免启动与切页时露出系统默认底色。
      *
      * 为什么不用 isSystemInDarkTheme()：它是 @Composable，只能进组合里读；
      * 「跟随系统」这一档在这里改成读同一份夜间配置，判定结果与组合里一致。
@@ -98,6 +105,8 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         sessionIdFrom(intent)?.let { notificationSessionId = it }
+        // 同上：摘掉会话 id，重建时不会再消费一次
+        intent.removeExtra(Notifier.EXTRA_SESSION_ID)
     }
 
     /** 前台计数 +1：只有真正露在屏幕上的 Activity 才算「用户在看」，通知据此决定弹不弹。 */
@@ -115,7 +124,7 @@ class MainActivity : ComponentActivity() {
     /**
      * 退到后台：把日志队列强制刷一次。
      *
-     * 用户习惯直接从最近任务里划掉 App —— 那一步只会走 onStop，不会走任何"优雅退出"，
+     * 用户习惯直接从最近任务里划掉 App，那一步只会走 onStop，不会走任何「优雅退出」，
      * 日志是异步写的，不在这里刷一次，最后那一两秒（往往正好是出问题的那几行）就随进程没了。
      * 300ms 是给写线程的余量：正常情况下队列是空的，这一次调用几乎不花时间。
      */

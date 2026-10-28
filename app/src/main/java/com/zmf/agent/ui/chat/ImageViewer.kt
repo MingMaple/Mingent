@@ -95,12 +95,14 @@ fun ImageViewer(
     var settleJob by remember { mutableStateOf<Job?>(null) }
     var settleSeed by remember { mutableStateOf(0) }
 
+    /** 掐掉正在跑的归位动画；它已排进下一帧的写入会被 seed 校验丢掉。 */
     fun cancelSettle() {
         settleJob?.cancel()
         settleJob = null
         settleSeed++
     }
 
+    /** 把 dragX 动画到 target，收尾执行 then；中途被 cancelSettle 打断则整段作废。 */
     fun settleTo(target: Float, spec: FiniteAnimationSpec<Float>, then: () -> Unit = {}) {
         settleJob?.cancel()
         settleSeed++
@@ -124,6 +126,7 @@ fun ImageViewer(
         }
     }
 
+    /** 关闭查看器：播完退场动画再回调 onDismiss；重复调用只生效一次。 */
     fun closeNow() {
         if (closing) return
         closing = true

@@ -1,4 +1,5 @@
 package com.zmf.agent.ui.settings
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
 
 import androidx.compose.foundation.background
@@ -66,7 +67,7 @@ private const val SUMMARY_MODEL_FIXED = "deepseek-flash"
  * 提示词排在最前，是因为它决定「模型是谁」；压缩只在上下文吃不下时才介入，
  * 顺序跟用户调参时的思维顺序一致。
  *
- * 压缩区照旧没有任何「保存」按钮——每个开关 / 滑杆改完立刻 onApply 出去，改一点就生效一点；
+ * 压缩区照旧没有任何「保存」按钮：每个开关 / 滑杆改完立刻 onApply 出去，改一点就生效一点；
  * 整列可竖向滚动，小屏也不会把底部说明挤没。
  */
 
@@ -198,7 +199,7 @@ fun ContextConfigPage(
                 }
             )
 
-            // 逐字保留：轮数是下限（上面那行），token 预算是上限；比例按 (窗口 − 输出预留) 换算，对齐 DSH
+            // 逐字保留：轮数是下限（上面那行），token 预算是上限；比例按 (窗口 − 输出预留) 换算
             val windowTokens = snapshot.window
             val retainBudget = ContextStore.retainBudgetTokens(policy, windowTokens)
             ContextSection("逐字保留（轮数为下限，token 预算为上限）")
@@ -316,7 +317,7 @@ private fun ContextSection(title: String) {
     )
 }
 
-/** 一行「左 label / 右开关」。 */
+/** 一行「左 label / 右开关」。整行可点（Salt Player 口径）：点行＝点开关。 */
 @Composable
 private fun ContextToggleRow(
     label: String,
@@ -328,6 +329,8 @@ private fun ContextToggleRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // 这一页的行不在卡片里、直接铺在页面底色上，所以显式给 16dp 圆角。
+            .saltRowClickable(RoundedCornerShape(16.dp), enabled = enabled) { onChange(!checked) }
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -413,7 +416,7 @@ private fun ContextRadioRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .saltRowClickable(RoundedCornerShape(0.dp), enabled = enabled) { onClick() }
+            .saltCardRow(enabled = enabled) { onClick() }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -446,7 +449,7 @@ private fun ContextActionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .saltRowClickable(RoundedCornerShape(0.dp), enabled = enabled) { onClick() }
+            .saltCardRow(enabled = enabled) { onClick() }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

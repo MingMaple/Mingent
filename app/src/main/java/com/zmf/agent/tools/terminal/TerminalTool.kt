@@ -5,6 +5,7 @@ import com.ai.assistance.operit.terminal.TerminalManager
 import com.ai.assistance.operit.terminal.provider.type.HiddenExecResult
 import com.ai.assistance.operit.terminal.view.domain.ansi.AnsiUtils
 import com.zmf.agent.core.model.PermissionLevel
+import com.zmf.agent.tools.HighRiskGate
 import com.zmf.agent.tools.Tool
 import com.zmf.agent.tools.ToolContext
 import com.zmf.agent.tools.ToolPolicy
@@ -26,6 +27,9 @@ import org.json.JSONObject
 class TerminalTool : Tool {
 
     override val name = "terminal"
+
+    /** 执行命令：只读档与计划模式都必须拒绝。 */
+    override val mutates = true
 
     override val description =
         "在 App 内的 Ubuntu 24 (PRoot) 里执行一条 shell 命令，返回真实退出码和输出（stdout 与 stderr 已合并）。" +
@@ -51,7 +55,17 @@ class TerminalTool : Tool {
         val raw = args.optString("command").trim()
         if (raw.isEmpty()) return ToolResult.Error("command 不能为空")
 
-        // 权限闸：只拿用户/模型给的原始 command 判断，绝不把 cwd 拼进来再判
+        val cwd = args.optString("cwd", "").trim().ifEmpty { DEFAULT_CWD }
+
+        // 第一道：高危闸门（删除/截断语义），**先于档位判定**：完全档只豁免越界，不豁免高危。
+        // 命令文本里的路径会按 PRoot 的 bind mount 表映射回宿主再判（/sdcard、/data/data/<pkg> 等），
+        // 只按文本猜「这是 Ubuntu 内部路径」会漏掉真实落点。
+        val risk = HighRiskGate.checkTerminal(ctx, raw, cwd)
+        if (!risk.allowed) {
+            return ToolResult.Error(risk.message ?: "终端命令被高危闸门拒绝")
+        }
+
+        // 第二道：越界与危险命令黑名单（只拿用户/模型给的原始 command 判断，绝不把 cwd 拼进来再判
         //（cwd 是执行细节，拼进去会让「cd /sdcard」这种写法被当成命令本身越界误拦）
         val decision = ToolPolicy.checkTerminal(ctx.permission, raw)
         if (!decision.allowed) {
@@ -66,7 +80,6 @@ class TerminalTool : Tool {
             return ToolResult.Error("当前开启了 SSH 远程终端，命令会被发到远端，请先在终端设置里关闭 SSH")
         }
 
-        val cwd = args.optString("cwd", "").trim().ifEmpty { DEFAULT_CWD }
         val timeoutMs = args.optLong("timeout_ms", DEFAULT_TIMEOUT_MS).coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
         // proot 里每条命令都是新子进程，cwd 不跨命令，只能拼在命令最前面
         val full = "cd " + cwd + " && " + raw

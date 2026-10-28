@@ -3,7 +3,9 @@ package com.zmf.agent.tools.file
 import com.zmf.agent.agent.workspace.WorkspaceEntry
 import com.zmf.agent.agent.workspace.WorkspaceIo
 import com.zmf.agent.agent.workspace.workspaceIoForRoot
+import com.zmf.agent.core.log.AuditLog
 import com.zmf.agent.core.model.PermissionLevel
+import com.zmf.agent.tools.HighRiskGate
 import com.zmf.agent.tools.PathGate
 import com.zmf.agent.tools.Tool
 import com.zmf.agent.tools.ToolContext
@@ -39,7 +41,8 @@ class ReadFileTool : Tool {
         "读取工作区里的文本文件，返回带行号的文本。路径可以是绝对路径，也可以是相对工作区的相对路径。" +
             "offset 指定从第几行开始读（从 1 起，默认 1），limit 指定最多返回多少行（默认 400）；" +
             "一次最多返回 2000 行或 64000 字符，超出会截断并提示用 offset 接着读。" +
-            "旧参数 startLine / maxLines 仍然可用，但 offset / limit 优先。"
+            "旧参数 startLine / maxLines 仍然可用，但 offset / limit 优先。" +
+            "本对话里已经读过、且期间没有别人改过的文件不要为「确认」再读一遍；内容已被压缩成摘要时才需要重读。"
 
     override val parametersJson = """
         {
@@ -67,6 +70,12 @@ class ReadFileTool : Tool {
             .getOrElse { return ToolResult.Error("路径不合法：" + (it.message ?: "未知原因")) }
         val target = targetFor(io, file)
             ?: return ToolResult.Error("这个工作区是系统授权的目录（SAF），只能读写它自己的目录，请用相对路径（如 notes/a.txt）：" + rawPath)
+        // 回收站对 Agent 是全黑区，且**与档位无关**（完全档也一样）：判定必须放在档位检查之前，
+        // 否则「完全档能读工作区外」这条会顺手把回收站也放行。走 canonical，软链接绕不过去
+        // （只看字面路径会被软链接绕开，也不能被 `canRead` 短路在完全档之外）。
+        if (HighRiskGate.isTrashPathDeep(file, ctx.context.packageName)) {
+            return ToolResult.Error(HighRiskGate.trashReadText())
+        }
         if (!target.inWorkspace && !PathGate.canRead(ctx, file)) {
             return ToolResult.Error(
                 "当前权限档是「" + ctx.permission.displayName() + "」，不能读取工作区外的路径：" + rawPath +
@@ -163,14 +172,18 @@ class ReadFileTool : Tool {
     }
 }
 
-/** 写文本文件：自动建目录，覆盖前不备份（M4 先这样），工作区外需要「完全」权限。 */
+/** 写文本文件：自动建目录，覆盖前不备份（工具层保持单文件直写），工作区外需要「完全」权限。 */
 class WriteFileTool : Tool {
 
     override val name = "write_file"
 
+    /** 写文件：只读档与计划模式都必须拒绝。 */
+    override val mutates = true
+
     override val description =
         "把文本写入文件（UTF-8），父目录不存在会自动创建。整文件覆盖写，不支持追加。" +
-            "相对路径相对工作区；工作区就是 Agent 可以自由改动的目录。"
+            "相对路径相对工作区；工作区就是 Agent 可以自由改动的目录。" +
+            "只改已有大文件的一小段时不要整文件覆盖：先用 read_file 看原文，改动很小就整体写回并在回复里说明改了哪几行。"
 
     override val parametersJson = """
         {
@@ -203,6 +216,26 @@ class WriteFileTool : Tool {
             ?: return ToolResult.Error("这个工作区是系统授权的目录（SAF），只能读写它自己的目录，请用相对路径（如 notes/a.txt）：" + rawPath)
         val inWorkspace = target.inWorkspace
 
+        // 绝对禁区：App 核心数据（shared_prefs / databases / appdata / mingmem / 审计日志…）任何档位都不许直写。
+        // 这些数据只能走各自的结构化接口（mem / 设置 / 会话存储），绕过接口直接改文件是
+        // 「能力由数据流持有」的反面。
+        if (!inWorkspace) {
+            HighRiskGate.protectedWriteReason(target.local)?.let { reason ->
+                AuditLog.record(
+                    ctx.context,
+                    "deny",
+                    "tool" to "write_file",
+                    "op" to "write",
+                    "session" to ctx.sessionId,
+                    "permission" to ctx.permission.displayName(),
+                    "target" to target.local.absolutePath,
+                    "rule" to "protected-write",
+                    "status" to "non-overridable"
+                )
+                return ToolResult.Error(reason)
+            }
+        }
+
         // 权限口径：工作区里只读档不能写；工作区外必须「完全」档
         val canWrite = if (inWorkspace) {
             ctx.permission != PermissionLevel.READ_ONLY
@@ -219,6 +252,17 @@ class WriteFileTool : Tool {
 
         val existed = target.exists()
         val oldSize = if (existed) target.size() else 0L
+        // 覆盖前先量一遍原来的行数：写成功后在回执里给出「原 N 行 → 新 M 行」，
+        // 模型多数情况下就不用再 read_file 确认一遍（提示词里本来就要求它别为确认重读）。
+        val oldLines = if (existed) {
+            runCatching {
+                target.openReader().use { reader -> reader.readText() }
+                    .trimEnd('\n')
+                    .let { text -> if (text.isEmpty()) 0 else text.count { c -> c == '\n' } + 1 }
+            }.getOrDefault(-1)
+        } else {
+            0
+        }
 
         runCatching { target.writeText(content) }
             .onFailure { return ToolResult.Error("写入失败：" + (it.message ?: it.javaClass.simpleName)) }
@@ -226,10 +270,13 @@ class WriteFileTool : Tool {
         // 行数和 read_file 的口径对齐：结尾的换行不算多出一行
         val trimmedForCount = content.trimEnd('\n')
         val lines = if (trimmedForCount.isEmpty()) 0 else trimmedForCount.count { it == '\n' } + 1
+        val firstLine = content.trimStart('\n').lineSequence().firstOrNull()?.take(80).orEmpty()
         return ToolResult.Ok(
             (if (existed) "已覆盖 " else "已新建 ") + target.display +
-                "（" + lines + " 行 / " + content.length + " 字符" +
-                (if (existed) "，原大小 " + oldSize + " 字节" else "") + "）"
+                "（" + (if (existed && oldLines >= 0) "原 " + oldLines + " 行 → 新 " else "") + lines + " 行 / " +
+                content.length + " 字符" +
+                (if (existed) "，原大小 " + oldSize + " 字节" else "") + "）" +
+                (if (firstLine.isNotEmpty()) "\n首行：" + firstLine else "")
         )
     }
 
@@ -269,6 +316,10 @@ class ListFilesTool : Tool {
                 .getOrElse { return ToolResult.Error("路径不合法：" + (it.message ?: "未知原因")) }
             val resolved = targetFor(io, file)
                 ?: return ToolResult.Error("这个工作区是系统授权的目录（SAF），只能读写它自己的目录，请用相对路径（如 notes/a.txt）：" + rawPath)
+            // 同 read_file：回收站先于档位拦，且走 canonical（软链接绕不过）
+            if (HighRiskGate.isTrashPathDeep(file, ctx.context.packageName)) {
+                return ToolResult.Error(HighRiskGate.trashReadText())
+            }
             if (!resolved.inWorkspace && !PathGate.canRead(ctx, file)) {
                 return ToolResult.Error("当前权限档是「" + ctx.permission.displayName() + "」，不能读取工作区外的路径：" + rawPath)
             }
@@ -326,12 +377,14 @@ private class FsTarget(
             return if (adapter != null && path != null) adapter.displayPath(path) else local.absolutePath
         }
 
+    /** 目标是否存在：SAF 分支问 provider，File 分支问文件系统，两边口径一致。 */
     fun exists(): Boolean {
         val adapter = io
         val path = rel
         return if (adapter != null && path != null) adapter.exists(path) else local.exists()
     }
 
+    /** 目标是不是目录；SAF provider 给不出类型时按「不是目录」算。 */
     fun isDirectory(): Boolean {
         val adapter = io
         val path = rel
@@ -346,12 +399,14 @@ private class FsTarget(
         return local.isFile
     }
 
+    /** 字节数；目录上的取值没有意义，调用方只在文件分支用它。 */
     fun size(): Long {
         val adapter = io
         val path = rel
         return if (adapter != null && path != null) adapter.size(path) else local.length()
     }
 
+    /** 列一层子项（不递归）；目录读不了时返回空列表，不抛异常。 */
     fun listEntries(): List<WorkspaceEntry> {
         val adapter = io
         val path = rel
@@ -366,6 +421,7 @@ private class FsTarget(
         }
     }
 
+    /** 取一个 UTF-8 文本读流，关闭由调用方负责。 */
     fun openReader(): BufferedReader {
         val adapter = io
         val path = rel
@@ -376,6 +432,7 @@ private class FsTarget(
         }
     }
 
+    /** 整段覆盖写：File 分支顺手建父目录，SAF 分支直接交给 provider 的写接口。 */
     fun writeText(content: String) {
         val adapter = io
         val path = rel
@@ -396,9 +453,9 @@ private class FsTarget(
 
 /**
  * 把参数路径解析成 [FsTarget]。返回 null 只有一种情形：
- * SAF 工作区里出现「推不出相对路径」的绝对路径 —— 那种路径在 File 这套上不成立，只能拒绝。
+ * SAF 工作区里出现「推不出相对路径」的绝对路径，那种路径在 File 这套上不成立，只能拒绝。
  *
- * 普通工作区外的绝对路径不算解析失败：原样交给 File，权限由调用方按 PathGate 判（跟改造前一致）。
+ * 普通工作区外的绝对路径不算解析失败：原样交给 File，权限由调用方按 PathGate 判。
  */
 private fun targetFor(io: WorkspaceIo, file: File): FsTarget? {
     val rel = io.relativePathOf(file)

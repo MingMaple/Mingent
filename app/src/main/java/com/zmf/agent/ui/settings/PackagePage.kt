@@ -1,4 +1,5 @@
 package com.zmf.agent.ui.settings
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
 
 import android.content.Context
@@ -74,6 +75,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.zmf.agent.ui.common.saltFieldColors
 
 /**
  * 「包管理」页：插件（MCP 服务）与 Skill 两个 tab，左右滑动切换。
@@ -157,7 +159,7 @@ fun PackagePage(
  *
  * 不用 Material3 的 TabRow：它的默认指示条是等分的下划线，跟 Salt 的手感不一致。
  * 这里自己排 Row（两个 tab 等分宽度），指示条用 animateFloatAsState 追
- * 「currentPage + currentPageOffsetFraction」——手拖的时候跟着手指实时动，
+ * 「currentPage + currentPageOffsetFraction」：手拖的时候跟着手指实时动，
  * 点 tab 时由 animateScrollToPage 驱动像素滚动，指示条同时被弹簧带过去。
  */
 @Composable
@@ -300,7 +302,7 @@ private fun McpTab(registry: ToolRegistry, onChanged: () -> Unit) {
                 )
             } else {
                 Surface(
-                    shape = RoundedCornerShape(22.dp),
+                    shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -326,7 +328,6 @@ private fun McpTab(registry: ToolRegistry, onChanged: () -> Unit) {
                             )
                             if (index != servers.lastIndex) {
                                 HorizontalDivider(
-                                    modifier = Modifier.padding(start = 16.dp),
                                     color = onSurface.copy(alpha = 0.06f)
                                 )
                             }
@@ -340,7 +341,9 @@ private fun McpTab(registry: ToolRegistry, onChanged: () -> Unit) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .saltRowClickable(RoundedCornerShape(10.dp)) {
+                // 页面级加号行（不在上面的服务卡里，是卡下方独立的一行）：
+                // 圆角取 16dp，与它上方的 16dp 服务卡同弧；10dp 会看得出比卡片尖一点
+                .saltRowClickable(RoundedCornerShape(16.dp)) {
                     editorSource = null
                     editorOpen = true
                 }
@@ -537,6 +540,7 @@ private fun McpEditorDialog(
         }
     ) {
         OutlinedTextField(
+                colors = saltFieldColors(),
             value = name,
             onValueChange = { name = it },
             modifier = Modifier.fillMaxWidth(),
@@ -568,6 +572,7 @@ private fun McpEditorDialog(
         if (stdio) {
             // 命令行在 App 内的 Ubuntu 里执行：npx / python3 这种直接写名字就行
             OutlinedTextField(
+                colors = saltFieldColors(),
                 value = command,
                 onValueChange = { command = it },
                 modifier = Modifier.fillMaxWidth(),
@@ -577,6 +582,7 @@ private fun McpEditorDialog(
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
             )
             OutlinedTextField(
+                colors = saltFieldColors(),
                 value = args,
                 onValueChange = { args = it },
                 modifier = Modifier.fillMaxWidth(),
@@ -586,6 +592,7 @@ private fun McpEditorDialog(
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
             )
             OutlinedTextField(
+                colors = saltFieldColors(),
                 value = env,
                 onValueChange = { env = it },
                 modifier = Modifier.fillMaxWidth().height(88.dp),
@@ -594,6 +601,7 @@ private fun McpEditorDialog(
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
             )
             OutlinedTextField(
+                colors = saltFieldColors(),
                 value = cwd,
                 onValueChange = { cwd = it },
                 modifier = Modifier.fillMaxWidth(),
@@ -604,6 +612,7 @@ private fun McpEditorDialog(
             )
         } else {
             OutlinedTextField(
+                colors = saltFieldColors(),
                 value = url,
                 onValueChange = { url = it },
                 modifier = Modifier.fillMaxWidth(),
@@ -614,6 +623,7 @@ private fun McpEditorDialog(
             )
 
             OutlinedTextField(
+                colors = saltFieldColors(),
                 value = headers,
                 onValueChange = { headers = it },
                 modifier = Modifier.fillMaxWidth().height(110.dp),
@@ -632,11 +642,11 @@ private fun McpEditorDialog(
 private fun TransportChip(text: String, selected: Boolean, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         color = if (selected) Palette.AccentGreen.copy(alpha = 0.16f) else onSurface.copy(alpha = 0.06f),
-        // 点击反馈必须跟着 12dp 胶囊走：把 clickable 交给 Surface 的 modifier 时，
+        // 点击反馈必须跟着 16dp 胶囊走：把 clickable 交给 Surface 的 modifier 时，
         // Surface 自己的 clip 在它之后生效，水波纹会按矩形铺开、四个角露出方角
-        modifier = Modifier.saltRowClickable(RoundedCornerShape(12.dp), onClick = onClick)
+        modifier = Modifier.saltCardRow(onClick = onClick)
     ) {
         Text(
             text = text,
@@ -705,7 +715,7 @@ private fun SkillTab(onChanged: () -> Unit) {
                 )
             } else {
                 Surface(
-                    shape = RoundedCornerShape(22.dp),
+                    shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -729,7 +739,6 @@ private fun SkillTab(onChanged: () -> Unit) {
                             )
                             if (index != skills.lastIndex) {
                                 HorizontalDivider(
-                                    modifier = Modifier.padding(start = 16.dp),
                                     color = onSurface.copy(alpha = 0.06f)
                                 )
                             }
@@ -848,6 +857,7 @@ private fun NewSkillDialog(
         onConfirm = { onCreate(name.trim(), description.trim(), body) }
     ) {
         OutlinedTextField(
+                colors = saltFieldColors(),
             value = name,
             onValueChange = { name = it },
             modifier = Modifier.fillMaxWidth(),
@@ -857,6 +867,7 @@ private fun NewSkillDialog(
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None)
         )
         OutlinedTextField(
+                colors = saltFieldColors(),
             value = description,
             onValueChange = { description = it },
             modifier = Modifier.fillMaxWidth(),
@@ -865,6 +876,7 @@ private fun NewSkillDialog(
             singleLine = true
         )
         OutlinedTextField(
+                colors = saltFieldColors(),
             value = body,
             onValueChange = { body = it },
             modifier = Modifier.fillMaxWidth().height(150.dp),
@@ -954,7 +966,7 @@ private suspend fun readSkills(context: Context): List<SkillEntry> =
 
 /**
  * 把 headers 文本解析成 Map：「Key: Value」一行一条。
- * 空行、没有冒号的行、key 为空的行直接跳过——宁可少一个请求头，也不要存进去一个坏键。
+ * 空行、没有冒号的行、key 为空的行直接跳过：宁可少一个请求头，也不要存进去一个坏键。
  */
 private fun parseHeaders(text: String): Map<String, String> {
     val map = LinkedHashMap<String, String>()

@@ -72,7 +72,7 @@ object WorkSpaceStore {
     /** 自建工作区目录都放在这里。 */
     private const val WORKSPACES_DIR = "workspaces"
 
-    /** 软删除（目录改名）的目标目录，用户要求「删除先留快照」，所以绝不做真删。 */
+    /** 软删除（目录改名）的目标目录，用来实现「删除先留快照」，所以绝不做真删。 */
     private const val TRASH_DIR = ".trash"
 
     /** 上一次发出的 id，保证同一毫秒内连点两次「新建工作区」也不会撞 id。 */
@@ -110,7 +110,7 @@ object WorkSpaceStore {
         }
     }
 
-    /** 整体覆盖写；失败只记日志。先写 .tmp 再 rename，避免写到一半被杀留下坏文件。 */
+    /** 整表覆盖写：先 .tmp 后 rename，避免半截文件；失败只记日志，内存里的列表仍是新的。 */
     fun save(context: Context, list: List<WorkSpace>) {
         try {
             val array = JSONArray()
@@ -158,7 +158,7 @@ object WorkSpaceStore {
 
     /**
      * 新建「指向用户目录」的工作区：目录由用户自己选（绝对路径 / SAF 授权目录），
-     * **不在应用私有目录里再建同名目录** —— 用户选了哪个目录，工作区的根就是哪个目录。
+     * **不在应用私有目录里再建同名目录**：用户选了哪个目录，工作区的根就是哪个目录。
      *
      * 校验口径（任一条不满足都返回 null，宁可让界面提示一句，也不建一个指不到的坏工作区）：
      * - [rootPath] 非空：必须已存在、是目录、可写；不替用户创建、不猜；
@@ -215,8 +215,8 @@ object WorkSpaceStore {
      * 工作区真正的根目录（File 分支）。
      *
      * 返回 null 只有两种情形，调用方必须能分辨并走对应分支：
-     * ① 这个工作区走 SAF（[WorkSpace.treeUri] 非空）—— File 表示不了它，请改用 [openTreeRoot]；
-     * ② 用户选的目录被删了 / 移走了 —— 提示用户重新选，不要默默换成私有目录。
+     * ① 这个工作区走 SAF（[WorkSpace.treeUri] 非空）：File 表示不了它，请改用 [openTreeRoot]；
+     * ② 用户选的目录被删了 / 移走了：提示用户重新选，不要默默换成私有目录。
      */
     fun resolveRoot(context: Context, record: WorkSpace): File? {
         val tree = record.treeUri
@@ -477,6 +477,7 @@ class TreeRoot internal constructor(
     /** 某个名字的子项；没有返回 null。 */
     fun find(name: String): Item? = listChildren().firstOrNull { it.name == name }
 
+    /** 这个目录下有没有这个名字的子项；不存在返回 false，不抛异常。 */
     fun exists(name: String): Boolean = find(name) != null
 
     /** 这个目录下某个文件的字节数；找不到或 provider 不给就是 -1。 */

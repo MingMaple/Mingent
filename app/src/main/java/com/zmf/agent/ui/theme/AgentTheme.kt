@@ -1,6 +1,8 @@
 package com.zmf.agent.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -69,7 +71,7 @@ fun AgentTheme(
             surface = Palette.DarkSurface,
             onBackground = Palette.DarkText,
             onSurface = Palette.DarkText,
-            // 不显式给 error，Material3 深色默认是 #FFB4AB（淡粉）——用户实测断网红点就是粉的
+            // 显式给 error：Material3 深色默认是 #FFB4AB（淡粉），断网红点就成了粉色
             error = androidx.compose.ui.graphics.Color(0xFFFF6369)
         )
     } else {
@@ -88,7 +90,17 @@ fun AgentTheme(
             configs = SaltConfigs.default(isDarkTheme = darkTheme),
             dynamicColors = SaltDynamicColors(light = saltLight(), dark = saltDark())
         ) {
-            MaterialTheme(colorScheme = material, content = content)
+            // 选中文字的光标手柄与选择底色统一走灰阶/绿，不再跟随 colorScheme.primary（蓝）。
+            // Material 默认 primary 是 Palette.AccentBlue，于是每个可点进去的输入框
+            // 点击后都是蓝色。这里一次性把全 App 的选择色钉住，省得每个 TextField 各写一遍。
+            CompositionLocalProvider(
+                LocalTextSelectionColors provides TextSelectionColors(
+                    handleColor = material.onSurface.copy(alpha = 0.7f),
+                    backgroundColor = Palette.AccentGreen.copy(alpha = 0.30f)
+                )
+            ) {
+                MaterialTheme(colorScheme = material, content = content)
+            }
         }
     }
 }

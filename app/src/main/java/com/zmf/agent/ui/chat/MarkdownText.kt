@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,7 +31,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
@@ -45,6 +48,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -79,41 +83,160 @@ fun MarkdownText(
     modifier: Modifier = Modifier,
     fontSize: TextUnit = 15.sp,
     color: Color = MaterialTheme.colorScheme.onSurface,
-    codeBackground: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f)
+    codeBackground: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f),
+    /**
+     * 是否把空行渲染成一段留白。
+     *
+     * 默认 false（AI 气泡、工具卡）：空行只作块间分隔，连续空行一律收起；
+     * 用户气泡传 true：用户在输入框里按下的换行是他自己排版的一部分，
+     * 吞掉就会变成「只剩几个标点」。发送时已把 3 个以上连续换行压成一个空行，
+     * 所以这里最多只会多出一段留白，不会出现整屏空白。
+     */
+    keepBlankLines: Boolean = false,
+    /**
+     * 折叠阈值：正文完整高度超过它才折叠。默认 [Dp.Unspecified] = 不折叠（AI 气泡、工具卡走这条）。
+     *
+     * 折叠按**整块**算：只显示完整放得下的块（段落 / 列表项 / 代码块），绝不在一行中间截断，
+     * 所以折叠态的结尾一定是某一段的末尾。放不下一块时至少保留第一块。
+     */
+    foldAt: Dp = Dp.Unspecified,
+    /** 折叠态最多占的高度；实际显示高度是「不超过它、且以整块结尾」的那一段。 */
+    foldedHeight: Dp = Dp.Unspecified,
+    /** true = 展开（整段铺开）；false = 折叠。 */
+    expanded: Boolean = true,
+    /** 折叠态底部渐变的落点色，一般传气泡底色。 */
+    foldColor: Color = Color.Unspecified,
+    /** 气泡右下角的展开 / 收起按钮；由调用方提供，这里只负责摆位置。 */
+    foldToggle: (@Composable () -> Unit)? = null,
+    /**
+     * 折叠按钮的落点基准 = **调用方气泡自己的内边距**（右 / 下）。
+     *
+     * 按钮要压在气泡右下角、离气泡边 6dp，所以它得落在正文外框之外那层内边距里。
+     * 主页气泡是 16/12dp；悬浮小窗更窄更矮，内边距是 10/7dp，得跟着换，
+     * 否则按钮会被推到气泡外面去。
+     */
+    foldToggleInsetX: Dp = 16.dp,
+    foldToggleInsetY: Dp = 12.dp
 ) {
     // 解析结果按原文缓存，避免每帧重解析；text 变化（流式增量）时才会重算。
     // 这里再套一层进程级 LRU：列表滑出屏幕后 item 会被回收，滑回来 remember 已经没了，
     // 只靠 remember 的话每次滑回来都要把整段 Markdown 重新切一遍（长对话滚动卡顿的主因）。
-    val blocks = remember(text) { parseMarkdownCached(text) }
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (block in blocks) {
-            when (block) {
-                is MdBlock.Paragraph -> MarkdownParagraph(block.content, fontSize, color, codeBackground)
-                is MdBlock.Heading -> MarkdownHeading(block.level, block.content, fontSize, color, codeBackground)
-                is MdBlock.ListItem -> MarkdownListItem(
-                    marker = block.marker,
-                    content = block.content,
-                    indent = block.indent,
-                    fontSize = fontSize,
-                    color = color,
-                    codeBackground = codeBackground
-                )
-                is MdBlock.Code -> MarkdownCodeBlock(
-                    code = block.code,
-                    lang = block.lang,
-                    fontSize = fontSize,
-                    color = color,
-                    codeBackground = codeBackground
-                )
-                MdBlock.Divider -> Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 2.dp)
-                        .height(1.dp)
-                        .background(color.copy(alpha = 0.15f))
-                )
-            }
+    val blocks = remember(text, keepBlankLines) { parseMarkdownCached(text, keepBlankLines) }
+    if (foldAt == Dp.Unspecified || foldedHeight == Dp.Unspecified) {
+        Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (block in blocks) MarkdownBlock(block, fontSize, color, codeBackground)
         }
+        return
+    }
+    val density = LocalDensity.current
+    val gapPx = with(density) { 6.dp.roundToPx() }
+    val foldAtPx = with(density) { foldAt.roundToPx() }
+    val foldedPx = with(density) { foldedHeight.roundToPx() }
+    val fadeHeight = 56.dp
+    val blockCount = blocks.size
+    Layout(
+        modifier = modifier,
+        content = {
+            for (block in blocks) MarkdownBlock(block, fontSize, color, codeBackground)
+            // 末尾两个不是正文：遮罩（盖住折叠处最后一行，暗示「下面还有」）与展开 / 收起按钮
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(fadeHeight)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, foldColor)))
+            )
+            foldToggle?.invoke()
+        }
+    ) { measurables, constraints ->
+        // 正文按不限高测量：完整高度是「折到第几块」的唯一依据。
+        // 宽度仍按父级给的范围走，代码块才能照常横滑。
+        val childConstraints = constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity)
+        val placeables = (0 until blockCount).map { measurables[it].measure(childConstraints) }
+        val width = if (constraints.hasBoundedWidth) constraints.maxWidth
+        else placeables.maxOfOrNull { it.width } ?: constraints.minWidth
+        val total = placeables.sumOf { it.height } + gapPx * (blockCount - 1).coerceAtLeast(0)
+        val foldable = total > foldAtPx
+        // 折叠态只放到整块为止：一块放不下一行也不切，宁可只留一块
+        var visible = blockCount
+        if (foldable && !expanded) {
+            var used = 0
+            var count = 0
+            for (index in 0 until blockCount) {
+                val next = if (count == 0) placeables[index].height
+                else used + gapPx + placeables[index].height
+                if (next > foldedPx) break
+                used = next
+                count++
+            }
+            visible = count.coerceAtLeast(1)
+        }
+        val bodyHeight = placeables.take(visible).sumOf { it.height } + gapPx * (visible - 1).coerceAtLeast(0)
+        val toggle = measurables[blockCount + 1].measure(Constraints())
+        val edge = 6.dp.roundToPx()
+        val height = bodyHeight
+        layout(width, height) {
+            var y = 0
+            for (index in 0 until visible) {
+                placeables[index].place(0, y)
+                y += placeables[index].height + gapPx
+            }
+            if (!foldable) return@layout
+            // 遮罩只盖折叠态的截断处：展开后整段可见，渐变反而会压住正文
+            if (!expanded) {
+                val fade = measurables[blockCount].measure(Constraints.fixed(width, fadeHeight.roundToPx()))
+                fade.place(0, height - fade.height)
+            }
+            // 按钮始终压在气泡自己的右下角：折叠态是截断处，展开态是整段末尾。
+            // 不跟着视线走，也不换角：按钮固定落在气泡右下角那一条上。
+            // 压进内边距里（内边距由调用方给：主页 16/12dp、小窗 10/7dp），离气泡边 6dp。
+            val toggleX = width + foldToggleInsetX.roundToPx() - edge - toggle.width
+            val toggleY = height + foldToggleInsetY.roundToPx() - edge - toggle.height
+            toggle.place(toggleX, toggleY)
+        }
+    }
+}
+
+/** 一个块的最小渲染单元：段落 / 标题 / 列表项 / 代码块 / 空行 / 分隔线。 */
+@Composable
+private fun MarkdownBlock(
+    block: MdBlock,
+    fontSize: TextUnit,
+    color: Color,
+    codeBackground: Color
+) {
+    when (block) {
+        is MdBlock.Paragraph -> MarkdownParagraph(block.content, fontSize, color, codeBackground)
+        is MdBlock.Heading -> MarkdownHeading(block.level, block.content, fontSize, color, codeBackground)
+        is MdBlock.ListItem -> MarkdownListItem(
+            marker = block.marker,
+            content = block.content,
+            indent = block.indent,
+            fontSize = fontSize,
+            color = color,
+            codeBackground = codeBackground
+        )
+        is MdBlock.Code -> MarkdownCodeBlock(
+            code = block.code,
+            lang = block.lang,
+            fontSize = fontSize,
+            color = color,
+            codeBackground = codeBackground,
+            // 气泡里的代码块不设限高、不开块内竖滚：整段随消息一起铺开，
+            // 快速滑动经过它时手势仍然归外层列表，不会被块内滚动截走
+            boundedBody = false,
+            // 行内滑到头之后那点余量就地吃掉：继续推不该把抽屉拉出来，也不该进轨迹页
+            // （滑到尽头后就该毫无响应，不能改由父层接力）
+            blockHorizontalAtEdge = true
+        )
+        // 空行：只在用户气泡里出现（见 keepBlankLines），一段留白＝一口换行
+        MdBlock.Blank -> Spacer(Modifier.height(8.dp))
+        MdBlock.Divider -> Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 2.dp)
+                .height(1.dp)
+                .background(color.copy(alpha = 0.15f))
+        )
     }
 }
 
@@ -198,17 +321,19 @@ private fun MarkdownListItem(
 /**
  * 围栏代码块：顶部一条工具条（语言 /「缩进」/「复制」），下面是行号列 + 代码体。
  *
- * 默认**单行横滑**（不折行，和 dsh 一致），点「缩进」改成完整换行；
+ * 默认**单行横滑**（不折行，长行靠横滑读），点「缩进」改成完整换行；
  * 行号等宽右对齐、半透明灰，宽度按总行数取 2–3 位。
  *
  * 「复制」跟「缩进」并列在工具条右端，但只有**摸过这一块**才出现（全局唯一，摸别的块会挪走）。
  * 单行横滑的正文保持原样，横向不受限高影响。
  *
- * 正文限高 240dp（[BoundedScrollColumn]）：装得下就随整页滚，真超了才在块内竖滚、
- * 滚到边界也不把余量交给外层列表。调用方明确给出 [maxBodyHeight] 时按它的值。
+ * 正文是否限高由 [boundedBody] 决定：
+ *  - true（工具卡）：限高 240dp（[BoundedScrollColumn]），装得下随整页滚，真超了才在块内竖滚；
+ *  - false（聊天气泡）：不设上限、不开块内竖滚，整段随消息铺开，快速滑动不被截走。
+ * 调用方明确给出 [maxBodyHeight] 时按它的值。
  *
- * 「横滑到边界不传给外层」用 ToolBlock.kt 里的 toolBlockHorizontalAtEdge（按子单约定
- * 只实现一份，这里传 [blockHorizontalAtEdge] 打开，也不动 ChatScreen 那份 private 的）。
+ * 「横滑到边界不传给外层」用同包的 [blockHorizontalAtEdge]：气泡里的代码块同样要拦住，
+ * 否则滑到行末继续推会去拉抽屉或进轨迹页。
  *
  * ToolBlock 会复用本函数：参数区 / 命令区不要行号、不要复制按钮。
  */
@@ -223,7 +348,8 @@ internal fun MarkdownCodeBlock(
     showCopy: Boolean = true,
     showLineNumbers: Boolean = true,
     maxBodyHeight: Dp = Dp.Unspecified,
-    blockHorizontalAtEdge: Boolean = false
+    blockHorizontalAtEdge: Boolean = false,
+    boundedBody: Boolean = true
 ) {
     // 代码块字号按正文字号等比缩小，默认 15sp -> 约 13sp。
     val codeFontSize = fontSize * 0.88f
@@ -258,64 +384,102 @@ internal fun MarkdownCodeBlock(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .claimCopyOnGesture(copyKey)
+            // 只有自己带复制按钮时才参与「谁显示复制」的竞争：
+            // 参数块 / 命令区是 showCopy = false，以前它们也登记成持有者，
+            // 结果摸到这些位置时整张卡的复制按钮反而不会出现（表现为「有些位置摸不出来」）。
+            .then(if (showCopy) Modifier.claimCopyOnGesture(copyKey) else Modifier)
             .background(codeBackground, RoundedCornerShape(12.dp))
             .padding(vertical = 8.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // 有语言标识就显示语言，没有就统一显示「代码」
-            Text(
-                text = langLabel,
-                modifier = Modifier.weight(1f, fill = false),
-                fontSize = 11.sp,
-                color = color.copy(alpha = 0.45f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = "缩进",
+        // 工具条要跟着**可用宽度**走，而不是跟着某个固定尺寸：
+        // 主页气泡宽 350dp、工具卡更宽，小窗却能被拖到很窄又随时拉宽。
+        // 窄于 [ToolbarCompactWidth] 时先丢掉「复制」，保住「缩进」还贴右端、点得到。
+        BoxWithConstraints {
+            val compact = maxWidth < ToolbarCompactWidth
+            Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { wrapMode = !wrapMode }
-                    // 命中区按手指给：11sp 的字本身才 15dp 高，原来再收 2dp 内距，
-                    // 实际可点范围不到 20dp，用户十次有八次点在边缘外——「点了没反应」主要就是这个
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                fontSize = 11.sp,
-                color = if (wrapMode) Palette.AccentBlue else toolbarColor
-            )
-            if (showCopy) {
-                Spacer(Modifier.width(12.dp))
-                // 「复制」在固定宽度的槽里出现 / 消失：不挤动「缩进」和语言名，工具条不跳
-                Box(
-                    modifier = Modifier.width(CodeCopySlot),
-                    contentAlignment = Alignment.CenterEnd
-                ) {
-                    if (CopyRevealHost.owner === copyKey) {
-                        Text(
-                            text = if (copied) "已复制" else "复制",
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    copyCode(context, code, langLabel)
-                                    copied = true
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 左：语言标识（或「代码」「参数」这类标签）。
+                // 用 weight(1f) 占满剩余宽度，把「缩进」和「复制」一起推到右端：
+                // 标签是「下面这段是什么」的名称，缩进是「换个看法」的操作，
+                // 两者紧挨着会被读成同一类东西；左右分开之后，标签在左、操作在右。
+                Text(
+                    text = langLabel,
+                    modifier = Modifier.weight(1f),
+                    fontSize = 11.sp,
+                    color = color.copy(alpha = 0.45f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(8.dp))
+                // 「复制」「缩进」各占一块**同宽的固定槽**：两块紧邻、中间不留 Spacer，
+                // 字在槽内居中，于是两枚的涟漪尺寸完全相同，按压时不会「一宽一窄」。
+                // 槽宽收到 38dp 时两字的视觉间距约 15dp（56dp 槽 + 4dp Spacer 时约 25dp，太散）。
+                // 槽宽下限 38dp（容得下「已复制」三个字）；系统字体放大时按字号同比放宽，
+                // 免得「已复制」被裁掉。
+                val actionSlot = if (compact) {
+                    CodeActionSlotCompact
+                } else {
+                    maxOf(CodeActionSlot, with(LocalDensity.current) { 34.sp.toDp() } + 3.dp)
+                }
+                if (showCopy && !compact) {
+                    val revealed = CopyRevealHost.owner === copyKey
+                    Box(
+                        modifier = Modifier
+                            .width(actionSlot)
+                            .clip(RoundedCornerShape(8.dp))
+                            .then(
+                                if (revealed) {
+                                    Modifier.clickable {
+                                        copyCode(context, code, langLabel)
+                                        copied = true
+                                    }
+                                } else {
+                                    Modifier
                                 }
-                                // 和「缩进」同一套命中区，别再让用户点在边缘外
-                                .padding(horizontal = 10.dp, vertical = 7.dp),
-                            fontSize = 11.sp,
-                            color = toolbarColor
-                        )
+                            )
+                            // 竖向内距留在区域内部：涟漪跟着区域一起长，不会溢到相邻行
+                            .padding(vertical = 7.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (revealed) {
+                            Text(
+                                text = if (copied) "已复制" else "复制",
+                                fontSize = 11.sp,
+                                color = toolbarColor,
+                                // 状态字绝不允许折行：折了第一行只剩「已复」，读起来像坏掉
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
+                }
+                Box(
+                    modifier = Modifier
+                        .width(actionSlot)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { wrapMode = !wrapMode }
+                        // 命中区按手指给：11sp 的字本身才 15dp 高，竖向内距让涟漪与「复制」同高
+                        .padding(vertical = 7.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "缩进",
+                        fontSize = 11.sp,
+                        // 开启态用同色提高不透明度表示，不刷成 AccentBlue（#0078FF）：
+                        // 主题是单色的，饱和蓝在整屏里是唯一的杂色；「已开启」的强调与
+                        // 「完成」「已复制」这类状态字统一用同色浓淡区分。
+                        color = if (wrapMode) color.copy(alpha = 0.92f) else toolbarColor
+                    )
                 }
             }
         }
-        // 正文限高 + 边界滑动：装得下时滑动照常交给整页，超过才在块内竖滚
-        BoundedScrollColumn(maxHeight = bodyMaxHeight) {
+        // 正文按调用方口径决定是否限高：气泡里不限高、不内滚（滑动始终归外层列表），
+        // 工具卡仍保留限高与「滚到边界就地截住」的行为
+        val body: @Composable () -> Unit = {
             if (wrapMode) {
                 // 折行模式：每个逻辑行单独一个 Row，行号才能和「折成多行的那一行」逐行对齐。
                 // 只有用户主动点开「缩进」才走这条分支（长代码建节点会多一些），
@@ -375,7 +539,7 @@ internal fun MarkdownCodeBlock(
                             // 拦截器排在 horizontalScroll 之前（= 外层），才看得见行内还剩没剩位移
                             .then(
                                 if (blockHorizontalAtEdge) {
-                                    Modifier.toolBlockHorizontalAtEdge(hScroll)
+                                    Modifier.blockHorizontalAtEdge(hScroll)
                                 } else {
                                     Modifier
                                 }
@@ -394,6 +558,11 @@ internal fun MarkdownCodeBlock(
                     }
                 }
             }
+        }
+        if (boundedBody) {
+            BoundedScrollColumn(maxHeight = bodyMaxHeight) { body() }
+        } else {
+            Column(modifier = Modifier.fillMaxWidth()) { body() }
         }
     }
 }
@@ -424,10 +593,24 @@ private fun CodeLineNumber(
     )
 }
 
-/** 复制文本到剪贴板。Android 13 起系统自己会弹「已复制」，低版本再补一个 Toast。 */
-/** 代码块工具条上「复制」的固定占位宽度：出现/消失都不挤动左边的东西。 */
-private val CodeCopySlot = 56.dp
+/** 代码块工具条上「复制」「缩进」共用的固定槽宽下限：两枚涟漪同尺寸，按压不突兀。 */
+private val CodeActionSlot = 38.dp
 
+/** 窄版（小窗被拖窄）时只留「缩进」，槽宽收到这个值，免得把行撑出块外。 */
+private val CodeActionSlotCompact = 32.dp
+
+/**
+ * 工具条进入「窄版」的宽度阈值：小窗可以被拖到很窄（服务端最小 48dp），
+ * 此时标签 + 复制槽 + 缩进会撑出块外。窄于这个宽度就先丢掉「复制」，
+ * 保住「缩进」还贴右端、点得到（复制在极窄窗口里本来也读不清）。
+ */
+private val ToolbarCompactWidth = 180.dp
+
+/**
+ * 把代码块正文放进系统剪贴板；[label] 是剪贴板条目的显示名（「代码」「思考过程」等）。
+ *
+ * 空串直接忽略；API 33 起系统自带复制提示，所以只在更低版本手动弹「已复制」。
+ */
 internal fun copyCode(context: Context, code: String, label: String = "代码") {
     if (code.isEmpty()) return
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -714,6 +897,8 @@ private sealed interface MdBlock {
     data class Heading(val level: Int, val content: String) : MdBlock
     data class ListItem(val marker: String, val content: String, val indent: Int) : MdBlock
     data class Code(val code: String, val lang: String) : MdBlock
+    /** 空行留白：只有 [MarkdownText] 的 keepBlankLines 打开时才会产生。 */
+    data object Blank : MdBlock
     data object Divider : MdBlock
 }
 
@@ -723,10 +908,6 @@ private val HEADING_REGEX = Regex("^(#{1,3})\\s+(.*)$")
 private val DIVIDER_REGEX = Regex("^([-*_])\\1{2,}$")
 
 /**
- * 把整段文本切成块。逐行处理，流式输出时没有任何"未完成状态"需要维护：
- * 未闭合的围栏会把剩下的所有行都收进代码块。
- */
-/**
  * 进程级缓存：列表滚出屏幕后 Composable 会被回收，靠 remember 保不住解析结果。
  *
  * 容量按条目数给（长对话一屏十几段，64 条够覆盖来回滚动），key 用原文/样式参数，
@@ -735,10 +916,12 @@ private val DIVIDER_REGEX = Regex("^([-*_])\\1{2,}$")
 private val mdBlocksCache = android.util.LruCache<String, List<MdBlock>>(64)
 private val inlineCache = android.util.LruCache<String, AnnotatedString>(128)
 
-private fun parseMarkdownCached(source: String): List<MdBlock> {
-    mdBlocksCache.get(source)?.let { return it }
-    val parsed = parseMarkdown(source)
-    mdBlocksCache.put(source, parsed)
+private fun parseMarkdownCached(source: String, keepBlankLines: Boolean): List<MdBlock> {
+    // 同一段原文在两种口径下解析结果不同，缓存 key 必须带上模式，否则一个模式会把另一个的结果读走
+    val key = (if (keepBlankLines) "B:" else "N:") + source
+    mdBlocksCache.get(key)?.let { return it }
+    val parsed = parseMarkdown(source, keepBlankLines)
+    mdBlocksCache.put(key, parsed)
     return parsed
 }
 
@@ -750,7 +933,11 @@ private fun inlineAnnotatedCached(content: String, fontSize: TextUnit, codeBackg
     return built
 }
 
-private fun parseMarkdown(source: String): List<MdBlock> {
+/**
+ * 把整段文本切成块。逐行处理，流式输出时没有任何「未完成状态」需要维护：
+ * 未闭合的围栏会把剩下的所有行都收进代码块。
+ */
+private fun parseMarkdown(source: String, keepBlankLines: Boolean = false): List<MdBlock> {
     if (source.isEmpty()) return emptyList()
     val lines = source.replace("\r\n", "\n").replace('\r', '\n').split('\n')
     val blocks = ArrayList<MdBlock>(lines.size)
@@ -788,8 +975,12 @@ private fun parseMarkdown(source: String): List<MdBlock> {
             continue
         }
 
-        // 2. 空行：只作分隔，不产生块（块间距统一由 Column 控制）
+        // 2. 空行：默认只作分隔，不产生块（块间距统一由 Column 控制）；
+        //    用户气泡打开 keepBlankLines 时留一段空白，连续多个空行也只留一段
         if (trimmed.isEmpty()) {
+            if (keepBlankLines && blocks.isNotEmpty() && blocks.last() !is MdBlock.Blank) {
+                blocks.add(MdBlock.Blank)
+            }
             i++
             continue
         }

@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.chat.FolderIcon
 import com.zmf.agent.ui.common.saltRowClickable
 import com.zmf.agent.ui.theme.Palette
@@ -54,7 +55,7 @@ import kotlinx.coroutines.withContext
 /**
  * 「自定义目录」展开区的内容：绝对路径输入 → 校验 → 列子文件夹 → 点进去，外加系统目录选择器。
  *
- * 设计口径（都按用户原话来的，别自作主张加东西）：
+ * 设计口径（这几条是刻意收窄的，别自作主张加东西）：
  * - **不弹新窗口**：进入子文件夹只是就地刷新列表 + 把子目录名追加到输入框路径末尾；
  * - **没有「返回上一级」**：回退靠用户自己改输入框里的路径；
  * - **没有「新建文件夹」、没有「显示隐藏文件」**：多余按钮一律不加（隐藏目录不列出来）；
@@ -124,11 +125,11 @@ fun WorkspaceDirPicker(
 
         // ---- 第一行：路径输入 + 纯图标按钮（系统目录选择器）----
         Surface(
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(16.dp),
             color = onSurface.copy(alpha = 0.04f),
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(22.dp))
+                .clip(RoundedCornerShape(16.dp))
         ) {
             Row(
                 modifier = Modifier.padding(start = 14.dp, end = 4.dp),
@@ -160,7 +161,7 @@ fun WorkspaceDirPicker(
                     }
                 )
                 // 纯图标按钮：打开系统目录选择器。图标复用抽屉里「工作区」那枚线稿文件夹，
-                // 不再用 emoji——emoji 自带颜色，tint 对它无效，全局唯一一处彩色图标就是它
+                // 不用 emoji：emoji 自带颜色，tint 对它无效，全局唯一一处彩色图标就是它
                 Box(
                     modifier = Modifier
                         .size(40.dp)
@@ -225,7 +226,7 @@ fun WorkspaceDirPicker(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 // 行在卡片内是矩形，形状交给外层卡片裁剪（跟设置页其它列表同一个口径）
-                                .saltRowClickable(RoundedCornerShape(0.dp)) {
+                                .saltCardRow() {
                                     onPathEdited(joinPath(normalized, child.name))
                                 }
                                 .padding(horizontal = 14.dp, vertical = 12.dp),

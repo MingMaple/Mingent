@@ -176,7 +176,7 @@ object ProviderStore {
     /**
      * 内置模板：DeepSeek / OpenAI / Kimi / 自定义（空地址）。
      *
-     * 只有模板带 API Key 之外的全部字段，Key 一律留空——模板是给用户照着填的样例，
+     * 只有模板带 API Key 之外的全部字段，Key 一律留空：模板是给用户照着填的样例，
      * 预置任何 Key 都会让「我以为用的是自己的 Key」变成一次事故。
      */
     fun catalog(): List<ProviderConfig> = listOf(
@@ -209,14 +209,14 @@ object ProviderStore {
             name = "自定义",
             baseUrl = "",
             apiKey = "",
-            // 自定义的模型名只有用户知道：留空列表，等于「用你自己填的那个」（见 ApiConfig.loadModel）
+            // 自定义的模型名只有用户知道：留空列表，等于「用用户自己填的那个」（见 ApiConfig.loadModel）
             models = emptyList(),
             // 空白模板不标内置：用它建出来的 provider 就该和用户自建的一视同仁
             builtIn = false
         )
     )
 
-    /** 新增或整条替换（按 id 认人）；id 为空直接拒绝——没有 id 就没法被引用。 */
+    /** 新增或整条替换（按 id 认人）；id 为空直接拒绝：没有 id 就没法被引用。 */
     fun upsert(context: Context, cfg: ProviderConfig) {
         if (cfg.id.isBlank()) {
             FileLog.log(TAG, "拒绝保存没有 id 的提供商")

@@ -38,11 +38,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.ui.common.saltCardRow
 import com.zmf.agent.ui.common.blockTapsOnly
 import com.zmf.agent.ui.common.saltRowClickable
 import com.zmf.agent.ui.theme.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.zmf.agent.ui.common.saltFieldColors
 
 /** 列表最多展示这么多行（与 FileLog.readLines 的默认上限一致，读盘时就已经截好了）。 */
 private const val MAX_LINES = 2000
@@ -63,7 +65,7 @@ private val LOG_FILTERS = listOf("全部", "tool", "ui", "session", "mcp", "prom
  * 日志在 App 跑着的过程中一直在写，做成实时订阅要用 FileObserver 之类的额外机制，
  * 而查问题通常是「出事了再进来看一眼」，读一次 + 手动返回重进足够。
  *
- * 展示是倒序（最新的在第一屏），复制则按时间正序拼——粘到文件里从头读到尾更顺。
+ * 展示是倒序（最新的在第一屏），复制则按时间正序拼：粘到文件里从头读到尾更顺。
  */
 @Composable
 fun LogsPage(onBack: () -> Unit) {
@@ -136,6 +138,7 @@ fun LogsPage(onBack: () -> Unit) {
             }
 
             OutlinedTextField(
+                colors = saltFieldColors(),
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier
@@ -241,9 +244,9 @@ private fun logsToast(context: Context, text: String) {
 private fun LogChip(text: String, selected: Boolean, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         color = if (selected) Palette.AccentGreen.copy(alpha = 0.16f) else onSurface.copy(alpha = 0.06f),
-        modifier = Modifier.saltRowClickable(RoundedCornerShape(12.dp), onClick = onClick)
+        modifier = Modifier.saltCardRow(onClick = onClick)
     ) {
         Text(
             text = text,
