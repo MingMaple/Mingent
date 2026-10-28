@@ -15,7 +15,7 @@ Mingent 的内置终端（PRoot + Ubuntu 24 环境）来自 Operit AI 项目，�
 
 | 项 | 内容 |
 |---|---|
-| 上游项目 | Operit AI（https://github.com/AAswordman/Operit） |
+| 上游项目 | Operit AI（[github.com/AAswordman/Operit](https://github.com/AAswordman/Operit)） |
 | 版权 | Copyright (C) 2023-2024 Operit AI 项目团队 |
 | 许可证 | GNU Lesser General Public License v3.0 |
 | 许可证全文 | [terminal/LICENSE](terminal/LICENSE) |
@@ -75,7 +75,7 @@ Mingent 的内置终端（PRoot + Ubuntu 24 环境）来自 Operit AI 项目，�
 
 | 项 | 内容 |
 |---|---|
-| 上游模型 | `BAAI/bge-small-zh-v1.5`（https://github.com/FlagOpen/FlagEmbedding） |
+| 上游模型 | `BAAI/bge-small-zh-v1.5`（[github.com/FlagOpen/FlagEmbedding](https://github.com/FlagOpen/FlagEmbedding)） |
 | 版权 | Copyright (c) 2022 staoxiao (BAAI / FlagEmbedding) |
 | 许可证 | MIT（全文：[app/src/main/assets/mingmem/mingmem/dense/model/LICENSE](app/src/main/assets/mingmem/mingmem/dense/model/LICENSE)） |
 | 本仓库中的位置 | `app/src/main/assets/mingmem/mingmem/dense/model/`（`model_q8.onnx` 23,942,540 B、`vocab.txt` 109,540 B） |
@@ -91,9 +91,9 @@ Mingent 的内置终端（PRoot + Ubuntu 24 环境）来自 Operit AI 项目，�
 | 项 | 内容 |
 |---|---|
 | 组件 | `io.github.moriafly:salt-ui:3.0.0-beta02` |
-| 上游项目 | SaltUI（https://github.com/Moriafly/SaltUI） |
+| 上游项目 | SaltUI（[github.com/Moriafly/SaltUI](https://github.com/Moriafly/SaltUI)） |
 | 作者 | Moriafly |
-| 许可证 | Apache License 2.0（全文：https://www.apache.org/licenses/LICENSE-2.0 ） |
+| 许可证 | Apache License 2.0（全文：[www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)） |
 
 ---
 
@@ -104,9 +104,9 @@ Mingent 的内置终端（PRoot + Ubuntu 24 环境）来自 Operit AI 项目，�
 | 项 | 内容 |
 |---|---|
 | 组件 | `dev.rikka.shizuku:api`、`dev.rikka.shizuku:provider`（13.1.5） |
-| 上游项目 | Shizuku（https://github.com/RikkaApps/Shizuku） |
+| 上游项目 | Shizuku（[github.com/RikkaApps/Shizuku](https://github.com/RikkaApps/Shizuku)） |
 | 作者 | RikkaApps |
-| 许可证 | Apache License 2.0（全文：https://www.apache.org/licenses/LICENSE-2.0 ） |
+| 许可证 | Apache License 2.0（全文：[www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)） |
 
 ---
 
@@ -121,9 +121,9 @@ Mingent 的内置终端（PRoot + Ubuntu 24 环境）来自 Operit AI 项目，�
 
 以下项目未向本仓库贡献代码，仅在架构设计与实现思路层面提供参考，特此致谢：
 
-- **DeepSeek Harness（dsh）**（https://github.com/deepseek-ai/deepseek-harness ，MIT）：Agent 循环、
+- **DeepSeek Harness（dsh）**（[github.com/deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)，MIT）：Agent 循环、
   上下文滚动压缩与工具分层的设计参考，本仓库未包含其代码；
-- **dsh-context**（https://github.com/bowenliang123/dsh-context ，Apache-2.0）：上下文洞察与管理的
+- **dsh-context**（[github.com/bowenliang123/dsh-context](https://github.com/bowenliang123/dsh-context)，Apache-2.0）：上下文洞察与管理的
   功能逻辑参考，本仓库未包含其代码。
 
 如后续引入其中任何代码，将在此登记并补充相应许可。

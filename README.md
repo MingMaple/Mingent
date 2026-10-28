@@ -88,19 +88,19 @@ gradlew.bat :app:assembleRelease
 
 本项目的实现受益于以下项目与作者，谨此致谢。
 
-**Operit AI**（https://github.com/AAswordman/Operit）
+**Operit AI**（[github.com/AAswordman/Operit](https://github.com/AAswordman/Operit)）
 Mingent 的内置终端直接采用了 Operit AI 的 PRoot Ubuntu 环境实现（`terminal/` 模块及其二进制资源），该部分依 GNU LGPL-3.0 授权使用；对应源码随本仓库公开，详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
-**SaltUI**（https://github.com/Moriafly/SaltUI）
+**SaltUI**（[github.com/Moriafly/SaltUI](https://github.com/Moriafly/SaltUI)）
 界面组件库，以其 Apache-2.0 授权的 Compose 组件引入。Mingent 的配色与交互节奏沿用 Salt Player 的风格取向，未使用 Salt Player 主程序的任何代码。
 
-**Shizuku**（https://github.com/RikkaApps/Shizuku）
+**Shizuku**（[github.com/RikkaApps/Shizuku](https://github.com/RikkaApps/Shizuku)）
 提供免 Root 调用系统接口的方案。
 
-**BAAI / FlagEmbedding**（https://github.com/FlagOpen/FlagEmbedding）
+**BAAI / FlagEmbedding**（[github.com/FlagOpen/FlagEmbedding](https://github.com/FlagOpen/FlagEmbedding)）
 稠密检索内置的 `bge-small-zh-v1.5` 模型权重以其 MIT 授权原样内置，未作修改。
 
-**DeepSeek Harness**（https://github.com/deepseek-ai/deepseek-harness）与 **dsh-context**（https://github.com/bowenliang123/dsh-context）
+**DeepSeek Harness**（[github.com/deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)）与 **dsh-context**（[github.com/bowenliang123/dsh-context](https://github.com/bowenliang123/dsh-context)）
 两者在 Agent 循环、上下文滚动压缩与工具分层等方面提供了设计与实现思路的参考。本仓库未包含两者的代码。
 
 记忆内核 `mingmem`、Agent 内核与全部界面代码为 Mingent 原创部分，随本仓库以 MIT 授权。
