@@ -80,18 +80,18 @@ fun CreateWorkspaceDialog(
     fun submit() {
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) {
-            hint = "先给工作区起个名字"
+            hint = "请输入工作区名称"
             return
         }
         val normalized = normalizePath(path)
         if (normalized.isNotEmpty()) {
             val dir = File(normalized)
             if (!dir.isDirectory) {
-                hint = "这个路径不是存在的目录"
+                hint = "该路径不是已存在的目录"
                 return
             }
             if (!dir.canRead()) {
-                hint = "这个目录读不了：先去「权限」页开启存储权限"
+                hint = "该目录不可读，请先在「权限」页授予存储权限"
                 return
             }
         }

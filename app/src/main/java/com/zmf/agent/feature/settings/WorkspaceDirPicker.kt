@@ -115,7 +115,7 @@ fun WorkspaceDirPicker(
             )
         }
         val ok = runCatching { treePicker.launch(intent) }.isSuccess
-        if (!ok) Toast.makeText(context, "这台机器没有目录选择器", Toast.LENGTH_SHORT).show()
+        if (!ok) Toast.makeText(context, "此设备未提供目录选择器", Toast.LENGTH_SHORT).show()
     }
 
     val ready = probe as? DirProbe.Ready
@@ -149,7 +149,7 @@ fun WorkspaceDirPicker(
                         Box {
                             if (path.isEmpty()) {
                                 Text(
-                                    text = "输入绝对路径，如 /storage/emulated/0/Documents",
+                                    text = "请输入绝对路径，例如 /storage/emulated/0/Documents",
                                     fontSize = 13.sp,
                                     color = onSurface.copy(alpha = 0.35f),
                                     maxLines = 1,
@@ -181,11 +181,11 @@ fun WorkspaceDirPicker(
         // ---- 第二行：校验结果一句话（路径不对就在这儿说清，不弹新窗口）----
         Spacer(Modifier.height(8.dp))
         val hint = when (val current = probe) {
-            DirProbe.Blank -> "留空就用应用私有目录（默认行为）"
-            DirProbe.Missing -> "这个路径不存在"
-            DirProbe.NotDirectory -> "这个路径是文件，不是目录"
-            DirProbe.Denied -> "这个目录读不了：先去「权限」页开启存储权限"
-            is DirProbe.Ready -> "这个目录下有 " + current.subDirs.size + " 个子文件夹"
+            DirProbe.Blank -> "留空将使用应用私有目录（默认）"
+            DirProbe.Missing -> "该路径不存在"
+            DirProbe.NotDirectory -> "该路径是文件，不是目录"
+            DirProbe.Denied -> "该目录不可读，请先在「权限」页授予存储权限"
+            is DirProbe.Ready -> "该目录下有 " + current.subDirs.size + " 个子文件夹"
         }
         val hintColor = when (probe) {
             is DirProbe.Ready -> Palette.AccentGreen
@@ -197,7 +197,7 @@ fun WorkspaceDirPicker(
         // ---- 第三行：当前根（点确定就在这个根目录下建工作区）----
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "当前根：" + rootLabel(normalized, treeUri),
+            text = "当前根目录：" + rootLabel(normalized, treeUri),
             fontSize = 12.sp,
             color = onSurface.copy(alpha = 0.55f),
             maxLines = 2,
@@ -256,7 +256,7 @@ fun WorkspaceDirPicker(
                     }
                     if (ready.subDirs.size > shown.size) {
                         Text(
-                            text = "还有 " + (ready.subDirs.size - shown.size) + " 个没列出来，直接改路径更快",
+                            text = "另有 " + (ready.subDirs.size - shown.size) + " 个目录未显示，可直接修改路径",
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                             fontSize = 11.sp,
                             color = onSurface.copy(alpha = 0.4f)
@@ -317,8 +317,8 @@ private fun probeDir(rawPath: String): DirProbe {
 /** 「当前根」那一行显示什么。 */
 private fun rootLabel(normalizedPath: String, treeUri: String?): String {
     if (normalizedPath.isNotEmpty()) return normalizedPath
-    if (treeUri != null) return "已授权的系统目录（无法转成本地路径）"
-    return "未选择（用应用私有目录）"
+    if (treeUri != null) return "已授权的系统目录（无法转换为本地路径）"
+    return "未选择（使用应用私有目录）"
 }
 
 /**
