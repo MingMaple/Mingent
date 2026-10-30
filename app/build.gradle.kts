@@ -191,9 +191,8 @@ val checkArchitecture by tasks.registering {
 
         // 编号: 层 / 被依赖包前缀 / 原因 / 台账编号
         data class Wl(val layer: String, val prefix: String, val why: String)
-        val whiteList = listOf(
-            Wl("uikit", "com.zmf.agent.ui.chat.", "R3-glyph: 字形定义寄生在 Composer/DshIcons.kt，下一批搬入 uikit/icons")
-        )
+        // 当前没有待还项：字形已搬进 uikit/icons，uikit 不再反向依赖 ui.chat
+        val whiteList = emptyList<Wl>()
 
         val problems = mutableListOf<String>()
         val files = srcRoot.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()

@@ -1,4 +1,10 @@
 package com.zmf.agent.ui.chat
+import com.zmf.agent.uikit.icons.PlusIcon
+import com.zmf.agent.uikit.icons.CylinderGlyph
+import com.zmf.agent.uikit.icons.PlanIcon
+import com.zmf.agent.uikit.icons.UnitGlyph
+import com.zmf.agent.uikit.icons.unitPath
+import com.zmf.agent.uikit.icons.unitStroke
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -1091,45 +1097,6 @@ private fun TrashGlyph(tint: Color, iconSize: Dp) {
     }
 }
 
-/** 上下文 / 模型共用的圆柱体：数据装在该装的地方，一眼看得懂。 */
-@Composable
-internal fun CylinderGlyph(tint: Color, iconSize: Dp) {
-    UnitGlyph(iconSize = iconSize) {
-        drawOval(
-            color = tint,
-            topLeft = Offset(3.6f, 2.6f),
-            size = Size(10.8f, 3.6f),
-            style = unitStroke(1.5f)
-        )
-        drawPath(
-            path = unitPath {
-                moveTo(3.6f, 4.4f)
-                lineTo(3.6f, 12.4f)
-                moveTo(14.4f, 4.4f)
-                lineTo(14.4f, 12.4f)
-            },
-            color = tint,
-            style = unitStroke(1.5f)
-        )
-        drawArc(
-            color = tint,
-            startAngle = 0f,
-            sweepAngle = 180f,
-            useCenter = false,
-            topLeft = Offset(3.6f, 10.6f),
-            size = Size(10.8f, 3.6f),
-            style = unitStroke(1.5f)
-        )
-        drawPath(
-            path = unitPath {
-                moveTo(4.8f, 8.6f)
-                lineTo(13.2f, 8.6f)
-            },
-            color = tint,
-            style = unitStroke(1.5f)
-        )
-    }
-}
 
 /** 模型：一个细线圆圈 + 中央一颗实心点，像正对着的一枚镜头，不依赖图标库。 */
 @Composable
@@ -1199,26 +1166,6 @@ private fun ChevronRightGlyph(tint: Color, iconSize: Dp) {
     }
 }
 
-/**
- * 18×18 单位坐标系的小图标：调用方按 18 的坐标写路径，这里按实际 dp 等比缩放。
- * 图标尺寸换了几档线宽也不会跟着变粗，深色浅色共用同一份形状。
- */
-@Composable
-internal fun UnitGlyph(iconSize: Dp, draw: DrawScope.() -> Unit) {
-    Canvas(modifier = Modifier.size(iconSize)) {
-        val unit = this.size.minDimension / 18f
-        scale(scaleX = unit, scaleY = unit, pivot = Offset.Zero) {
-            draw()
-        }
-    }
-}
-
-/** 单位坐标系里的描边规格：端点与拐角都收圆，1.4 单位宽的线缩放后不显尖。 */
-private fun unitStroke(width: Float): Stroke =
-    Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round)
-
-/** 拼路径的小工具，专门给 [UnitGlyph] 里的 18×18 坐标用。 */
-private fun unitPath(build: Path.() -> Unit): Path = Path().apply(build)
 
 /** 11300 → 11.3K、1048576 → 1M；用整数算，避免浮点在状态行上抖出 11.299999。 */
 internal fun composerTokenText(count: Int): String {

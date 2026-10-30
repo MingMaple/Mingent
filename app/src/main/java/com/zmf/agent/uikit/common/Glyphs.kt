@@ -17,9 +17,9 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.zmf.agent.ui.chat.CylinderGlyph
-import com.zmf.agent.ui.chat.PlanIcon
-import com.zmf.agent.ui.chat.UnitGlyph
+import com.zmf.agent.uikit.icons.CylinderGlyph
+import com.zmf.agent.uikit.icons.PlanIcon
+import com.zmf.agent.uikit.icons.UnitGlyph
 import com.zmf.agent.uikit.theme.Motion
 
 /*

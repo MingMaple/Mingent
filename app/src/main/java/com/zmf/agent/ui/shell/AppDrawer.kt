@@ -87,9 +87,9 @@ import com.zmf.agent.agent.session.SessionStore
 import com.zmf.agent.agent.workspace.WorkSpace
 import com.zmf.agent.agent.workspace.WorkSpaceStore
 import com.zmf.agent.uikit.common.saltCardRow
-import com.zmf.agent.ui.chat.DshIcons
-import com.zmf.agent.ui.chat.FolderIcon
-import com.zmf.agent.ui.chat.PlusIcon
+import com.zmf.agent.uikit.icons.DshIcons
+import com.zmf.agent.uikit.icons.FolderIcon
+import com.zmf.agent.uikit.icons.PlusIcon
 import com.zmf.agent.uikit.common.Chevron
 import com.zmf.agent.uikit.common.ChevronSize
 import com.zmf.agent.uikit.theme.Motion

@@ -34,7 +34,7 @@ import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
-import com.zmf.agent.ui.chat.DshIcons
+import com.zmf.agent.uikit.icons.DshIcons
 import com.zmf.agent.tools.HighRiskGate
 import com.zmf.agent.uikit.theme.Palette
 

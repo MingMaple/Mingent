@@ -1,4 +1,4 @@
-package com.zmf.agent.ui.chat
+package com.zmf.agent.uikit.icons
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
