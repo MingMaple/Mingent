@@ -88,6 +88,15 @@ internal fun ColumnScope.ChatMessageList(
         viewModel.messages.lastOrNull()?.reasoningContent?.length ?: 0
     )
 
+    // 流式期间的「最后一条助手消息」下标。
+    // 工具结果是以 role="tool" 追加进 messages 的，工具执行那几秒里 messages 末尾不是 assistant：
+    // 若拿 messages.lastIndex 当判据，本回合会被判成「已经结束」，过程区折起来，
+    // 等下一轮 assistant 消息到达又自动展开（2026-10-30 用户报的偶发折叠）。
+    // 角色序列只在追加/回滚时变化，都与条数绑在一起，所以按条数记忆，token 级重组不必重扫。
+    val lastAssistantIndex = remember(viewModel.currentSessionId, viewModel.messages.size) {
+        viewModel.messages.indexOfLast { it.role == "assistant" }
+    }
+
     // 键盘弹起时视口会先变矮：那一刻再问「是不是停在底部」，原来贴着底的位置已经被顶开了，
     // 问出来的永远是「不在底部」，列表就一条都不动。所以趁键盘收着的时候一直记着这个判断，
     // 真正弹起时用的是「弹起之前」的那一份。
@@ -224,7 +233,7 @@ internal fun ColumnScope.ChatMessageList(
                                     all = viewModel.messages,
                                     indices = item.indices,
                                     streaming = viewModel.isStreaming &&
-                                        item.indices.lastOrNull() == viewModel.messages.lastIndex,
+                                        item.indices.lastOrNull() == lastAssistantIndex,
                                     toolOutcomes = viewModel.toolOutcomes,
                                     onCopy = { text -> copyToClipboard(context, text) },
                                     onSelectText = { text, reasoning ->
