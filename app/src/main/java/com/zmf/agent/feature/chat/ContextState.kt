@@ -849,6 +849,36 @@ class ContextState(
         }
         return false
     }
+
+    // ---- 状态行的三个派生值 ----
+
+    /**
+     * 状态行显示的轮数：界面历史里用户问过几次。
+     *
+     * 为什么不用 stats.rounds：那个只有进统计页时才刷，状态行会一直停在旧数字上。
+     */
+    val statusRounds: Int get() = messages.count { it.role == "user" }
+
+    /**
+     * 状态行显示的步数：本会话已提交的步数 + 本次回复跑过的步数。
+     *
+     * 为什么要把两段加起来：stats.steps 只是「本次回复」，每次新提问都会归零，
+     * 只看它会让状态行在提问的一瞬间掉回 0。
+     */
+    val statusSteps: Int get() =
+        (sessions().firstOrNull { it.id == currentSessionId() }?.steps ?: 0) + stats.steps
+
+    /**
+     * 本会话的「活跃时长」：第一条与最后一条消息的时间差。
+     *
+     * 为什么不用累计耗时：那只是模型和工具真的在跑的时间，中间放着不管的几小时不算；
+     * 洞察页要的是「这段对话跨了多久」，所以取消息时间轴的两端。没消息就是 0。
+     */
+    val statusActiveMillis: Long
+        get() {
+            if (messages.isEmpty()) return 0L
+            return (messages.last().createdAt - messages.first().createdAt).coerceAtLeast(0L)
+        }
 }
 
 /**
