@@ -176,19 +176,20 @@ private fun SessionModule(
                 modifier = Modifier.weight(1f),
                 fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = onSurface
+                color = onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-        }
-        if (!session.isCurrent) {
-            Text(
-                text = "回到当前",
-                modifier = Modifier
-                    .padding(top = 4.dp)
-                    .saltRowClickable(RoundedCornerShape(8.dp)) { onBackToCurrent() }
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                fontSize = 12.sp,
-                color = Palette.AccentGreen
-            )
+            if (!session.isCurrent) {
+                Text(
+                    text = "回到当前",
+                    modifier = Modifier
+                        .saltRowClickable(RoundedCornerShape(8.dp)) { onBackToCurrent() }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    fontSize = 12.sp,
+                    color = Palette.AccentGreen
+                )
+            }
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -229,27 +230,27 @@ private fun CurrentContextTab(view: InsightSessionView) {
     Row(verticalAlignment = Alignment.Bottom) {
         Text(
             text = tokenText(view.estimatedTokens.toLong()),
-            fontSize = 28.sp,
+            fontSize = 26.sp,
             fontWeight = FontWeight.SemiBold,
             color = onSurface
         )
         Text(
             text = " / " + tokenText(view.window.toLong()) + " tokens",
-            modifier = Modifier.padding(bottom = 4.dp),
-            fontSize = 14.sp,
+            modifier = Modifier.padding(bottom = 3.dp),
+            fontSize = 13.sp,
             color = onSurface.copy(alpha = 0.45f)
         )
         Spacer(Modifier.weight(1f))
         Text(
             text = percentText(view.ratio),
-            fontSize = 22.sp,
+            fontSize = 20.sp,
             fontWeight = FontWeight.SemiBold,
             color = onSurface
         )
         Text(
             text = "上下文已用",
-            modifier = Modifier.padding(start = 4.dp, bottom = 3.dp),
-            fontSize = 12.sp,
+            modifier = Modifier.padding(start = 3.dp, bottom = 3.dp),
+            fontSize = 10.sp,
             color = onSurface.copy(alpha = 0.45f)
         )
     }
@@ -602,15 +603,26 @@ private fun SessionListCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(text = row.title, fontSize = 14.sp, color = onSurface)
                         Text(
-                            text = row.rounds.toString() + " 轮 · " +
-                                tokenText(row.tokens) +
-                                (row.cacheRate?.let { " · 缓存 " + percentText(it) } ?: "") +
+                            text = row.title,
+                            fontSize = 14.sp,
+                            color = onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = row.rounds.toString() + " 轮 · " + tokenText(row.tokens),
+                            fontSize = 11.sp,
+                            color = onSurface.copy(alpha = 0.45f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = (row.cacheRate?.let { "缓存 " + percentText(it) } ?: "缓存 —") +
                                 (row.costCny?.let { " · " + moneyText(it) } ?: "") +
                                 " · " + relativeTime(row.updatedAt),
                             fontSize = 11.sp,
-                            color = onSurface.copy(alpha = 0.45f),
+                            color = onSurface.copy(alpha = 0.35f),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
