@@ -150,6 +150,13 @@ internal class ChatUiState(context: Context) {
     /** 输入框弹出面板的「开着没 / 关掉」把手。面板状态仍归 Composer，父层只借它铺遮罩。 */
     val composerPanel = ComposerPanelHost()
 
+    /** 进上下文洞察页；[fromHome] 决定返回落到哪一层（主页 / 设置首页）。 */
+    fun openContextHub(fromHome: Boolean) {
+        contextHubFromHome.value = fromHome
+        drawerOpen.value = false
+        page.value = AppPage.CONTEXT_HUB
+    }
+
     /**
      * 所有「分叉」入口都走它：遮罩盖住 → 真正切会话 → 淡出，露出重新加载后的内容。
      */

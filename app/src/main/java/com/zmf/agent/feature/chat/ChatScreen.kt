@@ -258,11 +258,6 @@ fun ChatScreen(
     var pagerAtFirstPage by ui.pagerAtFirstPage
     var extraPrompt by ui.extraPrompt
     var overridePrompt by ui.overridePrompt
-    // 上下文页要的全局总账快照：进页面时读一次盘（UsageLedger.load 自带「只读一次」的闸门）
-    val lastLedger = remember(page) {
-        UsageLedger.load(context)
-        UsageLedger.snapshot()
-    }
     val haptic = LocalHapticFeedback.current
     val keyboard = LocalSoftwareKeyboardController.current
     // 输入栏实测高度：附件面板要浮在它上面，写死 dp 会跟字号档位对不上
@@ -560,11 +555,7 @@ fun ChatScreen(
     }
 
     /** 进上下文洞察页；[fromHome] 决定返回落到哪一层（主页 / 设置首页）。 */
-    fun openContextHub(fromHome: Boolean) {
-        contextHubFromHome = fromHome
-        drawerOpen = false
-        page = AppPage.CONTEXT_HUB
-    }
+    val openContextHub: (Boolean) -> Unit = ui::openContextHub
 
     /**
      * 打开系统文稿页。
@@ -1179,7 +1170,7 @@ fun ChatScreen(
                                     logLauncher.launch("mingent-logs-" + stamp + ".zip")
                                 }
                                 // 上下文只有「洞察」一个入口了：加号面板进来的也是主页，返回回主页
-                                ComposerCommand.CONTEXT -> openContextHub(fromHome = true)
+                                ComposerCommand.CONTEXT -> openContextHub(true)
                             }
                         },
                         status = ComposerStatus(
@@ -1211,7 +1202,7 @@ fun ChatScreen(
                             toolTokens = viewModel.contextBreakdown.toolTokens,
                             messageTokens = viewModel.contextBreakdown.messageTokens
                         ),
-                        onOpenContextPage = { openContextHub(fromHome = true) },
+                        onOpenContextPage = { openContextHub(true) },
                         // 当前模型显示名：内置 DeepSeek 的两个别名之外（自定义 provider）就显示 id 本身
                         modelLabel = modelDisplayName(viewModel.model),
                         // 强度也一律显示中文：一级窗里给用户看的是「高／最高」，接口取值只在数据层出现
@@ -1254,445 +1245,18 @@ fun ChatScreen(
             subAgentEntries = subAgentEntries
         )
 
-        // 设置 / 工作区 / 会话列表与设置下的所有页面都是独立全屏页，每页各一层 AnimatedVisibility：
-        // 下层页原地留着，中间不会闪出一帧主页；页面自身不透明，所以只做横向滑动。
-        AnimatedVisibility(
-            // 所有设置层页面也要算进这一层：滑入时设置首页必须原地留着，否则底下会露出主页
-            visible = page == AppPage.SETTINGS || page == AppPage.SETTINGS_DATA ||
-                page == AppPage.MODEL ||
-                page == AppPage.PERMISSION || page == AppPage.PACKAGE || page == AppPage.LOGS ||
-                page == AppPage.SCHEDULE || page == AppPage.PERMISSION_TIER ||
-                page == AppPage.GENERAL || page == AppPage.MEMORY ||
-                page == AppPage.CONTEXT_HUB || page == AppPage.CONTEXT_CONFIG ||
-                page == AppPage.ABOUT || page == AppPage.ARCHIVE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            SettingsHomePage(
-                onBack = { page = null },
-                onGeneral = { page = AppPage.GENERAL },
-                onModel = { page = AppPage.MODEL },
-                onMemory = { page = AppPage.MEMORY },
-                onContextInsight = { openContextHub(fromHome = false) },
-                onContextConfig = { page = AppPage.CONTEXT_CONFIG },
-                onPackage = { page = AppPage.PACKAGE },
-                onData = { page = AppPage.SETTINGS_DATA },
-                onAbout = { page = AppPage.ABOUT }
-            )
-        }
+        // 二十层全屏页面：设置层 / 工作区 / 会话列表 / 计划 / 浏览器 / 子智能体
+        ChatPageLayers(
+            viewModel = viewModel,
+            ui = ui,
+            uiScale = uiScale,
+            onUiScaleChange = onUiScaleChange,
+            subAgentEntries = subAgentEntries,
+            onImportLaunch = {
+                importLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+            }
+        )
 
-        // 数据层要一直留到它的三级页（日志 / 归档）之上：这一层若跟着 SETTINGS_DATA 一起滑走，
-        // 三级页滑入的那一下会把下面的「数据」页一起带走，中途露出的就是主页。
-        AnimatedVisibility(
-            visible = page == AppPage.SETTINGS_DATA || page == AppPage.ARCHIVE ||
-                page == AppPage.LOGS || page == AppPage.TRASH,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            DataSettingsPage(
-                onBack = { page = AppPage.SETTINGS },
-                onExport = { showExportDialog = true },
-                onImport = { importLauncher.launch(arrayOf("application/zip", "application/octet-stream")) },
-                onLogs = { page = AppPage.LOGS },
-                onArchive = { page = AppPage.ARCHIVE },
-                onTrash = { page = AppPage.TRASH },
-                trashRefreshKey = trashRefreshKey,
-                archivedCount = viewModel.sessionList.count { it.archived },
-                attachmentUsage = viewModel.attachmentUsageText,
-                backupStatus = viewModel.backupStatus,
-                // 导出/导入的结果显示在数据页，不挂到主页那条状态行上
-                backupNotice = viewModel.backupNotice,
-                orphanStatus = orphanStatus,
-                onRefreshAttachment = { viewModel.refreshAttachmentUsage() },
-                onCleanOrphans = { viewModel.cleanOrphanImages { message -> orphanStatus = message } }
-            )
-        }
-
-        AnimatedVisibility(
-            visible = page == AppPage.ARCHIVE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            ArchivePage(
-                workspaces = viewModel.workspaceList,
-                archived = viewModel.sessionList.filter { it.archived },
-                onBack = { page = AppPage.SETTINGS_DATA },
-                onRestore = { id -> viewModel.unarchiveSession(id) },
-                onDelete = { id -> viewModel.deleteSession(id) }
-            )
-        }
-
-        // 回收站只对用户开放（D3 主体分离）：它没有对应的 Agent 工具，恢复/清空全在这一页
-        AnimatedVisibility(
-            visible = page == AppPage.TRASH,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            TrashPage(
-                onBack = {
-                    trashRefreshKey++
-                    page = AppPage.SETTINGS_DATA
-                }
-            )
-        }
-
-        // 通用设置层同理：权限 / 权限档 / 定时任务三个三级页滑入时，这一层必须原地留着
-        AnimatedVisibility(
-            visible = page == AppPage.GENERAL || page == AppPage.PERMISSION ||
-                page == AppPage.PERMISSION_TIER || page == AppPage.SCHEDULE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            GeneralSettingsPage(
-                onBack = { page = AppPage.SETTINGS },
-                permissionLabel = viewModel.permissionLevel.displayName(),
-                onPermission = { page = AppPage.PERMISSION },
-                uiScale = uiScale,
-                uiScaleLabel = UiScaleStore.label(uiScale),
-                onUiScale = { onUiScaleChange(it) },
-                busyMode = viewModel.busyMode,
-                onBusyModeChange = { mode -> viewModel.applyBusyMode(mode) },
-                onSchedule = { page = AppPage.SCHEDULE }
-            )
-        }
-
-        // 长期记忆：进页面刷一次快照。记忆是读盘的，页面不该在主线程上摸文件
-        AnimatedVisibility(
-            visible = page == AppPage.MEMORY,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            // 页面自己进页就 onRefresh，这一层不再多刷一次（记忆每次刷新要跑内核，重复一次就是双倍开销）
-            MemoryPage(
-                onBack = { page = AppPage.SETTINGS },
-                state = viewModel.memoryState,
-                onRefresh = viewModel::refreshMemory,
-                onSearch = viewModel::searchMemory,
-                onRunCycle = viewModel::runMemoryCycle,
-                onExport = { path -> viewModel.exportMemory(path) },
-                vectorEnabled = viewModel.memoryVectorEnabled,
-                vectorBusy = viewModel.memoryVectorBusy,
-                vectorStatus = viewModel.memoryVectorStatus,
-                vectorFailed = viewModel.memoryVectorFailed,
-                onVectorToggle = viewModel::toggleMemoryVector,
-                onVectorPanelOpened = viewModel::clearMemoryVectorStatus
-            )
-        }
-
-        // 上下文洞察：纯只读一页。刷新由页面进页时自己发起（onRefresh），这一层不重复调。
-        AnimatedVisibility(
-            visible = page == AppPage.CONTEXT_HUB,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            ContextHubPage(
-                onBack = { page = if (contextHubFromHome) null else AppPage.SETTINGS },
-                insight = ContextInsight(
-                    ratio = viewModel.contextSnapshot.ratio,
-                    estimatedTokens = viewModel.contextSnapshot.estimatedTokens,
-                    window = viewModel.contextSnapshot.window,
-                    coveredMessages = viewModel.contextSnapshot.coveredMessages,
-                    totalMessages = viewModel.contextSnapshot.totalMessages,
-                    // 三个分项与三段估算是同一份口径（contextBreakdown），别各自再估一遍
-                    systemTokens = viewModel.contextBreakdown.systemTokens,
-                    summaryTokens = viewModel.contextBreakdown.summaryTokens,
-                    toolTokens = viewModel.contextBreakdown.toolTokens,
-                    userTokens = viewModel.contextBreakdown.userTokens,
-                    assistantTokens = viewModel.contextBreakdown.assistantTokens,
-                    toolResultTokens = viewModel.contextBreakdown.toolResultTokens,
-                    // 会话 / 今日 / 全局三段都在 stats 里按同一口径汇总好了，直接搬
-                    sessionPromptTokens = viewModel.stats.totalPromptTokens,
-                    sessionCompletionTokens = viewModel.stats.totalCompletionTokens,
-                    sessionRequests = viewModel.stats.totalRequests,
-                    todayPrompt = viewModel.stats.todayPromptTokens,
-                    todayCompletion = viewModel.stats.todayCompletionTokens,
-                    todayRequests = viewModel.stats.todayRequests,
-                    globalPromptTokens = viewModel.stats.globalPromptTokens,
-                    globalCompletionTokens = viewModel.stats.globalCompletionTokens,
-                    globalRequests = viewModel.stats.globalRequests,
-                    // 活跃时长 = 本会话首末消息的时间差（对话实际占用的时间）；模型 / 工具耗时另有时间账
-                    activeMillis = viewModel.statusActiveMillis,
-                    modelMillis = viewModel.sessionTiming.modelMillis,
-                    toolMillis = viewModel.sessionTiming.toolMillis,
-                    outputTokens = viewModel.sessionTiming.completionTokens,
-                    // 趋势是最近几次回复的输入 tokens（refreshInsight 里算好），页面只负责画
-                    trend = viewModel.insightTrend,
-                    rounds = viewModel.statusRounds,
-                    steps = viewModel.statusSteps,
-                    lastTurnModelMillis = viewModel.sessionTiming.lastTurnModelMillis,
-                    lastTurnOutputTokens = viewModel.sessionTiming.lastTurnOutputTokens,
-                    sessionFirstAt = viewModel.messages.firstOrNull()?.createdAt ?: 0L,
-                    firstUsedDate = viewModel.stats.firstUsedDate,
-                    // 总账是进程内单例，进页面时读一次盘拿最后使用时刻
-                    lastUsedAt = lastLedger.lastUsedAt
-                ),
-                onRefresh = viewModel::refreshInsight
-            )
-        }
-
-        AnimatedVisibility(
-            visible = page == AppPage.ABOUT,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            AboutPage(onBack = { page = AppPage.SETTINGS })
-        }
-
-        AnimatedVisibility(
-            visible = page == AppPage.WORKSPACE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            WorkSpacePage(
-                workspaces = viewModel.workspaceList,
-                currentId = viewModel.currentWorkspaceId,
-                streaming = viewModel.isStreaming,
-                onPick = { id ->
-                    viewModel.switchWorkspace(id)
-                    page = null
-                },
-                onCreate = { name -> viewModel.createWorkspace(name) },
-                onDelete = { id -> viewModel.deleteWorkspace(id) },
-                onBack = { page = null }
-            )
-        }
-
-        // 权限档从通用设置进来，返回回到上一级；会话列表才是抽屉的一级页
-        AnimatedVisibility(
-            visible = page == AppPage.PERMISSION_TIER,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            PermissionTierPage(
-                current = viewModel.permissionLevel,
-                onPick = { level -> viewModel.setPermission(level) },
-                onBack = { page = AppPage.GENERAL }
-            )
-        }
-
-        AnimatedVisibility(
-            visible = page == AppPage.SESSIONS,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            SessionListPage(
-                // 传全量：行里要显示所属工作区名，归档 tab 也要跨工作区
-                sessions = viewModel.sessionList,
-                workspaces = viewModel.workspaceList,
-                currentId = viewModel.currentSessionId,
-                streaming = viewModel.isStreaming,
-                onPick = { id ->
-                    viewModel.switchSession(id)
-                    page = null
-                },
-                onNew = { viewModel.newSession() },
-                onFirstPage = { pagerAtFirstPage = it },
-                onRename = { id, title -> viewModel.renameSession(id, title) },
-                onArchive = { id, archived ->
-                    if (archived) viewModel.archiveSession(id) else viewModel.unarchiveSession(id)
-                },
-                onDelete = { id -> viewModel.deleteSession(id) },
-                onFork = { id ->
-                    // 落回对话页：用户要接着在分支上说话，不该停在列表里
-                    page = null
-                    forkWithReload {
-                        // forkSession 只作用于当前会话：从别的会话行进来时先切过去
-                        if (id != viewModel.currentSessionId) viewModel.switchSession(id)
-                        viewModel.forkSession()
-                    }
-                },
-                onBack = { page = null }
-            )
-        }
-
-        AnimatedVisibility(
-            visible = page == AppPage.MODEL,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            ModelSettingsPage(
-                onBack = { page = AppPage.SETTINGS },
-                providers = viewModel.providers,
-                currentProviderId = viewModel.currentProviderId,
-                onSelectProvider = { id -> viewModel.selectProvider(id) },
-                onSaveProvider = { cfg -> viewModel.saveProvider(cfg) },
-                onDeleteProvider = { id -> viewModel.deleteProvider(id) },
-                // 模型候选跟着当前 provider 走：内置 DeepSeek 才用 ApiDefaults.MODELS 的显示名
-                models = viewModel.providers
-                    .firstOrNull { it.id == viewModel.currentProviderId }
-                    ?.models
-                    .orEmpty()
-                    .map { id ->
-                        id to (ApiDefaults.MODELS.firstOrNull { it.first == id }?.second ?: id)
-                    },
-                // 思考开关与强度都并进模型页的行内展开：配置在一处，翻开关不用再跳一层
-                thinkingEnabled = viewModel.thinkingEnabled,
-                thinkingEffort = viewModel.thinkingEffort,
-                // ViewModel 只暴露翻转；页面给的是「目标值」，和目标不一致时才翻，避免同一帧翻两次
-                onThinkingToggle = { on ->
-                    if (on != viewModel.thinkingEnabled) viewModel.toggleThinking()
-                },
-                onPickEffort = { effort -> viewModel.chooseThinkingEffort(effort) },
-                balance = balance,
-                balanceBusy = balanceBusy,
-                onBalance = {
-                    if (!balanceBusy) {
-                        balanceBusy = true
-                        scope.launch {
-                            balance = BalanceClient.fetchBalance(
-                                ApiConfig.loadApiKey(context),
-                                ApiConfig.loadBaseUrl(context)
-                            )
-                            balanceBusy = false
-                        }
-                    }
-                }
-            )
-        }
-
-        // 权限管理：也是设置下的二级页，单独一层，滑入时设置页原地留着
-        AnimatedVisibility(
-            visible = page == AppPage.PERMISSION,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            PermissionPage(onBack = { page = AppPage.GENERAL })
-        }
-
-        // 上下文配置：提示词两段 + 压缩策略 + 摘要，一页改完。保存即落盘，页面自己不认存储
-        AnimatedVisibility(
-            visible = page == AppPage.CONTEXT_CONFIG,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            ContextConfigPage(
-                onBack = { page = AppPage.SETTINGS },
-                extraPrompt = extraPrompt,
-                overridePrompt = overridePrompt,
-                onSaveExtra = { text ->
-                    extraPrompt = text
-                    PromptStore.saveExtra(context, text)
-                    viewModel.refreshContextBreakdown()
-                },
-                onSaveOverride = { text ->
-                    overridePrompt = text
-                    PromptStore.saveOverride(context, text)
-                    viewModel.refreshContextBreakdown()
-                },
-                policy = viewModel.contextPolicy,
-                snapshot = viewModel.contextSnapshot,
-                summary = viewModel.contextSummary,
-                onApply = { p -> viewModel.applyContextPolicy(p) },
-                onSummarize = { done -> viewModel.summarizeNow(done) },
-                onClearSummary = { viewModel.clearContextSummary() },
-                onRefresh = { viewModel.refreshContext() },
-                // 压缩/裁剪留下的操作记录（谁在什么时候压了什么）：只读列表，页面自己滚动展示
-                events = viewModel.contextEventList
-            )
-        }
-
-        // 计划：模型用 write_plan 写的那些。多份时上面有标签栏切着看，删光就自动回主页
-        AnimatedVisibility(
-            visible = page == AppPage.PLAN,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            PlanPage(
-                plans = viewModel.plans,
-                selectedId = viewModel.selectedPlanId,
-                onSelect = { id -> viewModel.selectPlan(id) },
-                onDelete = { id -> viewModel.deletePlan(id) },
-                // 「继续修改」只回主页：替用户发一句反而会把「再看看」变成一次发送。
-                // 带 id 进去，那份计划会被标成「已处理」，按钮随之变灰
-                onContinueEdit = { id ->
-                    viewModel.continuePlanEdit(id)
-                    page = null
-                },
-                // 「同意执行」只对当前这一份生效；计划预览不清，之后还要能对着逐条回看
-                onApprove = { id ->
-                    viewModel.approvePlan(id)
-                    page = null
-                },
-                onBack = { page = null }
-            )
-        }
-
-        // 内置浏览器：点开回复里的链接就滑进来。它独立于设置层，返回只回主页（页面不销毁）
-        AnimatedVisibility(
-            visible = page == AppPage.BROWSER,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            BrowserPage(onBack = { page = null })
-        }
-
-        // 包管理：MCP 服务 / Skill 两个 tab（设置下的二级页）
-        AnimatedVisibility(
-            visible = page == AppPage.PACKAGE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            PackagePage(
-                registry = viewModel.toolRegistry,
-                onBack = { page = AppPage.SETTINGS },
-                onChanged = { viewModel.refreshSkillCatalog() },
-                // 停在第一页时抽屉才抢向右位移（第二页要能正常往右翻回第一页）
-                onFirstPage = { pagerAtFirstPage = it }
-            )
-        }
-
-        // 日志：设置下的二级页，单独一层（读日志在 LogsPage 里自己进 IO，不阻塞这层滑入动画）
-        AnimatedVisibility(
-            visible = page == AppPage.LOGS,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            LogsPage(onBack = { page = AppPage.SETTINGS_DATA })
-        }
-
-        // 定时任务：一级入口在设置里，单独一层
-        AnimatedVisibility(
-            visible = page == AppPage.SCHEDULE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            SchedulePage(onBack = { page = AppPage.SETTINGS })
-        }
-
-        // 子智能体详情：从右上角胶囊的卡片进来，可继续发消息
-        AnimatedVisibility(
-            visible = page == AppPage.SUBAGENT,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            SubAgentPage(
-                entry = subAgentEntries.firstOrNull { it.id == subAgentDetailId },
-                onBack = { page = null },
-                onSend = { text ->
-                    viewModel.continueSubAgent(subAgentDetailId ?: "", text, scope)
-                }
-            )
-        }
 
         // 压在页面层之上的浮层：本轮用量 / 图片长按菜单 / 选择文本 / 图片查看器
         ChatOverlays(
