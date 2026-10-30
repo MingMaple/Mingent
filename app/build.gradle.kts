@@ -169,6 +169,9 @@ val checkArchitecture by tasks.registering {
             if (pkg == null || !pkg.startsWith("com.zmf.agent.")) return null
             val rest = pkg.removePrefix("com.zmf.agent.")
             return when {
+                // core 也是层：它是数据与工具的容器，谁都依赖它，它不依赖任何人。
+                // 早先漏掉这一支，core.log / core.AppPaths 会被误判成「老目录」，infra 一引用就报违规。
+                rest == "core" || rest.startsWith("core.") -> "core"
                 rest == "uikit" || rest.startsWith("uikit.") -> "uikit"
                 rest == "infra" || rest.startsWith("infra.") -> "infra"
                 rest == "capability" || rest.startsWith("capability.") -> "capability"
@@ -183,7 +186,8 @@ val checkArchitecture by tasks.registering {
             } else null
 
         val allowed = mapOf(
-            "uikit" to setOf("uikit", "core"),
+            "core" to setOf("core"),
+            "uikit" to setOf("core", "uikit"),
             "infra" to setOf("core", "infra"),
             "capability" to setOf("core", "infra", "capability"),
             "feature" to setOf("core", "infra", "capability", "uikit", "feature")

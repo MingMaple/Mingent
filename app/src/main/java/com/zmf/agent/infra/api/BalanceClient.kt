@@ -1,7 +1,6 @@
 package com.zmf.agent.infra.api
 
 import android.content.Context
-import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.core.log.FileLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -66,14 +65,16 @@ object BalanceClient {
     /**
      * 查一次余额。
      *
-     * [apiKey] / [baseUrl] 留空时回落到设置页里当前的配置（[ApiConfig]）：
-     * 设置页只想「刷新一下余额」，没必要自己先去把 Key 和端点各读一遍；
-     * 传了值就以传入的为准（比如用户刚改完输入框还没保存）。
+     * [apiKey] / [baseUrl] 由调用方给全，这里不读配置：读配置属于上层的事（它知道当前 provider 是哪个），
+     * infra 只负责发请求。早先这里会回落到 [ApiConfig]，结果 infra 反向依赖了业务配置层。
      */
-    suspend fun fetchBalance(context: Context, apiKey: String, baseUrl: String): BalanceResult {
-        val app = context.applicationContext
-        val key = apiKey.trim().ifEmpty { ApiConfig.loadApiKey(app) }
-        val endpoint = baseUrl.trim().trimEnd('/').ifEmpty { ApiConfig.loadBaseUrl(app) } + PATH_BALANCE
+    suspend fun fetchBalance(apiKey: String, baseUrl: String): BalanceResult {
+        val key = apiKey.trim()
+        val trimmedBase = baseUrl.trim().trimEnd('/')
+        if (key.isEmpty() || trimmedBase.isEmpty()) {
+            return BalanceResult(ok = false, error = "还没有配置 API 密钥或端点")
+        }
+        val endpoint = trimmedBase + PATH_BALANCE
 
         return try {
             withContext(Dispatchers.IO) { request(endpoint, key) }

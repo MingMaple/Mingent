@@ -1627,7 +1627,10 @@ fun ChatScreen(
                     if (!balanceBusy) {
                         balanceBusy = true
                         scope.launch {
-                            balance = BalanceClient.fetchBalance(context, "", "")
+                            balance = BalanceClient.fetchBalance(
+                                ApiConfig.loadApiKey(context),
+                                ApiConfig.loadBaseUrl(context)
+                            )
                             balanceBusy = false
                         }
                     }

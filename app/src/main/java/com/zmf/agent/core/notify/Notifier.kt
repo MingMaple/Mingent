@@ -10,7 +10,6 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import com.zmf.agent.MainActivity
 import com.zmf.agent.core.log.FileLog
 
 /**
@@ -38,6 +37,15 @@ object Notifier {
 
     /** 点通知回 App 时带的会话 id；MainActivity 侧读这个 key 决定切到哪个会话。 */
     const val EXTRA_SESSION_ID = "session_id"
+
+    /**
+     * 回 App 的目标 Activity 类名。
+     *
+     * 为什么用字符串而不是 `MainActivity::class.java`：core 是底层数据与工具层，
+     * 不该反向依赖壳层的 Activity。代价是改类名/改包名时这里必须同步——
+     * 这是全工程唯一的字符串耦合点，改 MainActivity 名字的人必须搜到它。
+     */
+    private const val LAUNCH_ACTIVITY = "com.zmf.agent.MainActivity"
 
     // 固定 id：同一类通知只留最新一条，不同类互不覆盖（1001 已被前台服务的常驻通知占用）
     private const val ID_REPLY = 2001
@@ -160,7 +168,7 @@ object Notifier {
      * requestCode 用通知 id：三种通知各自的 sessionId 才不会被 FLAG_UPDATE_CURRENT 互相覆盖。
      */
     private fun contentIntent(context: Context, id: Int, sessionId: String): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java)
+        val intent = Intent().setClassName(context, LAUNCH_ACTIVITY)
             .addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK
                     or Intent.FLAG_ACTIVITY_CLEAR_TOP
