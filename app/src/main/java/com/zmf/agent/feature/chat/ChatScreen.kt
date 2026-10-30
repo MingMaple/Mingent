@@ -718,101 +718,12 @@ fun ChatScreen(
             // 只有「当前就在包管理 / 会话列表、且它停在第一页」时，才让抽屉抢向右的位移
             interceptRightSwipe = (page == AppPage.PACKAGE || page == AppPage.SESSIONS) && pagerAtFirstPage,
             panel = {
-                AppDrawerContent(
-                    workspaces = viewModel.workspaceList,
-                    sessions = viewModel.sessionList,
-                    currentWorkspaceId = viewModel.currentWorkspaceId,
-                    currentSessionId = viewModel.currentSessionId,
+                ChatDrawerPane(
+                    viewModel = viewModel,
+                    ui = ui,
+                    context = context,
                     themeMode = themeMode,
-                    // 主题不再跳页面：抽屉里点开是内联三选，选中即落盘（MainActivity 写 ThemeStore）
-                    onThemePick = { onThemeModeChange(it) },
-                    onHome = {
-                        drawerOpen = false
-                        page = null
-                    },
-                    onTerminal = {
-                        drawerOpen = false
-                        context.startActivity(Intent(context, com.zmf.agent.feature.terminal.TerminalActivity::class.java))
-                    },
-                    onSettings = {
-                        drawerOpen = false
-                        page = AppPage.SETTINGS
-                    },
-                    onSearchSessions = {
-                        drawerOpen = false
-                        page = AppPage.SESSIONS
-                    },
-                    // 抽屉只在 4 种情况下收回：点会话进入、分叉进入、删掉当前会话后自动新建、
-                    // 新建工作区后自动建会话进入。其余（重命名 / 置顶 / 归档 / 复制 / 删别的会话 /
-                    // 删工作区 / 折叠展开 / 在这个工作区里新建会话）一律保持抽屉展开。
-                    onPickSession = { id ->
-                        drawerOpen = false
-                        page = null
-                        viewModel.switchSession(id)
-                    },
-                    onCreateSession = { workspaceId ->
-                        if (workspaceId != viewModel.currentWorkspaceId) viewModel.switchWorkspace(workspaceId)
-                        viewModel.newSession()
-                    },
-                    onCreateWorkspace = { showCreateWorkspace = true },
-                    onRenameWorkspace = { id, name -> viewModel.renameWorkspace(id, name) },
-                    onDeleteWorkspace = { id -> viewModel.deleteWorkspace(id) },
-                    onRenameSession = { id, name -> viewModel.renameSession(id, name) },
-                    onForkSession = { id ->
-                        drawerOpen = false
-                        page = null
-                        forkWithReload {
-                            viewModel.switchSession(id)
-                            viewModel.forkSession()
-                        }
-                    },
-                    onArchiveSession = { id -> viewModel.archiveSession(id) },
-                    onPinSession = { id, pinned -> viewModel.pinSession(id, pinned) },
-                    onCopySessionId = { id ->
-                        copyToClipboard(context, id)
-                        Toast.makeText(context, "已复制 Session ID", Toast.LENGTH_SHORT).show()
-                    },
-                    onDeleteSession = { id ->
-                        // 删的就是当前会话：ViewModel 会补一个空会话，界面对齐回主页并收起抽屉
-                        val wasCurrent = id == viewModel.currentSessionId
-                        viewModel.deleteSession(id)
-                        if (wasCurrent) {
-                            drawerOpen = false
-                            page = null
-                        }
-                    },
-                    // 打开系统悬浮小窗：先把抽屉收掉，再按权限决定直接起服务还是先要权限。
-                    // 小窗是独立的系统悬浮窗，所以起完服务把 App 退到后台，只留小窗在桌面上。
-                    onFloatingWindow = {
-                        drawerOpen = false
-                        if (Settings.canDrawOverlays(context)) {
-                            // expand = true：点入口直接是小窗；球态只在用户按「∨」折叠后才出现
-                            FloatingBallService.start(context, expand = true)
-                            // 只有「在 App 里主动点启动」这一下才退后台；拿不到 Activity 就回桌面兜底
-                            val activity = findActivity(context)
-                            if (activity != null) {
-                                activity.moveTaskToBack(true)
-                            } else {
-                                runCatching {
-                                    context.startActivity(
-                                        Intent(Intent.ACTION_MAIN)
-                                            .addCategory(Intent.CATEGORY_HOME)
-                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    )
-                                }
-                            }
-                        } else {
-                            Toast.makeText(context, "请允许悬浮窗权限", Toast.LENGTH_SHORT).show()
-                            runCatching {
-                                context.startActivity(
-                                    Intent(
-                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                        Uri.parse("package:" + context.packageName)
-                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                )
-                            }
-                        }
-                    }
+                    onThemeModeChange = onThemeModeChange
                 )
             }
         ) {
