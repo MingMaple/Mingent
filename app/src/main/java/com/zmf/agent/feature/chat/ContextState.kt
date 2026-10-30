@@ -27,7 +27,9 @@ import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.InheritedUsage
 import com.zmf.agent.core.store.UsageLedger
+import com.zmf.agent.infra.llm.DeepSeekProvider
 import com.zmf.agent.infra.llm.LlmProvider
+import com.zmf.agent.infra.llm.ProviderStore
 import com.zmf.agent.infra.llm.UsageBuckets
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -400,7 +402,13 @@ class ContextState(
      * 合成一条就没法分别按类型过滤，页面上也说不清。
      */
     private fun recordCompressFallback(reason: String) {
-        recordContextEvent(kind = ContextEventKind.COMPRESS, ok = false, note = reason)
+        // 失败事件也要带上兜底轮数：描述行要写「已退回最近 N 轮」，不传就渲染成 0 轮
+        recordContextEvent(
+            kind = ContextEventKind.COMPRESS,
+            ok = false,
+            keptRounds = contextPolicy.fallbackKeepRounds,
+            note = reason
+        )
         recordContextEvent(
             kind = ContextEventKind.FALLBACK,
             keptRounds = contextPolicy.fallbackKeepRounds
@@ -440,6 +448,33 @@ class ContextState(
     }
 
     /**
+     * 摘要目标：请求通道与模型。
+     *
+     * `summaryModel` 的取值有三种：空串（跟随当前对话模型，复用主请求通道）、
+     * `providerId|model`（设置页选的固定档，Key 与端点必须跟着那个提供商走）、
+     * 裸模型名（旧版本落盘的值，仍按当前 provider 解释）。
+     * 配置被删、Key 清空或值损坏时回落到当前对话模型——摘要只是旁路动作，不该因此失败。
+     */
+    private fun summaryTarget(): Pair<LlmProvider, String> {
+        val raw = contextPolicy.summaryModel.trim()
+        if (raw.isEmpty()) return provider() to modelName()
+        val cut = raw.indexOf('|')
+        if (cut <= 0) return provider() to raw
+        val providerId = raw.substring(0, cut)
+        val model = raw.substring(cut + 1).trim()
+        val cfg = ProviderStore.load(appContext).firstOrNull { it.id == providerId }
+        if (cfg == null || cfg.apiKey.isBlank() || model.isEmpty()) {
+            FileLog.log("context", "摘要模型不可用（" + raw + "），回落到当前模型")
+            return provider() to modelName()
+        }
+        val baseUrl = cfg.baseUrl.trim().trimEnd('/').ifBlank {
+            // 只有内置 DeepSeek 允许回落到官方端点；别家空地址由 provider 明确报错
+            if (cfg.id == ProviderStore.DEEPSEEK_ID) ApiDefaults.BASE_URL else ""
+        }
+        return DeepSeekProvider(apiKey = cfg.apiKey, baseUrl = baseUrl) to model
+    }
+
+    /**
      * 跑一次摘要（与上一条摘要融合成新的）：
      * 成功 → 写回会话三字段并落盘；失败/超时/空结果 → 只置兜底标记，主请求照常发。
      */
@@ -454,7 +489,6 @@ class ContextState(
         }
 
         val previous = contextSummary
-        val useModel = policy.summaryModel.ifBlank { modelName() }
         // 摘要请求要「蹭」主请求的热前缀：把主请求从 system 到分界处的字节**原样重放**，
         // 只把「请压缩」作为最后一条 user 消息追加。system / 工作区指令 / 已有检查点 / 工具表少给或换了
         // 顺序，缓存就断在那一处，摘要调用就从「几乎全命中」退化成「付一整份输入」。
@@ -488,9 +522,10 @@ class ContextState(
             }
         }
         val startedAt = System.currentTimeMillis()
+        val target = summaryTarget()
         val text = ContextSummarizer.summarize(
-            provider = provider(),
-            model = useModel,
+            provider = target.first,
+            model = target.second,
             previous = previous,
             prefix = prefix,
             tools = registry().specs()

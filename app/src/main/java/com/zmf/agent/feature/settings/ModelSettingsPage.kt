@@ -143,31 +143,54 @@ fun ModelSettingsPage(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
 
-                // 提供商列表：点整行 = 选中，右侧胶囊 = 编辑
+                // 提供商列表：点整行 = 选中，右侧胶囊 = 编辑。
+                // 表单紧贴被编辑的那一行展开：挂到列表末尾的话，编辑第一条时表单会在最下方
+                // 撑开，点的地方和内容出现的地方对不上，还会以为没反应。
                 providers.forEach { cfg ->
-                    ProviderRow(
-                        cfg = cfg,
-                        selected = cfg.id == currentProviderId,
-                        onSelect = { onSelectProvider(cfg.id) },
-                        onEdit = { draft = cfg }
-                    )
+                    // 每一行自带一个可动画的容器：表单在这行下面展开/收起时由它撑高度
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateContentSize(animationSpec = Motion.spring()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        ProviderRow(
+                            cfg = cfg,
+                            selected = cfg.id == currentProviderId,
+                            onSelect = { onSelectProvider(cfg.id) },
+                            onEdit = { draft = cfg }
+                        )
+                        draft?.takeIf { it.id == cfg.id }?.let { editing ->
+                            ProviderFormCard(
+                                initial = editing,
+                                canDelete = providers.size > 1,
+                                candidates = models,
+                                onDelete = {
+                                    draft = null
+                                    onDeleteProvider(editing.id)
+                                },
+                                onCancel = { draft = null },
+                                onSave = { saved ->
+                                    draft = null
+                                    onSaveProvider(saved)
+                                }
+                            )
+                        }
+                    }
                 }
 
-                // 编辑表单：收起/展开时内容尺寸变化交给弹簧，不做淡入淡出（列表会跟着跳）
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .animateContentSize(animationSpec = Motion.spring())
-                ) {
-                    draft?.let { editing ->
+                // 新增（目录里选出的模板 id 还不在列表里）：表单挂在列表末尾、添加按钮上方
+                draft?.takeIf { d -> providers.none { it.id == d.id } }?.let { editing ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateContentSize(animationSpec = Motion.spring())
+                    ) {
                         ProviderFormCard(
                             initial = editing,
-                            canDelete = providers.size > 1 && providers.any { it.id == editing.id },
+                            canDelete = false,
                             candidates = models,
-                            onDelete = {
-                                draft = null
-                                onDeleteProvider(editing.id)
-                            },
+                            onDelete = {},
                             onCancel = { draft = null },
                             onSave = { saved ->
                                 draft = null

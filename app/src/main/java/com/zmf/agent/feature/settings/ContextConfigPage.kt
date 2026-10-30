@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -48,6 +49,8 @@ import com.zmf.agent.capability.context.ContextEventKind
 import com.zmf.agent.capability.context.ContextPolicy
 import com.zmf.agent.capability.context.ContextSnapshot
 import com.zmf.agent.capability.context.ContextStore
+import com.zmf.agent.core.llm.ApiDefaults
+import com.zmf.agent.infra.llm.ProviderStore
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette
@@ -57,9 +60,19 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-/** 摘要模型的固定档；空串表示「跟随当前模型」。 */
+// 摘要模型的「跟随当前模型」档；非空值统一编码成 `providerId|model`，
+// 这样摘要请求能按所选提供商解析 Key 与端点，而不是把模型名硬发到当前端点
 private const val SUMMARY_MODEL_FOLLOW = ""
-private const val SUMMARY_MODEL_FIXED = "deepseek-flash"
+/** 旧版本落盘的裸模型名不带分隔符：读到时按当前 provider 解释。 */
+private const val SUMMARY_MODEL_SEPARATOR = '|'
+
+/** 摘要模型的一个可选档；[value] 是落盘格式 `providerId|model`。 */
+private data class SummaryOption(
+    val value: String,
+    val label: String,
+    /** 旧版裸模型名是否等价于这一项（只有当前 provider 的同名模型算命中）。 */
+    val legacyMatch: Boolean
+)
 
 /**
  * 「上下文配置」页：提示词（最上面）+ 摘要式滚动压缩的全部可调项。
@@ -201,31 +214,55 @@ fun ContextConfigPage(
 
             // 逐字保留：轮数是下限（上面那行），token 预算是上限；比例按 (窗口 − 输出预留) 换算
             val windowTokens = snapshot.window
-            val retainBudget = ContextStore.retainBudgetTokens(policy, windowTokens)
+            // 输入中的上限放在页级：比例行的灰/亮要跟着刚敲进去的数字立刻变，
+            // 不能等失焦提交才刷新，否则改完看着没反应，会以为设置没生效
+            var limitDraft by remember { mutableStateOf<String?>(null) }
+            val typedLimit = limitDraft?.toIntOrNull()
+                ?: if (limitDraft == null) policy.retainTokens else 0
+            // 预算也按草稿算：两行右侧的「≈ 多少 token」要和正在输入的数字同步，
+            // 否则敲了 1000 却还显示旧的 209k
+            val typedBudget = ContextStore.retainBudgetTokens(
+                policy.copy(retainTokens = typedLimit),
+                windowTokens
+            )
             ContextSection("逐字保留（轮数为下限，token 预算为上限）")
             ContextSliderRow(
                 label = "保留比例",
+                // 填了绝对上限时比例不生效：这里别再重复显示同一个预算数字，直接说明被覆盖
                 valueText = (policy.retainRatio * 100f).roundToInt().toString() + "% · " +
-                    retainBudgetText(retainBudget),
+                    if (typedLimit > 0) "已被上限覆盖" else retainBudgetText(typedBudget),
                 value = policy.retainRatio.coerceIn(
                     ContextPolicy.MIN_RETAIN_RATIO,
                     ContextPolicy.MAX_RETAIN_RATIO
                 ),
                 range = ContextPolicy.MIN_RETAIN_RATIO..ContextPolicy.MAX_RETAIN_RATIO,
                 // 填了绝对 token 时比例不再生效，置灰说明它被覆盖了
-                enabled = enabled && policy.retainTokens <= 0,
+                enabled = enabled && typedLimit <= 0,
                 onChange = {
                     onApply(policy.copy(retainRatio = (it * 100f).roundToInt() / 100f))
                 }
             )
             ContextTokenRow(
                 label = "保留上限",
+                draft = limitDraft,
                 tokens = policy.retainTokens,
-                budgetText = retainBudgetText(retainBudget),
+                budgetText = retainBudgetText(typedBudget),
                 enabled = enabled,
-                onCommit = { value -> onApply(policy.copy(retainTokens = value)) }
+                onDraftChange = { limitDraft = it },
+                onCommit = {
+                    // 直接读页面当前草稿：失焦事件可能带着旧闭包里捕获的值，
+                    // 用它算会出现「输入框已清空却把上一个数字又存回去」
+                    val parsed = (limitDraft?.trim()?.toIntOrNull() ?: policy.retainTokens)
+                        .coerceAtLeast(0)
+                    if (parsed != policy.retainTokens) {
+                        onApply(policy.copy(retainTokens = parsed))
+                    }
+                    // 提交后回到「显示落盘值」，输入框和比例行都以实际值为准
+                    limitDraft = null
+                }
             )
-            if (enabled && ContextStore.retainClamped(policy, windowTokens)) {
+            // 「已按阈值回落」也按草稿判定：填 1000 时不该还挂着上限超出阈值的提示
+            if (enabled && ContextStore.retainClamped(policy.copy(retainTokens = typedLimit), windowTokens)) {
                 Text(
                     text = "已按阈值回落",
                     modifier = Modifier.padding(start = 16.dp, bottom = 2.dp),
@@ -241,12 +278,68 @@ fun ContextConfigPage(
                 enabled = enabled,
                 onClick = { onApply(policy.copy(summaryModel = SUMMARY_MODEL_FOLLOW)) }
             )
-            ContextRadioRow(
-                label = SUMMARY_MODEL_FIXED,
-                selected = policy.summaryModel == SUMMARY_MODEL_FIXED,
-                enabled = enabled,
-                onClick = { onApply(policy.copy(summaryModel = SUMMARY_MODEL_FIXED)) }
+            // 只列「已配置 Key」的提供商：列一个没 Key 的模型等于给用户一个必然失败的选项。
+            // 自定义提供商的模型列表可能为空，此时用它上次使用的模型名（也是请求真正会发的那个）。
+            val context = LocalContext.current
+            val summaryOptions = remember {
+                val currentId = ProviderStore.currentId(context)
+                ProviderStore.load(context)
+                    .filter { it.apiKey.isNotBlank() }
+                    .flatMap { provider ->
+                        val models = provider.models.ifEmpty {
+                            listOf(
+                                ProviderStore.modelOf(context, provider.id)
+                                    .ifBlank { ApiDefaults.MODEL }
+                            )
+                        }
+                        models.map { model ->
+                            SummaryOption(
+                                value = provider.id + SUMMARY_MODEL_SEPARATOR + model,
+                                label = provider.name + " · " + model,
+                                legacyMatch = provider.id == currentId && model == policy.summaryModel
+                            )
+                        }
+                    }
+            }
+            // 固定档收进「切换模型」里折叠：默认只显示一行当前选中项，
+            // 点开才列出全部可选模型，选完自动收起，免得一长串模型把「立即压缩」推到屏幕外
+            var modelsExpanded by remember { mutableStateOf(false) }
+            // 折叠时右侧要能看出当前选的是哪个模型，所以先按落盘值反查一次
+            val selectedOption = summaryOptions.firstOrNull {
+                policy.summaryModel == it.value ||
+                    policy.summaryModel.indexOf(SUMMARY_MODEL_SEPARATOR) < 0 && it.legacyMatch
+            }
+            ContextExpandRow(
+                label = "切换模型",
+                valueText = selectedOption?.label.orEmpty(),
+                expanded = modelsExpanded,
+                enabled = enabled && summaryOptions.isNotEmpty(),
+                onClick = { modelsExpanded = !modelsExpanded }
             )
+            if (modelsExpanded) {
+                summaryOptions.forEach { option ->
+                    ContextRadioRow(
+                        label = option.label,
+                        selected = policy.summaryModel == option.value ||
+                            policy.summaryModel.indexOf(SUMMARY_MODEL_SEPARATOR) < 0 &&
+                            option.legacyMatch,
+                        enabled = enabled,
+                        onClick = {
+                            onApply(policy.copy(summaryModel = option.value))
+                            // 选完即收起：这一步的用户意图已经达成，列表留着只会挤占纵向空间
+                            modelsExpanded = false
+                        }
+                    )
+                }
+            }
+            if (summaryOptions.isEmpty()) {
+                Text(
+                    text = "没有已配置 Key 的提供商，摘要只能跟随当前模型。",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    fontSize = 12.sp,
+                    color = onSurface.copy(alpha = 0.35f)
+                )
+            }
 
             ContextActionRow(
                 label = "立即压缩",
@@ -296,7 +389,9 @@ fun ContextConfigPage(
             ContextEventsSection(events = events)
 
             Text(
-                text = "摘要由当前模型关闭思考生成；失败时会退回只发最近几轮原文，不影响正常对话。",
+                text = "摘要由所选模型关闭思考生成；选「跟随当前模型」时能原样重放主请求前缀以命中缓存，" +
+                    "选其它提供商则按该提供商的 Key 与端点发请求、无法复用当前会话的前缀缓存。" +
+                    "失败时会退回只发最近几轮原文，不影响正常对话。",
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                 fontSize = 11.sp,
                 color = onSurface.copy(alpha = 0.35f)
@@ -433,6 +528,45 @@ private fun ContextRadioRow(
                 color = Palette.Neutral.copy(alpha = if (enabled) 1f else 0.35f)
             )
         }
+    }
+}
+
+/** 可展开的分组行：右值是当前选中项，最右是折叠箭头；整行可点，再点一次收起。 */
+@Composable
+private fun ContextExpandRow(
+    label: String,
+    valueText: String,
+    expanded: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .saltCardRow(enabled = enabled) { onClick() }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f),
+            fontSize = 15.sp,
+            color = onSurface.copy(alpha = if (enabled) 1f else 0.35f)
+        )
+        if (valueText.isNotEmpty()) {
+            Text(
+                text = valueText,
+                fontSize = 12.sp,
+                color = onSurface.copy(alpha = if (enabled) 0.45f else 0.25f)
+            )
+        }
+        Text(
+            text = if (expanded) "▴" else "▾",
+            modifier = Modifier.padding(start = 8.dp),
+            fontSize = 13.sp,
+            color = Palette.Neutral.copy(alpha = if (enabled) 1f else 0.35f)
+        )
     }
 }
 
@@ -601,13 +735,16 @@ private fun retainBudgetText(budget: Int): String =
 @Composable
 private fun ContextTokenRow(
     label: String,
+    // null = 没在编辑，直接显示落盘值；非 null = 正在输入的草稿，由页面持有以便联动别的行
+    draft: String?,
     tokens: Int,
     budgetText: String,
     enabled: Boolean,
-    onCommit: (Int) -> Unit
+    onDraftChange: (String) -> Unit,
+    onCommit: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    var draft by remember(tokens) { mutableStateOf(if (tokens > 0) tokens.toString() else "") }
+    val value = draft ?: if (tokens > 0) tokens.toString() else ""
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -621,12 +758,12 @@ private fun ContextTokenRow(
             color = onSurface.copy(alpha = if (enabled) 1f else 0.35f)
         )
         ContextTokenField(
-            value = draft,
-            onValueChange = { draft = it.filter { ch -> ch.isDigit() } },
+            value = value,
+            onValueChange = { onDraftChange(it.filter { ch -> ch.isDigit() }) },
             enabled = enabled,
             onCommit = {
-                val parsed = (draft.trim().toIntOrNull() ?: 0).coerceAtLeast(0)
-                if (parsed != tokens) onCommit(parsed)
+                // 提交一律交给页面：改没改、要不要清草稿都由页面按当前草稿判断
+                onCommit()
             }
         )
         Text(

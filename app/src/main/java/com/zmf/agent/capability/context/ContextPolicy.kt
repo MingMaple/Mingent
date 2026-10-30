@@ -44,7 +44,12 @@ data class ContextPolicy(
      * 用户想「就留 20k」时不用拿计算器算比例。
      */
     val retainTokens: Int = 0,
-    /** 摘要用哪个模型；空串 = 跟随当前对话模型。 */
+    /**
+     * 摘要用哪个模型。
+     *
+     * 空串 = 跟随当前对话模型（同时复用当前请求通道）；非空时编码成 `providerId|model`，
+     * 摘要请求按该提供商的 Key / 端点发；旧版本落盘的裸模型名按当前 provider 解释。
+     */
     val summaryModel: String = ""
 ) {
 
