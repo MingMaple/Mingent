@@ -1,8 +1,8 @@
 package com.zmf.agent.capability.mcp
+import com.zmf.agent.infra.terminal.HiddenProcess
+import com.zmf.agent.infra.terminal.TerminalApi
 
 import android.content.Context
-import com.ai.assistance.operit.terminal.HiddenHandle
-import com.ai.assistance.operit.terminal.TerminalManager
 import com.zmf.agent.core.log.FileLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -71,7 +71,7 @@ class McpStdioClient(
 
     /** 三个状态都是「调用线程写、TerminalManager 的读线程读」，必须 volatile，否则迟到回调看不到新值。 */
     @Volatile
-    private var handle: HiddenHandle? = null
+    private var handle: HiddenProcess? = null
 
     /** initialize 的握手是否已经做成；进程一退就置 false。 */
     @Volatile
@@ -186,7 +186,7 @@ class McpStdioClient(
         val current = ++generation
         // 清掉上一条进程留下的等待者，免得它们的 id 被新响应对上
         synchronized(pending) { pending.clear() }
-        val created = TerminalManager.getInstance(context).openHiddenProcess(
+        val created = TerminalApi.openProcess(context, 
             commandLine = commandLine,
             onLine = { line -> if (current == generation) onStdoutLine(line) },
             env = server.env,

@@ -29,6 +29,25 @@ sealed interface ShellResult {
 }
 
 /**
+ * 隐藏进程句柄：上层只负责持有它（保证进程不被回收）、写一行、查存活、收尾关闭，
+ * 不需要认识上游的 `HiddenHandle`。
+ */
+class HiddenProcess internal constructor(
+    private val isAliveImpl: () -> Boolean,
+    private val writeLineImpl: (String) -> Boolean,
+    private val onClose: () -> Unit
+) {
+    val isAlive: Boolean get() = runCatching { isAliveImpl() }.getOrDefault(false)
+
+    /** 写一行给子进程；返回是否真的写进去了（进程已死/流已关时为 false）。 */
+    fun writeLine(line: String): Boolean = runCatching { writeLineImpl(line) }.getOrDefault(false)
+
+    fun close() {
+        runCatching { onClose() }
+    }
+}
+
+/**
  * 终端能力的唯一入口：全工程只有这里可以 import `com.ai.assistance.operit.*`。
  *
  * 用法：`TerminalApi.exec(context, command, key, timeoutMs)`。上游实现内部会阻塞等待，
@@ -44,6 +63,33 @@ object TerminalApi {
             HiddenExecResult.State.SHELL_NOT_READY -> ShellResult.ShellNotReady
             else -> ShellResult.Failed(raw.state.name, raw.error, raw.rawOutputPreview)
         }
+    }
+
+    /**
+     * 在隐藏终端里起一条常驻子进程（MCP stdio 用）。
+     *
+     * [onLine] 是上游读线程回调，调用方要保证线程安全；返回 null 表示命令为空、没起起来。
+     */
+    fun openProcess(
+        context: Context,
+        commandLine: String,
+        env: Map<String, String>,
+        cwd: String,
+        onLine: (String) -> Unit,
+        onExit: (Int?) -> Unit
+    ): HiddenProcess? {
+        val handle = TerminalManager.getInstance(context).openHiddenProcess(
+            commandLine = commandLine,
+            onLine = onLine,
+            env = env,
+            cwd = cwd,
+            onExit = onExit
+        ) ?: return null
+        return HiddenProcess(
+            isAliveImpl = { handle.isAlive },
+            writeLineImpl = { handle.writeLine(it) },
+            onClose = { handle.close() }
+        )
     }
 
     /**

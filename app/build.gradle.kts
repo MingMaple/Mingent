@@ -204,6 +204,17 @@ val checkArchitecture by tasks.registering {
         for (f in files) {
             val text = f.readText()
             val pkg = packageRe.find(text)?.groupValues?.get(1) ?: continue
+            val rel = f.relativeTo(srcRoot).toString().replace('\\', '/')
+
+            // 规则 6：vendored 终端只能从 infra 进。这条对所有文件生效，不豁免老目录——
+            // 反正是「谁都不许」的硬边界，没有存量需要迁移。
+            for (m in importRe.findAll(text)) {
+                val imp = m.groupValues[1]
+                if (imp.startsWith("com.ai.assistance.operit.") && !pkg.startsWith("com.zmf.agent.infra.")) {
+                    problems += "$rel: only infra may depend on vendored terminal ($imp)"
+                }
+            }
+
             val layer = layerOf(pkg) ?: continue
             checkedFiles++
             val selfFeature = featureOf(pkg)
