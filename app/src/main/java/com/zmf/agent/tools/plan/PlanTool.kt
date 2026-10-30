@@ -1,6 +1,6 @@
 package com.zmf.agent.tools.plan
 
-import com.zmf.agent.agent.session.PlanStore
+import com.zmf.agent.core.store.PlanStore
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.tools.Tool
 import com.zmf.agent.tools.ToolContext

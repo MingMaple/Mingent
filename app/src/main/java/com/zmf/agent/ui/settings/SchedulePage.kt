@@ -35,9 +35,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.agent.session.ChatSession
-import com.zmf.agent.agent.session.SessionStore
-import com.zmf.agent.agent.workspace.WorkSpaceStore
+import com.zmf.agent.core.store.ChatSession
+import com.zmf.agent.core.store.SessionStore
+import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.schedule.ScheduleRunner
 import com.zmf.agent.schedule.ScheduleStore
 import com.zmf.agent.schedule.ScheduleTask

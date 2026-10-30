@@ -1,6 +1,6 @@
 package com.zmf.agent.tools.file
 
-import com.zmf.agent.tools.PathGate
+import com.zmf.agent.core.fs.PathGate
 import java.io.File
 
 /**

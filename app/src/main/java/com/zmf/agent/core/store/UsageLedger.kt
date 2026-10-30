@@ -1,4 +1,4 @@
-package com.zmf.agent.agent.stats
+package com.zmf.agent.core.store
 
 import android.content.Context
 import com.zmf.agent.core.AppPaths

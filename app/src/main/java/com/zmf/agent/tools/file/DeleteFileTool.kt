@@ -1,11 +1,12 @@
 package com.zmf.agent.tools.file
+import com.zmf.agent.tools.PathAccess
 
-import com.zmf.agent.agent.workspace.WorkspaceIo
-import com.zmf.agent.agent.workspace.workspaceIoForRoot
+import com.zmf.agent.core.store.WorkspaceIo
+import com.zmf.agent.core.store.workspaceIoForRoot
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.tools.HighRiskGate
-import com.zmf.agent.tools.PathGate
+import com.zmf.agent.core.fs.PathGate
 import com.zmf.agent.tools.Tool
 import com.zmf.agent.tools.ToolContext
 import com.zmf.agent.tools.ToolResult
@@ -105,7 +106,7 @@ class DeleteFileTool : Tool {
         val approved = decision.risk == HighRiskGate.Risk.CONFIRM
 
         // 越界：工作区外必须「完全」档
-        if (!inWorkspace && !PathGate.canWrite(ctx, file)) {
+        if (!inWorkspace && !PathAccess.canWrite(ctx, file)) {
             return ToolResult.Error(
                 "当前权限档是「" + ctx.permission.displayName() + "」，不能删除工作区外的路径：" + rawPath +
                     "。工作区内的文件用相对路径直接删；越界需要切到「完全」权限。"

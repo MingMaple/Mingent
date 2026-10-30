@@ -147,12 +147,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.agent.ApiConfig
-import com.zmf.agent.agent.goal.GoalPhase
-import com.zmf.agent.agent.session.PlanDoc
-import com.zmf.agent.agent.session.TodoStore
+import com.zmf.agent.core.store.GoalPhase
+import com.zmf.agent.core.store.PlanDoc
+import com.zmf.agent.core.store.TodoStore
 import com.zmf.agent.agent.subagent.SubAgentRegistry
-import com.zmf.agent.agent.workspace.WorkSpace
-import com.zmf.agent.agent.workspace.WorkSpaceStore
+import com.zmf.agent.core.store.WorkSpace
+import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.infra.api.BalanceClient
 import com.zmf.agent.infra.api.BalanceResult
 import com.zmf.agent.infra.backup.BackupArchive
@@ -179,7 +179,7 @@ import com.zmf.agent.ui.settings.DataSettingsPage
 import com.zmf.agent.ui.settings.GeneralSettingsPage
 import com.zmf.agent.ui.settings.ModelSettingsPage
 import com.zmf.agent.ui.settings.SettingsHomePage
-import com.zmf.agent.agent.stats.UsageLedger
+import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.agent.prompt.PromptStore
 import com.zmf.agent.ui.chat.ChatComposer
 import com.zmf.agent.ui.chat.ComposerCommand

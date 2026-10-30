@@ -20,9 +20,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.agent.goal.Goal
-import com.zmf.agent.agent.goal.GoalPhase
-import com.zmf.agent.agent.goal.label
+import com.zmf.agent.core.store.Goal
+import com.zmf.agent.core.store.GoalPhase
+import com.zmf.agent.core.store.label
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.theme.Palette
 

@@ -25,8 +25,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.agent.session.PlanDoc
-import com.zmf.agent.agent.session.PlanStore
+import com.zmf.agent.core.store.PlanDoc
+import com.zmf.agent.core.store.PlanStore
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.theme.Palette
 

@@ -1,7 +1,7 @@
 package com.zmf.agent.tools.task
 
-import com.zmf.agent.agent.session.Todo
-import com.zmf.agent.agent.session.TodoStore
+import com.zmf.agent.core.store.Todo
+import com.zmf.agent.core.store.TodoStore
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.tools.Tool

@@ -3,7 +3,7 @@ package com.zmf.agent.tools.file
 import android.content.Context
 import android.system.Os
 import com.zmf.agent.core.log.FileLog
-import com.zmf.agent.tools.PathGate
+import com.zmf.agent.core.fs.PathGate
 import org.json.JSONObject
 import java.io.File
 import java.security.SecureRandom

@@ -1,4 +1,5 @@
 package com.zmf.agent.tools
+import com.zmf.agent.core.fs.PathGate
 
 import com.zmf.agent.core.model.PermissionLevel
 import java.io.File

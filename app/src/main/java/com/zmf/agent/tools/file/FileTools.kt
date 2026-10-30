@@ -1,12 +1,13 @@
 package com.zmf.agent.tools.file
+import com.zmf.agent.tools.PathAccess
 
-import com.zmf.agent.agent.workspace.WorkspaceEntry
-import com.zmf.agent.agent.workspace.WorkspaceIo
-import com.zmf.agent.agent.workspace.workspaceIoForRoot
+import com.zmf.agent.core.store.WorkspaceEntry
+import com.zmf.agent.core.store.WorkspaceIo
+import com.zmf.agent.core.store.workspaceIoForRoot
 import com.zmf.agent.core.log.AuditLog
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.tools.HighRiskGate
-import com.zmf.agent.tools.PathGate
+import com.zmf.agent.core.fs.PathGate
 import com.zmf.agent.tools.Tool
 import com.zmf.agent.tools.ToolContext
 import com.zmf.agent.tools.ToolResult
@@ -76,7 +77,7 @@ class ReadFileTool : Tool {
         if (HighRiskGate.isTrashPathDeep(file, ctx.context.packageName)) {
             return ToolResult.Error(HighRiskGate.trashReadText())
         }
-        if (!target.inWorkspace && !PathGate.canRead(ctx, file)) {
+        if (!target.inWorkspace && !PathAccess.canRead(ctx, file)) {
             return ToolResult.Error(
                 "当前权限档是「" + ctx.permission.displayName() + "」，不能读取工作区外的路径：" + rawPath +
                     "。工作区内的文件用相对路径直接读；越界需要切到「完全」权限。"
@@ -240,7 +241,7 @@ class WriteFileTool : Tool {
         val canWrite = if (inWorkspace) {
             ctx.permission != PermissionLevel.READ_ONLY
         } else {
-            PathGate.canWrite(ctx, target.local)
+            PathAccess.canWrite(ctx, target.local)
         }
         if (!canWrite) {
             return ToolResult.Error(
@@ -320,7 +321,7 @@ class ListFilesTool : Tool {
             if (HighRiskGate.isTrashPathDeep(file, ctx.context.packageName)) {
                 return ToolResult.Error(HighRiskGate.trashReadText())
             }
-            if (!resolved.inWorkspace && !PathGate.canRead(ctx, file)) {
+            if (!resolved.inWorkspace && !PathAccess.canRead(ctx, file)) {
                 return ToolResult.Error("当前权限档是「" + ctx.permission.displayName() + "」，不能读取工作区外的路径：" + rawPath)
             }
             resolved

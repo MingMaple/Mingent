@@ -1,9 +1,9 @@
 package com.zmf.agent.tools.goal
 
-import com.zmf.agent.agent.goal.Goal
-import com.zmf.agent.agent.goal.GoalPhase
-import com.zmf.agent.agent.goal.GoalStore
-import com.zmf.agent.agent.goal.label
+import com.zmf.agent.core.store.Goal
+import com.zmf.agent.core.store.GoalPhase
+import com.zmf.agent.core.store.GoalStore
+import com.zmf.agent.core.store.label
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.tools.Tool
 import com.zmf.agent.tools.ToolContext

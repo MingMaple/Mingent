@@ -82,10 +82,10 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
-import com.zmf.agent.agent.session.ChatSession
-import com.zmf.agent.agent.session.SessionStore
-import com.zmf.agent.agent.workspace.WorkSpace
-import com.zmf.agent.agent.workspace.WorkSpaceStore
+import com.zmf.agent.core.store.ChatSession
+import com.zmf.agent.core.store.SessionStore
+import com.zmf.agent.core.store.WorkSpace
+import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.icons.DshIcons
 import com.zmf.agent.uikit.icons.FolderIcon
