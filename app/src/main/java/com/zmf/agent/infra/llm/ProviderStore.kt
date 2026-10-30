@@ -2,7 +2,6 @@ package com.zmf.agent.infra.llm
 import com.zmf.agent.core.llm.ApiDefaults
 
 import android.content.Context
-import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.core.AppPaths
 import com.zmf.agent.core.log.FileLog
 import org.json.JSONArray
@@ -17,7 +16,7 @@ import java.io.File
  * 兼容端点都能用同一套字段填。
  *
  * @param id 稳定标识（"deepseek" / "openai" / "kimi" / "custom-<毫秒时间戳>"），会话与偏好都按它引用
- * @param models 可用模型 id；空列表表示「交给用户自己填」，[ApiConfig.loadModel] 会记住上次用的那个
+ * @param models 可用模型 id；空列表表示「交给用户自己填」，ApiConfig.loadModel 会记住上次用的那个
  * @param builtIn 来自内置目录的模板（界面上据此显示「内置」并禁止改 id / 删除 id 语义）
  */
 data class ProviderConfig(
@@ -35,7 +34,7 @@ data class ProviderConfig(
  * 为什么不是一个数据库：提供商是用户在设置页手填出来的，几条到十几条量级，
  * 和 sessions.json / workspaces.json 一样「整份覆盖写」最省事，也避免引入新依赖。
  *
- * 一个进程只读一次盘（[cache]）：[ApiConfig] 每次拼提示词 / 发请求都要问当前 provider，
+ * 一个进程只读一次盘（[cache]）：ApiConfig 每次拼提示词 / 发请求都要问当前 provider，
  * 每次都读盘纯属浪费；所有写入都走 [save]，缓存和文件不会走偏。
  */
 object ProviderStore {
@@ -60,7 +59,7 @@ object ProviderStore {
     private const val KEY_BUILT_IN = "builtIn"
 
     /**
-     * 迁移时读的旧键名，语义与 [ApiConfig] 里的同名键一一对应。
+     * 迁移时读的旧键名，语义与 ApiConfig 里的同名键一一对应。
      *
      * 这里直接读 prefs 而不是调 ApiConfig.loadXxx：ApiConfig 现在反过来要问 ProviderStore
      * 「当前 provider」，绕回去就是 load → 迁移 → load 的无限递归。
@@ -293,7 +292,7 @@ object ProviderStore {
     /**
      * 由旧版本的三个 pref 键拼出唯一一条 DeepSeek provider。
      *
-     * 老模型的取值也要搬到 model_deepseek：不然升级后 [ApiConfig.loadModel] 只会拿到第一个模型，
+     * 老模型的取值也要搬到 model_deepseek：不然升级后 ApiConfig.loadModel 只会拿到第一个模型，
      * 用户明明选过 deepseek-v4-pro，升级后却悄悄换成了 flash。
      */
     private fun defaultsFromLegacy(context: Context): List<ProviderConfig> {
