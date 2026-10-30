@@ -11,7 +11,6 @@ import android.net.Uri
 import android.util.Base64
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -205,8 +204,6 @@ private const val MAX_GOAL_ROUNDS = 8
 /** 批准计划时替用户发出的那句话；正文与日志共用一份，别两处各写一遍。 */
 private const val PLAN_APPROVE_TEXT = "按计划开始执行"
 
-/** 目标工具名：它一跑完目标就变了，得立刻重读（见 onToolFinished）。 */
-private const val GOAL_TOOL = "goal"
 /** 「用户最后停留的会话」的落盘位置。 */
 private const val SESSION_PREFS = "session_prefs"
 private const val KEY_OPENED_SESSION = "last_opened_session"
@@ -315,7 +312,7 @@ class ChatViewModel(context: Context) : AgentUi {
     val messages: SnapshotStateList<ChatMessage> = mutableStateListOf()
 
     /** tool_call_id -> 工具是否成功；只用于界面给工具卡上色，不参与请求。 */
-    val toolOutcomes = mutableStateMapOf<String, Boolean>()
+    val toolOutcomes: Map<String, Boolean> get() = toolCalls.outcomes
 
     /** 全部会话，按 updatedAt 降序（第一个就是最近用过的）；侧边栏直接用。 */
     var sessionList by mutableStateOf<List<ChatSession>>(emptyList())
@@ -453,6 +450,12 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 当前在干什么：「第 2 轮」「调用 read_file」之类，空闲时为 null。 */
     var activityText by mutableStateOf<String?>(null)
         private set
+
+    /** 工具调用展示：成败表与工具起止提示；界面仍通过 [toolOutcomes] 读。 */
+    private val toolCalls = ToolCallController(
+        setActivity = { activityText = it },
+        reloadGoal = { reloadGoal() }
+    )
 
     private var streamJob: Job? = null
 
@@ -2165,7 +2168,7 @@ class ChatViewModel(context: Context) : AgentUi {
         currentSessionId = fresh.id
         persistOpenedSession(fresh.id)
         messages.clear()
-        toolOutcomes.clear()
+        toolCalls.clear()
         // 新会话的累计就是它自己那四个字段（刚建出来全是 0）
         resetStats()
         persistAll()
@@ -2204,7 +2207,7 @@ class ChatViewModel(context: Context) : AgentUi {
         currentWorkspaceId = target.workspaceId
         messages.clear()
         messages.addAll(target.messages)
-        toolOutcomes.clear()
+        toolCalls.clear()
         // 上一个会话的累计不回带：累计从目标会话自己的字段读回来（切回来就能接上）
         resetStats()
         persistAll()
@@ -2240,7 +2243,7 @@ class ChatViewModel(context: Context) : AgentUi {
         currentWorkspaceId = fresh.workspaceId
         messages.clear()
         messages.addAll(fresh.messages)
-        toolOutcomes.clear()
+        toolCalls.clear()
         // 待办留在父会话：新会话的清单从空表开始
         todos = emptyList()
         resetStats()
@@ -2281,7 +2284,7 @@ class ChatViewModel(context: Context) : AgentUi {
                 messages.clear()
                 messages.addAll(next.messages)
             }
-            toolOutcomes.clear()
+            toolCalls.clear()
             // 删除只删会话本身：全局总账（UsageLedger）是历史总账，一分不动
             resetStats()
         }
@@ -2474,7 +2477,7 @@ class ChatViewModel(context: Context) : AgentUi {
         val target = sessionList
             .filter { !it.archived && it.workspaceId == workspaceId }
             .maxByOrNull { it.updatedAt }
-        toolOutcomes.clear()
+        toolCalls.clear()
         if (target != null) {
             currentSessionId = target.id
             persistOpenedSession(target.id)
@@ -2881,17 +2884,11 @@ class ChatViewModel(context: Context) : AgentUi {
     }
 
     /** 工具开始执行：只改进行中提示，不提前写结果。 */
-    override fun onToolStarted(call: ToolCall) {
-        activityText = "调用 " + call.name
-    }
+    override fun onToolStarted(call: ToolCall) = toolCalls.onToolStarted(call)
 
     /** 工具执行结束：记下这一步的成败供工具卡读，goal 工具成功时顺带刷新目标。 */
-    override fun onToolFinished(call: ToolCall, result: ToolResult) {
-        if (call.id.isNotEmpty()) toolOutcomes[call.id] = result.ok
-        activityText = (if (result.ok) "已返回 " else "失败 ") + call.name
-        // goal 工具改的是 goals.json：改完立刻读回来，目标页与状态行不用等下一轮
-        if (result.ok && call.name == GOAL_TOOL) reloadGoal()
-    }
+    override fun onToolFinished(call: ToolCall, result: ToolResult) =
+        toolCalls.onToolFinished(call, result)
 
     /**
      * 本轮用量的「提供方/模型」：写成 `deepseek/deepseek-flash` 这种形态。
