@@ -26,6 +26,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -52,6 +53,8 @@ import com.zmf.agent.feature.float.FloatingChatWindow
 import com.zmf.agent.feature.float.LocalFloatInputFocus
 import com.zmf.agent.feature.float.SiriBall
 import com.zmf.agent.uikit.theme.AgentTheme
+import com.zmf.agent.uikit.theme.ThemeMode
+import com.zmf.agent.uikit.theme.ThemeStore
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import com.zmf.agent.capability.runtime.ChatBridge
@@ -360,6 +363,11 @@ class FloatingBallService : Service() {
         // 普通的 ComposeView（ComposeView 在 1.12 里是 final，不能匿名继承去重写可见性回调）。
         // 可见性通知挂 ViewTreeObserver：系统改了这条窗口的可见性（切到全屏 App、锁屏、下拉通知栏……）时
         // 看不见就把球的动画停掉，恢复可见再打开；球被折叠成小窗时由 applyExpandedLayout 关掉。
+        // 小窗的深浅色必须跟 App 里的设置走：AgentTheme 的 darkTheme 默认值只认系统
+        // （isSystemInDarkTheme），App 里选了「深色」而系统是浅色时，小窗会一直是浅色。
+        // 这里在建视图前读一次 App 的设置，切换主题后重开小窗即生效。
+        val appThemeMode = ThemeStore.load(this)
+
         val view = ComposeView(this).apply {
             attachLifecycleOwner(this, owner)
             // 不用池化策略：dispose 只跟 detach 走
@@ -367,7 +375,12 @@ class FloatingBallService : Service() {
             isFocusable = true
             isFocusableInTouchMode = true
             setContent {
-                AgentTheme {
+                val dark = when (appThemeMode) {
+                    ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                    ThemeMode.LIGHT -> false
+                    ThemeMode.DARK -> true
+                }
+                AgentTheme(darkTheme = dark) {
                     CompositionLocalProvider(
                         LocalFloatInputFocus provides { focused -> onInputFocusChanged(focused) }
                     ) {
