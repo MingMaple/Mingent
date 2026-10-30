@@ -480,67 +480,6 @@ fun ChatScreen(
     val imeVisible = WindowInsets.isImeVisible
     val bottomTolerancePx = with(density) { 200.dp.toPx() }.toInt()
 
-    // 键盘弹起时视口会先变矮：那一刻再问「是不是停在底部」，原来贴着底的位置已经被顶开了，
-    // 问出来的永远是「不在底部」，列表就一条都不动。所以趁键盘收着的时候一直记着这个判断，
-    // 真正弹起时用的是「弹起之前」的那一份。
-    var wasAtBottom by ui.wasAtBottom
-    LaunchedEffect(imeVisible) {
-        if (imeVisible) return@LaunchedEffect
-        snapshotFlow { listState.isNearBottom(bottomTolerancePx) }.collect { wasAtBottom = it }
-    }
-
-    // 新消息 / 工具返回 / 流式正文都会让 followKey 变。只有用户本来就贴在底部时才跟随，
-    // 上翻看历史的时候不再被拽回底部（原来每来一次工具调用就弹回底）。
-    LaunchedEffect(followKey) {
-        if (!wasAtBottom) return@LaunchedEffect
-        followBottom(listState, items.lastIndex)
-    }
-
-    // 冷启动 / 切会话的第一次落位：必须直接落在最后一条，而不是列表顶部。
-    // 为什么不能只靠上面那条跟随逻辑：它要问 wasAtBottom，而 wasAtBottom 是由下面那条
-    // 「是否贴底」采样写进去的：重开 App 那一刻列表还在顶部，采样先跑出 false，
-    // 跟随逻辑就被自己让位掉了，于是停在最顶上。
-    // 这里单独一条一次性锚定：不管当下停在哪，先落到最后一条并恢复「贴底」这个前提。
-    var anchoredInitialPosition by remember(viewModel.currentSessionId) { mutableStateOf(false) }
-    LaunchedEffect(items.size, viewModel.currentSessionId) {
-        if (anchoredInitialPosition || items.isEmpty()) return@LaunchedEffect
-        anchoredInitialPosition = true
-        wasAtBottom = true
-        followBottom(listState, items.lastIndex)
-    }
-
-    // 键盘动画期间逐帧跟住底部：视口每矮 Δ，列表就同步滚 Δ，最后一条消息在屏幕上原地不动。
-    // 效果就是「输入框与列表同一段运动」。只在本来就贴着底部时跟，翻着历史看的时候不打断。
-    //
-    // 只跟「视口变矮」这一侧。键盘收起时视口是变高的，那时候再按 Δ 滚（Δ 为负）等于把内容
-    // 往下推，最后一条连同气泡底部的用量胶囊就被推到输入框和待办条底下去了：遮挡就是这么来的。
-    var appliedImePadPx by remember { mutableStateOf(0f) }
-    LaunchedEffect(listState, imePad) {
-        val targetPx = with(density) { imePad.toPx() }
-        val delta = targetPx - appliedImePadPx
-        // 先记「已经跟到哪」再决定动不动：中途让位（不在底部）时，下一次的差量才不会算错
-        appliedImePadPx = targetPx
-        if (delta <= 0f) return@LaunchedEffect
-        if (!wasAtBottom) return@LaunchedEffect
-        listState.scroll { scrollBy(delta) }
-    }
-
-    // 消息区的可见高度：键盘开合、待办条（n/n 完成）/ 待发附件行 / 排队行冒出或收起都会改它。
-    // 这些兄弟节点是从下面把列表顶掉一截的，视口一变，原来贴着底的那条就可能落到视口外，
-    // 所以「贴底」这件事不能只在键盘动画里做一次，得跟着视口的变化重算。
-    // 视口落定后再对一次底部（键盘开合、待办条、待发附件行都会改视口）。
-    // 这里绝不能把 imePad / 视口值放进 effect 的 key：键盘动画期间它们逐帧变化，
-    // effect 会被取消并重启几十次，等于每帧都排一次「等一会儿再吸附」：这就是掉帧主因。
-    // 用 collectLatest 只在视口安静 120ms 之后执行一次。
-    val lastItemIndex = rememberUpdatedState(items.lastIndex)
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.layoutInfo.viewportEndOffset }.collectLatest {
-            delay(120)
-            if (!wasAtBottom) return@collectLatest
-            settleToBottom(listState, lastItemIndex.value)
-        }
-    }
-
     /**
      * 选文件 / 选图片走同一个入口：回到页面时输入法要跟「进去之前」一致。
      * 进去前是收着的，光靠系统是收不住的：输入框一直握着焦点，回到前台系统会把键盘重新弹出来，
@@ -796,7 +735,9 @@ fun ChatScreen(
                         context = context,
                         imageRoot = imageRoot,
                         items = items,
-                        listState = listState
+                        listState = listState,
+                        imePad = imePad,
+                        imeVisible = imeVisible
                     )
 
                     // 输入区上的一摞条 + 输入框
