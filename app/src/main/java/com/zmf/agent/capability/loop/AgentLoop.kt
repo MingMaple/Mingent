@@ -61,7 +61,13 @@ data class OutputTiming(
     val ttftMillis: Long = 0,
     val ttftCount: Int = 0,
     val genMillis: Long = 0,
-    val genTokens: Int = 0
+    val genTokens: Int = 0,
+    /** 生成阶段的细分：思考块 / 正文块 / 工具参数块（互不重叠，来自流式事件类型切换）。 */
+    val reasoningMillis: Long = 0,
+    val textMillis: Long = 0,
+    val toolArgMillis: Long = 0,
+    /** 本次回复实际执行的工具调用次数。 */
+    val toolCalls: Int = 0
 )
 
 /**
@@ -122,6 +128,11 @@ class AgentLoop(
 
     /** 上一次请求「第一个字 → 最后一个字」的毫秒数：输出速度只用这一段，不含等首字。 */
     private var lastGenMillis = 0L
+
+    /** 上一次请求生成阶段的细分：思考 / 正文 / 工具参数各自的毫秒（按事件类型切块累计）。 */
+    private var lastReasoningMillis = 0L
+    private var lastTextMillis = 0L
+    private var lastToolArgMillis = 0L
 
     /** 上一次请求的输入缓存命中 token 数（服务端没返回就是 0）。 */
     private var lastCachedTokens = 0
@@ -247,6 +258,10 @@ class AgentLoop(
         var ttftCount = 0
         var genMillis = 0L
         var genTokens = 0
+        var reasoningMillis = 0L
+        var textMillis = 0L
+        var toolArgMillis = 0L
+        var toolCalls = 0
         try {
             while (round < maxRounds) {
                 round++
@@ -262,6 +277,9 @@ class AgentLoop(
                 }
                 genMillis += lastGenMillis
                 genTokens += lastRequestOutputTokens
+                reasoningMillis += lastReasoningMillis
+                textMillis += lastTextMillis
+                toolArgMillis += lastToolArgMillis
 
                 // 溢出恢复：只给一次机会。
                 // 为什么不是「重试到成功」：溢出说明发的东西太多，压一次还不够就该让用户看见，
@@ -285,6 +303,9 @@ class AgentLoop(
                         }
                         genMillis += lastGenMillis
                         genTokens += lastRequestOutputTokens
+                        reasoningMillis += lastReasoningMillis
+                        textMillis += lastTextMillis
+                        toolArgMillis += lastToolArgMillis
                     }
                 }
                 if (!completed) {
@@ -300,6 +321,7 @@ class AgentLoop(
                 var producedPlan = false
                 for (call in calls) {
                     ui.onToolStarted(call)
+                    toolCalls++
                     if (call.name == PLAN_TOOL) producedPlan = true
                     // 屏障②：执行有副作用的工具之前落盘。
                     // 只为「已派发」留证据：崩在工具执行中，重载后能看到这条调用、并补一条「结果未知」，
@@ -351,7 +373,11 @@ class AgentLoop(
                     ttftMillis = ttftMillis,
                     ttftCount = ttftCount,
                     genMillis = genMillis,
-                    genTokens = genTokens
+                    genTokens = genTokens,
+                    reasoningMillis = reasoningMillis,
+                    textMillis = textMillis,
+                    toolArgMillis = toolArgMillis,
+                    toolCalls = toolCalls
                 )
             )
         }
@@ -427,6 +453,9 @@ class AgentLoop(
         lastStreamMillis = 0L
         lastTtftMillis = 0L
         lastGenMillis = 0L
+        lastReasoningMillis = 0L
+        lastTextMillis = 0L
+        lastToolArgMillis = 0L
         lastCachedTokens = 0
         lastRequestOutputTokens = 0
         // 失败信息也一样：只属于本次尝试。留着上一次的，会把正常请求误判成「又溢出了」
@@ -625,6 +654,29 @@ class AgentLoop(
          // 只认真正出了字的片段（思考也算，它是模型在说话），工具调用增量不算，那部分没有 token 速率可言
         var firstTokenAt = 0L
         var lastTokenAt = 0L
+        /**
+         * 生成阶段的块计时：流式事件按类型切换即切块（思考 / 正文 / 工具参数）。
+         *
+         * DSH 用 block-start 标记切块；我们这里没有标记，但事件类型本身就是分界，
+         * 一段的结束到下一段的开始之间的空档归下一段，三段互不重叠、加起来就是整个生成窗口。
+         */
+        var blockKind = 0
+        var blockStartAt = 0L
+        var reasoningMs = 0L
+        var textMs = 0L
+        var toolArgMs = 0L
+        fun switchBlock(kind: Int, at: Long) {
+            if (blockKind != 0) {
+                val d = (at - blockStartAt) / 1_000_000
+                when (blockKind) {
+                    1 -> reasoningMs += d
+                    2 -> textMs += d
+                    3 -> toolArgMs += d
+                }
+            }
+            blockKind = kind
+            blockStartAt = at
+        }
         /** 记一次增量时间戳：第一次调用定首字起点，之后每次更新末字时间。 */
         fun markToken() {
             val now = System.nanoTime()
@@ -646,6 +698,7 @@ class AgentLoop(
             ).collect { event ->
                 when (event) {
                     is LlmEvent.ReasoningDelta -> {
+                        switchBlock(1, System.nanoTime())
                         val visible = reasoningFilter.feed(event.text)
                         if (visible.isNotEmpty()) {
                             markToken()
@@ -655,6 +708,7 @@ class AgentLoop(
                     }
 
                     is LlmEvent.ContentDelta -> {
+                        switchBlock(2, System.nanoTime())
                         val visible = contentFilter.feed(event.text)
                         if (visible.isNotEmpty()) {
                             markToken()
@@ -664,6 +718,7 @@ class AgentLoop(
                     }
 
                     is LlmEvent.ToolCallDelta -> {
+                        switchBlock(3, System.nanoTime())
                         val prev = calls[event.index]
                         calls[event.index] = ToolCall(
                             id = event.id ?: prev?.id.orEmpty(),
@@ -727,7 +782,11 @@ class AgentLoop(
         } finally {
             // 取消也要记：用户点停止时这一轮的等待时间是真实花掉的
             val endedAt = System.nanoTime()
+            switchBlock(0, endedAt)
             lastStreamMillis = (endedAt - streamStartedAt) / 1_000_000
+            lastReasoningMillis = reasoningMs
+            lastTextMillis = textMs
+            lastToolArgMillis = toolArgMs
             if (firstTokenAt > 0L) {
                 lastTtftMillis = (firstTokenAt - streamStartedAt) / 1_000_000
                 // 只出一个字时 lastTokenAt == firstTokenAt：生成时长按 0 算，速度那边自己兜底，不除零

@@ -86,8 +86,55 @@ data class ChatSession(
      * 分叉 = 克隆当前会话：状态行的轮数/步数/命中率、右下角的用量胶囊都按继承后的累计值显示；
      * 上下文洞察页只统计自分支起的真实用量，需要靠这份基线做减法（见 [InheritedUsage]）。
      */
-    val inheritedUsage: InheritedUsage = InheritedUsage()
+    val inheritedUsage: InheritedUsage = InheritedUsage(),
+    /**
+     * 本会话的累计计费构成（每次请求按估算占比折算后累加）。
+     *
+     * 旧文件没有这个键 → 空值（界面按「没有明细」显示「—」，不补历史）。
+     */
+    val composition: SessionComposition = SessionComposition(),
+    /** 生成阶段再细分：模型思考 / 正文 / 工具参数三段的累计毫秒（旧文件读到 0）。 */
+    val reasoningMillis: Long = 0,
+    val textMillis: Long = 0,
+    val toolArgMillis: Long = 0
 )
+
+/**
+ * 会话累计的计费构成：八段（七段上下文 + 输出）。
+ *
+ * 口径：每次模型请求按「当前请求视图的估算占比 × 真实 prompt tokens」折算，
+ * 输出直接取 completionTokens；所以八段合计 = 会话真实输入 + 输出。
+ */
+data class SessionComposition(
+    val system: Int = 0,
+    val skills: Int = 0,
+    val tools: Int = 0,
+    val user: Int = 0,
+    val inject: Int = 0,
+    val assistant: Int = 0,
+    val toolResults: Int = 0,
+    val output: Int = 0
+) {
+    /** 全 0 = 这条会话没有构成明细（旧会话 / 还没请求过）。 */
+    val isEmpty: Boolean
+        get() = system == 0 && skills == 0 && tools == 0 && user == 0 &&
+            inject == 0 && assistant == 0 && toolResults == 0 && output == 0
+
+    /** 八段合计（计费总额）。 */
+    val total: Int
+        get() = system + skills + tools + user + inject + assistant + toolResults + output
+
+    operator fun plus(other: SessionComposition): SessionComposition = SessionComposition(
+        system = system + other.system,
+        skills = skills + other.skills,
+        tools = tools + other.tools,
+        user = user + other.user,
+        inject = inject + other.inject,
+        assistant = assistant + other.assistant,
+        toolResults = toolResults + other.toolResults,
+        output = output + other.output
+    )
+}
 
 /**
  * 分叉时继承的用量快照。
@@ -157,6 +204,10 @@ object SessionStore {
     private const val KEY_TTFT_COUNT = "ttftCount"
     private const val KEY_GEN_MILLIS = "genMillis"
     private const val KEY_GEN_TOKENS = "genTokens"
+    private const val KEY_COMPOSITION = "composition"
+    private const val KEY_REASONING_MILLIS = "reasoningMillis"
+    private const val KEY_TEXT_MILLIS = "textMillis"
+    private const val KEY_TOOL_ARG_MILLIS = "toolArgMillis"
     private const val KEY_INHERITED_USAGE = "inheritedUsage"
     private const val KEY_CONTEXT_SUMMARY = "contextSummary"
     private const val KEY_SUMMARY_UP_TO = "summaryUpTo"
@@ -423,6 +474,11 @@ object SessionStore {
         if (session.ttftCount != 0) obj.put(KEY_TTFT_COUNT, session.ttftCount)
         if (session.genMillis != 0L) obj.put(KEY_GEN_MILLIS, session.genMillis)
         if (session.genTokens != 0) obj.put(KEY_GEN_TOKENS, session.genTokens)
+        // 构成与生成细分：同样是「有数才写」，旧文件不会被撑大
+        if (!session.composition.isEmpty) obj.put(KEY_COMPOSITION, compositionToJson(session.composition))
+        if (session.reasoningMillis != 0L) obj.put(KEY_REASONING_MILLIS, session.reasoningMillis)
+        if (session.textMillis != 0L) obj.put(KEY_TEXT_MILLIS, session.textMillis)
+        if (session.toolArgMillis != 0L) obj.put(KEY_TOOL_ARG_MILLIS, session.toolArgMillis)
         // 摘要三件套同上一批计数：默认值不落 key，旧文件不因升级被撑大
         if (session.contextSummary.isNotEmpty()) obj.put(KEY_CONTEXT_SUMMARY, session.contextSummary)
         if (session.summaryUpTo != 0) obj.put(KEY_SUMMARY_UP_TO, session.summaryUpTo)
@@ -463,6 +519,29 @@ object SessionStore {
         lastTurnModelMillis = obj.optLong(KEY_LAST_TURN_MODEL_MILLIS, 0L),
         lastTurnCompletionTokens = obj.optInt(KEY_LAST_TURN_COMPLETION, 0),
         messages = obj.optInt(KEY_MESSAGES, 0)
+    )
+
+    /** 会话构成落盘：嵌套一层，键名与 DSH 的八段一致。 */
+    private fun compositionToJson(c: SessionComposition): JSONObject = JSONObject().apply {
+        put("system", c.system)
+        put("skills", c.skills)
+        put("tools", c.tools)
+        put("user", c.user)
+        put("inject", c.inject)
+        put("assistant", c.assistant)
+        put("toolResults", c.toolResults)
+        put("output", c.output)
+    }
+
+    private fun compositionFromJson(obj: JSONObject?): SessionComposition = SessionComposition(
+        system = obj?.optInt("system", 0) ?: 0,
+        skills = obj?.optInt("skills", 0) ?: 0,
+        tools = obj?.optInt("tools", 0) ?: 0,
+        user = obj?.optInt("user", 0) ?: 0,
+        inject = obj?.optInt("inject", 0) ?: 0,
+        assistant = obj?.optInt("assistant", 0) ?: 0,
+        toolResults = obj?.optInt("toolResults", 0) ?: 0,
+        output = obj?.optInt("output", 0) ?: 0
     )
 
     /**
@@ -607,6 +686,11 @@ object SessionStore {
                     ttftCount = obj.optInt(KEY_TTFT_COUNT, 0),
                     genMillis = obj.optLong(KEY_GEN_MILLIS, 0L),
                     genTokens = obj.optInt(KEY_GEN_TOKENS, 0),
+                    // 构成与生成细分：旧文件没有这些键，读不到就是空 / 0（界面显示「—」）
+                    composition = compositionFromJson(obj.optJSONObject(KEY_COMPOSITION)),
+                    reasoningMillis = obj.optLong(KEY_REASONING_MILLIS, 0L),
+                    textMillis = obj.optLong(KEY_TEXT_MILLIS, 0L),
+                    toolArgMillis = obj.optLong(KEY_TOOL_ARG_MILLIS, 0L),
                     // 旧文件没有摘要三件套，optString/optInt/optLong 的默认值兜住：没有摘要就是空串 + 0
                     contextSummary = obj.optString(KEY_CONTEXT_SUMMARY, ""),
                     summaryUpTo = obj.optInt(KEY_SUMMARY_UP_TO, 0),

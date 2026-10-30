@@ -10,20 +10,88 @@ import java.util.Date
 import java.util.Locale
 
 /**
+ * 计费构成八段：七段上下文 + 输出。
+ *
+ * 口径与 DSH 一致：服务端给的 prompt tokens 是真实总额，按请求视图的估算占比拆成七段；
+ * 输出直接取 completionTokens。八段合计 = 真实输入 + 输出。
+ */
+data class LedgerComposition(
+    val system: Int = 0,
+    val skills: Int = 0,
+    val tools: Int = 0,
+    val user: Int = 0,
+    val inject: Int = 0,
+    val assistant: Int = 0,
+    val toolResults: Int = 0,
+    val output: Int = 0
+) {
+    val isEmpty: Boolean
+        get() = system == 0 && skills == 0 && tools == 0 && user == 0 &&
+            inject == 0 && assistant == 0 && toolResults == 0 && output == 0
+
+    val total: Int
+        get() = system + skills + tools + user + inject + assistant + toolResults + output
+
+    operator fun plus(other: LedgerComposition): LedgerComposition = LedgerComposition(
+        system = system + other.system,
+        skills = skills + other.skills,
+        tools = tools + other.tools,
+        user = user + other.user,
+        inject = inject + other.inject,
+        assistant = assistant + other.assistant,
+        toolResults = toolResults + other.toolResults,
+        output = output + other.output
+    )
+}
+
+/**
+ * 一份用量桶：总账与按天共用同一形状。
+ *
+ * 时间字段全部是毫秒；[toolCalls] 是工具调用次数，[requests] 是成功的模型请求次数。
+ */
+data class LedgerUsage(
+    val prompt: Int = 0,
+    val completion: Int = 0,
+    val requests: Int = 0,
+    val steps: Int = 0,
+    val cacheHit: Int = 0,
+    val cacheMiss: Int = 0,
+    val modelMs: Long = 0L,
+    val toolMs: Long = 0L,
+    val activeMs: Long = 0L,
+    val ttftMs: Long = 0L,
+    val genMs: Long = 0L,
+    val reasoningMs: Long = 0L,
+    val textMs: Long = 0L,
+    val toolArgMs: Long = 0L,
+    val genTokens: Int = 0,
+    val toolCalls: Int = 0,
+    val composition: LedgerComposition = LedgerComposition()
+)
+
+/**
  * 全局总账的一份只读快照：统计页直接读它，不改 [UsageLedger] 内部状态。
+ *
+ * 旧字段（totalPromptTokens / todayPromptTokens 等）保留成计算属性，
+ * 免得调用点跟着新结构一起改。
  */
 data class LedgerSnapshot(
-    val totalPromptTokens: Int = 0,
-    val totalCompletionTokens: Int = 0,
-    val totalRequests: Int = 0,
-    val totalSteps: Int = 0,
-    val todayPromptTokens: Int = 0,
-    val todayCompletionTokens: Int = 0,
-    val todayRequests: Int = 0,
+    val total: LedgerUsage = LedgerUsage(),
+    val today: LedgerUsage = LedgerUsage(),
     val todayDate: String = "",
+    /** 按天账本（`yyyy-MM-dd` → 当天用量），只保留最近 [UsageLedger.DAYS_KEEP] 天。 */
+    val days: Map<String, LedgerUsage> = emptyMap(),
     val firstUsedAt: Long = 0L,
     val lastUsedAt: Long = 0L
-)
+) {
+    val totalPromptTokens: Int get() = total.prompt
+    val totalCompletionTokens: Int get() = total.completion
+    val totalRequests: Int get() = total.requests
+    val totalSteps: Int get() = total.steps
+    val todayPromptTokens: Int get() = today.prompt
+    val todayCompletionTokens: Int get() = today.completion
+    val todayRequests: Int get() = today.requests
+}
 
 /**
  * 全局用量总账（stats.json）：**只增不减的历史总账**。
@@ -31,15 +99,26 @@ data class LedgerSnapshot(
  * 口径（用户定死，别改）：
  * - 删会话 / 归档 / 清工作区都**不动**这里；只有真的发生模型请求才往上加。
  * - 本会话的累计另存在 sessions.json 的会话记录里，两套账互不覆盖。
- * - 今日三项跨天自动归零（todayDate 不是今天就把 today* 清零）。
+ * - 按天桶用于「近 7 天 / 近 30 天 / 范围筛选」；只保留最近 [DAYS_KEEP] 天。
  *
- * 落盘用 .tmp 再 rename（跟 SessionStore 一个写法）；坏文件 / 缺字段一律回落 0，绝不抛。
+ * 落盘格式 v2（version=2）；读到 v1 的扁平 10 个键时原样搬进 `total`，
+ * 并先把旧文件复制成 `stats.json.bak`。坏文件 / 缺字段一律回落 0，绝不抛。
  */
 object UsageLedger {
 
     private const val FILE_NAME = "stats.json"
     private const val TAG = "stats"
 
+    /** 按天账本保留天数：7 天 / 30 天 / 全部区间都够用。 */
+    const val DAYS_KEEP = 120
+
+    private const val KEY_VERSION = "version"
+    private const val KEY_TOTAL = "total"
+    private const val KEY_DAYS = "days"
+    private const val KEY_FIRST_USED_AT = "firstUsedAt"
+    private const val KEY_LAST_USED_AT = "lastUsedAt"
+
+    // v1 扁平键：只读迁移用，不再新写
     private const val KEY_TOTAL_PROMPT = "totalPromptTokens"
     private const val KEY_TOTAL_COMPLETION = "totalCompletionTokens"
     private const val KEY_TOTAL_REQUESTS = "totalRequests"
@@ -48,20 +127,12 @@ object UsageLedger {
     private const val KEY_TODAY_COMPLETION = "todayCompletionTokens"
     private const val KEY_TODAY_REQUESTS = "todayRequests"
     private const val KEY_TODAY_DATE = "todayDate"
-    private const val KEY_FIRST_USED_AT = "firstUsedAt"
-    private const val KEY_LAST_USED_AT = "lastUsedAt"
 
     /** 内存里是否已经读过盘；进程重启后由 init 里的 load 置位。 */
     private var loaded = false
 
-    private var totalPromptTokens = 0
-    private var totalCompletionTokens = 0
-    private var totalRequests = 0
-    private var totalSteps = 0
-    private var todayPromptTokens = 0
-    private var todayCompletionTokens = 0
-    private var todayRequests = 0
-    private var todayDate = ""
+    private var total = LedgerUsage()
+    private val days = HashMap<String, LedgerUsage>()
     private var firstUsedAt = 0L
     private var lastUsedAt = 0L
 
@@ -86,41 +157,106 @@ object UsageLedger {
         val file = storeFile(context)
         if (file.exists() && file.length() > 0L) {
             try {
-                val obj = JSONObject(file.readText(Charsets.UTF_8))
-                totalPromptTokens = obj.optInt(KEY_TOTAL_PROMPT, 0)
-                totalCompletionTokens = obj.optInt(KEY_TOTAL_COMPLETION, 0)
-                totalRequests = obj.optInt(KEY_TOTAL_REQUESTS, 0)
-                totalSteps = obj.optInt(KEY_TOTAL_STEPS, 0)
-                todayPromptTokens = obj.optInt(KEY_TODAY_PROMPT, 0)
-                todayCompletionTokens = obj.optInt(KEY_TODAY_COMPLETION, 0)
-                todayRequests = obj.optInt(KEY_TODAY_REQUESTS, 0)
-                todayDate = obj.optString(KEY_TODAY_DATE, "")
-                firstUsedAt = obj.optLong(KEY_FIRST_USED_AT, 0L)
-                lastUsedAt = obj.optLong(KEY_LAST_USED_AT, 0L)
+                val root = JSONObject(file.readText(Charsets.UTF_8))
+                val version = root.optInt(KEY_VERSION, 1)
+                if (version >= 2) {
+                    total = usageFromJson(root.optJSONObject(KEY_TOTAL))
+                    val dayObj = root.optJSONObject(KEY_DAYS)
+                    if (dayObj != null) {
+                        for (key in dayObj.keys()) {
+                            days[key] = usageFromJson(dayObj.optJSONObject(key))
+                        }
+                    }
+                } else {
+                    // v1：先留备份，再原样搬进 total；今日三项按旧日期落到当天桶
+                    backupV1(file)
+                    total = LedgerUsage(
+                        prompt = root.optInt(KEY_TOTAL_PROMPT, 0),
+                        completion = root.optInt(KEY_TOTAL_COMPLETION, 0),
+                        requests = root.optInt(KEY_TOTAL_REQUESTS, 0),
+                        steps = root.optInt(KEY_TOTAL_STEPS, 0)
+                    )
+                    val oldDate = root.optString(KEY_TODAY_DATE, "")
+                    if (oldDate.isNotEmpty()) {
+                        days[oldDate] = LedgerUsage(
+                            prompt = root.optInt(KEY_TODAY_PROMPT, 0),
+                            completion = root.optInt(KEY_TODAY_COMPLETION, 0),
+                            requests = root.optInt(KEY_TODAY_REQUESTS, 0)
+                        )
+                    }
+                }
+                firstUsedAt = root.optLong(KEY_FIRST_USED_AT, 0L)
+                lastUsedAt = root.optLong(KEY_LAST_USED_AT, 0L)
             } catch (e: Exception) {
                 FileLog.log(TAG, "读取总账失败，从 0 开始：" + e)
                 clearMemory()
             }
         }
         loaded = true
-        // 读回来先过一遍跨天：隔天打开 App 时今日就是 0，不等到下一次请求
-        rollDay()
     }
 
-    /** 记一次真实请求：总账累加、今日累加（跨天先归零）、首次/最近使用时间跟着更新。 */
+    /** 记一次成功请求：总账累加、当天桶累加、首次/最近使用时间跟着更新。 */
     @Synchronized
-    fun record(context: Context, promptTokens: Int, completionTokens: Int) {
+    fun record(
+        context: Context,
+        promptTokens: Int,
+        completionTokens: Int,
+        cacheHitTokens: Int,
+        cacheMissTokens: Int,
+        composition: LedgerComposition = LedgerComposition()
+    ) {
         load(context)
-        rollDay()
         val now = System.currentTimeMillis()
-        totalPromptTokens += promptTokens
-        totalCompletionTokens += completionTokens
-        totalRequests += 1
-        todayPromptTokens += promptTokens
-        todayCompletionTokens += completionTokens
-        todayRequests += 1
+        val date = dateText(now)
+        val add = LedgerUsage(
+            prompt = promptTokens,
+            completion = completionTokens,
+            requests = 1,
+            cacheHit = cacheHitTokens,
+            cacheMiss = cacheMissTokens,
+            composition = composition
+        )
+        total = total.merge(add)
+        days[date] = (days[date] ?: LedgerUsage()).merge(add)
+        trimDays()
         if (firstUsedAt <= 0L) firstUsedAt = now
         lastUsedAt = now
+        save(context)
+    }
+
+    /** 记一次回复的时间账：模型/工具/活跃/六段细分 + 工具调用次数。 */
+    @Synchronized
+    fun recordTiming(
+        context: Context,
+        modelMs: Long,
+        toolMs: Long,
+        activeMs: Long,
+        ttftMs: Long,
+        genMs: Long,
+        reasoningMs: Long,
+        textMs: Long,
+        toolArgMs: Long,
+        genTokens: Int,
+        toolCalls: Int
+    ) {
+        load(context)
+        val date = dateText(System.currentTimeMillis())
+        val add = LedgerUsage(
+            modelMs = modelMs,
+            toolMs = toolMs,
+            activeMs = activeMs,
+            ttftMs = ttftMs,
+            genMs = genMs,
+            reasoningMs = reasoningMs,
+            textMs = textMs,
+            toolArgMs = toolArgMs,
+            genTokens = genTokens,
+            toolCalls = toolCalls
+        )
+        total = total.merge(add)
+        days[date] = (days[date] ?: LedgerUsage()).merge(add)
+        trimDays()
+        lastUsedAt = System.currentTimeMillis()
         save(context)
     }
 
@@ -129,47 +265,67 @@ object UsageLedger {
     fun addSteps(context: Context, count: Int) {
         if (count <= 0) return
         load(context)
-        rollDay()
-        totalSteps += count
+        val date = dateText(System.currentTimeMillis())
+        total = total.copy(steps = total.steps + count)
+        days[date] = (days[date] ?: LedgerUsage()).copy(steps = (days[date]?.steps ?: 0) + count)
+        trimDays()
         save(context)
     }
 
     /** 当前值快照；load 之后才有效（ChatViewModel init 里已经读过一次）。 */
     @Synchronized
-    fun snapshot(): LedgerSnapshot = LedgerSnapshot(
-        totalPromptTokens = totalPromptTokens,
-        totalCompletionTokens = totalCompletionTokens,
-        totalRequests = totalRequests,
-        totalSteps = totalSteps,
-        todayPromptTokens = todayPromptTokens,
-        todayCompletionTokens = todayCompletionTokens,
-        todayRequests = todayRequests,
-        todayDate = todayDate,
-        firstUsedAt = firstUsedAt,
-        lastUsedAt = lastUsedAt
-    )
+    fun snapshot(): LedgerSnapshot {
+        val todayKey = dateText(System.currentTimeMillis())
+        return LedgerSnapshot(
+            total = total,
+            today = days[todayKey] ?: LedgerUsage(),
+            todayDate = todayKey,
+            days = HashMap(days),
+            firstUsedAt = firstUsedAt,
+            lastUsedAt = lastUsedAt
+        )
+    }
 
     // ---- 内部 ----
 
-    /** 跨天归零：todayDate 不是今天就把今日三项清零（总账一分不动）。 */
-    private fun rollDay() {
-        val today = dateText(System.currentTimeMillis())
-        if (todayDate == today) return
-        todayDate = today
-        todayPromptTokens = 0
-        todayCompletionTokens = 0
-        todayRequests = 0
+    private fun LedgerUsage.merge(other: LedgerUsage): LedgerUsage = LedgerUsage(
+        prompt = prompt + other.prompt,
+        completion = completion + other.completion,
+        requests = requests + other.requests,
+        steps = steps + other.steps,
+        cacheHit = cacheHit + other.cacheHit,
+        cacheMiss = cacheMiss + other.cacheMiss,
+        modelMs = modelMs + other.modelMs,
+        toolMs = toolMs + other.toolMs,
+        activeMs = activeMs + other.activeMs,
+        ttftMs = ttftMs + other.ttftMs,
+        genMs = genMs + other.genMs,
+        reasoningMs = reasoningMs + other.reasoningMs,
+        textMs = textMs + other.textMs,
+        toolArgMs = toolArgMs + other.toolArgMs,
+        genTokens = genTokens + other.genTokens,
+        toolCalls = toolCalls + other.toolCalls,
+        composition = composition + other.composition
+    )
+
+    private fun trimDays() {
+        if (days.size <= DAYS_KEEP) return
+        val drop = days.keys.sorted().take(days.size - DAYS_KEEP)
+        for (key in drop) days.remove(key)
+    }
+
+    private fun backupV1(file: File) {
+        try {
+            val bak = File(file.parentFile, FILE_NAME + ".bak")
+            if (!bak.exists()) file.copyTo(bak, overwrite = true)
+        } catch (e: Exception) {
+            FileLog.log(TAG, "总账 v1 备份失败（不影响读取）：" + e)
+        }
     }
 
     private fun clearMemory() {
-        totalPromptTokens = 0
-        totalCompletionTokens = 0
-        totalRequests = 0
-        totalSteps = 0
-        todayPromptTokens = 0
-        todayCompletionTokens = 0
-        todayRequests = 0
-        todayDate = ""
+        total = LedgerUsage()
+        days.clear()
         firstUsedAt = 0L
         lastUsedAt = 0L
     }
@@ -178,30 +334,95 @@ object UsageLedger {
     @Synchronized
     private fun save(context: Context) {
         try {
-            val obj = JSONObject()
-            obj.put(KEY_TOTAL_PROMPT, totalPromptTokens)
-            obj.put(KEY_TOTAL_COMPLETION, totalCompletionTokens)
-            obj.put(KEY_TOTAL_REQUESTS, totalRequests)
-            obj.put(KEY_TOTAL_STEPS, totalSteps)
-            obj.put(KEY_TODAY_PROMPT, todayPromptTokens)
-            obj.put(KEY_TODAY_COMPLETION, todayCompletionTokens)
-            obj.put(KEY_TODAY_REQUESTS, todayRequests)
-            obj.put(KEY_TODAY_DATE, todayDate)
-            obj.put(KEY_FIRST_USED_AT, firstUsedAt)
-            obj.put(KEY_LAST_USED_AT, lastUsedAt)
-            val json = obj.toString()
+            val root = JSONObject()
+            root.put(KEY_VERSION, 2)
+            root.put(KEY_TOTAL, usageToJson(total))
+            val dayObj = JSONObject()
+            for ((key, usage) in days) dayObj.put(key, usageToJson(usage))
+            root.put(KEY_DAYS, dayObj)
+            root.put(KEY_FIRST_USED_AT, firstUsedAt)
+            root.put(KEY_LAST_USED_AT, lastUsedAt)
 
             val file = storeFile(context)
             file.parentFile?.mkdirs()
             val temp = File(file.parentFile, FILE_NAME + ".tmp")
-            temp.writeText(json, Charsets.UTF_8)
+            temp.writeText(root.toString(), Charsets.UTF_8)
             if (!temp.renameTo(file)) {
-                // rename 失败（个别文件系统）时退化成直接覆盖，保证内容落地
-                file.writeText(json, Charsets.UTF_8)
+                file.writeText(root.toString(), Charsets.UTF_8)
                 temp.delete()
             }
         } catch (e: Exception) {
             FileLog.log(TAG, "保存总账失败：" + e)
         }
+    }
+
+    private fun usageToJson(usage: LedgerUsage): JSONObject = JSONObject().apply {
+        put("prompt", usage.prompt)
+        put("completion", usage.completion)
+        put("requests", usage.requests)
+        put("steps", usage.steps)
+        put("cacheHit", usage.cacheHit)
+        put("cacheMiss", usage.cacheMiss)
+        put("modelMs", usage.modelMs)
+        put("toolMs", usage.toolMs)
+        put("activeMs", usage.activeMs)
+        put("ttftMs", usage.ttftMs)
+        put("genMs", usage.genMs)
+        put("reasoningMs", usage.reasoningMs)
+        put("textMs", usage.textMs)
+        put("toolArgMs", usage.toolArgMs)
+        put("genTokens", usage.genTokens)
+        put("toolCalls", usage.toolCalls)
+        if (!usage.composition.isEmpty) {
+            put("composition", compositionToJson(usage.composition))
+        }
+    }
+
+    private fun usageFromJson(obj: JSONObject?): LedgerUsage {
+        if (obj == null) return LedgerUsage()
+        return LedgerUsage(
+            prompt = obj.optInt("prompt", 0),
+            completion = obj.optInt("completion", 0),
+            requests = obj.optInt("requests", 0),
+            steps = obj.optInt("steps", 0),
+            cacheHit = obj.optInt("cacheHit", 0),
+            cacheMiss = obj.optInt("cacheMiss", 0),
+            modelMs = obj.optLong("modelMs", 0L),
+            toolMs = obj.optLong("toolMs", 0L),
+            activeMs = obj.optLong("activeMs", 0L),
+            ttftMs = obj.optLong("ttftMs", 0L),
+            genMs = obj.optLong("genMs", 0L),
+            reasoningMs = obj.optLong("reasoningMs", 0L),
+            textMs = obj.optLong("textMs", 0L),
+            toolArgMs = obj.optLong("toolArgMs", 0L),
+            genTokens = obj.optInt("genTokens", 0),
+            toolCalls = obj.optInt("toolCalls", 0),
+            composition = compositionFromJson(obj.optJSONObject("composition"))
+        )
+    }
+
+    private fun compositionToJson(c: LedgerComposition): JSONObject = JSONObject().apply {
+        put("system", c.system)
+        put("skills", c.skills)
+        put("tools", c.tools)
+        put("user", c.user)
+        put("inject", c.inject)
+        put("assistant", c.assistant)
+        put("toolResults", c.toolResults)
+        put("output", c.output)
+    }
+
+    private fun compositionFromJson(obj: JSONObject?): LedgerComposition {
+        if (obj == null) return LedgerComposition()
+        return LedgerComposition(
+            system = obj.optInt("system", 0),
+            skills = obj.optInt("skills", 0),
+            tools = obj.optInt("tools", 0),
+            user = obj.optInt("user", 0),
+            inject = obj.optInt("inject", 0),
+            assistant = obj.optInt("assistant", 0),
+            toolResults = obj.optInt("toolResults", 0),
+            output = obj.optInt("output", 0)
+        )
     }
 }

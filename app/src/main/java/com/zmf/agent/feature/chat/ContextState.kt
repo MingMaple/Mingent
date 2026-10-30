@@ -26,6 +26,8 @@ import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.InheritedUsage
+import com.zmf.agent.core.store.LedgerComposition
+import com.zmf.agent.core.store.SessionComposition
 import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.infra.llm.DeepSeekProvider
 import com.zmf.agent.infra.llm.LlmProvider
@@ -37,6 +39,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 import java.io.File
 
 /** 洞察页趋势只画最近这么多次回复：再多就糊成一团，也看不出变化。 */
@@ -159,6 +162,23 @@ class ContextState(
     /** 本次回复的模型 / 工具耗时（毫秒）：AgentLoop 收尾回调一次，[commitTiming] 后清零。 */
     private var turnModelMillis = 0L
     private var turnToolMillis = 0L
+
+    /**
+     * 本次回复的输出侧账目（首字等待 / 生成 / 三段细分 / 工具调用次数）。
+     *
+     * AgentLoop 在收尾时先回 onTiming、再回 onOutputTiming；[commitTiming] 在这之后，
+     * 所以这里先攒着，落总账时一次写清。
+     */
+    private var turnTtftMillis = 0L
+    private var turnGenMillis = 0L
+    private var turnGenTokens = 0
+    private var turnReasoningMillis = 0L
+    private var turnTextMillis = 0L
+    private var turnToolArgMillis = 0L
+    private var turnToolCalls = 0
+
+    /** 本轮起点（毫秒）：用于算总账的活跃时长（一次回复的墙钟）。 */
+    private var turnStartedAt = 0L
 
     // ---- 上下文摘要（滚动压缩） ----
 
@@ -676,8 +696,35 @@ class ContextState(
         // 本轮输出 tokens 在 writeTurnUsage 之后仍然留着（计数器要到下一次提问才清零），
         // 所以这里能把它和本轮耗时配成一对落进会话记录，供「输出速度」使用
         val lastOutput = turnCompletionTokens
+        val active = if (turnStartedAt > 0L) {
+            (System.currentTimeMillis() - turnStartedAt).coerceAtLeast(0L)
+        } else {
+            0L
+        }
         turnModelMillis = 0
         turnToolMillis = 0
+        // 总账按天：一次回复一次，把六段耗时、活跃时长与工具次数一起记进去
+        UsageLedger.recordTiming(
+            appContext,
+            modelMs = model,
+            toolMs = tool,
+            activeMs = active,
+            ttftMs = turnTtftMillis,
+            genMs = turnGenMillis,
+            reasoningMs = turnReasoningMillis,
+            textMs = turnTextMillis,
+            toolArgMs = turnToolArgMillis,
+            genTokens = turnGenTokens,
+            toolCalls = turnToolCalls
+        )
+        turnTtftMillis = 0L
+        turnGenMillis = 0L
+        turnGenTokens = 0
+        turnReasoningMillis = 0L
+        turnTextMillis = 0L
+        turnToolArgMillis = 0L
+        turnToolCalls = 0
+        turnStartedAt = 0L
         if (model > 0 || tool > 0) {
             val id = currentSessionId()
             writeSessions(sessions().map {
@@ -770,6 +817,14 @@ class ContextState(
         // 时间账同样按回合清零：AgentLoop 收尾时会把本回合的模型/工具耗时回调一次
         turnModelMillis = 0
         turnToolMillis = 0
+        turnTtftMillis = 0L
+        turnGenMillis = 0L
+        turnGenTokens = 0
+        turnReasoningMillis = 0L
+        turnTextMillis = 0L
+        turnToolArgMillis = 0L
+        turnToolCalls = 0
+        turnStartedAt = System.currentTimeMillis()
         // 新的一次提问：本次回复步数归零；累计 token 与轮数保留（它们是整个会话的）
         stats = stats.copy(steps = 0)
         // 发送这一刻先对一次水位：状态行与圆环读的是 contextSnapshot，本轮跑完还会再刷一次
@@ -800,7 +855,15 @@ class ContextState(
      * 会让人以为数字坏了。落盘的时机就是这里：一次回复一次，不会写得太勤。
      */
     fun recordOutputTiming(timing: OutputTiming) {
-        if (timing.ttftCount == 0 && timing.genTokens == 0) return
+        if (timing.ttftCount == 0 && timing.genTokens == 0 && timing.toolCalls == 0) return
+        // 先攒在本轮：commitTiming 落总账时一起写（活跃时长在那里才有终点）
+        turnTtftMillis = timing.ttftMillis
+        turnGenMillis = timing.genMillis
+        turnGenTokens = timing.genTokens
+        turnReasoningMillis = timing.reasoningMillis
+        turnTextMillis = timing.textMillis
+        turnToolArgMillis = timing.toolArgMillis
+        turnToolCalls = timing.toolCalls
         val id = currentSessionId()
         writeSessions(sessions().map {
             if (it.id == id) {
@@ -808,7 +871,10 @@ class ContextState(
                     ttftMillis = it.ttftMillis + timing.ttftMillis,
                     ttftCount = it.ttftCount + timing.ttftCount,
                     genMillis = it.genMillis + timing.genMillis,
-                    genTokens = it.genTokens + timing.genTokens
+                    genTokens = it.genTokens + timing.genTokens,
+                    reasoningMillis = it.reasoningMillis + timing.reasoningMillis,
+                    textMillis = it.textMillis + timing.textMillis,
+                    toolArgMillis = it.toolArgMillis + timing.toolArgMillis
                 )
             } else {
                 it
@@ -864,20 +930,23 @@ class ContextState(
         }
         usage.cacheWriteTokens?.let { turnCacheWriteTokens = (turnCacheWriteTokens ?: 0) + it }
         usage.reasoningTokens?.let { turnReasoningTokens = (turnReasoningTokens ?: 0) + it }
+        // 缓存命中 / 未命中只认服务端真的报过的那次：没报就别记，否则界面上会冒出一个
+        // 看着像「缓存一次都没命中」的 0%，其实只是这家服务商不给这个字段
+        val hitTokens = if (usage.cacheReadReported) usage.cacheReadTokens else 0
+        val missTokens = if (usage.cacheReadReported) usage.uncachedInputTokens else 0
+        // 计费构成：这次请求视图的估算占比 × 真实 prompt tokens；输出直接取 completion
+        val scaled = scaledComposition(promptTokens, completionTokens)
         // 本会话计数写回当前会话那条记录（切会话不丢、回来能接上），随后落盘
         val id = currentSessionId()
         writeSessions(sessions().map {
             if (it.id == id) {
-                // 缓存命中 / 未命中只认服务端真的报过的那次：没报就别记，否则界面上会冒出一个
-                // 看着像「缓存一次都没命中」的 0%，其实只是这家服务商不给这个字段
-                val hit = if (usage.cacheReadReported) usage.cacheReadTokens else 0
-                val miss = if (usage.cacheReadReported) usage.uncachedInputTokens else 0
                 it.copy(
                     promptTokens = it.promptTokens + promptTokens,
                     completionTokens = it.completionTokens + completionTokens,
                     requests = it.requests + 1,
-                    cacheHitTokens = it.cacheHitTokens + hit,
-                    cacheMissTokens = it.cacheMissTokens + miss
+                    cacheHitTokens = it.cacheHitTokens + hitTokens,
+                    cacheMissTokens = it.cacheMissTokens + missTokens,
+                    composition = it.composition + scaled
                 )
             } else {
                 it
@@ -885,7 +954,23 @@ class ContextState(
         })
         persistCurrent()
         // 全局总账：只增不减，跟删会话 / 归档无关，记在同一次 usage 里
-        UsageLedger.record(appContext, promptTokens, completionTokens)
+        UsageLedger.record(
+            context = appContext,
+            promptTokens = promptTokens,
+            completionTokens = completionTokens,
+            cacheHitTokens = hitTokens,
+            cacheMissTokens = missTokens,
+            composition = LedgerComposition(
+                system = scaled.system,
+                skills = scaled.skills,
+                tools = scaled.tools,
+                user = scaled.user,
+                inject = scaled.inject,
+                assistant = scaled.assistant,
+                toolResults = scaled.toolResults,
+                output = scaled.output
+            )
+        )
         val ledger = UsageLedger.snapshot()
         // 统计页：最近一次取本次值，本会话累计取会话字段，全局取总账快照
         stats = stats.copy(
@@ -907,6 +992,33 @@ class ContextState(
         refreshContext()
         // 会话累计输出 tokens 变了：时间账面板读的是 sessionTiming，这里顺手同步
         syncSessionTiming()
+    }
+
+    /**
+     * 把「本次请求视图的估算构成」折算成计费构成。
+     *
+     * 服务端给的 prompt tokens 是真实总额，这里按七段估算占比分摊；输出直接取 completion。
+     * 先重算一次 breakdown：一次回复里工具结果会变，拿旧快照分摊会让各段比例失真。
+     */
+    private fun scaledComposition(promptTokens: Int, completionTokens: Int): SessionComposition {
+        refreshContextBreakdown()
+        val b = contextBreakdown
+        val total = b.totalTokens
+        if (total <= 0) return SessionComposition(output = completionTokens)
+        fun part(value: Int): Int =
+            (value.toDouble() * promptTokens / total).roundToInt().coerceAtLeast(0)
+        return SessionComposition(
+            system = part(b.systemTokens),
+            // Skill 段的单独拆分在 PromptBuilder 分段接口里补（当前先记 0，后续批次启用）
+            skills = 0,
+            tools = part(b.toolTokens),
+            user = part(b.userTokens),
+            // 摘要属于「注入内容」
+            inject = part(b.summaryTokens),
+            assistant = part(b.assistantTokens),
+            toolResults = part(b.toolResultTokens),
+            output = completionTokens
+        )
     }
 
     /** 本轮（从 turnStartIndex 起）有没有工具结果：用它判断模型是不是真的动手了。 */
