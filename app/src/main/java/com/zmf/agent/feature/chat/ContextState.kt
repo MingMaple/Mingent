@@ -1069,7 +1069,25 @@ class ContextState(
     val statusActiveMillis: Long
         get() {
             if (messages.isEmpty()) return 0L
-            return (messages.last().createdAt - messages.first().createdAt).coerceAtLeast(0L)
+            // 分叉会话的首条消息是父会话克隆来的：从分叉边界后第一条算起，才只算这条分支真正用掉的时间
+            val inherited = sessions().firstOrNull { it.id == currentSessionId() }
+                ?.inheritedUsage?.messages ?: 0
+            if (inherited >= messages.size) return 0L
+            val first = messages[inherited].createdAt
+            return (messages.last().createdAt - first).coerceAtLeast(0L)
+        }
+
+    /**
+     * 洞察页的轮次：只数分叉边界之后、用户亲手输入的 user 消息。
+     *
+     * 比 [statusRounds] 多两道过滤：分叉克隆的历史不算、App 代发（programmatic）不算，
+     * 与 DSH 的 humanInputs 口径一致。
+     */
+    val insightRounds: Int
+        get() {
+            val inherited = sessions().firstOrNull { it.id == currentSessionId() }
+                ?.inheritedUsage?.messages ?: 0
+            return messages.drop(inherited).count { it.role == "user" && !it.programmatic }
         }
 }
 
