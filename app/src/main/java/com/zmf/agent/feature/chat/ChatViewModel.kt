@@ -47,7 +47,6 @@ import com.zmf.agent.core.store.UploadStore
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.core.AppForeground
-import com.zmf.agent.infra.backup.BackupArchive
 import com.zmf.agent.infra.backup.BackupManifest
 import com.zmf.agent.infra.backup.BackupOptions
 import com.zmf.agent.infra.backup.ImportReport
@@ -279,6 +278,9 @@ class ChatViewModel(context: Context) : AgentUi {
 
     /** tool_call_id -> 工具是否成功；只用于界面给工具卡上色，不参与请求。 */
     val toolOutcomes: Map<String, Boolean> get() = toolCalls.outcomes
+
+    /** 备份 / 恢复的状态与动作，实现与依赖装配见 [BackupController]；下面成员保持原有调用口。 */
+    private val backup = BackupController(appContext = appContext)
 
     /** 会话与工作区的状态与动作都在这里；下面四个转发口就是原来的四个属性。 */
     private val sessionStore: SessionController = SessionController(
@@ -962,153 +964,41 @@ class ChatViewModel(context: Context) : AgentUi {
         FileLog.log("todo", "上一轮清单已全部完成，新一轮提问时清空")
     }
 
-    // ---- 备份 / 恢复 ----
+    // ---- 备份 / 恢复（状态与实现见 BackupController.kt，这里只留对外的调用口）----
 
     /** 备份正在跑：导出/导入按钮一起禁用。 */
-    var backupBusy by mutableStateOf(false)
-        private set
+    val backupBusy: Boolean get() = backup.backupBusy
 
     /** 备份进度文案（「导出中 37%」）；空闲为 null。 */
-    var backupStatus by mutableStateOf<String?>(null)
-        private set
+    val backupStatus: String? get() = backup.backupStatus
 
-    /**
-     * 上一次导出 / 导入的结果，非空时在**数据页**里显示一行。
-     *
-     * 为什么不再挂到主页那条状态行上：导出是从数据页点起来的，进度也在那儿看着；
-     * 结果却跑到主页去，人还留在数据页上等于什么都没看到。
-     */
-    var backupNotice by mutableStateOf<String?>(null)
-        private set
+    /** 上一次导出 / 导入的结果，非空时在数据页里显示一行。 */
+    val backupNotice: String? get() = backup.backupNotice
 
     /** 导入前的清单摘要；非空时界面弹确认框。 */
-    var pendingManifest by mutableStateOf<BackupManifest?>(null)
-        private set
+    val pendingManifest: BackupManifest? get() = backup.pendingManifest
 
     /** 导入结果；非空时界面弹报告。 */
-    var importReport by mutableStateOf<ImportReport?>(null)
-        private set
+    val importReport: ImportReport? get() = backup.importReport
 
-    /**
-     * 刚导入完、还没重启。
-     *
-     * 磁盘上的数据已经是备份里的那一份，但内存里还是旧列表：这时任何一次落盘
-     * 都会把刚导入的数据盖掉。所以从导入成功起：发送直接拒绝、落盘全部跳过，
-     * 等用户重启进程（内存从磁盘重新读）才放开。
-     */
-    var needsRestart by mutableStateOf(false)
-        private set
+    /** 刚导入完、还没重启：此时发送直接拒绝、落盘全部跳过。 */
+    val needsRestart: Boolean get() = backup.needsRestart
 
     /** 导出到系统里选的 zip 目标。 */
-    fun exportData(uri: Uri, options: BackupOptions, scope: CoroutineScope) {
-        if (backupBusy) return
-        backupBusy = true
-        backupStatus = "准备导出…"
-        backupNotice = null
-        scope.launch {
-            val result = BackupArchive.export(appContext, uri, options) { percent, stage ->
-                backupStatus = stage + " " + percent + "%"
-            }
-            backupBusy = false
-            backupStatus = null
-            result.fold(
-                onSuccess = { outcome ->
-                    val size = "%.1f".format(outcome.bytes / 1024.0 / 1024.0) + " MB"
-                    backupNotice = buildString {
-                        append("导出成功：")
-                        append(displayNameOf(uri) ?: "备份文件")
-                        append("（").append(size).append("）")
-                        // 终端环境被跳过时把原因说出来，别让人以为整包都齐了
-                        outcome.note?.let { append("\n").append(it) }
-                    }
-                    FileLog.log(
-                        "backup",
-                        "导出完成：" + outcome.bytes + " 字节" + (outcome.note?.let { "，$it" } ?: "")
-                    )
-                },
-                onFailure = { e ->
-                    backupNotice = "导出失败：" + (e.message ?: e.javaClass.simpleName) +
-                        "\n半截文件已删除，可以重新导出一次。"
-                    FileLog.log("backup", "导出失败：" + e)
-                }
-            )
-        }
-    }
-
-    /** 系统文件选择器里那个目标文件叫什么（数据页那句「导出到 xxx」用）。 */
-    private fun displayNameOf(uri: Uri): String? = try {
-        appContext.contentResolver.query(
-            uri,
-            arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
-            null,
-            null,
-            null
-        )?.use { cursor ->
-            val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
-        }
-    } catch (e: Exception) {
-        null
-    }
+    fun exportData(uri: Uri, options: BackupOptions, scope: CoroutineScope) =
+        backup.exportData(uri, options, scope)
 
     /** 只读备份清单：先给用户看清楚要导入什么，再决定。 */
-    fun loadBackupManifest(uri: Uri, scope: CoroutineScope) {
-        if (backupBusy) return
-        backupBusy = true
-        backupStatus = "读取备份信息…"
-        scope.launch {
-            val result = BackupArchive.peekManifest(appContext, uri)
-            backupBusy = false
-            backupStatus = null
-            result.fold(
-                onSuccess = { manifest -> pendingManifest = manifest },
-                onFailure = { e ->
-                    backupNotice = "无法识别这个备份：" + (e.message ?: e.javaClass.simpleName)
-                }
-            )
-        }
-    }
+    fun loadBackupManifest(uri: Uri, scope: CoroutineScope) = backup.loadBackupManifest(uri, scope)
 
     /** 放弃已解析但还没确认导入的备份：只清待确认状态，不动磁盘数据。 */
-    fun cancelImport() {
-        pendingManifest = null
-    }
+    fun cancelImport() = backup.cancelImport()
 
     /** 关掉导入结果报告；报告本身是界面状态，关掉不影响已导入的数据。 */
-    fun dismissImportReport() {
-        importReport = null
-    }
+    fun dismissImportReport() = backup.dismissImportReport()
 
-    /** 开始导入备份文件；[backupBusy] 期间重复调用会被忽略。 */
-    fun importData(uri: Uri, scope: CoroutineScope) {
-        if (backupBusy) return
-        pendingManifest = null
-        backupBusy = true
-        backupStatus = "准备导入…"
-        scope.launch {
-            val result = BackupArchive.import(appContext, uri) { percent, stage ->
-                backupStatus = stage + " " + percent + "%"
-            }
-            backupBusy = false
-            backupStatus = null
-            result.fold(
-                onSuccess = { report ->
-                    importReport = report
-                    needsRestart = true
-                    FileLog.log(
-                        "backup",
-                        "导入完成：成功 " + report.restored.size + " 项、跳过 " + report.skipped.size +
-                            " 项、失败 " + report.failed.size + " 项"
-                    )
-                },
-                onFailure = { e ->
-                    // 导入失败也落在数据页那一行（报告对话框之外还能看到上一句）
-                    backupNotice = "导入失败：" + (e.message ?: e.javaClass.simpleName)
-                    FileLog.log("backup", "导入失败：" + e)
-                }
-            )
-        }
-    }
+    /** 开始导入备份文件。 */
+    fun importData(uri: Uri, scope: CoroutineScope) = backup.importData(uri, scope)
 
     // ---- 发送与流式回合（状态与实现见 SendController.kt，这里只留对外的调用口）----
 
