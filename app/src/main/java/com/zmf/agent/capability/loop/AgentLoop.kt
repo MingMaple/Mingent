@@ -592,17 +592,6 @@ class AgentLoop(
         val cacheTools = specs.joinToString("|") { it.name + ":" + it.description.length + ":" + it.parametersJson.length }
         val fingerprint = cacheSystem.length.toString() + "/" + shortHash(cacheSystem) +
             " tools=" + specs.size + "/" + shortHash(cacheTools)
-         // 一次性诊断：把本轮请求「最后一条消息」的尾部记下来，直接确认状态块到底进没进请求。
-        // 只在「线上请求落盘」打开时才记：这是排查用的，平时每轮打一行只会把日志淹掉。
-        if (com.zmf.agent.infra.llm.WireDump.dir != null) {
-            val lastRequest = request.lastOrNull()
-            FileLog.log(
-                "request",
-                "请求末尾：role=" + (lastRequest?.role ?: "-") +
-                    " 含状态块=" + request.count { it.content.contains(PromptBuilder.SNAPSHOT_MARKER) } +
-                    " 尾部=[" + (lastRequest?.content?.takeLast(90) ?: "") + "]"
-            )
-        }
         if (fingerprint != lastCacheFingerprint) {
             FileLog.log(
                 "cache",

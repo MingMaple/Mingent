@@ -1,6 +1,5 @@
 package com.zmf.agent.feature.chat
 import com.zmf.agent.core.model.BusySendMode
-import com.zmf.agent.infra.llm.WireDump
 import com.zmf.agent.core.llm.ApiDefaults
 
 import android.content.Context
@@ -152,17 +151,6 @@ class ChatViewModel(context: Context) : AgentUi {
 
     /** Agent 循环：换 Key / 端点 / 模型后由 [LlmConfigController] 重建。 */
     private val loop: AgentLoop get() = llm.loop
-
-    init {
-        // 调试用线上请求落盘：pref `wire_dump`=true 时，每条请求 JSON 存到 appdata/wire/（只留最近 12 份）。
-        // 排查「为什么没命中前缀缓存」时打开它，离线 diff 两条请求即可定位第一处差异。
-        val prefs = appContext.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
-        WireDump.dir = if (prefs.getBoolean("wire_dump", false)) {
-            java.io.File(com.zmf.agent.core.AppPaths.dataDir(appContext), "wire")
-        } else {
-            null
-        }
-    }
 
     /** 上下文快照（估算 tokens / 水位 / 覆盖条数）；由 [refreshContext] 算，界面只读。 */
     val contextSnapshot: ContextSnapshot get() = context.contextSnapshot

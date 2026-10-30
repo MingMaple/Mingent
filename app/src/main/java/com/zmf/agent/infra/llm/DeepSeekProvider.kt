@@ -51,7 +51,6 @@ class DeepSeekProvider(
 
         // 地址本身不合法（少了 https:// 之类）时 OkHttp 会在 build 阶段抛 IllegalArgumentException，
         // 这一句提前收住，用户看到的是「地址无效」而不是一条底层异常
-        dumpWireIfEnabled(request)
         val httpRequest = try {
             Request.Builder()
                 .url(base + "/chat/completions")
@@ -193,28 +192,6 @@ class DeepSeekProvider(
             emit(LlmEvent.Failed(-1, e.message ?: e.javaClass.simpleName))
         }
     }.flowOn(Dispatchers.IO)
-
-    /**
-     * 线上请求落盘（默认关，pref = `wire_dump`）。
-     *
-     * 为什么需要：前缀缓存只在「两个请求从第 0 个 token 起逐字节相同」时才命中；
-     * 光看日志里的命中百分比，永远说不清是「我们这边哪里变了」还是「提供方侧的行为」。
-     * 把真实发出的 JSON 存下来，离线 diff 两个连续请求，就能一眼看到第一处差异在哪一行。
-     * 只保留最近 [WIRE_KEEP] 份，避免占空间。
-     */
-    private fun dumpWireIfEnabled(request: ChatRequest) {
-        val dir = WireDump.dir ?: return
-        try {
-            if (!dir.exists()) dir.mkdirs()
-            val stamp = System.currentTimeMillis()
-            val file = java.io.File(dir, stamp.toString() + ".json")
-            file.writeText(buildRequestJson(request).toString())
-            val all = dir.listFiles()?.sortedBy { it.name }.orEmpty()
-            for (i in 0 until (all.size - 12).coerceAtLeast(0)) all[i].delete()
-        } catch (e: Exception) {
-            com.zmf.agent.core.log.FileLog.log("wire", "落盘失败：" + e.message)
-        }
-    }
 
     private fun buildRequestJson(request: ChatRequest): JSONObject {
         val root = JSONObject()
