@@ -1247,31 +1247,12 @@ fun ChatScreen(
                 }
             }
 
-        // 子任务面板：透明遮罩铺满整屏先吃掉「点外部」的点击，卡片浮在它上面。
-        // 只读 SubAgentRegistry 的快照，不碰 ViewModel 的任何状态。
-        if (subAgentPanelOpen) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { subAgentPanelOpen = false }
-            )
-            SubAgentPanel(
-                entries = subAgentEntries,
-                onOpen = { id ->
-                    subAgentPanelOpen = false
-                    subAgentDetailId = id
-                    page = AppPage.SUBAGENT
-                },
-                // 清完不用手动刷新：clearFinished 会 +1 版本号，上面的订阅自己把新快照取回来
-                onClearFinished = { SubAgentRegistry.clearFinished() },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = with(LocalDensity.current) { topBarHeightPx.toDp() }, end = 12.dp)
-            )
-        }
+        // 子任务面板（全屏页之下的一层浮层，层序与拆分前一致）
+        ChatSubAgentPanel(
+            ui = ui,
+            viewModel = viewModel,
+            subAgentEntries = subAgentEntries
+        )
 
         // 设置 / 工作区 / 会话列表与设置下的所有页面都是独立全屏页，每页各一层 AnimatedVisibility：
         // 下层页原地留着，中间不会闪出一帧主页；页面自身不透明，所以只做横向滑动。
@@ -1713,72 +1694,15 @@ fun ChatScreen(
             )
         }
 
-            // 「本轮用量」伴随面板：贴着被点的用量按钮弹出，点面板以外任何地方关闭。
-            // 不用弹窗（Dialog）：那会把视线从「这条回复花了多少」拉到屏幕中央，也不跟按钮走。
-            turnUsage?.let { target ->
-                SaltPopover(
-                    anchor = target.anchor,
-                    // 宽度取「屏宽减两侧留白」的量级：用量面板要装下「提供方 / 模型」这种长值，
-                    // 太窄会贴着气泡右缘被看成一截
-                    widthDp = 300.dp,
-                    onDismiss = { turnUsage = null }
-                ) {
-                    TurnUsagePanel(usage = target.usage)
-                }
-            }
-
-            // 长按已发送图片：只有「存这一张」和「回滚到这条提问」两项。
-            // 和上面那套文字菜单分开，是因为图片没有可复制的正文；锚点是按住的那一张的坐标。
-            AnimatedVisibility(
-                visible = imageMenuVisible,
-                enter = fadeIn(tween(140)),
-                exit = fadeOut(tween(140)),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                imageMenuTarget?.let { target ->
-                    val imageActions = listOf(
-                        MenuAction("保存图片") {
-                            imageMenuVisible = false
-                            saveImageFromChat(context, scope, imageRoot, target.relPath)
-                        },
-                        MenuAction("回滚到此处") {
-                            rollbackUserIndex = target.userIndex
-                            imageMenuVisible = false
-                        }
-                    )
-                    MessageContextMenu(
-                        anchor = target.anchor,
-                        actions = imageActions,
-                        onDismiss = { imageMenuVisible = false }
-                    )
-                }
-            }
-
-            // 选择文本整页：从下方弹出，可下滑关闭
-            AnimatedVisibility(
-                visible = selectionVisible,
-                enter = fadeIn(Motion.fadeIn()) + slideInVertically(Motion.spring()) { it / 4 },
-                // 退场由 TextSelectionOverlay 自己播完再回调，这里不能再叠一层淡出
-                exit = ExitTransition.None
-            ) {
-                selectionTarget?.let { target ->
-                    TextSelectionOverlay(
-                        title = target.title,
-                        text = target.text,
-                        reasoning = target.reasoning,
-                        onDismiss = { selectionVisible = false }
-                    )
-                }
-            }
-            // 图片查看器压在所有页面之上：整条消息的图片一起传进去，详情里才能按缩略图顺序左右切
-            viewer?.let { target ->
-                ImageViewer(
-                    paths = target.paths,
-                    startIndex = target.startIndex,
-                    root = imageRoot,
-                    onDismiss = { viewer = null }
-                )
-            }
+        // 压在页面层之上的浮层：本轮用量 / 图片长按菜单 / 选择文本 / 图片查看器
+        ChatOverlays(
+            viewModel = viewModel,
+            ui = ui,
+            context = context,
+            scope = scope,
+            imageRoot = imageRoot,
+            subAgentEntries = subAgentEntries
+        )
             }
             }
         }
