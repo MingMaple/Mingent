@@ -1,4 +1,4 @@
-package com.zmf.agent.feature.chat
+package com.zmf.agent.uikit.gesture
 
 import androidx.compose.foundation.ScrollState
 import androidx.compose.ui.Modifier

@@ -1,10 +1,11 @@
-package com.zmf.agent.feature.settings
+package com.zmf.agent.core.prefs
 
 import android.content.Context
 import com.zmf.agent.core.model.BusySendMode
 
 /**
- * 通用设置里两个新开关的落盘。
+ * 通用设置里两个新开关的落盘（2026-10-30 从 feature/settings 上移 core：
+ * 发送流程的繁忙策略与设置页读的是同一份，属于数据容器，不是页面私有）。
  *
  * 和 ThemeStore / UiScaleStore 共用 "app_prefs" 这一个文件：备份导出的是整个
  * app_prefs.xml，多开一个文件反而要在备份逻辑里多登记一处。

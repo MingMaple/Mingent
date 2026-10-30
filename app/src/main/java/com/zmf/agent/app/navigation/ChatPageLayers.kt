@@ -1,4 +1,4 @@
-package com.zmf.agent.feature.chat
+package com.zmf.agent.app.navigation
 import com.zmf.agent.uikit.components.FoldToggle
 import com.zmf.agent.feature.terminal.TerminalActivity
 import com.zmf.agent.core.llm.ApiDefaults
@@ -164,7 +164,6 @@ import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.feature.float.FloatingBallService
 import com.zmf.agent.capability.tools.displayName
-import com.zmf.agent.feature.float.ChatBridge
 import com.zmf.agent.feature.settings.AboutPage
 import com.zmf.agent.feature.settings.CreateWorkspaceDialog
 import com.zmf.agent.feature.settings.LogsPage
@@ -208,6 +207,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import com.zmf.agent.feature.chat.BrowserPage
+import com.zmf.agent.feature.chat.WorkSpacePage
+import com.zmf.agent.feature.chat.AppPage
+import com.zmf.agent.feature.chat.ChatUiState
+import com.zmf.agent.feature.chat.ChatViewModel
+import com.zmf.agent.feature.chat.PermissionTierPage
+import com.zmf.agent.feature.chat.PlanPage
+import com.zmf.agent.feature.chat.SessionListPage
+import com.zmf.agent.feature.chat.SubAgentPage
 
 /**
  * 聊天页之上的二十层全屏页面：设置首页 / 数据 / 通用设置 / 模型 / 权限 / 包管理 / 日志 /

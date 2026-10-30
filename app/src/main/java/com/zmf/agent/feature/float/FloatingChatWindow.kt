@@ -1,5 +1,4 @@
 package com.zmf.agent.feature.float
-import com.zmf.agent.feature.chat.MarkdownText
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
@@ -68,6 +67,7 @@ import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.uikit.components.FoldToggle
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.common.saltCursorBrush
+import com.zmf.agent.uikit.markdown.MarkdownText
 
 /** 小窗只读展示最近多少条消息（老消息不铺进 LazyColumn，省内存也省布局）。 */
 private const val MAX_SHOWN = 80

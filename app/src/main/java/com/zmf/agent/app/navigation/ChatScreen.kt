@@ -1,4 +1,4 @@
-package com.zmf.agent.feature.chat
+package com.zmf.agent.app.navigation
 import com.zmf.agent.uikit.components.FoldToggle
 import com.zmf.agent.feature.terminal.TerminalActivity
 import com.zmf.agent.core.llm.ApiDefaults
@@ -164,7 +164,6 @@ import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.feature.float.FloatingBallService
 import com.zmf.agent.capability.tools.displayName
-import com.zmf.agent.feature.float.ChatBridge
 import com.zmf.agent.feature.settings.AboutPage
 import com.zmf.agent.feature.settings.CreateWorkspaceDialog
 import com.zmf.agent.feature.settings.LogsPage
@@ -208,6 +207,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import com.zmf.agent.feature.chat.ChatAppEffects
+import com.zmf.agent.feature.chat.ChatBackHandlers
+import com.zmf.agent.feature.chat.buildChatItems
+import com.zmf.agent.feature.chat.pickerInitialDir
+import com.zmf.agent.feature.chat.rememberPickerDir
+import com.zmf.agent.feature.chat.AppPage
+import com.zmf.agent.feature.chat.ChatUiState
+import com.zmf.agent.feature.chat.ChatViewModel
 
 
 /**

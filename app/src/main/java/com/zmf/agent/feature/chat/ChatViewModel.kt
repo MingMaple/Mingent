@@ -37,10 +37,8 @@ import com.zmf.agent.core.store.Todo
 import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.capability.subagent.SubAgentDeps
 import com.zmf.agent.capability.subagent.SubAgentRunner
-import com.zmf.agent.core.store.UploadStore
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
-import com.zmf.agent.core.AppForeground
 import com.zmf.agent.infra.backup.BackupManifest
 import com.zmf.agent.infra.backup.BackupOptions
 import com.zmf.agent.infra.backup.ImportReport
@@ -49,8 +47,6 @@ import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.core.model.ToolCall
-import com.zmf.agent.core.notify.Notifier
-import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
 import com.zmf.agent.capability.tools.SandboxRegression
@@ -62,7 +58,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import java.io.File

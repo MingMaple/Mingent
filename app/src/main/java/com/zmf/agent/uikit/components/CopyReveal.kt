@@ -1,4 +1,4 @@
-package com.zmf.agent.feature.chat
+package com.zmf.agent.uikit.components
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable

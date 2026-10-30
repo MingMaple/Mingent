@@ -1,4 +1,4 @@
-package com.zmf.agent.feature.chat
+package com.zmf.agent.uikit.markdown
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -54,6 +54,10 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.common.BoundedScrollColumn
+import com.zmf.agent.uikit.components.CopyRevealHost
+import com.zmf.agent.uikit.components.claimCopyOnGesture
+import com.zmf.agent.uikit.components.rememberCopyBlockKey
+import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.delay
 

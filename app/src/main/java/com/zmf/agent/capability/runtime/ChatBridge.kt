@@ -1,11 +1,10 @@
-package com.zmf.agent.feature.float
+package com.zmf.agent.capability.runtime
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
-import com.zmf.agent.feature.chat.ChatViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -15,7 +14,9 @@ import kotlinx.coroutines.launch
  * 悬浮球小窗 ↔ 聊天状态的数据桥。
  *
  * 小窗 Service 和主 App 是同一个进程，所以不走 AIDL、不走 Binder：
- * 抽屉（或 ChatScreen）把 [ChatViewModel] 的引用塞进来，小窗直接读它的 Compose 状态。
+ * 界面侧把 [ChatPort] 的实现塞进来，小窗直接读它的 Compose 状态。
+ * 桥本身只认窄口、不认 ChatViewModel（2026-10-30 从 feature/float 上移 capability/runtime，
+ * 顺带把「小窗和定时任务都复用聊天」这条 feature→feature 依赖断掉）。
  * Service 注册时机由 App 侧决定（本对象只管存取，写成可空 var，注销时赋 null 即可）。
  *
  * 线程：Service 和 App 的主线程是同一个，读状态都在主线程，不需要额外同步；
@@ -23,9 +24,9 @@ import kotlinx.coroutines.launch
  */
 object ChatBridge {
 
-    /** 真正的引用；对外通过 [viewModel] 暴露（写的时候顺带 bump 快照版本）。 */
+    /** 真正的引用；对外通过 [port] 暴露（写的时候顺带 bump 快照版本）。 */
     @Volatile
-    private var bound: ChatViewModel? = null
+    private var bound: ChatPort? = null
 
     /**
      * 绑定版本号：绑上来 / 换绑 / 注销时 +1。
@@ -35,17 +36,17 @@ object ChatBridge {
     private var bindVersion by mutableStateOf(0)
 
     /**
-     * 小窗发消息用的作用域：ChatViewModel.send(text, scope) 的签名要一个 scope，
-     * 它自己并不持有（主界面那边是 rememberCoroutineScope 传进去的）。
+     * 小窗发消息用的作用域：ChatPort.send 的签名要一个 scope，
+     * 实现方自己并不持有（主界面那边是 rememberCoroutineScope 传进去的）。
      * 这里用 Main.immediate：状态写入和流式回调本来就要在主线程。
      */
     private val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /**
-     * App 侧注册位：把 ChatViewModel 赋进来即可；注销时赋 null。
-     * 类型必须是可写的 ChatViewModel?，注册方会拿它做 === 判重。
+     * App 侧注册位：把实现赋进来即可；注销时赋 null。
+     * 注册方会拿它做 === 判重，所以类型是可写的 ChatPort?。
      */
-    var viewModel: ChatViewModel?
+    var port: ChatPort?
         get() = bound
         set(value) {
             bound = value
@@ -54,14 +55,14 @@ object ChatBridge {
         }
 
     /**
-     * 当前会话的原始消息列表（直接返回 SnapshotStateList，不 copy）：
+     * 当前会话的原始消息列表（实现方直接返回 SnapshotStateList，不 copy）：
      * 组合里遍历它就会自动订阅，新消息进来小窗自己重组。
      */
-    fun messages(): List<ChatMessage> = current()?.messages ?: emptyList()
+    fun messages(): List<ChatMessage> = current()?.messages() ?: emptyList()
 
     /**
      * 小窗发送一条消息。
-     * 流式中（isStreaming）时 ChatViewModel.send 内部会直接返回，不会打断正在生成的回复；
+     * 流式中（isStreaming）时实现方内部会直接返回，不会打断正在生成的回复；
      * 这里只做空串过滤与异常兜底，免得小窗把服务搞崩。
      */
     fun send(text: String) {
@@ -72,30 +73,30 @@ object ChatBridge {
             .onFailure { FileLog.log("float", "小窗发送失败：" + it) }
     }
 
-    /** 会话名：ChatViewModel.currentTitle() 已处理过「没标题 = 新会话」，取不到就兜底成「会话」。 */
+    /** 会话名：实现方已处理过「没标题 = 新会话」，取不到就兜底成「会话」。 */
     fun title(): String {
         val target = current() ?: return "会话"
-        return runCatching { target.currentTitle() }.getOrDefault("会话").ifBlank { "会话" }
+        return runCatching { target.title() }.getOrDefault("会话").ifBlank { "会话" }
     }
 
     /**
      * 后台（定时任务）改过会话文件之后通知界面重读一次（2026-10-25）。
      *
      * 不加这个的话，后台追加的会话要等用户杀掉进程重进才看得见——界面的 sessionList 是内存快照。
-     * 切到主线程执行：reloadSessionsFromDisk 会写 Compose 状态。
+     * 切到主线程执行：reloadSessions 会写 Compose 状态。
      */
     fun notifySessionsChanged() {
         if (bound == null) return
         bridgeScope.launch {
             val target = bound ?: return@launch
-            runCatching { target.reloadSessionsFromDisk() }
+            runCatching { target.reloadSessions() }
                 .onFailure { FileLog.log("float", "后台刷新会话失败：" + it) }
         }
     }
 
     /** 读一次快照版本 + 拿引用：绑定/换绑能触发重组。 */
     @Suppress("UNUSED_EXPRESSION")
-    private fun current(): ChatViewModel? {
+    private fun current(): ChatPort? {
         // 这一行是 Compose 快照读，不要删
         bindVersion
         return bound

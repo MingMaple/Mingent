@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 
 /** 条目栏里的一条：[key] 是稳定身份（选中 / 关闭都按它找），[label] 是显示名，[muted] 表示已消费。 */
 data class TabStripItem(

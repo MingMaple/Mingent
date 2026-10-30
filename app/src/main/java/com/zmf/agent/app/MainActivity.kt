@@ -19,7 +19,7 @@ import com.zmf.agent.core.AppForeground
 import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.feature.schedule.ScheduleRunner
-import com.zmf.agent.feature.chat.ChatScreen
+import com.zmf.agent.app.navigation.ChatScreen
 import com.zmf.agent.uikit.theme.AgentTheme
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.ThemeMode

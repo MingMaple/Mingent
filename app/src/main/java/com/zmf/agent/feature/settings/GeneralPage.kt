@@ -46,6 +46,7 @@ import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiScaleStore
 import kotlin.math.abs
+import com.zmf.agent.core.prefs.GeneralPrefs
 
 /**
  * 「通用设置」页：权限、字号、工作代码视图、繁忙时发送行为、定时任务。

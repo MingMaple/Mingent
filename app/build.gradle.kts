@@ -198,31 +198,10 @@ val checkArchitecture by tasks.registering {
 
         // 编号: 层 / 来源包前缀 / 被依赖包前缀 / 原因
         // from 前缀不可省：feature 层如果只按「层」放行，等于整个 feature 之间都放开了
+        // 2026-10-30 清零：导航壳与小窗/定时投递的跨 feature 依赖改由 app/navigation 装配，
+        // 共享件上移 uikit、跨 feature 窄口下沉 capability，此后不再新增条目。
         data class Wl(val layer: String, val fromPrefix: String, val toPrefix: String, val why: String)
-        val whiteList = listOf(
-            // ChatScreen 现在既是聊天页又是全 App 导航壳：它 import 了各设置页、
-            // 启动终端 Activity 与小窗 Service。R6 把页面装配抽到 app 层导航后，这条必须删掉。
-            // 注意 fromPrefix 不带尾点：pkg 可能正好等于它（层根/功能根包），
-            // 匹配时用「等于 或 前缀点」两种形态，否则会像层判定那样漏掉整包。
-            Wl(
-                "feature",
-                "com.zmf.agent.feature.float",
-                "com.zmf.agent.feature.chat.",
-                "R6: 小窗复用聊天的 ChatViewModel 与 MarkdownText，需抽会话门面后才能解"
-            ),
-            Wl(
-                "feature",
-                "com.zmf.agent.feature.schedule",
-                "com.zmf.agent.feature.float.",
-                "R6: 定时任务通过 ChatBridge 把消息投进会话，需抽投递接口"
-            ),
-            Wl(
-                "feature",
-                "com.zmf.agent.feature.chat",
-                "com.zmf.agent.feature.",
-                "R6-nav: ChatScreen 暂作导航壳，页面装配待抽到 app 层"
-            )
-        )
+        val whiteList = emptyList<Wl>()
 
         val problems = mutableListOf<String>()
         val files = srcRoot.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()

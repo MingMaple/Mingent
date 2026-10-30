@@ -24,7 +24,7 @@ import com.zmf.agent.core.store.GoalPhase
 import com.zmf.agent.core.store.GoalStore
 import com.zmf.agent.core.store.UploadStore
 import com.zmf.agent.core.store.WorkSpaceStore
-import com.zmf.agent.feature.settings.GeneralPrefs
+import com.zmf.agent.core.prefs.GeneralPrefs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

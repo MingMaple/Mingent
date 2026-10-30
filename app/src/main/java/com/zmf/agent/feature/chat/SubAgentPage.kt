@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.capability.subagent.SubAgentRegistry
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.markdown.MarkdownText
 
 /**
  * 子智能体详情页：看它自己的对话，并能给它追加一条消息继续跑。

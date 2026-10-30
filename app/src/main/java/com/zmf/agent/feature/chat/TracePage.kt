@@ -87,6 +87,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import com.zmf.agent.uikit.markdown.MarkdownText
+import com.zmf.agent.uikit.markdown.copyCode
+import com.zmf.agent.uikit.components.CopyRevealHost
+import com.zmf.agent.uikit.components.claimCopyOnGesture
+import com.zmf.agent.uikit.components.rememberCopyBlockKey
 
 /**
  * 「轨迹」页：把当前会话的消息还原成一条按时间先后排的扁平时间线。

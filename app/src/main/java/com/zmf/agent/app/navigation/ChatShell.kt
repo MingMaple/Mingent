@@ -1,4 +1,4 @@
-package com.zmf.agent.feature.chat
+package com.zmf.agent.app.navigation
 import com.zmf.agent.uikit.components.FoldToggle
 import com.zmf.agent.feature.terminal.TerminalActivity
 import com.zmf.agent.core.llm.ApiDefaults
@@ -164,7 +164,7 @@ import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.feature.float.FloatingBallService
 import com.zmf.agent.capability.tools.displayName
-import com.zmf.agent.feature.float.ChatBridge
+import com.zmf.agent.feature.chat.ChatItem
 import com.zmf.agent.feature.settings.AboutPage
 import com.zmf.agent.feature.settings.CreateWorkspaceDialog
 import com.zmf.agent.feature.settings.LogsPage
@@ -208,6 +208,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import com.zmf.agent.feature.chat.BrowserState
+import com.zmf.agent.feature.chat.ChatComposerArea
+import com.zmf.agent.feature.chat.ChatMessageList
+import com.zmf.agent.feature.chat.ChatSubAgentPanel
+import com.zmf.agent.feature.chat.ChatOverlays
+import com.zmf.agent.feature.chat.ChatTopBar
+import com.zmf.agent.feature.chat.AppPage
+import com.zmf.agent.feature.chat.ChatUiState
+import com.zmf.agent.feature.chat.ChatViewModel
 
 /**
  * 聊天页的骨架：底色 → 抽屉 → 轨迹页连体平移 → 主内容（顶栏 / 消息流 / 输入区）→ 页面层 → 浮层。

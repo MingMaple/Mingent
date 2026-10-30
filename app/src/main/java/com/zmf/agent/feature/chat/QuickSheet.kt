@@ -17,7 +17,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.theme.Palette
 

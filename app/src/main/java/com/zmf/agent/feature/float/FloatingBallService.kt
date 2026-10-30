@@ -48,13 +48,13 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import com.zmf.agent.core.log.FileLog
-import com.zmf.agent.feature.float.ChatBridge
 import com.zmf.agent.feature.float.FloatingChatWindow
 import com.zmf.agent.feature.float.LocalFloatInputFocus
 import com.zmf.agent.feature.float.SiriBall
 import com.zmf.agent.uikit.theme.AgentTheme
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import com.zmf.agent.capability.runtime.ChatBridge
 
 /**
  * 系统悬浮球 + 小窗（形态与手势借鉴常见悬浮窗产品，代码为本项目重写）。

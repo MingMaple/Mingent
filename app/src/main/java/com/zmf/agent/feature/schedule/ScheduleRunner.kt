@@ -20,7 +20,6 @@ import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.capability.runtime.AgentForegroundService
 import com.zmf.agent.capability.tools.ToolContext
-import com.zmf.agent.feature.float.ChatBridge
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
 import kotlinx.coroutines.CoroutineScope
@@ -30,6 +29,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.zmf.agent.capability.runtime.ChatBridge
 
 /**
  * 定时任务的执行端：排闹钟、到点跑一轮 Agent、把结果写回会话、发通知。
