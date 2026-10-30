@@ -850,3 +850,72 @@ class ContextState(
         return false
     }
 }
+
+/**
+ * 上下文分段估算（粗估 tokens，口径同 [ContextCompactor]）。
+ *
+ * 为什么把「消息」拆成 user / assistant / tool 三段：历史里三者的增长速度完全不同
+ * （工具结果才是真正的大头），只给一个合计看不出该压缩谁。
+ *
+ * 六段合起来才是**整份请求**（提示词 + 摘要 + 工具表 + 三类消息），
+ * 水位那条只按「消息 + 摘要」算，两者口径不同、数值不等，界面上必须分开说明。
+ */
+data class Breakdown(
+    /** 系统提示词正文（**不含**会话摘要）。 */
+    val systemTokens: Int = 0,
+    /** 会话摘要：它是拼进 system 的一段，单列出来，否则「提示词」会显得莫名其妙地大。 */
+    val summaryTokens: Int = 0,
+    val toolTokens: Int = 0,
+    val userTokens: Int = 0,
+    val assistantTokens: Int = 0,
+    val toolResultTokens: Int = 0
+) {
+    /** 三段的合计（旧界面口径「消息占多少」，也是水位里除提示词与工具表之外的部分）。 */
+    val messageTokens: Int get() = userTokens + assistantTokens + toolResultTokens
+
+    /** 整份请求的估算：提示词 + 摘要 + 工具表 + 三类消息（= 成分条六段之和）。 */
+    val totalTokens: Int
+        get() = systemTokens + summaryTokens + toolTokens + messageTokens
+}
+
+/**
+ * 本会话的时间账：模型等待 / 工具执行各自的累计毫秒数，外加会话累计输出 tokens。
+ *
+ * 分母都是「本会话」，不是全局：用户看的是这条会话到底把时间花在哪。
+ */
+data class TimingSnapshot(
+    val modelMillis: Long = 0,
+    val toolMillis: Long = 0,
+    /** 本会话累计的输入 / 输出 tokens（状态行右侧那枚胶囊报的是两者之和）。 */
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0,
+    /** 上一轮回复的模型耗时与输出 tokens：输出速度只用这一对算（累计值在旧会话里是残缺的）。 */
+    val lastTurnModelMillis: Long = 0,
+    val lastTurnOutputTokens: Int = 0,
+    /** 提示词缓存的累计命中 / 未命中输入 tokens。 */
+    val cacheHitTokens: Int = 0,
+    val cacheMissTokens: Int = 0,
+    /** 首 token 等待累计与次数、纯生成时长与输出 tokens（速度与 TTFT 的分母）。 */
+    val ttftMillis: Long = 0,
+    val ttftCount: Int = 0,
+    val genMillis: Long = 0,
+    val genTokens: Int = 0
+) {
+    /** 首 token 平均（毫秒）；一次都没等到过就是 null，界面显示「—」。 */
+    val ttftAverageMillis: Long? get() = if (ttftCount > 0) ttftMillis / ttftCount else null
+
+    /**
+     * 输出速度（tok/s）：分子是输出 tokens，分母只算「第一个字到最后一个字」。
+     *
+     * 为什么**不**用累计模型耗时：那里面含等首字的时间，网络慢的时候会把速度压得莫名其妙。
+     */
+    val tokensPerSec: Int?
+        get() = if (genMillis > 0L && genTokens > 0) ((genTokens * 1000L) / genMillis).toInt() else null
+
+    /** 缓存命中率（0–100）；服务端从没报过缓存字段就是 null，界面显示「—」。 */
+    val cacheHitPercent: Float?
+        get() {
+            val total = cacheHitTokens + cacheMissTokens
+            return if (total > 0) cacheHitTokens * 100f / total else null
+        }
+}

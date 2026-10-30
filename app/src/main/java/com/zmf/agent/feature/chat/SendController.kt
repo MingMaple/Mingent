@@ -745,3 +745,14 @@ class SendController(
             }
         }
 }
+
+/**
+ * 排队等发送的一条消息。
+ *
+ * 只存纯文本，不存附件/图片：等它轮到时走的就是普通发送流程（[SendController.send]），
+ * 附件按那一刻输入框里的状态一起拼进 prompt：和手动发一条完全同路径，
+ * 排过队的消息不会多带一份、也不会丢一份文件。
+ *
+ * @param id 队列内的稳定标识，编辑 / 删除 / 立即发送都按它找
+ */
+data class QueuedMessage(val id: Long, val text: String)
