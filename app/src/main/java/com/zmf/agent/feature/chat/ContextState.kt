@@ -26,8 +26,17 @@ import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.InheritedUsage
+import com.zmf.agent.core.store.InsightColors
+import com.zmf.agent.core.store.InsightDay
+import com.zmf.agent.core.store.InsightGlobalView
+import com.zmf.agent.core.store.InsightPart
+import com.zmf.agent.core.store.InsightRange
+import com.zmf.agent.core.store.InsightSessionRow
+import com.zmf.agent.core.store.InsightSessionView
+import com.zmf.agent.core.store.InsightTiming
 import com.zmf.agent.core.store.LedgerComposition
 import com.zmf.agent.core.store.SessionComposition
+import com.zmf.agent.core.store.UsageCost
 import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.infra.llm.DeepSeekProvider
 import com.zmf.agent.infra.llm.LlmProvider
@@ -41,6 +50,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 import java.io.File
+import java.util.Calendar
 
 /** 洞察页趋势只画最近这么多次回复：再多就糊成一团，也看不出变化。 */
 private const val INSIGHT_TREND_POINTS = 20
@@ -1089,6 +1099,335 @@ class ContextState(
                 ?.inheritedUsage?.messages ?: 0
             return messages.drop(inherited).count { it.role == "user" && !it.programmatic }
         }
+
+    // ---- 洞察页数据装配（页面只读，不做业务判断） ----
+
+    /**
+     * 组装本会话模块的数据。
+     *
+     * 当前会话用内存里的消息（含还没落盘的）；其余会话读它自己的消息。
+     * 分叉会话一律从 `inheritedUsage.messages` 之后算，克隆段不进任何统计。
+     */
+    fun insightSession(sessionId: String): InsightSessionView {
+        val session = sessions().firstOrNull { it.id == sessionId }
+            ?: return InsightSessionView()
+        val isCurrent = sessionId == currentSessionId()
+        val all = if (isCurrent) messages.toList() else session.messages
+        val start = session.inheritedUsage.messages.coerceIn(0, all.size)
+        val own = all.drop(start)
+        val summary = session.contextSummary
+        val upTo = if (summary.isEmpty()) {
+            0
+        } else {
+            session.summaryUpTo.takeIf { it in 1 until all.size && all[it].role == "user" } ?: 0
+        }
+        val breakdown: Breakdown
+        val estimated: Int
+        if (isCurrent) {
+            breakdown = contextBreakdown
+            estimated = contextSnapshot.estimatedTokens
+        } else {
+            val request = requestFor(all, summary, upTo)
+            estimated = ContextCompactor.estimate(request)
+            breakdown = breakdownFor(request, if (upTo > 0) summary else "")
+        }
+        val parts = listOf(
+            InsightPart("系统提示词", breakdown.systemTokens, InsightColors.SYSTEM),
+            InsightPart("技能注入", 0, InsightColors.SKILLS),
+            InsightPart("工具定义", breakdown.toolTokens, InsightColors.TOOLS),
+            InsightPart("用户消息", breakdown.userTokens, InsightColors.USER),
+            InsightPart("注入内容", breakdown.summaryTokens, InsightColors.INJECT),
+            InsightPart("助手消息", breakdown.assistantTokens, InsightColors.ASSISTANT),
+            InsightPart("工具结果", breakdown.toolResultTokens, InsightColors.TOOL_RESULTS)
+        )
+        var cacheHit = 0
+        var cacheMiss = 0
+        var toolCalls = 0
+        var replies = 0
+        var rounds = 0
+        var firstAt = 0L
+        var lastAt = 0L
+        var hasOwnUsage = false
+        for (message in own) {
+            if (message.createdAt > 0L) {
+                if (firstAt == 0L) firstAt = message.createdAt
+                lastAt = message.createdAt
+            }
+            when (message.role) {
+                "user" -> if (!message.programmatic) rounds++
+                "tool" -> toolCalls++
+                "assistant" -> {
+                    if (message.content.isNotBlank()) replies++
+                    if (message.usageModel.isNotBlank() &&
+                        (message.promptTokens > 0 || message.completionTokens > 0)
+                    ) {
+                        hasOwnUsage = true
+                    }
+                    if (message.usageCacheReported) {
+                        cacheHit += message.cachedTokens
+                        cacheMiss += message.uncachedInputTokens
+                    }
+                }
+            }
+        }
+        val cacheRate = if (cacheHit + cacheMiss > 0) {
+            cacheHit.toFloat() / (cacheHit + cacheMiss)
+        } else {
+            null
+        }
+        val active = if (firstAt > 0L && lastAt > firstAt) lastAt - firstAt else 0L
+        val inherited = session.inheritedUsage
+        val ttft = (session.ttftMillis - inherited.ttftMillis).coerceAtLeast(0L)
+        val reasoning = (session.reasoningMillis - inherited.reasoningMillis).coerceAtLeast(0L)
+        val text = (session.textMillis - inherited.textMillis).coerceAtLeast(0L)
+        val toolArg = (session.toolArgMillis - inherited.toolArgMillis).coerceAtLeast(0L)
+        val toolMs = (session.toolMillis - inherited.toolMillis).coerceAtLeast(0L)
+        val speed = if (hasOwnUsage && session.lastTurnModelMillis > 0 &&
+            session.lastTurnCompletionTokens > 0
+        ) {
+            (session.lastTurnCompletionTokens * 1000L / session.lastTurnModelMillis).toInt()
+        } else {
+            null
+        }
+        val cost = UsageCost.session(session).takeIf { it.hasValue }
+        val modelLabel = own.lastOrNull { it.role == "assistant" && it.usageModel.isNotBlank() }
+            ?.usageModel ?: if (isCurrent) usageModel() else ""
+        val window = ApiDefaults.CONTEXT_WINDOW
+        return InsightSessionView(
+            sessionId = sessionId,
+            title = if (isCurrent) "当前上下文" else session.title.ifBlank { "新会话" },
+            isCurrent = isCurrent,
+            modelLabel = modelLabel,
+            window = window,
+            estimatedTokens = estimated,
+            ratio = if (window > 0) estimated.toFloat() / window else 0f,
+            parts = parts,
+            tokenComposition = session.composition.takeIf { !it.isEmpty },
+            cacheRate = cacheRate,
+            promptTokens = (session.promptTokens - inherited.promptTokens).coerceAtLeast(0),
+            completionTokens = (session.completionTokens - inherited.completionTokens)
+                .coerceAtLeast(0),
+            requests = (session.requests - inherited.requests).coerceAtLeast(0),
+            activeMillis = active,
+            ttftMillis = ttft,
+            reasoningMillis = reasoning,
+            textMillis = text,
+            toolArgMillis = toolArg,
+            toolMillis = toolMs,
+            outputSpeed = speed,
+            rounds = rounds,
+            steps = (session.steps - inherited.steps).coerceAtLeast(0),
+            replies = replies,
+            toolCalls = toolCalls,
+            costCny = cost?.cny
+        )
+    }
+
+    /** 组装全局统计区的数据。 */
+    fun globalInsight(range: InsightRange): InsightGlobalView {
+        UsageLedger.load(appContext)
+        val ledger = UsageLedger.snapshot()
+        val now = System.currentTimeMillis()
+        val fromMs = rangeStart(range)
+        val fromDate = UsageLedger.dateText(fromMs)
+        val keys = ledger.days.keys.filter { range == InsightRange.ALL || it >= fromDate }
+        var composition = LedgerComposition()
+        var ttft = 0L
+        var reasoning = 0L
+        var text = 0L
+        var toolArg = 0L
+        var toolExec = 0L
+        var active = 0L
+        var toolCalls = 0
+        var hit = 0
+        var miss = 0
+        var tokens = 0L
+        var requests = 0
+        if (range == InsightRange.ALL) {
+            val t = ledger.total
+            composition = t.composition
+            ttft = t.ttftMs
+            reasoning = t.reasoningMs
+            text = t.textMs
+            toolArg = t.toolArgMs
+            toolExec = t.toolMs
+            active = t.activeMs
+            toolCalls = t.toolCalls
+            hit = t.cacheHit
+            miss = t.cacheMiss
+            tokens = t.prompt.toLong() + t.completion
+            requests = t.requests
+        } else {
+            for (key in keys) {
+                val day = ledger.days[key] ?: continue
+                composition += day.composition
+                ttft += day.ttftMs
+                reasoning += day.reasoningMs
+                text += day.textMs
+                toolArg += day.toolArgMs
+                toolExec += day.toolMs
+                active += day.activeMs
+                toolCalls += day.toolCalls
+                hit += day.cacheHit
+                miss += day.cacheMiss
+                tokens += day.prompt.toLong() + day.completion
+                requests += day.requests
+            }
+        }
+        val cacheRate = if (hit + miss > 0) hit.toFloat() / (hit + miss) else null
+        val other = (active - ttft - reasoning - text - toolArg - toolExec).coerceAtLeast(0L)
+        val all = sessions().toList()
+        val cost = UsageCost.sessions(all, fromMs, now)
+        val rows = all.map { session -> globalRow(session, fromMs, now) }
+            .sortedByDescending { it.updatedAt }
+        return InsightGlobalView(
+            range = range,
+            sessions = all.size,
+            archived = all.count { it.archived },
+            totalTokens = tokens,
+            rounds = rows.sumOf { it.rounds },
+            costCny = cost.takeIf { it.hasValue }?.cny,
+            pricedSessions = UsageCost.pricedSessionCount(all, fromMs, now),
+            cacheRate = cacheRate,
+            toolCalls = toolCalls,
+            toolMillis = toolExec,
+            activeMillis = active,
+            requests = requests,
+            days = sevenDays(ledger),
+            composition = composition.takeIf { !it.isEmpty },
+            timing = InsightTiming(
+                ttft = ttft,
+                reasoning = reasoning,
+                text = text,
+                toolArg = toolArg,
+                toolExec = toolExec,
+                other = other,
+                active = active
+            ),
+            rows = rows
+        )
+    }
+
+    private fun globalRow(session: ChatSession, fromMs: Long, toMs: Long): InsightSessionRow {
+        val own = session.messages.drop(session.inheritedUsage.messages)
+        var tokens = 0L
+        var rounds = 0
+        var hit = 0
+        var miss = 0
+        for (message in own) {
+            if (message.createdAt < fromMs || message.createdAt > toMs) continue
+            when (message.role) {
+                "user" -> if (!message.programmatic) rounds++
+                "assistant" -> {
+                    tokens += message.promptTokens.toLong() + message.completionTokens
+                    if (message.usageCacheReported) {
+                        hit += message.cachedTokens
+                        miss += message.uncachedInputTokens
+                    }
+                }
+            }
+        }
+        val cacheRate = if (hit + miss > 0) hit.toFloat() / (hit + miss) else null
+        val cost = UsageCost.session(session, fromMs, toMs).takeIf { it.hasValue }?.cny
+        return InsightSessionRow(
+            id = session.id,
+            title = session.title.ifBlank { "新会话" },
+            archived = session.archived,
+            updatedAt = session.updatedAt,
+            rounds = rounds,
+            tokens = tokens,
+            cacheRate = cacheRate,
+            costCny = cost
+        )
+    }
+
+    private fun sevenDays(ledger: com.zmf.agent.core.store.LedgerSnapshot): List<InsightDay> {
+        val cal = Calendar.getInstance()
+        cal.set(Calendar.HOUR_OF_DAY, 0)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        cal.add(Calendar.DAY_OF_YEAR, -6)
+        val days = ArrayList<InsightDay>(7)
+        for (i in 0 until 7) {
+            val key = UsageLedger.dateText(cal.timeInMillis)
+            val usage = ledger.days[key]
+            days += InsightDay(
+                date = key,
+                tokens = if (usage == null) 0L else usage.prompt.toLong() + usage.completion,
+                requests = usage?.requests ?: 0
+            )
+            cal.add(Calendar.DAY_OF_YEAR, 1)
+        }
+        return days
+    }
+
+    private fun rangeStart(range: InsightRange): Long {
+        if (range == InsightRange.ALL) return 0L
+        val cal = Calendar.getInstance()
+        cal.set(Calendar.HOUR_OF_DAY, 0)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        when (range) {
+            InsightRange.WEEK -> cal.add(Calendar.DAY_OF_YEAR, -6)
+            InsightRange.MONTH -> cal.add(Calendar.DAY_OF_YEAR, -29)
+            else -> Unit
+        }
+        return cal.timeInMillis
+    }
+
+    /** 非当前会话的请求视图：摘要抬头 + 起点之后的原文（与 AgentLoop 同一口径）。 */
+    private fun requestFor(
+        all: List<ChatMessage>,
+        summary: String,
+        upTo: Int
+    ): List<ChatMessage> {
+        val request = ArrayList<ChatMessage>(all.size - upTo + 1)
+        if (summary.isNotEmpty() && upTo > 0) {
+            request.add(ChatMessage(role = "system", content = contextSummarySystemText(summary)))
+        }
+        for (i in upTo until all.size) request.add(all[i])
+        return request
+    }
+
+    /** 任意请求视图的六段估算（与 [refreshContextBreakdown] 同一套口径）。 */
+    private fun breakdownFor(request: List<ChatMessage>, summaryText: String): Breakdown {
+        val promptOnly = PromptBuilder.build(promptInput().copy(summaryText = ""))
+        val systemTokens = promptOnly?.let { ContextCompactor.estimateText(it) } ?: 0
+        val summaryTokens = if (summaryText.isBlank()) {
+            0
+        } else {
+            ContextCompactor.estimateText(contextSummarySystemText(summaryText))
+        }
+        val specs = registry().specs()
+        val toolTokens = if (specs.isEmpty()) {
+            0
+        } else {
+            ContextCompactor.estimateText(
+                specs.joinToString("\n") { it.name + "\n" + it.description + "\n" + it.parametersJson }
+            )
+        }
+        var userTokens = 0
+        var assistantTokens = 0
+        var toolResultTokens = 0
+        for (message in request) {
+            when (message.role) {
+                "user" -> userTokens += ContextCompactor.estimate(message)
+                "assistant" -> assistantTokens += ContextCompactor.estimate(message)
+                "tool" -> toolResultTokens += ContextCompactor.estimate(message)
+                else -> Unit
+            }
+        }
+        return Breakdown(
+            systemTokens = systemTokens,
+            summaryTokens = summaryTokens,
+            toolTokens = toolTokens,
+            userTokens = userTokens,
+            assistantTokens = assistantTokens,
+            toolResultTokens = toolResultTokens
+        )
+    }
 }
 
 /**

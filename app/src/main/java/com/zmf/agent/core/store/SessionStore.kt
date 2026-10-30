@@ -153,13 +153,23 @@ data class InheritedUsage(
     val toolMillis: Long = 0,
     val lastTurnModelMillis: Long = 0,
     val lastTurnCompletionTokens: Int = 0,
+    /** 输出侧细分也随克隆一起继承：洞察页要减掉，状态行/浮窗保持克隆观感。 */
+    val ttftMillis: Long = 0,
+    val ttftCount: Int = 0,
+    val genMillis: Long = 0,
+    val genTokens: Int = 0,
+    val reasoningMillis: Long = 0,
+    val textMillis: Long = 0,
+    val toolArgMillis: Long = 0,
     val messages: Int = 0
 ) {
     /** 全 0 表示「不是从别的会话分叉来的」：落盘时整个对象都不写。 */
     val isEmpty: Boolean
         get() = promptTokens == 0 && completionTokens == 0 && requests == 0 && steps == 0 &&
             modelMillis == 0L && toolMillis == 0L && lastTurnModelMillis == 0L &&
-            lastTurnCompletionTokens == 0 && messages == 0
+            lastTurnCompletionTokens == 0 && ttftMillis == 0L && ttftCount == 0 &&
+            genMillis == 0L && genTokens == 0 && reasoningMillis == 0L &&
+            textMillis == 0L && toolArgMillis == 0L && messages == 0
 }
 
 /**
@@ -425,6 +435,13 @@ object SessionStore {
                 toolMillis = base.toolMillis,
                 lastTurnModelMillis = base.lastTurnModelMillis,
                 lastTurnCompletionTokens = base.lastTurnCompletionTokens,
+                ttftMillis = base.ttftMillis,
+                ttftCount = base.ttftCount,
+                genMillis = base.genMillis,
+                genTokens = base.genTokens,
+                reasoningMillis = base.reasoningMillis,
+                textMillis = base.textMillis,
+                toolArgMillis = base.toolArgMillis,
                 messages = messages.size
             )
         )
@@ -504,6 +521,13 @@ object SessionStore {
         obj.put(KEY_TOOL_MILLIS, usage.toolMillis)
         obj.put(KEY_LAST_TURN_MODEL_MILLIS, usage.lastTurnModelMillis)
         obj.put(KEY_LAST_TURN_COMPLETION, usage.lastTurnCompletionTokens)
+        obj.put(KEY_TTFT_MILLIS, usage.ttftMillis)
+        obj.put(KEY_TTFT_COUNT, usage.ttftCount)
+        obj.put(KEY_GEN_MILLIS, usage.genMillis)
+        obj.put(KEY_GEN_TOKENS, usage.genTokens)
+        obj.put(KEY_REASONING_MILLIS, usage.reasoningMillis)
+        obj.put(KEY_TEXT_MILLIS, usage.textMillis)
+        obj.put(KEY_TOOL_ARG_MILLIS, usage.toolArgMillis)
         // 这里不是消息数组，是克隆过来的消息条数（分叉边界）
         obj.put(KEY_MESSAGES, usage.messages)
         return obj
@@ -518,6 +542,13 @@ object SessionStore {
         toolMillis = obj.optLong(KEY_TOOL_MILLIS, 0L),
         lastTurnModelMillis = obj.optLong(KEY_LAST_TURN_MODEL_MILLIS, 0L),
         lastTurnCompletionTokens = obj.optInt(KEY_LAST_TURN_COMPLETION, 0),
+        ttftMillis = obj.optLong(KEY_TTFT_MILLIS, 0L),
+        ttftCount = obj.optInt(KEY_TTFT_COUNT, 0),
+        genMillis = obj.optLong(KEY_GEN_MILLIS, 0L),
+        genTokens = obj.optInt(KEY_GEN_TOKENS, 0),
+        reasoningMillis = obj.optLong(KEY_REASONING_MILLIS, 0L),
+        textMillis = obj.optLong(KEY_TEXT_MILLIS, 0L),
+        toolArgMillis = obj.optLong(KEY_TOOL_ARG_MILLIS, 0L),
         messages = obj.optInt(KEY_MESSAGES, 0)
     )
 

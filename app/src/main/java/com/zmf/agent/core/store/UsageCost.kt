@@ -57,8 +57,17 @@ object UsageCost {
         )
     }
 
-    /** 单条会话的费用（全部历史）。 */
-    fun session(session: ChatSession): CostSummary = session(session.messages, 0L, Long.MAX_VALUE)
+    /** 单条会话的费用（只算这条会话自己的历史：分叉克隆段不计）。 */
+    fun session(session: ChatSession): CostSummary {
+        val own = session.messages.drop(session.inheritedUsage.messages)
+        return session(own, 0L, Long.MAX_VALUE)
+    }
+
+    /** 单条会话在时间范围内的费用（同样只算自己的历史）。 */
+    fun session(session: ChatSession, fromMs: Long, toMs: Long): CostSummary {
+        val own = session.messages.drop(session.inheritedUsage.messages)
+        return session(own, fromMs, toMs)
+    }
 
     /**
      * 一组消息在时间范围内的费用。
@@ -86,7 +95,7 @@ object UsageCost {
         return CostSummary(cny = cny, pricedTurns = priced, allTurns = all)
     }
 
-    /** 多条会话在时间范围内的费用。 */
+    /** 多条会话在时间范围内的费用（每条都只算自己的历史）。 */
     fun sessions(
         sessions: List<ChatSession>,
         fromMs: Long,
@@ -94,12 +103,12 @@ object UsageCost {
     ): CostSummary {
         var result = CostSummary()
         for (session in sessions) {
-            result += session(session.messages, fromMs, toMs)
+            result += session(session, fromMs, toMs)
         }
         return result
     }
 
     /** 有至少一轮可计价的会话数（全局 KPI 的「已计价 N/M 个会话」用）。 */
     fun pricedSessionCount(sessions: List<ChatSession>, fromMs: Long, toMs: Long): Int =
-        sessions.count { session(it.messages, fromMs, toMs).pricedTurns > 0 }
+        sessions.count { session(it, fromMs, toMs).pricedTurns > 0 }
 }

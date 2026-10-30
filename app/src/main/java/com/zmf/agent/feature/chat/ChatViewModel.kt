@@ -31,6 +31,9 @@ import com.zmf.agent.infra.llm.LlmProvider
 import com.zmf.agent.infra.llm.ProviderConfig
 import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.core.store.ChatSession
+import com.zmf.agent.core.store.InsightGlobalView
+import com.zmf.agent.core.store.InsightRange
+import com.zmf.agent.core.store.InsightSessionView
 import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.Todo
 import com.zmf.agent.core.store.UsageLedger
@@ -902,6 +905,12 @@ class ChatViewModel(context: Context) : AgentUi {
 
     /** 刷新洞察页：上下文水位 + 分段估算 + 全局总账，外加提示词长度趋势。 */
     fun refreshInsight() = context.refreshInsight()
+
+    /** 本会话模块的数据（指定会话；当前会话用内存态）。 */
+    fun insightSession(sessionId: String): InsightSessionView = context.insightSession(sessionId)
+
+    /** 全局统计区的数据（按范围）。 */
+    fun globalInsight(range: InsightRange): InsightGlobalView = context.globalInsight(range)
 
     // ---- 日志 / 记忆（状态与实现见 InsightController.kt，这里只留对外的调用口）----
 
