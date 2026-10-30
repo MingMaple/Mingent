@@ -29,9 +29,8 @@ import com.zmf.agent.capability.permission.PermissionStore
 import com.zmf.agent.capability.prompt.PromptInput
 import com.zmf.agent.capability.prompt.PromptStore
 import com.zmf.agent.capability.skill.SkillStore
-import com.zmf.agent.infra.llm.DeepSeekProvider
+import com.zmf.agent.infra.llm.LlmProvider
 import com.zmf.agent.infra.llm.ProviderConfig
-import com.zmf.agent.infra.llm.ProviderStore
 import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.PlanDoc
@@ -117,29 +116,6 @@ class ChatViewModel(context: Context) : AgentUi {
 
     private val appContext: Context = context.applicationContext
 
-    /** 用户自填的 Key；没填过时 ApiConfig 会回落到源码里的默认 Key。 */
-    var apiKey by mutableStateOf(ApiConfig.loadApiKey(appContext))
-        private set
-
-    /** 当前模型（deepseek-flash / deepseek-v4-pro / 别家的模型 id）；改了立刻重建请求链路。 */
-    var model by mutableStateOf(ApiConfig.loadModel(appContext))
-        private set
-
-    /** 全部提供商；多提供商设置页直接读它，[currentProviderId] 指向其中一条。 */
-    var providers by mutableStateOf<List<ProviderConfig>>(ProviderStore.load(appContext))
-        private set
-
-    /** 当前提供商 id；选中态落在 app_prefs 里，重启后还停在这一条。 */
-    var currentProviderId by mutableStateOf(ProviderStore.currentId(appContext))
-        private set
-
-    // 端点与 Key 都取自当前 provider：一个 provider 都没配时 ProviderStore 会自动建一条内置
-    // DeepSeek（老用户的 Key / 端点 / 模型都在里面），所以默认行为与单提供商版本完全一致
-    private var provider = DeepSeekProvider(
-        apiKey = ApiConfig.loadApiKey(appContext),
-        baseUrl = ApiConfig.loadBaseUrl(appContext)
-    )
-
     private val registry = ToolRegistry()
 
     /** 工具表对外只读：包管理页（MCP 启停）要拿它去注册/注销，别的地方不要改。 */
@@ -147,6 +123,41 @@ class ChatViewModel(context: Context) : AgentUi {
 
     /** 上下文压缩策略（摘要式滚动压缩）：只影响发给模型的请求视图，界面历史不动。 */
     val contextPolicy: ContextPolicy get() = context.contextPolicy
+
+    /** 模型与提供商配置、请求链路（Key / 模型 / 端点 / 提供商列表），实现见 [LlmConfigController]。 */
+    private val llm: LlmConfigController = LlmConfigController(
+        appContext = appContext,
+        registry = registry,
+        maxRounds = MAX_ROUNDS,
+        promptInput = { promptInput() },
+        contextPolicy = { contextPolicy },
+        contextState = { summaryState() },
+        syncSubAgentDeps = { syncSubAgentDeps() }
+    )
+
+    /** provider 是新对象时子智能体必须拿到新的那个，否则它还在用旧 Key / 旧端点。 */
+    private fun syncSubAgentDeps() {
+        SubAgentDeps.provider = { llm.currentProvider }
+        SubAgentDeps.registry = { registry }
+    }
+
+    /** 用户自填的 Key；只读转发。 */
+    val apiKey: String get() = llm.apiKey
+
+    /** 当前模型；只读转发。 */
+    val model: String get() = llm.model
+
+    /** 全部提供商；只读转发。 */
+    val providers: List<ProviderConfig> get() = llm.providers
+
+    /** 当前提供商 id；只读转发。 */
+    val currentProviderId: String get() = llm.currentProviderId
+
+    /** 当前请求对象（子智能体与工具侧要用同一个）。 */
+    private val provider: LlmProvider get() = llm.currentProvider
+
+    /** Agent 循环：换 Key / 端点 / 模型后由 [LlmConfigController] 重建。 */
+    private val loop: AgentLoop get() = llm.loop
 
     init {
         // 调试用线上请求落盘：pref `wire_dump`=true 时，每条请求 JSON 存到 appdata/wire/（只留最近 12 份）。
@@ -170,16 +181,6 @@ class ChatViewModel(context: Context) : AgentUi {
      * 只能自己开一个（Main 调度器，顺带保证状态写入都在主线程）。
      */
     private val summaryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-
-    private var loop = AgentLoop(
-        provider = provider,
-        registry = registry,
-        model = model,
-        maxRounds = MAX_ROUNDS,
-        contextPolicy = { contextPolicy },
-        contextState = { summaryState() },
-        promptProvider = { promptInput() }
-    )
 
     /** 对话全量消息（user / assistant / tool），循环直接往里追加。 */
     val messages: SnapshotStateList<ChatMessage> = mutableStateListOf()
@@ -480,8 +481,7 @@ class ChatViewModel(context: Context) : AgentUi {
         }
         // 子智能体的 provider 与工具表只能从「外面」注入：工具接口 invoke(args, ctx) 里拿不到这两样。
         // 没注入时 subagent 工具会明确报「子智能体未初始化」，不会假装成功
-        SubAgentDeps.provider = { provider }
-        SubAgentDeps.registry = { registry }
+        syncSubAgentDeps()
         // 待办清单跟着会话走：先把当前会话的清单读回来，界面一进来就是对的
         reloadTodos()
         FileLog.log("chat", "初始化完成，权限=" + permissionLevel.displayName())
@@ -548,108 +548,25 @@ class ChatViewModel(context: Context) : AgentUi {
     /** AgentLoop 的溢出恢复回调：压一次上下文，成功就让它重发同一轮。 */
     private suspend fun onOverflowCompaction(): Boolean = context.onOverflowCompaction()
 
-    // ---- API Key 与模型 ----
+    // ---- 模型与提供商（状态与实现见 LlmConfigController.kt，这里只留对外的调用口）----
 
     /** 保存并立即生效（重建 provider 与 loop）。 */
-    fun applyApiKey(newKey: String) {
-        val trimmed = newKey.trim()
-        if (trimmed.isEmpty() || trimmed == apiKey) return
-        apiKey = trimmed
-        ApiConfig.saveApiKey(appContext, trimmed)
-        // Key 写在当前 provider 里：设置页的列表也要跟着变
-        providers = ProviderStore.load(appContext)
-        rebuildClient()
-        FileLog.log("api", "已更新 API Key（长度 " + trimmed.length + "）")
-    }
+    fun applyApiKey(newKey: String) = llm.applyApiKey(newKey)
 
-    /** 切换模型：落盘并重建请求链路；值没变时直接返回，避免无谓的重建。 */
-    fun applyModel(newModel: String) {
-        if (newModel == model) return
-        model = newModel
-        ApiConfig.saveModel(appContext, newModel)
-        // 用 rebuildPipeline 而不是 rebuildClient：后者会把模型重新读一遍，
-        // 而「记下的模型不在 provider 的模型列表里就回落第一个」会把刚选的值悄悄改掉
-        rebuildPipeline()
-        FileLog.log("api", "模型切到 " + newModel)
-    }
+    /** 切换模型：落盘并重建请求链路。 */
+    fun applyModel(newModel: String) = llm.applyModel(newModel)
 
-    /**
-     * 保存当前 provider 的对话端点并立刻生效（重建 provider 与 loop）。
-     *
-     * 空串对内置 DeepSeek 等于「回落官方地址」（ApiConfig 内部处理），别家则保持空、由 provider 报错提示。
-     */
-    fun applyBaseUrl(url: String) {
-        val before = ApiConfig.loadBaseUrl(appContext)
-        ApiConfig.saveBaseUrl(appContext, url)
-        // 端点是当前 provider 的一部分：设置页的列表也要跟着变
-        providers = ProviderStore.load(appContext)
-        rebuildClient()
-        FileLog.log("api", "对话端点：" + before + " → " + ApiConfig.loadBaseUrl(appContext))
-    }
+    /** 保存当前 provider 的对话端点并立刻生效。 */
+    fun applyBaseUrl(url: String) = llm.applyBaseUrl(url)
 
-    // ---- 多提供商 ----
+    /** 切换当前提供商：落盘 + 重建请求链路 + 刷新列表状态。 */
+    fun selectProvider(id: String) = llm.selectProvider(id)
 
-    /**
-     * 切换当前提供商：落盘 + 重建请求链路 + 刷新列表状态。
-     *
-     * Key / 端点 / 模型全都跟着 provider 走，所以不在这里单独读它们：[rebuildClient] 统一读。
-     */
-    fun selectProvider(id: String) {
-        if (providers.none { it.id == id }) return
-        if (id == currentProviderId) return
-        ProviderStore.select(appContext, id)
-        providers = ProviderStore.load(appContext)
-        rebuildClient()
-        FileLog.log("api", "切换提供商 " + id + "（模型=" + model + "）")
-    }
+    /** 新增或整条替换一个提供商。 */
+    fun saveProvider(cfg: ProviderConfig) = llm.saveProvider(cfg)
 
-    /** 新增或整条替换一个提供商；改的正好是当前这条时才需要重建请求链路。 */
-    fun saveProvider(cfg: ProviderConfig) {
-        ProviderStore.upsert(appContext, cfg)
-        providers = ProviderStore.load(appContext)
-        if (cfg.id == currentProviderId) rebuildClient()
-        FileLog.log("api", "保存提供商 " + cfg.id + "（" + cfg.name + "）")
-    }
-
-    /** 删除提供商；最后一个删不掉（[ProviderStore.remove] 会拒绝，这里什么都不做）。 */
-    fun deleteProvider(id: String) {
-        if (!ProviderStore.remove(appContext, id)) return
-        providers = ProviderStore.load(appContext)
-        // 删的是当前 provider：ProviderStore 已把选中态挪到第一个，这里跟着切过去重建
-        if (ProviderStore.currentId(appContext) != currentProviderId) rebuildClient()
-        FileLog.log("api", "删除提供商 " + id + "，当前=" + currentProviderId)
-    }
-
-    /** 换 Key / 换端点 / 换提供商后重建请求链路：Key、端点、模型都重新从当前 provider 读一遍。 */
-    private fun rebuildClient() {
-        val cfg = ProviderStore.current(appContext)
-        currentProviderId = cfg.id
-        apiKey = ApiConfig.loadApiKey(appContext)
-        model = ApiConfig.loadModel(appContext)
-        rebuildPipeline()
-    }
-
-    /**
-     * 只换请求对象、不重新读配置。
-     *
-     * provider 与 loop 的 Key / 端点 / 模型都是构造时固定的，配置一变就必须换一套新对象；
-     * 单独拆出来是给「换模型」用的（见 [applyModel]）。
-     */
-    private fun rebuildPipeline() {
-        provider = DeepSeekProvider(apiKey = apiKey, baseUrl = ApiConfig.loadBaseUrl(appContext))
-        // provider 是新对象：子智能体必须拿到新的那个，否则它还在用旧 Key / 旧端点
-        SubAgentDeps.provider = { provider }
-        SubAgentDeps.registry = { registry }
-        loop = AgentLoop(
-            provider = provider,
-            registry = registry,
-            model = model,
-            maxRounds = MAX_ROUNDS,
-            contextPolicy = { contextPolicy },
-            contextState = { summaryState() },
-            promptProvider = { promptInput() }
-        )
-    }
+    /** 删除提供商；最后一个删不掉。 */
+    fun deleteProvider(id: String) = llm.deleteProvider(id)
 
     /**
      * 系统提示词的输入：每次请求前现取，所以换工作区 / 切权限档 / 改附加指令都立刻生效。
