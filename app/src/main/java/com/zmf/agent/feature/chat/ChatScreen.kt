@@ -209,59 +209,6 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
-/**
- * 「本轮用量」伴随面板的入参：[anchor] 是那枚用量按钮在窗口里的位置，[usage] 是这一轮的账。
- *
- * 两者必须一起传：面板上的数字与「贴着哪一枚按钮」是同一次点击的产物，分开存会错位。
- */
-private data class TurnUsageTarget(val usage: TurnUsageInfo, val anchor: Offset)
-
-/**
- * 长按已发送图片时的小窗：只这两件事：存下这一张、回到这条提问。
- * 带上 relPath 是因为「长按哪张就保存哪张」，不能拿整条的图片列表糊过去。
- */
-private data class ImageMenuTarget(
-    val relPath: String,
-    /** 这条用户消息在整个列表里的下标，回滚按它定位。 */
-    val userIndex: Int,
-    val anchor: Offset
-)
-
-/**
- * 图片详情的入参：这条消息的全部图片（缩略图顺序 = 选择/发送顺序）+ 被点开的那张下标。
- *
- * 一起传而不是只传一张：详情里要能左右切换查看，只给一张就切不了。
- */
-private data class ViewerTarget(val paths: List<String>, val startIndex: Int)
-
-/** 选择文本页要展示的内容。 */
-private data class SelectionTarget(
-    val title: String,
-    val text: String,
-    val reasoning: String
-)
-
-/**
- * 独立全屏页面：抽屉直接进的一级页（设置 / 工作区 / 会话列表），以及设置首页下的各功能页。
- */
-private enum class AppPage {
-    SETTINGS, WORKSPACE, SETTINGS_DATA, SESSIONS,
-    PERMISSION_TIER,
-    MODEL, PERMISSION, PACKAGE, LOGS, SCHEDULE, SUBAGENT, ARCHIVE, TRASH,
-    // 设置首页（SETTINGS）→ 通用设置（GENERAL）/ 模型（MODEL）/ 长期记忆（MEMORY）/
-    // 上下文洞察（CONTEXT_HUB）/ 上下文配置（CONTEXT_CONFIG）/ 包管理（PACKAGE）/ 数据（SETTINGS_DATA）；
-    // 轨迹是由主页左滑进入的全屏页，不属于设置层。
-    // 统计 / 提示词 / 思考三页已并进「上下文洞察」与「模型」：同一件事在两处入口只会让人怀疑哪个是真的。
-    GENERAL, MEMORY, CONTEXT_HUB, CONTEXT_CONFIG, TRACE,
-    // 关于是只读页（版本 / 开源地址 / 第三方组件），从设置首页最底部的卡片进
-    ABOUT,
-    // 计划是主页右上角那枚按钮进的独立页（不挂在设置层下），返回即回主页。
-    // 目标没有预览页：/goal 走命令解析，状态只看输入框右侧那枚只读图标
-    PLAN,
-    // 内置浏览器：回复里的链接点开进这里。返回（侧滑/返回键）只回主页，**页面不关**：
-    // 顶栏会多出一枚网页图标，点回来接着用（页面实例留在 BrowserHolder 里，登录态不丢）。
-    BROWSER
-}
 
 /**
  * 主页：消息流 + 底部输入区，以及抽屉与各二级全屏页的唯一宿主。
@@ -286,29 +233,31 @@ fun ChatScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // 全部瞬时界面状态集中在这里：拆块时子组合用 `var x by ui.x` 拿到同一份状态
+    val ui = remember { ChatUiState(context) }
     val viewModel = remember { ChatViewModel(context) }
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var page by remember { mutableStateOf<AppPage?>(null) }
+    var page by ui.page
     // 回收站页返回时自增：数据页一直挂在这层下面，不换 key 那行统计就不会刷新
-    var trashRefreshKey by remember { mutableStateOf(0) }
-    var drawerOpen by remember { mutableStateOf(false) }
+    var trashRefreshKey by ui.trashRefreshKey
+    var drawerOpen by ui.drawerOpen
     // 上下文洞察页是从哪进来的：主页输入框那条路要退回主页，设置首页那条要退回设置。
     // 只记一个来源就够，不必为每个二级页都备一套返回栈（页面上只有它有两个入口）。
-    var contextHubFromHome by remember { mutableStateOf(false) }
+    var contextHubFromHome by ui.contextHubFromHome
     // 抽屉里的「＋ 新建工作区」：抽屉没有输入框，弹一个极简输入框
-    var showCreateWorkspace by remember { mutableStateOf(false) }
+    var showCreateWorkspace by ui.showCreateWorkspace
     // 轨迹页固定显示代码块，不受「显示工作代码视图」开关影响
     val traceView = true
     // 输入框弹出面板的「开着没 / 关掉」把手：面板状态仍归 Composer，父层只借它铺遮罩
-    val composerPanel = remember { ComposerPanelHost() }
+    val composerPanel = ui.composerPanel
     // 包管理 / 会话列表这两页的内容区是 HorizontalPager：只有它停在第一页时，
     // 抽屉才敢在 Initial pass 抢走向右的位移（否则从第二页往右翻页就翻不动了）
-    var pagerAtFirstPage by remember { mutableStateOf(true) }
-    var extraPrompt by remember { mutableStateOf(PromptStore.loadExtra(context)) }
-    var overridePrompt by remember { mutableStateOf(PromptStore.loadOverride(context).orEmpty()) }
+    var pagerAtFirstPage by ui.pagerAtFirstPage
+    var extraPrompt by ui.extraPrompt
+    var overridePrompt by ui.overridePrompt
     // 上下文页要的全局总账快照：进页面时读一次盘（UsageLedger.load 自带「只读一次」的闸门）
     val lastLedger = remember(page) {
         UsageLedger.load(context)
@@ -317,16 +266,16 @@ fun ChatScreen(
     val haptic = LocalHapticFeedback.current
     val keyboard = LocalSoftwareKeyboardController.current
     // 输入栏实测高度：附件面板要浮在它上面，写死 dp 会跟字号档位对不上
-    var inputBarHeightPx by remember { mutableStateOf(0) }
-    var topBarHeightPx by remember { mutableStateOf(0) }
+    var inputBarHeightPx by ui.inputBarHeightPx
+    var topBarHeightPx by ui.topBarHeightPx
     // 图片详情：这条消息的全部图片 + 起点下标（详情里按缩略图顺序左右切换）
-    var viewer by remember { mutableStateOf<ViewerTarget?>(null) }
+    var viewer by ui.viewer
 
     // 子任务面板：Registry 是内存 object（子智能体在 IO 协程里写）。
     // 以前这里是 300ms 轮询：空闲、一个子智能体都没有时也在每 300ms 醒一次并分配一份快照。
     // 现在改成订阅版本号：没有子智能体在跑时，那条 Flow 一条都不会发，主线程一次都不会被叫醒。
-    var subAgentPanelOpen by remember { mutableStateOf(false) }
-    var subAgentDetailId by remember { mutableStateOf<String?>(null) }
+    var subAgentPanelOpen by ui.subAgentPanelOpen
+    var subAgentDetailId by ui.subAgentDetailId
     val subAgentVersion by SubAgentRegistry.version.collectAsState()
     // 只在版本真的变了时重取快照（首帧也走这条 remember，等于开页面先取一次）
     val subAgentEntries = remember(subAgentVersion) { SubAgentRegistry.snapshot() }
@@ -339,58 +288,49 @@ fun ChatScreen(
     }
 
     // 数据备份：导出选项 / 导入确认 / 导入报告
-    var showExportDialog by remember { mutableStateOf(false) }
-    var includeTerminal by remember { mutableStateOf(false) }
-    var includeLogs by remember { mutableStateOf(false) }
-    var includeMemory by remember { mutableStateOf(false) }
+    var showExportDialog by ui.showExportDialog
+    var includeTerminal by ui.includeTerminal
+    var includeLogs by ui.includeLogs
+    var includeMemory by ui.includeMemory
     // Ubuntu 环境段的真实体积（字节）：0 表示还没量出来（弹窗刚开、盘上文件多时要走一两秒）
-    var terminalBytes by remember { mutableStateOf(0L) }
+    var terminalBytes by ui.terminalBytes
     // 每次打开弹窗都重量一次：用户可能在两次导出之间用 apt 装了不少东西
     LaunchedEffect(showExportDialog) {
         if (showExportDialog) {
             terminalBytes = withContext(Dispatchers.IO) { BackupArchive.terminalSectionBytes(context) }
         }
     }
-    var importUri by remember { mutableStateOf<Uri?>(null) }
+    var importUri by ui.importUri
 
     // 「清理未引用附件」的结果：只在这一层显示，页面关掉就没了
-    var orphanStatus by remember { mutableStateOf<String?>(null) }
+    var orphanStatus by ui.orphanStatus
 
     // 余额是「查了才有」的临时结果，不落盘：只在模型页显示
-    var balance by remember { mutableStateOf<BalanceResult?>(null) }
-    var balanceBusy by remember { mutableStateOf(false) }
+    var balance by ui.balance
+    var balanceBusy by ui.balanceBusy
 
     // 分叉会话的「瞬灭再加载」：分叉完屏幕内容要闪一下，
     // 否则复制整条会话时画面纹丝不动，看不出已经分叉成功。
-    var forkReloading by remember { mutableStateOf(false) }
+    var forkReloading by ui.forkReloading
     val forkReloadAlpha by animateFloatAsState(
         targetValue = if (forkReloading) 1f else 0f,
         animationSpec = tween(durationMillis = if (forkReloading) 70 else 140),
         label = "forkReload"
     )
     // 所有「分叉」入口都走它：遮罩盖住 → 真正切会话 → 淡出，露出重新加载后的内容
-    val forkWithReload: (() -> Unit) -> Unit = { action ->
-        scope.launch {
-            forkReloading = true
-            // 等遮罩盖实了再换数据，避免用户看见中间态
-            delay(80)
-            action()
-            delay(110)
-            forkReloading = false
-        }
-    }
+    val forkWithReload: (() -> Unit) -> Unit = { action -> ui.forkWithReload(scope, action) }
     // 「本轮用量」伴随面板：贴着被点的那枚用量按钮弹出，点面板以外任何地方收掉
-    var turnUsage by remember { mutableStateOf<TurnUsageTarget?>(null) }
-    var selectionTarget by remember { mutableStateOf<SelectionTarget?>(null) }
-    var selectionVisible by remember { mutableStateOf(false) }
+    var turnUsage by ui.turnUsage
+    var selectionTarget by ui.selectionTarget
+    var selectionVisible by ui.selectionVisible
     // 图片长按小窗：内容与可见性分开存，收起那 140ms 里内容还得留在场上播淡出
-    var imageMenuTarget by remember { mutableStateOf<ImageMenuTarget?>(null) }
-    var imageMenuVisible by remember { mutableStateOf(false) }
-    var rollbackUserIndex by remember { mutableStateOf<Int?>(null) }
+    var imageMenuTarget by ui.imageMenuTarget
+    var imageMenuVisible by ui.imageMenuVisible
+    var rollbackUserIndex by ui.rollbackUserIndex
     // 清单条点开后的全表弹窗（只读）
-    var todoDialogVisible by remember { mutableStateOf(false) }
+    var todoDialogVisible by ui.todoDialogVisible
     // 清单条是否被用户收起：只影响这一屏，不动盘上的清单
-    var todoBarHidden by remember { mutableStateOf(false) }
+    var todoBarHidden by ui.todoBarHidden
 
     // 从通知点进来：切一次就把 id 清掉，界面重组时不再重复切
     // （switchSession 对「已经是当前会话」本来就是空操作，这里只是别让它每帧都调一次）
@@ -548,7 +488,7 @@ fun ChatScreen(
     // 键盘弹起时视口会先变矮：那一刻再问「是不是停在底部」，原来贴着底的位置已经被顶开了，
     // 问出来的永远是「不在底部」，列表就一条都不动。所以趁键盘收着的时候一直记着这个判断，
     // 真正弹起时用的是「弹起之前」的那一份。
-    var wasAtBottom by remember { mutableStateOf(true) }
+    var wasAtBottom by ui.wasAtBottom
     LaunchedEffect(imeVisible) {
         if (imeVisible) return@LaunchedEffect
         snapshotFlow { listState.isNearBottom(bottomTolerancePx) }.collect { wasAtBottom = it }
