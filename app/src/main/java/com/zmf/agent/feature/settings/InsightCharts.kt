@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -46,7 +47,7 @@ internal fun DonutRing(
         contentAlignment = Alignment.Center
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            val stroke = 4.dp.toPx()
+            val stroke = 3.dp.toPx()
             val inset = stroke / 2 + 1.dp.toPx()
             val arcSize = Size(this.size.width - inset * 2, this.size.height - inset * 2)
             val topLeft = Offset(inset, inset)
@@ -76,16 +77,27 @@ internal fun DonutRing(
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // 中心数字按长度收字号：天数级（如 2d10h）也必须单行，不能换到第二行
+            val topSize = when {
+                centerTop.length <= 4 -> 18.sp
+                centerTop.length <= 6 -> 16.sp
+                centerTop.length <= 8 -> 14.sp
+                else -> 12.sp
+            }
             Text(
                 text = centerTop,
-                fontSize = 24.sp,
+                fontSize = topSize,
                 fontWeight = FontWeight.SemiBold,
-                color = onSurface
+                color = onSurface,
+                maxLines = 1,
+                softWrap = false
             )
             Text(
                 text = centerBottom,
                 fontSize = 12.sp,
-                color = onSurface.copy(alpha = 0.45f)
+                color = onSurface.copy(alpha = 0.45f),
+                maxLines = 1,
+                softWrap = false
             )
         }
     }
@@ -174,20 +186,65 @@ internal fun LegendRow(
     ) {
         Box(
             modifier = Modifier
-                .size(8.dp)
-                .background(color, CircleShape)
+                .size(9.dp)
+                .background(color, RoundedCornerShape(2.dp))
         )
         Text(
             text = label,
             modifier = Modifier.weight(1f).padding(start = 8.dp),
             fontSize = 14.sp,
-            color = onSurface
+            color = onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
         Text(
             text = (if (tokens > 0) "≈" + tokenText(tokens) else "—") +
                 (if (fraction != null) "  " + percentText(fraction) else ""),
             fontSize = 12.sp,
-            color = onSurface.copy(alpha = 0.45f)
+            color = onSurface.copy(alpha = 0.45f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** 段落图例（两行）：第一行「名称 + 右对齐百分比」，第二行灰色补充值（DSH 同款）。 */
+@Composable
+internal fun LegendTwoLine(
+    label: String,
+    rightTop: String,
+    rightBottom: String,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    Column(
+        modifier = modifier.fillMaxWidth().padding(vertical = 3.dp)
+    ) {
+        // 色标是标题行的兄弟节点：与标题文字垂直居中，不在两行之间居中
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(9.dp)
+                    .background(color, RoundedCornerShape(2.dp))
+            )
+            Text(
+                text = label,
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
+                fontSize = 13.sp,
+                color = onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(text = rightTop, fontSize = 12.sp, color = onSurface.copy(alpha = 0.65f))
+        }
+        Text(
+            text = rightBottom,
+            modifier = Modifier.padding(start = 17.dp),
+            fontSize = 11.sp,
+            color = onSurface.copy(alpha = 0.40f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -207,8 +264,8 @@ internal fun LegendPlain(
     ) {
         Box(
             modifier = Modifier
-                .size(8.dp)
-                .background(color, CircleShape)
+                .size(9.dp)
+                .background(color, RoundedCornerShape(2.dp))
         )
         Text(
             text = label,
@@ -236,16 +293,19 @@ private fun oneDecimal(value: Double): String {
     return v.toString()
 }
 
-/** 时长按量级写成人话。 */
+/**
+ * 时长按 DSH 的紧凑写法：秒 / 分秒 / 时分 / 天时。
+ *
+ * 例：`17s`、`3m17s`、`13h38m`、`2d10h`。中文「2 天 10 小时」在环形中心会被挤成两行，
+ * 所以这里不写中文单位。
+ */
 internal fun durationText(millis: Long): String {
-    val totalSeconds = millis.coerceAtLeast(0L) / 1000L
-    if (totalSeconds < 60L) return totalSeconds.toString() + " 秒"
+    val totalSeconds = (millis.coerceAtLeast(0L) + 999L) / 1000L
+    if (totalSeconds < 60L) return totalSeconds.toString() + "s"
     val minutes = totalSeconds / 60L
-    if (minutes < 60L) {
-        val seconds = totalSeconds % 60L
-        return minutes.toString() + ":" + (if (seconds < 10L) "0$seconds" else seconds.toString())
-    }
+    if (minutes < 60L) return minutes.toString() + "m" + (totalSeconds % 60L).toString() + "s"
     val hours = minutes / 60L
-    if (hours < 24L) return hours.toString() + " 小时 " + (minutes % 60L).toString() + " 分"
-    return (hours / 24L).toString() + " 天 " + (hours % 24L).toString() + " 小时"
+    if (hours < 24L) return hours.toString() + "h" + (minutes % 60L).toString() + "m"
+    val days = hours / 24L
+    return days.toString() + "d" + (hours % 24L).toString() + "h"
 }

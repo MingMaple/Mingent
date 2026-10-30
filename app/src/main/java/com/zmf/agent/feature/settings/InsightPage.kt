@@ -41,6 +41,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.store.InsightColors
@@ -61,6 +62,15 @@ import java.util.Date
 import java.util.Locale
 
 /**
+ * 页面内记忆：本次 App 进程内记住全局范围（默认近 7 天）。
+ *
+ * 不落盘：进程被杀（后台被删除）后回到默认值；页面退出/重进仍保留本次选择。
+ */
+private object InsightPageMemory {
+    var range: InsightRange = InsightRange.WEEK
+}
+
+/**
  * 上下文洞察页（单页）。
  *
  * 顶部是本会话模块（三张卡、左上角三个按钮切换），下面接全局统计，最下面是会话列表。
@@ -77,7 +87,7 @@ fun ContextInsightPage(
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     var viewedId by remember { mutableStateOf(initialSessionId) }
-    var range by remember { mutableStateOf(InsightRange.ALL) }
+    var range by remember { mutableStateOf(InsightPageMemory.range) }
     var tab by remember { mutableIntStateOf(0) }
     val global = remember(range) { loadGlobal(range) }
     val session = remember(viewedId) { loadSession(viewedId) }
@@ -132,7 +142,10 @@ fun ContextInsightPage(
                 GlobalSection(
                     global = global,
                     range = range,
-                    onRange = { range = it },
+                    onRange = {
+                        range = it
+                        InsightPageMemory.range = it
+                    },
                     onPickSession = { row ->
                         viewedId = row.id
                         scope.launch { scroll.animateScrollTo(0) }
@@ -164,11 +177,6 @@ private fun SessionModule(
                 fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = onSurface
-            )
-            Text(
-                text = session.modelLabel,
-                fontSize = 12.sp,
-                color = onSurface.copy(alpha = 0.45f)
             )
         }
         if (!session.isCurrent) {
@@ -202,10 +210,13 @@ private fun SessionModule(
             },
             label = "insightTab"
         ) { index ->
-            when (index) {
-                1 -> TokenTab(session)
-                2 -> TimingTab(session)
-                else -> CurrentContextTab(session)
+            // AnimatedContent 的内容槽是 BoxScope：不套 Column，多行内容会全部叠在同一个位置
+            Column(Modifier.fillMaxWidth()) {
+                when (index) {
+                    1 -> TokenTab(session)
+                    2 -> TimingTab(session)
+                    else -> CurrentContextTab(session)
+                }
             }
         }
     }
@@ -235,12 +246,13 @@ private fun CurrentContextTab(view: InsightSessionView) {
             fontWeight = FontWeight.SemiBold,
             color = onSurface
         )
+        Text(
+            text = "上下文已用",
+            modifier = Modifier.padding(start = 4.dp, bottom = 3.dp),
+            fontSize = 12.sp,
+            color = onSurface.copy(alpha = 0.45f)
+        )
     }
-    Text(
-        text = "上下文已用",
-        fontSize = 12.sp,
-        color = onSurface.copy(alpha = 0.45f)
-    )
     Spacer(Modifier.height(8.dp))
     StackedBar(
         segments = view.parts.map { it.tokens to argb(it.colorArgb) },
@@ -277,11 +289,11 @@ private fun TokenTab(view: InsightSessionView) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         DonutRing(
             segments = compositionSegments(composition),
-            size = 128.dp,
+            size = 88.dp,
             centerTop = tokenText(total.toLong()),
             centerBottom = "总用量"
         )
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             CompositionLegend(composition)
         }
@@ -314,23 +326,22 @@ private fun TimingTab(view: InsightSessionView) {
         DashBlock()
         return
     }
-    val segments = timingSegments(timing)
+    val segments = timingSegments(timing, view.requests, view.toolCalls)
     Row(verticalAlignment = Alignment.CenterVertically) {
         DonutRing(
             segments = segments.map { it.fraction to it.color },
-            size = 128.dp,
+            size = 88.dp,
             centerTop = durationText(timing.active),
             centerBottom = "活跃时长"
         )
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             for (seg in segments) {
-                LegendPlain(
+                LegendTwoLine(
                     label = seg.label,
-                    value = durationText(seg.millis) +
-                        (seg.count?.let { " · " + it + " 次" } ?: "") +
-                        " · " + percentText(seg.fraction)
-                    ,
+                    rightTop = percentText(seg.fraction),
+                    rightBottom = durationText(seg.millis) +
+                        (seg.count?.let { " · " + it + " 次" } ?: ""),
                     color = seg.color
                 )
             }
@@ -348,6 +359,13 @@ private fun GlobalSection(
     onPickSession: (InsightSessionRow) -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
+    Text(
+        text = "全局统计",
+        fontSize = 17.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = onSurface,
+        modifier = Modifier.padding(top = 4.dp)
+    )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         RangePill("今天", range == InsightRange.TODAY) { onRange(InsightRange.TODAY) }
         RangePill("近 7 天", range == InsightRange.WEEK) { onRange(InsightRange.WEEK) }
@@ -355,51 +373,47 @@ private fun GlobalSection(
         RangePill("全部", range == InsightRange.ALL) { onRange(InsightRange.ALL) }
     }
 
-    InsightCard {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            KpiCard(
-                label = "全部会话",
-                value = global.sessions.toString(),
-                sub = "其中已归档 " + global.archived + " 个",
-                modifier = Modifier.weight(1f)
-            )
-            KpiCard(
-                label = "累计消耗",
-                value = tokenText(global.totalTokens),
-                sub = "轮次 " + global.rounds,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            KpiCard(
-                label = "费用",
-                value = global.costCny?.let { moneyText(it) } ?: "—",
-                sub = "已计价 " + global.pricedSessions + "/" + global.sessions + " 个会话",
-                modifier = Modifier.weight(1f)
-            )
-            KpiCard(
-                label = "缓存命中",
-                value = global.cacheRate?.let { percentText(it) } ?: "—",
-                sub = "本范围",
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            KpiCard(
-                label = "工具调用",
-                value = global.toolCalls.toString(),
-                sub = "工具执行 " + durationText(global.toolMillis),
-                modifier = Modifier.weight(1f)
-            )
-            KpiCard(
-                label = "活跃时长",
-                value = durationText(global.activeMillis),
-                sub = "模型调用 " + global.requests,
-                modifier = Modifier.weight(1f)
-            )
-        }
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        KpiCard(
+            label = "全部会话",
+            value = global.sessions.toString(),
+            sub = "其中已归档 " + global.archived + " 个",
+            modifier = Modifier.weight(1f)
+        )
+        KpiCard(
+            label = "累计消耗",
+            value = tokenText(global.totalTokens),
+            sub = "轮次 " + global.rounds,
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        KpiCard(
+            label = "费用",
+            value = global.costCny?.let { moneyText(it) } ?: "—",
+            sub = "已计价 " + global.pricedSessions + "/" + global.sessions + " 个会话",
+            modifier = Modifier.weight(1f)
+        )
+        KpiCard(
+            label = "缓存命中",
+            value = global.cacheRate?.let { percentText(it) } ?: "—",
+            sub = "本范围",
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        KpiCard(
+            label = "工具调用",
+            value = global.toolCalls.toString(),
+            sub = "工具执行 " + (if (global.toolMillis > 0) durationText(global.toolMillis) else "—"),
+            modifier = Modifier.weight(1f)
+        )
+        KpiCard(
+            label = "活跃时长",
+            value = if (global.activeMillis > 0) durationText(global.activeMillis) else "—",
+            sub = "模型调用 " + global.requests,
+            modifier = Modifier.weight(1f)
+        )
     }
 
     var dayMode by remember { mutableIntStateOf(0) }
@@ -456,11 +470,11 @@ private fun GlobalSection(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 DonutRing(
                     segments = ledgerSegments(composition),
-                    size = 128.dp,
+                    size = 88.dp,
                     centerTop = tokenText(composition.total.toLong()),
                     centerBottom = "总用量"
                 )
-                Spacer(Modifier.width(16.dp))
+                Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     LedgerLegend(composition)
                 }
@@ -491,18 +505,18 @@ private fun GlobalSection(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 DonutRing(
                     segments = segments.map { it.fraction to it.color },
-                    size = 128.dp,
+                    size = 88.dp,
                     centerTop = durationText(global.timing.active),
                     centerBottom = "活跃时长"
                 )
-                Spacer(Modifier.width(16.dp))
+                Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     for (seg in segments) {
-                        LegendPlain(
+                        LegendTwoLine(
                             label = seg.label,
-                            value = durationText(seg.millis) +
-                                (seg.count?.let { " · " + it + " 次" } ?: "") +
-                                " · " + percentText(seg.fraction),
+                            rightTop = percentText(seg.fraction),
+                            rightBottom = durationText(seg.millis) +
+                                (seg.count?.let { " · " + it + " 次" } ?: ""),
                             color = seg.color
                         )
                     }
@@ -596,7 +610,9 @@ private fun SessionListCard(
                                 (row.costCny?.let { " · " + moneyText(it) } ?: "") +
                                 " · " + relativeTime(row.updatedAt),
                             fontSize = 11.sp,
-                            color = onSurface.copy(alpha = 0.45f)
+                            color = onSurface.copy(alpha = 0.45f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -645,10 +661,10 @@ private fun compositionSegments(c: SessionComposition): List<Pair<Float, Color>>
     val total = c.total.coerceAtLeast(1)
     return listOf(
         part("系统提示词", c.system, total, InsightColors.SYSTEM),
-        part("技能注入", c.skills, total, InsightColors.SKILLS),
         part("工具定义", c.tools, total, InsightColors.TOOLS),
         part("用户消息", c.user, total, InsightColors.USER),
         part("注入内容", c.inject, total, InsightColors.INJECT),
+        part("技能注入", c.skills, total, InsightColors.SKILLS),
         part("助手消息", c.assistant, total, InsightColors.ASSISTANT),
         part("工具结果", c.toolResults, total, InsightColors.TOOL_RESULTS),
         part("输出", c.output, total, InsightColors.OUTPUT)
@@ -659,10 +675,10 @@ private fun ledgerSegments(c: LedgerComposition): List<Pair<Float, Color>> {
     val total = c.total.coerceAtLeast(1)
     return listOf(
         part("系统提示词", c.system, total, InsightColors.SYSTEM),
-        part("技能注入", c.skills, total, InsightColors.SKILLS),
         part("工具定义", c.tools, total, InsightColors.TOOLS),
         part("用户消息", c.user, total, InsightColors.USER),
         part("注入内容", c.inject, total, InsightColors.INJECT),
+        part("技能注入", c.skills, total, InsightColors.SKILLS),
         part("助手消息", c.assistant, total, InsightColors.ASSISTANT),
         part("工具结果", c.toolResults, total, InsightColors.TOOL_RESULTS),
         part("输出", c.output, total, InsightColors.OUTPUT)
@@ -672,34 +688,30 @@ private fun ledgerSegments(c: LedgerComposition): List<Pair<Float, Color>> {
 @Composable
 private fun CompositionLegend(c: SessionComposition) {
     val total = c.total.coerceAtLeast(1)
-    LegendRow("系统提示词", c.system.toLong(), c.system.toFloat() / total, argb(InsightColors.SYSTEM))
-    LegendRow("技能注入", c.skills.toLong(), c.skills.toFloat() / total, argb(InsightColors.SKILLS))
-    LegendRow("工具定义", c.tools.toLong(), c.tools.toFloat() / total, argb(InsightColors.TOOLS))
-    LegendRow("用户消息", c.user.toLong(), c.user.toFloat() / total, argb(InsightColors.USER))
-    LegendRow("注入内容", c.inject.toLong(), c.inject.toFloat() / total, argb(InsightColors.INJECT))
-    LegendRow("助手消息", c.assistant.toLong(), c.assistant.toFloat() / total, argb(InsightColors.ASSISTANT))
-    LegendRow(
-        "工具结果", c.toolResults.toLong(), c.toolResults.toFloat() / total,
-        argb(InsightColors.TOOL_RESULTS)
-    )
-    LegendRow("输出", c.output.toLong(), c.output.toFloat() / total, argb(InsightColors.OUTPUT))
+    LegendTwoLine("系统提示词", percentText(c.system.toFloat() / total), tokenOrDash(c.system), argb(InsightColors.SYSTEM))
+    LegendTwoLine("工具定义", percentText(c.tools.toFloat() / total), tokenOrDash(c.tools), argb(InsightColors.TOOLS))
+    LegendTwoLine("用户消息", percentText(c.user.toFloat() / total), tokenOrDash(c.user), argb(InsightColors.USER))
+    LegendTwoLine("注入内容", percentText(c.inject.toFloat() / total), tokenOrDash(c.inject), argb(InsightColors.INJECT))
+    LegendTwoLine("技能注入", percentText(c.skills.toFloat() / total), tokenOrDash(c.skills), argb(InsightColors.SKILLS))
+    LegendTwoLine("助手消息", percentText(c.assistant.toFloat() / total), tokenOrDash(c.assistant), argb(InsightColors.ASSISTANT))
+    LegendTwoLine("工具结果", percentText(c.toolResults.toFloat() / total), tokenOrDash(c.toolResults), argb(InsightColors.TOOL_RESULTS))
+    LegendTwoLine("输出", percentText(c.output.toFloat() / total), tokenOrDash(c.output), argb(InsightColors.OUTPUT))
 }
 
 @Composable
 private fun LedgerLegend(c: LedgerComposition) {
     val total = c.total.coerceAtLeast(1)
-    LegendRow("系统提示词", c.system.toLong(), c.system.toFloat() / total, argb(InsightColors.SYSTEM))
-    LegendRow("技能注入", c.skills.toLong(), c.skills.toFloat() / total, argb(InsightColors.SKILLS))
-    LegendRow("工具定义", c.tools.toLong(), c.tools.toFloat() / total, argb(InsightColors.TOOLS))
-    LegendRow("用户消息", c.user.toLong(), c.user.toFloat() / total, argb(InsightColors.USER))
-    LegendRow("注入内容", c.inject.toLong(), c.inject.toFloat() / total, argb(InsightColors.INJECT))
-    LegendRow("助手消息", c.assistant.toLong(), c.assistant.toFloat() / total, argb(InsightColors.ASSISTANT))
-    LegendRow(
-        "工具结果", c.toolResults.toLong(), c.toolResults.toFloat() / total,
-        argb(InsightColors.TOOL_RESULTS)
-    )
-    LegendRow("输出", c.output.toLong(), c.output.toFloat() / total, argb(InsightColors.OUTPUT))
+    LegendTwoLine("系统提示词", percentText(c.system.toFloat() / total), tokenOrDash(c.system), argb(InsightColors.SYSTEM))
+    LegendTwoLine("工具定义", percentText(c.tools.toFloat() / total), tokenOrDash(c.tools), argb(InsightColors.TOOLS))
+    LegendTwoLine("用户消息", percentText(c.user.toFloat() / total), tokenOrDash(c.user), argb(InsightColors.USER))
+    LegendTwoLine("注入内容", percentText(c.inject.toFloat() / total), tokenOrDash(c.inject), argb(InsightColors.INJECT))
+    LegendTwoLine("技能注入", percentText(c.skills.toFloat() / total), tokenOrDash(c.skills), argb(InsightColors.SKILLS))
+    LegendTwoLine("助手消息", percentText(c.assistant.toFloat() / total), tokenOrDash(c.assistant), argb(InsightColors.ASSISTANT))
+    LegendTwoLine("工具结果", percentText(c.toolResults.toFloat() / total), tokenOrDash(c.toolResults), argb(InsightColors.TOOL_RESULTS))
+    LegendTwoLine("输出", percentText(c.output.toFloat() / total), tokenOrDash(c.output), argb(InsightColors.OUTPUT))
 }
+
+private fun tokenOrDash(tokens: Int): String = if (tokens > 0) "≈" + tokenText(tokens.toLong()) else "—"
 
 @Composable
 private fun PartRow(part: InsightPart, partsSum: Int) {
@@ -739,14 +751,27 @@ private fun KpiCard(
     val onSurface = MaterialTheme.colorScheme.onSurface
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
-        Text(text = label, fontSize = 12.sp, color = onSurface.copy(alpha = 0.45f))
+        Text(text = label, fontSize = 12.sp, color = onSurface.copy(alpha = 0.45f), maxLines = 1)
         Spacer(Modifier.height(2.dp))
-        Text(text = value, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
-        Text(text = sub, fontSize = 11.sp, color = onSurface.copy(alpha = 0.35f))
+        Text(
+            text = value,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = sub,
+            fontSize = 11.sp,
+            color = onSurface.copy(alpha = 0.35f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

@@ -1127,18 +1127,19 @@ class ContextState(
         val estimated: Int
         if (isCurrent) {
             breakdown = contextBreakdown
-            estimated = contextSnapshot.estimatedTokens
         } else {
             val request = requestFor(all, summary, upTo)
-            estimated = ContextCompactor.estimate(request)
             breakdown = breakdownFor(request, if (upTo > 0) summary else "")
         }
+        // 水位按整份请求算（提示词 + 技能 + 摘要 + 工具表 + 三类消息），
+        // 与成分条同一口径，避免「成分加起来比水位大几倍」
+        estimated = breakdown.totalTokens
         val parts = listOf(
             InsightPart("系统提示词", breakdown.systemTokens, InsightColors.SYSTEM),
-            InsightPart("技能注入", breakdown.skillTokens, InsightColors.SKILLS),
             InsightPart("工具定义", breakdown.toolTokens, InsightColors.TOOLS),
             InsightPart("用户消息", breakdown.userTokens, InsightColors.USER),
             InsightPart("注入内容", breakdown.summaryTokens, InsightColors.INJECT),
+            InsightPart("技能注入", breakdown.skillTokens, InsightColors.SKILLS),
             InsightPart("助手消息", breakdown.assistantTokens, InsightColors.ASSISTANT),
             InsightPart("工具结果", breakdown.toolResultTokens, InsightColors.TOOL_RESULTS)
         )
@@ -1177,17 +1178,21 @@ class ContextState(
         } else {
             null
         }
-        val active = if (firstAt > 0L && lastAt > firstAt) lastAt - firstAt else 0L
         val inherited = session.inheritedUsage
         val ttft = (session.ttftMillis - inherited.ttftMillis).coerceAtLeast(0L)
         val reasoning = (session.reasoningMillis - inherited.reasoningMillis).coerceAtLeast(0L)
         val textRaw = (session.textMillis - inherited.textMillis).coerceAtLeast(0L)
         val toolArg = (session.toolArgMillis - inherited.toolArgMillis).coerceAtLeast(0L)
-        // 老会话只有 genMillis（思考+正文合在一起）：三段细分都没有时把它记到「模型回复」，
+        // 老会话只有 genMillis（思考+正文合在一起）：把「新细分没有覆盖到」的那部分补进模型回复，
         // 免得整段旧生成时间掉进「其他开销」
         val genLegacy = (session.genMillis - inherited.genMillis).coerceAtLeast(0L)
-        val text = if (reasoning == 0L && textRaw == 0L && toolArg == 0L) genLegacy else textRaw
+        val detailedGen = reasoning + textRaw + toolArg
+        val text = textRaw + (genLegacy - detailedGen).coerceAtLeast(0L)
         val toolMs = (session.toolMillis - inherited.toolMillis).coerceAtLeast(0L)
+        // 洞察页的「活跃时长」= 模型流 + 工具执行（DSH 同口径），
+        // 不用消息首末差：那个跨度含几天闲置，会把耗时环压成「其他 99.9%」
+        val modelMs = (session.modelMillis - inherited.modelMillis).coerceAtLeast(0L)
+        val active = modelMs + toolMs
         val speed = if (hasOwnUsage && session.lastTurnModelMillis > 0 &&
             session.lastTurnCompletionTokens > 0
         ) {
