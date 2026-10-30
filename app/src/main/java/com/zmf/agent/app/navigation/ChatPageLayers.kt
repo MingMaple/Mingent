@@ -212,7 +212,6 @@ import com.zmf.agent.feature.chat.WorkSpacePage
 import com.zmf.agent.feature.chat.AppPage
 import com.zmf.agent.feature.chat.ChatUiState
 import com.zmf.agent.feature.chat.ChatViewModel
-import com.zmf.agent.feature.chat.PermissionTierPage
 import com.zmf.agent.feature.chat.PlanPage
 import com.zmf.agent.feature.chat.SessionListPage
 import com.zmf.agent.feature.chat.SubAgentPage
@@ -263,7 +262,7 @@ internal fun ChatPageLayers(
             visible = page == AppPage.SETTINGS || page == AppPage.SETTINGS_DATA ||
                 page == AppPage.MODEL ||
                 page == AppPage.PERMISSION || page == AppPage.PACKAGE || page == AppPage.LOGS ||
-                page == AppPage.SCHEDULE || page == AppPage.PERMISSION_TIER ||
+                page == AppPage.SCHEDULE ||
                 page == AppPage.GENERAL || page == AppPage.MEMORY ||
                 page == AppPage.CONTEXT_HUB || page == AppPage.CONTEXT_CONFIG ||
                 page == AppPage.ABOUT || page == AppPage.ARCHIVE,
@@ -342,17 +341,16 @@ internal fun ChatPageLayers(
             )
         }
 
-        // 通用设置层同理：权限 / 权限档 / 定时任务三个三级页滑入时，这一层必须原地留着
+        // 通用设置层同理：权限 / 定时任务两个三级页滑入时，这一层必须原地留着
         AnimatedVisibility(
             visible = page == AppPage.GENERAL || page == AppPage.PERMISSION ||
-                page == AppPage.PERMISSION_TIER || page == AppPage.SCHEDULE,
+                page == AppPage.SCHEDULE,
             enter = slideInHorizontally(Motion.spring()) { it },
             exit = slideOutHorizontally(tween(220)) { it },
             modifier = Modifier.fillMaxSize()
         ) {
             GeneralSettingsPage(
                 onBack = { page = AppPage.SETTINGS },
-                permissionLabel = viewModel.permissionLevel.displayName(),
                 onPermission = { page = AppPage.PERMISSION },
                 uiScale = uiScale,
                 uiScaleLabel = UiScaleStore.label(uiScale),
@@ -468,20 +466,7 @@ internal fun ChatPageLayers(
             )
         }
 
-        // 权限档从通用设置进来，返回回到上一级；会话列表才是抽屉的一级页
-        AnimatedVisibility(
-            visible = page == AppPage.PERMISSION_TIER,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            PermissionTierPage(
-                current = viewModel.permissionLevel,
-                onPick = { level -> viewModel.setPermission(level) },
-                onBack = { page = AppPage.GENERAL }
-            )
-        }
-
+        // 会话列表是抽屉的一级页
         AnimatedVisibility(
             visible = page == AppPage.SESSIONS,
             enter = slideInHorizontally(Motion.spring()) { it },

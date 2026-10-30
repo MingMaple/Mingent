@@ -57,7 +57,6 @@ import com.zmf.agent.core.prefs.GeneralPrefs
 @Composable
 fun GeneralSettingsPage(
     onBack: () -> Unit,
-    permissionLabel: String,
     onPermission: () -> Unit,
     uiScale: Float,
     uiScaleLabel: String,
@@ -74,7 +73,9 @@ fun GeneralSettingsPage(
         GeneralCard {
             GeneralNavRow(
                 title = "权限",
-                value = permissionLabel,
+                // 这里进的是系统授权状态页，不是三档权限，所以不再显示当前档位：
+                // 那一行跟着三档变，会让人以为点进去能改档，实际上改档只在主页浮层里
+                value = "管理",
                 onClick = onPermission
             )
             GeneralDivider()

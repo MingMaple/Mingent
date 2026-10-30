@@ -205,10 +205,9 @@ internal fun ChatBackHandlers(
     BackHandler(enabled = page == AppPage.SESSIONS) { page = null }
     BackHandler(enabled = page == AppPage.SUBAGENT) { page = null }
     // 结构：设置首页 → 通用设置 / 模型 / 长期记忆 / 上下文洞察 / 上下文配置 / 包管理 / 数据，
-    // 通用设置 → 权限、权限档、定时任务；数据 → 日志、归档。
+    // 通用设置 → 权限、定时任务；数据 → 日志、归档。
     // 每一级只退回到它的上一级，不能跳级。
     BackHandler(enabled = page == AppPage.TRACE) { page = null }
-    BackHandler(enabled = page == AppPage.PERMISSION_TIER) { page = AppPage.GENERAL }
     BackHandler(enabled = page == AppPage.MODEL) { page = AppPage.SETTINGS }
     BackHandler(enabled = page == AppPage.ARCHIVE) { page = AppPage.SETTINGS_DATA }
     BackHandler(enabled = page == AppPage.TRASH) {

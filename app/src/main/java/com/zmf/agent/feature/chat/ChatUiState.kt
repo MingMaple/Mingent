@@ -48,7 +48,6 @@ internal data class SelectionTarget(
  */
 internal enum class AppPage {
     SETTINGS, WORKSPACE, SETTINGS_DATA, SESSIONS,
-    PERMISSION_TIER,
     MODEL, PERMISSION, PACKAGE, LOGS, SCHEDULE, SUBAGENT, ARCHIVE, TRASH,
     // 设置首页（SETTINGS）→ 通用设置（GENERAL）/ 模型（MODEL）/ 长期记忆（MEMORY）/
     // 上下文洞察（CONTEXT_HUB）/ 上下文配置（CONTEXT_CONFIG）/ 包管理（PACKAGE）/ 数据（SETTINGS_DATA）；
