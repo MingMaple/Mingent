@@ -18,7 +18,6 @@ import com.zmf.agent.capability.context.ContextEvent
 import com.zmf.agent.capability.context.ContextPolicy
 import com.zmf.agent.capability.context.ContextSnapshot
 import com.zmf.agent.core.store.Goal
-import com.zmf.agent.core.store.label
 import com.zmf.agent.capability.loop.AgentLoop
 import com.zmf.agent.capability.mcp.McpManager
 import com.zmf.agent.capability.loop.AgentUi
@@ -594,12 +593,8 @@ class ChatViewModel(context: Context) : AgentUi {
         )
     }
 
-    /** 当前目标的一句话：写给快照用，没有目标返回空串（那一行就不出）。 */
-    private fun goalText(): String {
-        val current = goal ?: return ""
-        return current.objective.take(200) + "（" + current.phase.label() + "，第 " + current.rounds +
-            " 轮 / 上限 " + MAX_GOAL_ROUNDS + " 轮）"
-    }
+    /** 当前目标的一句话（口径见 [PlanGoalController.goalText]）。 */
+    private fun goalText(): String = planGoal.goalText()
 
     /** 重新扫描 appdata/skills（导入/删除 Skill 之后调）。 */
     fun refreshSkillCatalog() {

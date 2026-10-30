@@ -274,6 +274,13 @@ class PlanGoalController(
         reloadGoal()
     }
 
+    /** 当前目标的一句话：写给请求尾部的快照用，没有目标返回空串（那一行就不出）。 */
+    fun goalText(): String {
+        val current = goal ?: return ""
+        return current.objective.take(200) + "（" + current.phase.label() + "，第 " + current.rounds +
+            " 轮 / 上限 " + MAX_GOAL_ROUNDS + " 轮）"
+    }
+
     /** 计划预览切换选中项；id 不在列表里就当没点（界面上的选中态不该跟着乱跳）。 */
     fun selectPlan(id: String) {
         if (plans.none { it.id == id }) return
