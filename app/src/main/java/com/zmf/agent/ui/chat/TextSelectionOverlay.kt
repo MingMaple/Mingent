@@ -41,7 +41,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.ui.theme.Motion
+import com.zmf.agent.uikit.theme.Motion
 import kotlinx.coroutines.launch
 
 /**

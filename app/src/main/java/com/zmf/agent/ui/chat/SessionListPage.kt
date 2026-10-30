@@ -1,6 +1,6 @@
 package com.zmf.agent.ui.chat
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.blockTapsOnly
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -61,11 +61,11 @@ import androidx.compose.ui.window.DialogProperties
 import com.zmf.agent.agent.session.ChatSession
 import com.zmf.agent.agent.session.SessionStore
 import com.zmf.agent.agent.workspace.WorkSpace
-import com.zmf.agent.ui.theme.Motion
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import com.zmf.agent.ui.common.saltFieldColors
+import com.zmf.agent.uikit.common.saltFieldColors
 
 /**
  * 「会话列表」页（侧边栏一级页面）：上面两个 tab「会话」「归档」，左右滑动切换。

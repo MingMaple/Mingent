@@ -1,6 +1,6 @@
 package com.zmf.agent.ui.chat
-import com.zmf.agent.ui.common.BoundedScrollColumn
-import com.zmf.agent.ui.common.blockTapsOnly
+import com.zmf.agent.uikit.common.BoundedScrollColumn
+import com.zmf.agent.uikit.common.blockTapsOnly
 
 import android.app.Activity
 import android.content.ClipData
@@ -189,10 +189,10 @@ import com.zmf.agent.ui.shell.AppDrawerContent
 import com.zmf.agent.ui.shell.SaltDrawer
 import com.zmf.agent.ui.shell.SaltFullPane
 import com.zmf.agent.ui.shell.SaltSwitch
-import com.zmf.agent.ui.theme.Motion
-import com.zmf.agent.ui.theme.Palette
-import com.zmf.agent.ui.theme.ThemeMode
-import com.zmf.agent.ui.theme.UiScaleStore
+import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.ThemeMode
+import com.zmf.agent.uikit.theme.UiScaleStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay

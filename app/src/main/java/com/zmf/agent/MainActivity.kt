@@ -20,11 +20,11 @@ import com.zmf.agent.core.capability.ShizukuBridge
 import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.schedule.ScheduleRunner
 import com.zmf.agent.ui.chat.ChatScreen
-import com.zmf.agent.ui.theme.AgentTheme
-import com.zmf.agent.ui.theme.Palette
-import com.zmf.agent.ui.theme.ThemeMode
-import com.zmf.agent.ui.theme.ThemeStore
-import com.zmf.agent.ui.theme.UiScaleStore
+import com.zmf.agent.uikit.theme.AgentTheme
+import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.ThemeMode
+import com.zmf.agent.uikit.theme.ThemeStore
+import com.zmf.agent.uikit.theme.UiScaleStore
 
 /**
  * 主界面：承载聊天页，并负责进程级初始化（通知会话跳转、崩溃落盘、Shizuku 绑定、

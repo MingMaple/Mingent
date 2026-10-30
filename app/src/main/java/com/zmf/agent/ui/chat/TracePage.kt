@@ -77,10 +77,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ToolCall
-import com.zmf.agent.ui.common.BoundedScrollColumn
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.theme.Motion
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.BoundedScrollColumn
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.theme.Palette
 import java.io.File
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay

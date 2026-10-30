@@ -66,8 +66,8 @@ import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.ui.chat.FoldToggle
 import com.zmf.agent.ui.chat.MarkdownText
-import com.zmf.agent.ui.theme.Palette
-import com.zmf.agent.ui.common.saltCursorBrush
+import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.common.saltCursorBrush
 
 /** 小窗只读展示最近多少条消息（老消息不铺进 LazyColumn，省内存也省布局）。 */
 private const val MAX_SHOWN = 80

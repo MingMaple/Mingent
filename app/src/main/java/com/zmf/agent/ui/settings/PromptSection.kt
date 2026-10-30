@@ -52,11 +52,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.agent.prompt.PromptBuilder
 import com.zmf.agent.agent.prompt.PromptInput
-import com.zmf.agent.ui.common.BoundedScrollColumn
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.theme.Motion
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.BoundedScrollColumn
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 「提示词」折叠卡：追加指令 / 整份覆盖 / 生效预览。

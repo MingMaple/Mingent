@@ -25,8 +25,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.dp
-import com.zmf.agent.ui.theme.Motion
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * Salt 风开关：不用 Material3 的 Switch，自己拿 Box + offset 拼。

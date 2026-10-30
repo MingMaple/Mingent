@@ -141,3 +141,90 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
+
+// ---------------------------------------------------------------
+// 架构边界检查
+//
+// 把「谁不许依赖谁」从文档约定变成构建失败：
+//   gradle :app:checkArchitecture
+//
+// 规则来源：_Docs/模块化重构/01_调研论文与结构设计.md §5.2
+//
+// 存量豁免：ui/ agent/ tools/ core/ schedule/ service/ 等老目录还在搬迁中，不属于任何新层，
+// 一律跳过；只有新层（uikit/ infra/ capability/ feature/）被强制检查。
+//
+// 白名单不是放水：每条都带编号与原因，并登记在 03_执行台账.md，搬完即刻删除。
+// ---------------------------------------------------------------
+val checkArchitecture by tasks.registering {
+    group = "verification"
+    description = "检查包依赖方向，违反即构建失败（见 _Docs/模块化重构/01）"
+    doLast {
+        val srcRoot = file("src/main/java")
+        val packageRe = Regex("""^\s*package\s+([\w.]+)""", RegexOption.MULTILINE)
+        val importRe = Regex("""^\s*import\s+([\w.]+)""", RegexOption.MULTILINE)
+
+        // 注意：包名可能正好是层根（如 com.zmf.agent.uikit，没有尾部点），
+        // 只用 startsWith("com.zmf.agent.uikit.") 会漏掉这类文件——测试探针就是这么漏过去的
+        fun layerOf(pkg: String?): String? {
+            if (pkg == null || !pkg.startsWith("com.zmf.agent.")) return null
+            val rest = pkg.removePrefix("com.zmf.agent.")
+            return when {
+                rest == "uikit" || rest.startsWith("uikit.") -> "uikit"
+                rest == "infra" || rest.startsWith("infra.") -> "infra"
+                rest == "capability" || rest.startsWith("capability.") -> "capability"
+                rest == "feature" || rest.startsWith("feature.") -> "feature"
+                else -> null
+            }
+        }
+
+        fun featureOf(pkg: String): String? =
+            if (pkg.startsWith("com.zmf.agent.feature.")) {
+                pkg.removePrefix("com.zmf.agent.feature.").substringBefore('.')
+            } else null
+
+        val allowed = mapOf(
+            "uikit" to setOf("uikit", "core"),
+            "infra" to setOf("core", "infra"),
+            "capability" to setOf("core", "infra", "capability"),
+            "feature" to setOf("core", "infra", "capability", "uikit", "feature")
+        )
+
+        // 编号: 层 / 被依赖包前缀 / 原因 / 台账编号
+        data class Wl(val layer: String, val prefix: String, val why: String)
+        val whiteList = listOf(
+            Wl("uikit", "com.zmf.agent.ui.chat.", "R3-glyph: 字形定义寄生在 Composer/DshIcons.kt，下一批搬入 uikit/icons")
+        )
+
+        val problems = mutableListOf<String>()
+        val files = srcRoot.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        var checkedFiles = 0
+        for (f in files) {
+            val text = f.readText()
+            val pkg = packageRe.find(text)?.groupValues?.get(1) ?: continue
+            val layer = layerOf(pkg) ?: continue
+            checkedFiles++
+            val selfFeature = featureOf(pkg)
+            for (m in importRe.findAll(text)) {
+                val imp = m.groupValues[1]
+                if (!imp.startsWith("com.zmf.agent.")) continue
+                if (whiteList.any { it.layer == layer && imp.startsWith(it.prefix) }) continue
+                val targetLayer = layerOf(imp)
+                val rel = f.relativeTo(srcRoot).toString().replace('\\', '/')
+                if (targetLayer == null) {
+                    problems += "$rel: new layer '$layer' must not depend on legacy code ($imp)"
+                } else if (targetLayer !in allowed.getValue(layer)) {
+                    problems += "$rel: '$layer' must not depend on '$targetLayer' ($imp)"
+                } else if (layer == "feature" && targetLayer == "feature" && featureOf(imp) != selfFeature) {
+                    problems += "$rel: feature modules must not depend on each other ($imp)"
+                }
+            }
+        }
+
+        if (problems.isEmpty()) {
+            logger.lifecycle("checkArchitecture: OK (scanned ${files.size} kt, new-layer ${checkedFiles}, whitelisted ${whiteList.size})")
+        } else {
+            problems.forEach { logger.error("  [violation] $it") }
+            throw GradleException("Architecture check failed: " + problems.size + " violation(s), see list above")
+        }
+    }
+}

@@ -1,6 +1,6 @@
 package com.zmf.agent.ui.settings
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.blockTapsOnly
 
 import android.content.Context
 import android.widget.Toast
@@ -67,15 +67,15 @@ import com.zmf.agent.agent.mcp.McpServerStore
 import com.zmf.agent.agent.skill.SkillEntry
 import com.zmf.agent.agent.skill.SkillStore
 import com.zmf.agent.tools.ToolRegistry
-import com.zmf.agent.ui.common.saltRowClickable
+import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.ui.shell.SaltSwitch
-import com.zmf.agent.ui.theme.Motion
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import com.zmf.agent.ui.common.saltFieldColors
+import com.zmf.agent.uikit.common.saltFieldColors
 
 /**
  * 「包管理」页：插件（MCP 服务）与 Skill 两个 tab，左右滑动切换。

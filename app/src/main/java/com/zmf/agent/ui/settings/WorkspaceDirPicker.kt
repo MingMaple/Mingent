@@ -43,10 +43,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.ui.common.saltCardRow
+import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.ui.chat.FolderIcon
-import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.theme.Palette
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay

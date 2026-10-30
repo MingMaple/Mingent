@@ -38,13 +38,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.log.FileLog
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import com.zmf.agent.ui.common.saltFieldColors
+import com.zmf.agent.uikit.common.saltFieldColors
 
 /** 列表最多展示这么多行（与 FileLog.readLines 的默认上限一致，读盘时就已经截好了）。 */
 private const val MAX_LINES = 2000

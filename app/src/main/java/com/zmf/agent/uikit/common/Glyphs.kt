@@ -1,4 +1,4 @@
-package com.zmf.agent.ui.common
+package com.zmf.agent.uikit.common
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
@@ -20,7 +20,7 @@ import androidx.compose.ui.unit.dp
 import com.zmf.agent.ui.chat.CylinderGlyph
 import com.zmf.agent.ui.chat.PlanIcon
 import com.zmf.agent.ui.chat.UnitGlyph
-import com.zmf.agent.ui.theme.Motion
+import com.zmf.agent.uikit.theme.Motion
 
 /*
  * 全 App 线稿图标的口径都收在这里：单位网格（18×18 / 24×24）、1.8 圆头描边、颜色一律交给调用方 tint。

@@ -1,5 +1,5 @@
 package com.zmf.agent.ui.chat
-import com.zmf.agent.ui.common.blockTapsOnly
+import com.zmf.agent.uikit.common.blockTapsOnly
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -23,8 +23,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.tools.displayName
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.theme.Palette
 
 /** 三档各一句最短说明，超过一行会被省略号截掉：用户要的是「这一档能干什么」，不是一段原理。 */
 private val PERMISSION_HINTS = mapOf(

@@ -26,8 +26,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 全屏浏览页：真浏览器、多标签，逻辑与计划页对齐。

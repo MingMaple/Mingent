@@ -39,10 +39,10 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.theme.Motion
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.theme.Palette
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale

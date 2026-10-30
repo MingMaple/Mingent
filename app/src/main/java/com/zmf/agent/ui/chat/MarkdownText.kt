@@ -53,8 +53,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.ui.common.BoundedScrollColumn
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.BoundedScrollColumn
+import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.delay
 
 /**

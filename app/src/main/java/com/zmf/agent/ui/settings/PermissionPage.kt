@@ -1,6 +1,6 @@
 package com.zmf.agent.ui.settings
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.blockTapsOnly
 
 import android.Manifest
 import android.app.Activity
@@ -44,8 +44,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.core.capability.AndroidPermissions
 import com.zmf.agent.core.capability.ShizukuBridge
-import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 「权限管理」页（设置下的二级页）：把手机端真正卡住功能的几项权限集中成一张清单。

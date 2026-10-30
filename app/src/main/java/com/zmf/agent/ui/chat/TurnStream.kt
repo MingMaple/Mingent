@@ -37,12 +37,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ToolCall
-import com.zmf.agent.ui.common.BoundedScrollColumn
-import com.zmf.agent.ui.common.Chevron
-import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.common.ChevronKind
-import com.zmf.agent.ui.common.ChevronSize
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.BoundedScrollColumn
+import com.zmf.agent.uikit.common.Chevron
+import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.common.ChevronKind
+import com.zmf.agent.uikit.common.ChevronSize
+import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.delay
 
 /*

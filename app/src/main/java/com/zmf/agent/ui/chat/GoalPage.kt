@@ -23,8 +23,8 @@ import androidx.compose.ui.unit.sp
 import com.zmf.agent.agent.goal.Goal
 import com.zmf.agent.agent.goal.GoalPhase
 import com.zmf.agent.agent.goal.label
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 「目标」页：看当前会话的长期目标，并按阶段给动作。

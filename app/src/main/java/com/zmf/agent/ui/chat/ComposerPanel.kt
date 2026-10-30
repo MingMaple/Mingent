@@ -39,13 +39,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.model.PermissionLevel
-import com.zmf.agent.ui.common.GlyphIcon
-import com.zmf.agent.ui.common.PanelGlyph
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.common.saltLongPress
+import com.zmf.agent.uikit.common.GlyphIcon
+import com.zmf.agent.uikit.common.PanelGlyph
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.saltLongPress
 import java.util.Locale
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 「＋」浮窗：附件 / 指令 / 上下文 / 命令 / 技能，每行「图标 + 名字 + 英文 + 右侧说明」。

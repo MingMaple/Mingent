@@ -1,4 +1,4 @@
-package com.zmf.agent.ui.theme
+package com.zmf.agent.uikit.theme
 
 import androidx.compose.ui.graphics.Color
 

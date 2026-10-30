@@ -73,12 +73,12 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.model.PermissionLevel
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.common.saltCardRow
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.ui.settings.BusySendMode
-import com.zmf.agent.ui.theme.Motion
+import com.zmf.agent.uikit.theme.Motion
 import kotlin.math.roundToInt
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 输入框下面那行状态：左「轮 / 步 / 速度」、右「累计 token / 缓存命中」，两枚都可点开明细。

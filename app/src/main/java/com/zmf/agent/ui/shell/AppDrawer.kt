@@ -86,15 +86,15 @@ import com.zmf.agent.agent.session.ChatSession
 import com.zmf.agent.agent.session.SessionStore
 import com.zmf.agent.agent.workspace.WorkSpace
 import com.zmf.agent.agent.workspace.WorkSpaceStore
-import com.zmf.agent.ui.common.saltCardRow
+import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.ui.chat.DshIcons
 import com.zmf.agent.ui.chat.FolderIcon
 import com.zmf.agent.ui.chat.PlusIcon
-import com.zmf.agent.ui.common.Chevron
-import com.zmf.agent.ui.common.ChevronSize
-import com.zmf.agent.ui.theme.Motion
-import com.zmf.agent.ui.theme.Palette
-import com.zmf.agent.ui.theme.ThemeMode
+import com.zmf.agent.uikit.common.Chevron
+import com.zmf.agent.uikit.common.ChevronSize
+import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.ThemeMode
 
 /** 工作区展开后先只显示这么多条会话。 */
 private const val SESSION_PREVIEW = 5

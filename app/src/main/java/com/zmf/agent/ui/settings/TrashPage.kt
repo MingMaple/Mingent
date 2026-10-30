@@ -35,9 +35,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.agent.session.SessionStore
 import com.zmf.agent.tools.file.TrashStore
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext

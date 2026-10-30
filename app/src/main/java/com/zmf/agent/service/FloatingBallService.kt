@@ -52,7 +52,7 @@ import com.zmf.agent.ui.float.ChatBridge
 import com.zmf.agent.ui.float.FloatingChatWindow
 import com.zmf.agent.ui.float.LocalFloatInputFocus
 import com.zmf.agent.ui.float.SiriBall
-import com.zmf.agent.ui.theme.AgentTheme
+import com.zmf.agent.uikit.theme.AgentTheme
 import kotlin.math.abs
 import kotlin.math.roundToInt
 

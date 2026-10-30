@@ -31,12 +31,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.common.saltRowClickable
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.ui.chat.DshIcons
 import com.zmf.agent.tools.HighRiskGate
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 设置首页：八行入口分三张卡，取代原来那个「三段式」分类列表：分类再多一级，

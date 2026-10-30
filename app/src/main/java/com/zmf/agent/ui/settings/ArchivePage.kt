@@ -27,9 +27,9 @@ import androidx.compose.ui.unit.sp
 import com.zmf.agent.agent.session.ChatSession
 import com.zmf.agent.agent.session.SessionStore
 import com.zmf.agent.agent.workspace.WorkSpace
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.common.saltRowClickable
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.theme.Palette
 
 /** 分组表的键：null（未分类）用空串占位，工作区 id 不会是空串。 */
 private const val NO_WORKSPACE_KEY = ""

@@ -27,8 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.agent.session.PlanDoc
 import com.zmf.agent.agent.session.PlanStore
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 「计划」页：把模型交出来的**每一份**计划都摊在一条标签栏上，切着看、单独删，再决定继续改还是执行。

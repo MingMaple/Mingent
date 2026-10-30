@@ -1,6 +1,6 @@
 package com.zmf.agent.ui.settings
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.blockTapsOnly
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -48,9 +48,9 @@ import com.zmf.agent.agent.context.ContextEventKind
 import com.zmf.agent.agent.context.ContextPolicy
 import com.zmf.agent.agent.context.ContextSnapshot
 import com.zmf.agent.agent.context.ContextStore
-import com.zmf.agent.ui.common.saltRowClickable
+import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.ui.shell.SaltSwitch
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date

@@ -17,8 +17,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.agent.ApiConfig
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.theme.Palette
 
 /*
  * 模型 / 推理等级的二级窗：点一级窗里的某一行，就在同一张卡片里展开可选项。

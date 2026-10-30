@@ -1,4 +1,4 @@
-package com.zmf.agent.ui.common
+package com.zmf.agent.uikit.common
 
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Column

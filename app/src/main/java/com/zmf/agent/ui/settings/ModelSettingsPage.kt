@@ -61,12 +61,12 @@ import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.agent.provider.ProviderConfig
 import com.zmf.agent.agent.provider.ProviderStore
 import com.zmf.agent.core.api.BalanceResult
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.common.blockTapsOnly
-import com.zmf.agent.ui.common.saltRowClickable
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.ui.shell.SaltSwitch
-import com.zmf.agent.ui.theme.Motion
-import com.zmf.agent.ui.theme.Palette
+import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 「模型」页（二级）：多提供商目录 + 单个提供商的编辑表单 + 思考强度 + 余额。

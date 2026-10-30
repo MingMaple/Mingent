@@ -51,8 +51,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.ui.common.saltCardRow
-import com.zmf.agent.ui.theme.Motion
+import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.theme.Motion
 import kotlin.math.roundToInt
 
 /** 小窗里的一项：只负责文案与点击动作，排布与关闭都由菜单那一层决定。 */
