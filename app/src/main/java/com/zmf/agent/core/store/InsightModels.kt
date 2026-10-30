@@ -109,5 +109,7 @@ data class InsightGlobalView(
     val days: List<InsightDay> = emptyList(),
     val composition: LedgerComposition? = null,
     val timing: InsightTiming = InsightTiming(),
+    /** 全局输出速度 tok/s；null = 没有生成数据。 */
+    val outputSpeed: Int? = null,
     val rows: List<InsightSessionRow> = emptyList()
 )

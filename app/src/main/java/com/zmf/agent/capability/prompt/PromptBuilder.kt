@@ -253,6 +253,12 @@ object PromptBuilder {
         """.trimIndent()
     }
 
+    /** Skill 段单独估算：供洞察页把「技能注入」从系统提示词里拆出来。 */
+    fun skillSectionTokens(input: PromptInput): Int {
+        val text = skillText(input.skills) ?: return 0
+        return estimateTokens(text)
+    }
+
     /** Skill 目录：一条一行；没有 Skill 就返回 null（这一整段不出）。 */
     private fun skillText(skills: List<Pair<String, String>>): String? {
         val lines = skills

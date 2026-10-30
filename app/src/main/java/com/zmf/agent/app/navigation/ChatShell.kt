@@ -174,8 +174,6 @@ import com.zmf.agent.feature.settings.PackagePage
 import com.zmf.agent.feature.settings.PermissionPage
 import com.zmf.agent.feature.schedule.SchedulePage
 import com.zmf.agent.feature.settings.ContextConfigPage
-import com.zmf.agent.feature.settings.ContextHubPage
-import com.zmf.agent.feature.settings.ContextInsight
 import com.zmf.agent.feature.settings.MemoryPage
 import com.zmf.agent.feature.settings.DataSettingsPage
 import com.zmf.agent.feature.settings.GeneralSettingsPage

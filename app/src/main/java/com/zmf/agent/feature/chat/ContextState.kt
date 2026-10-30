@@ -268,7 +268,9 @@ class ContextState(
         // planMode 由 promptInput() 自己带（与 AgentLoop 同一份输入）；摘要单独量一遍，
         // 不然「提示词」这段把摘要也算进去，用户会以为提示词本身就有几千 token
         val promptOnly = PromptBuilder.build(promptInput().copy(summaryText = ""))
-        val systemTokens = promptOnly?.let { ContextCompactor.estimateText(it) } ?: 0
+        val skillTokens = PromptBuilder.skillSectionTokens(promptInput())
+        val systemTokens = ((promptOnly?.let { ContextCompactor.estimateText(it) } ?: 0) - skillTokens)
+            .coerceAtLeast(0)
         val summaryTokens = if (summaryText.isBlank()) {
             0
         } else {
@@ -299,6 +301,7 @@ class ContextState(
         }
         contextBreakdown = Breakdown(
             systemTokens = systemTokens,
+            skillTokens = skillTokens,
             summaryTokens = summaryTokens,
             toolTokens = toolTokens,
             userTokens = userTokens,
@@ -1019,8 +1022,7 @@ class ContextState(
             (value.toDouble() * promptTokens / total).roundToInt().coerceAtLeast(0)
         return SessionComposition(
             system = part(b.systemTokens),
-            // Skill 段的单独拆分在 PromptBuilder 分段接口里补（当前先记 0，后续批次启用）
-            skills = 0,
+            skills = part(b.skillTokens),
             tools = part(b.toolTokens),
             user = part(b.userTokens),
             // 摘要属于「注入内容」
@@ -1133,7 +1135,7 @@ class ContextState(
         }
         val parts = listOf(
             InsightPart("系统提示词", breakdown.systemTokens, InsightColors.SYSTEM),
-            InsightPart("技能注入", 0, InsightColors.SKILLS),
+            InsightPart("技能注入", breakdown.skillTokens, InsightColors.SKILLS),
             InsightPart("工具定义", breakdown.toolTokens, InsightColors.TOOLS),
             InsightPart("用户消息", breakdown.userTokens, InsightColors.USER),
             InsightPart("注入内容", breakdown.summaryTokens, InsightColors.INJECT),
@@ -1179,8 +1181,12 @@ class ContextState(
         val inherited = session.inheritedUsage
         val ttft = (session.ttftMillis - inherited.ttftMillis).coerceAtLeast(0L)
         val reasoning = (session.reasoningMillis - inherited.reasoningMillis).coerceAtLeast(0L)
-        val text = (session.textMillis - inherited.textMillis).coerceAtLeast(0L)
+        val textRaw = (session.textMillis - inherited.textMillis).coerceAtLeast(0L)
         val toolArg = (session.toolArgMillis - inherited.toolArgMillis).coerceAtLeast(0L)
+        // 老会话只有 genMillis（思考+正文合在一起）：三段细分都没有时把它记到「模型回复」，
+        // 免得整段旧生成时间掉进「其他开销」
+        val genLegacy = (session.genMillis - inherited.genMillis).coerceAtLeast(0L)
+        val text = if (reasoning == 0L && textRaw == 0L && toolArg == 0L) genLegacy else textRaw
         val toolMs = (session.toolMillis - inherited.toolMillis).coerceAtLeast(0L)
         val speed = if (hasOwnUsage && session.lastTurnModelMillis > 0 &&
             session.lastTurnCompletionTokens > 0
@@ -1243,6 +1249,8 @@ class ContextState(
         var miss = 0
         var tokens = 0L
         var requests = 0
+        var genMs = 0L
+        var genTokens = 0
         if (range == InsightRange.ALL) {
             val t = ledger.total
             composition = t.composition
@@ -1257,6 +1265,8 @@ class ContextState(
             miss = t.cacheMiss
             tokens = t.prompt.toLong() + t.completion
             requests = t.requests
+            genMs = t.genMs
+            genTokens = t.genTokens
         } else {
             for (key in keys) {
                 val day = ledger.days[key] ?: continue
@@ -1272,10 +1282,19 @@ class ContextState(
                 miss += day.cacheMiss
                 tokens += day.prompt.toLong() + day.completion
                 requests += day.requests
+                genMs += day.genMs
+                genTokens += day.genTokens
             }
         }
         val cacheRate = if (hit + miss > 0) hit.toFloat() / (hit + miss) else null
         val other = (active - ttft - reasoning - text - toolArg - toolExec).coerceAtLeast(0L)
+        val genMsTotal = genMs
+        val genTokensTotal = genTokens
+        val speed = if (genMsTotal > 0 && genTokensTotal > 0) {
+            (genTokensTotal * 1000L / genMsTotal).toInt()
+        } else {
+            null
+        }
         val all = sessions().toList()
         val cost = UsageCost.sessions(all, fromMs, now)
         val rows = all.map { session -> globalRow(session, fromMs, now) }
@@ -1304,6 +1323,7 @@ class ContextState(
                 other = other,
                 active = active
             ),
+            outputSpeed = speed,
             rows = rows
         )
     }
@@ -1394,7 +1414,9 @@ class ContextState(
     /** 任意请求视图的六段估算（与 [refreshContextBreakdown] 同一套口径）。 */
     private fun breakdownFor(request: List<ChatMessage>, summaryText: String): Breakdown {
         val promptOnly = PromptBuilder.build(promptInput().copy(summaryText = ""))
-        val systemTokens = promptOnly?.let { ContextCompactor.estimateText(it) } ?: 0
+        val skillTokens = PromptBuilder.skillSectionTokens(promptInput())
+        val systemTokens = ((promptOnly?.let { ContextCompactor.estimateText(it) } ?: 0) - skillTokens)
+            .coerceAtLeast(0)
         val summaryTokens = if (summaryText.isBlank()) {
             0
         } else {
@@ -1421,6 +1443,7 @@ class ContextState(
         }
         return Breakdown(
             systemTokens = systemTokens,
+            skillTokens = skillTokens,
             summaryTokens = summaryTokens,
             toolTokens = toolTokens,
             userTokens = userTokens,
@@ -1440,8 +1463,10 @@ class ContextState(
  * 水位那条只按「消息 + 摘要」算，两者口径不同、数值不等，界面上必须分开说明。
  */
 data class Breakdown(
-    /** 系统提示词正文（**不含**会话摘要）。 */
+    /** 系统提示词正文（**不含**会话摘要与 Skill 段）。 */
     val systemTokens: Int = 0,
+    /** 技能目录（`<available_skills>` 那一段）单独估算。 */
+    val skillTokens: Int = 0,
     /** 会话摘要：它是拼进 system 的一段，单列出来，否则「提示词」会显得莫名其妙地大。 */
     val summaryTokens: Int = 0,
     val toolTokens: Int = 0,
@@ -1452,9 +1477,9 @@ data class Breakdown(
     /** 三段的合计（旧界面口径「消息占多少」，也是水位里除提示词与工具表之外的部分）。 */
     val messageTokens: Int get() = userTokens + assistantTokens + toolResultTokens
 
-    /** 整份请求的估算：提示词 + 摘要 + 工具表 + 三类消息（= 成分条六段之和）。 */
+    /** 整份请求的估算：提示词 + 技能 + 摘要 + 工具表 + 三类消息（= 成分条七段之和）。 */
     val totalTokens: Int
-        get() = systemTokens + summaryTokens + toolTokens + messageTokens
+        get() = systemTokens + skillTokens + summaryTokens + toolTokens + messageTokens
 }
 
 /**

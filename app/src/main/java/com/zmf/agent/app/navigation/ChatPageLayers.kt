@@ -173,8 +173,7 @@ import com.zmf.agent.feature.settings.PackagePage
 import com.zmf.agent.feature.settings.PermissionPage
 import com.zmf.agent.feature.schedule.SchedulePage
 import com.zmf.agent.feature.settings.ContextConfigPage
-import com.zmf.agent.feature.settings.ContextHubPage
-import com.zmf.agent.feature.settings.ContextInsight
+import com.zmf.agent.feature.settings.ContextInsightPage
 import com.zmf.agent.feature.settings.MemoryPage
 import com.zmf.agent.feature.settings.DataSettingsPage
 import com.zmf.agent.feature.settings.GeneralSettingsPage
@@ -392,49 +391,12 @@ internal fun ChatPageLayers(
             exit = slideOutHorizontally(tween(220)) { it },
             modifier = Modifier.fillMaxSize()
         ) {
-            ContextHubPage(
+            ContextInsightPage(
+                initialSessionId = viewModel.currentSessionId,
+                currentSessionId = viewModel.currentSessionId,
                 onBack = { page = if (contextHubFromHome) null else AppPage.SETTINGS },
-                insight = ContextInsight(
-                    ratio = viewModel.contextSnapshot.ratio,
-                    estimatedTokens = viewModel.contextSnapshot.estimatedTokens,
-                    window = viewModel.contextSnapshot.window,
-                    coveredMessages = viewModel.contextSnapshot.coveredMessages,
-                    totalMessages = viewModel.contextSnapshot.totalMessages,
-                    // 三个分项与三段估算是同一份口径（contextBreakdown），别各自再估一遍
-                    systemTokens = viewModel.contextBreakdown.systemTokens,
-                    summaryTokens = viewModel.contextBreakdown.summaryTokens,
-                    toolTokens = viewModel.contextBreakdown.toolTokens,
-                    userTokens = viewModel.contextBreakdown.userTokens,
-                    assistantTokens = viewModel.contextBreakdown.assistantTokens,
-                    toolResultTokens = viewModel.contextBreakdown.toolResultTokens,
-                    // 会话 / 今日 / 全局三段都在 stats 里按同一口径汇总好了，直接搬
-                    sessionPromptTokens = viewModel.stats.totalPromptTokens,
-                    sessionCompletionTokens = viewModel.stats.totalCompletionTokens,
-                    sessionRequests = viewModel.stats.totalRequests,
-                    todayPrompt = viewModel.stats.todayPromptTokens,
-                    todayCompletion = viewModel.stats.todayCompletionTokens,
-                    todayRequests = viewModel.stats.todayRequests,
-                    globalPromptTokens = viewModel.stats.globalPromptTokens,
-                    globalCompletionTokens = viewModel.stats.globalCompletionTokens,
-                    globalRequests = viewModel.stats.globalRequests,
-                    // 活跃时长 = 本会话首末消息的时间差（对话实际占用的时间）；模型 / 工具耗时另有时间账
-                    activeMillis = viewModel.statusActiveMillis,
-                    // 时间账与步数用洞察口径：分叉会话已减掉继承的基线，只报自分支起的真实数据
-                    modelMillis = viewModel.insightTiming.modelMillis,
-                    toolMillis = viewModel.insightTiming.toolMillis,
-                    outputTokens = viewModel.insightTiming.completionTokens,
-                    // 趋势是最近几次回复的输入 tokens（refreshInsight 里算好），页面只负责画
-                    trend = viewModel.insightTrend,
-                    rounds = viewModel.statusRounds,
-                    steps = viewModel.insightSteps,
-                    lastTurnModelMillis = viewModel.insightTiming.lastTurnModelMillis,
-                    lastTurnOutputTokens = viewModel.insightTiming.lastTurnOutputTokens,
-                    sessionFirstAt = viewModel.messages.firstOrNull()?.createdAt ?: 0L,
-                    firstUsedDate = viewModel.stats.firstUsedDate,
-                    // 总账是进程内单例，进页面时读一次盘拿最后使用时刻
-                    lastUsedAt = lastLedger.lastUsedAt
-                ),
-                onRefresh = viewModel::refreshInsight
+                loadSession = { viewModel.insightSession(it) },
+                loadGlobal = { viewModel.globalInsight(it) }
             )
         }
 
