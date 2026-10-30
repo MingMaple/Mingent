@@ -206,6 +206,7 @@ internal fun LegendRow(
             lineHeight = 16.sp,
             color = onSurface.copy(alpha = 0.45f),
             maxLines = 1,
+            softWrap = false,
             overflow = TextOverflow.Ellipsis
         )
     }
@@ -245,7 +246,9 @@ internal fun LegendTwoLine(
                 modifier = Modifier.offset(y = 1.8.dp),
                 fontSize = 12.sp,
                 lineHeight = 14.sp,
-                color = onSurface.copy(alpha = 0.65f)
+                color = onSurface.copy(alpha = 0.65f),
+                maxLines = 1,
+                softWrap = false
             )
         }
         Text(
@@ -282,9 +285,17 @@ internal fun LegendPlain(
             text = label,
             modifier = Modifier.weight(1f).padding(start = 8.dp),
             fontSize = 14.sp,
-            color = onSurface
+            color = onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
-        Text(text = value, fontSize = 12.sp, color = onSurface.copy(alpha = 0.45f))
+        Text(
+            text = value,
+            fontSize = 12.sp,
+            color = onSurface.copy(alpha = 0.45f),
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
 

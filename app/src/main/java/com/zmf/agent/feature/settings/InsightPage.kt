@@ -34,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -45,9 +46,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.store.InsightColors
@@ -99,66 +102,73 @@ fun ContextInsightPage(
     val global = remember(range) { loadGlobal(range) }
     val session = remember(viewedId) { loadSession(viewedId) }
 
+    // 洞察页锁定设计字号（fontScale = 1）：系统字体调大时版式保持不变，
+    // 避免窄屏或大字号下标签被挤成竖排、按钮被撑满整行。系统字号仍作用于其它页面。
+    val baseDensity = LocalDensity.current
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .verticalScroll(scroll)
+        CompositionLocalProvider(
+            LocalDensity provides Density(density = baseDensity.density, fontScale = 1f)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "←",
-                    modifier = Modifier
-                        .saltRowClickable(RoundedCornerShape(50)) { onBack() }
-                        .padding(horizontal = 12.dp, vertical = 14.dp),
-                    fontSize = 20.sp,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "上下文洞察",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-            }
-
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, bottom = 28.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .verticalScroll(scroll)
             ) {
-                SessionModule(
-                    session = session,
-                    tab = tab,
-                    onTab = { tab = it },
-                    onBackToCurrent = {
-                        viewedId = currentSessionId
-                        scope.launch { scroll.animateScrollTo(0) }
-                    }
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "←",
+                        modifier = Modifier
+                            .saltRowClickable(RoundedCornerShape(50)) { onBack() }
+                            .padding(horizontal = 12.dp, vertical = 14.dp),
+                        fontSize = 20.sp,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = "上下文洞察",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                }
 
-                GlobalSection(
-                    global = global,
-                    range = range,
-                    onRange = {
-                        range = it
-                        InsightPageMemory.range = it
-                    },
-                    onPickSession = { row ->
-                        viewedId = row.id
-                        scope.launch { scroll.animateScrollTo(0) }
-                    },
-                    workspaces = workspaces
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, bottom = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    SessionModule(
+                        session = session,
+                        tab = tab,
+                        onTab = { tab = it },
+                        onBackToCurrent = {
+                            viewedId = currentSessionId
+                            scope.launch { scroll.animateScrollTo(0) }
+                        }
+                    )
+
+                    GlobalSection(
+                        global = global,
+                        range = range,
+                        onRange = {
+                            range = it
+                            InsightPageMemory.range = it
+                        },
+                        onPickSession = { row ->
+                            viewedId = row.id
+                            scope.launch { scroll.animateScrollTo(0) }
+                        },
+                        workspaces = workspaces
+                    )
+                }
             }
         }
     }
@@ -166,6 +176,7 @@ fun ContextInsightPage(
 
 // ---- 本会话模块 ----
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionModule(
     session: InsightSessionView,
@@ -195,13 +206,18 @@ private fun SessionModule(
                         .saltRowClickable(RoundedCornerShape(8.dp)) { onBackToCurrent() }
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     fontSize = 12.sp,
-                    color = Palette.AccentGreen
+                    color = Palette.AccentGreen,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }
         Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TabPill(text = "当前上下文", selected = tab == 0) { onTab(0) }
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            TabPill(text = "占用明细", selected = tab == 0) { onTab(0) }
             TabPill(text = "Token 统计", selected = tab == 1) { onTab(1) }
             TabPill(text = "耗时统计", selected = tab == 2) { onTab(2) }
         }
@@ -235,32 +251,47 @@ private fun SessionModule(
 private fun CurrentContextTab(view: InsightSessionView) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val partsSum = view.parts.sumOf { it.tokens }
-    Row(verticalAlignment = Alignment.Bottom) {
-        Text(
-            text = tokenText(view.estimatedTokens.toLong()),
-            fontSize = 26.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = onSurface
-        )
-        Text(
-            text = " / " + tokenText(view.window.toLong()) + " tokens",
-            modifier = Modifier.padding(bottom = 2.dp),
-            fontSize = 12.sp,
-            color = onSurface.copy(alpha = 0.45f)
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = percentText(view.ratio),
-            fontSize = 26.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = onSurface
-        )
-        Text(
-            text = "上下文已用",
-            modifier = Modifier.padding(start = 3.dp, bottom = 2.dp),
-            fontSize = 12.sp,
-            color = onSurface.copy(alpha = 0.45f)
-        )
+    // 窄屏或系统大字号下：左侧数字组吃掉剩余宽度，右侧百分比组按自身宽度贴右，
+    // 「上下文已用」绝不逐字换行；空间不足时只截断左侧的「/ N tokens」。
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = tokenText(view.estimatedTokens.toLong()),
+                fontSize = 26.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = onSurface,
+                maxLines = 1,
+                softWrap = false
+            )
+            Text(
+                text = " / " + tokenText(view.window.toLong()) + " tokens",
+                modifier = Modifier.padding(bottom = 2.dp),
+                fontSize = 12.sp,
+                color = onSurface.copy(alpha = 0.45f),
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = percentText(view.ratio),
+                fontSize = 26.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = onSurface,
+                maxLines = 1,
+                softWrap = false
+            )
+            Text(
+                text = "上下文已用",
+                modifier = Modifier.padding(start = 3.dp, bottom = 2.dp),
+                fontSize = 12.sp,
+                color = onSurface.copy(alpha = 0.45f),
+                maxLines = 1,
+                softWrap = false
+            )
+        }
     }
     Spacer(Modifier.height(6.dp))
     StackedBar(
@@ -281,7 +312,9 @@ private fun TokenTab(view: InsightSessionView) {
         Text(
             text = "缓存命中 " + (view.cacheRate?.let { percentText(it) } ?: "—"),
             fontSize = 13.sp,
-            color = onSurface.copy(alpha = 0.45f)
+            color = onSurface.copy(alpha = 0.45f),
+            maxLines = 1,
+            softWrap = false
         )
     }
     Spacer(Modifier.height(4.dp))
@@ -317,7 +350,9 @@ private fun TimingTab(view: InsightSessionView) {
         Text(
             text = "输出速度 " + (view.outputSpeed?.toString()?.plus(" tok/s") ?: "—"),
             fontSize = 13.sp,
-            color = onSurface.copy(alpha = 0.45f)
+            color = onSurface.copy(alpha = 0.45f),
+            maxLines = 1,
+            softWrap = false
         )
     }
     Spacer(Modifier.height(4.dp))
@@ -360,6 +395,7 @@ private fun TimingTab(view: InsightSessionView) {
 
 // ---- 全局区 ----
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun GlobalSection(
     global: InsightGlobalView,
@@ -376,7 +412,10 @@ private fun GlobalSection(
         color = onSurface,
         modifier = Modifier.padding(top = 4.dp)
     )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
         RangePill("今天", range == InsightRange.TODAY) { onRange(InsightRange.TODAY) }
         RangePill("近 7 天", range == InsightRange.WEEK) { onRange(InsightRange.WEEK) }
         RangePill("近 30 天", range == InsightRange.MONTH) { onRange(InsightRange.MONTH) }
@@ -471,7 +510,9 @@ private fun GlobalSection(
             Text(
                 text = "缓存命中 " + (global.cacheRate?.let { percentText(it) } ?: "—"),
                 fontSize = 13.sp,
-                color = onSurface.copy(alpha = 0.45f)
+                color = onSurface.copy(alpha = 0.45f),
+                maxLines = 1,
+                softWrap = false
             )
         }
         Spacer(Modifier.height(6.dp))
@@ -506,7 +547,9 @@ private fun GlobalSection(
             Text(
                 text = "输出速度 " + (global.outputSpeed?.toString()?.plus(" tok/s") ?: "—"),
                 fontSize = 13.sp,
-                color = onSurface.copy(alpha = 0.45f)
+                color = onSurface.copy(alpha = 0.45f),
+                maxLines = 1,
+                softWrap = false
             )
         }
         Spacer(Modifier.height(6.dp))
@@ -602,8 +645,20 @@ private fun SessionListCard(
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(text = archiveLabel, fontSize = 12.sp, color = onSurface.copy(alpha = 0.65f))
-                    Text(text = " ▾", fontSize = 11.sp, color = onSurface.copy(alpha = 0.45f))
+                    Text(
+                        text = archiveLabel,
+                        fontSize = 12.sp,
+                        color = onSurface.copy(alpha = 0.65f),
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                    Text(
+                        text = " ▾",
+                        fontSize = 11.sp,
+                        color = onSurface.copy(alpha = 0.45f),
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
                 DropdownMenu(
                     expanded = menuOpen,
