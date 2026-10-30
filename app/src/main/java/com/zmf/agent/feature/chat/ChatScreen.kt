@@ -878,119 +878,15 @@ fun ChatScreen(
                         )
                     }
 
-                    // 消息区 + 挂在上方的面板：面板是浮层，不吃列表高度（列表不会重排）
-                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        // 内容不满一屏时贴底（Bottom）：新消息应该从底部往上长，而不是浮在半空。
-                        // 内容超过一屏后 Bottom 对齐不再起作用，滚动行为与原来的 spacedBy 完全一致。
-                        verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom)
-                    ) {
-                        if (items.isEmpty()) {
-                            item {
-                                Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text(
-                                        text = "输入消息开始对话",
-                                        fontSize = 14.sp,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-                                    )
-                                }
-                            }
-                        }
-                        // 必须给稳定 key：items(count = ...) 默认拿下标当 key，而流式输出时
-                        // 消息条数一直在变，同一下标会指向「另一个回合」，LazyColumn 就把新内容
-                        // 复用进旧槽位，槽位里残留的展开/点击状态跟着错位。
-                        // UserItem 用消息下标；AssistantItem 用这一轮第一条消息的下标（一轮内不变）。
-                        items(
-                            count = items.size,
-                            key = { position ->
-                                when (val item = items[position]) {
-                                    is ChatItem.UserItem -> "u" + item.index
-                                    is ChatItem.AssistantItem -> "a" + item.indices.first()
-                                }
-                            },
-                            // contentType 分开：用户气泡与助手回合结构不同，不分开会让列表
-                            // 把这两种行当同一类型复用，重组时更容易带错状态。
-                            contentType = { position ->
-                                when (items[position]) {
-                                    is ChatItem.UserItem -> "user"
-                                    is ChatItem.AssistantItem -> "assistant"
-                                }
-                            }
-                        ) { position ->
-                            when (val item = items[position]) {
-                                is ChatItem.UserItem -> UserRow(
-                                    message = item.message,
-                                    roundsFromEnd = item.roundsFromEnd,
-                                    imageRoot = imageRoot,
-                                    onCopy = { text -> copyToClipboard(context, text) },
-                                    onSelectText = { text ->
-                                        selectionTarget = SelectionTarget(
-                                            title = "选择文本",
-                                            text = text,
-                                            reasoning = ""
-                                        )
-                                        selectionVisible = true
-                                    },
-                                    onRollback = { rollbackUserIndex = item.index },
-                                    onImageClick = { paths, index -> viewer = ViewerTarget(paths, index) },
-                                    onImageLongPress = { rel, anchor ->
-                                        // 同 openMenu：惯性还没停就按住的那一下不算长按
-                                        if (longPressAllowed()) {
-                                            imageMenuTarget = ImageMenuTarget(
-                                                relPath = rel,
-                                                userIndex = item.index,
-                                                anchor = anchor
-                                            )
-                                            imageMenuVisible = true
-                                        }
-                                    }
-                                )
-
-                                is ChatItem.AssistantItem -> AssistantRow(
-                                    all = viewModel.messages,
-                                    indices = item.indices,
-                                    streaming = viewModel.isStreaming &&
-                                        item.indices.lastOrNull() == viewModel.messages.lastIndex,
-                                    toolOutcomes = viewModel.toolOutcomes,
-                                    onCopy = { text -> copyToClipboard(context, text) },
-                                    onSelectText = { text, reasoning ->
-                                        selectionTarget = SelectionTarget(
-                                            title = "选择文本",
-                                            text = text,
-                                            reasoning = reasoning
-                                        )
-                                        selectionVisible = true
-                                    },
-                                    onFork = { boundary -> forkWithReload { viewModel.forkSession(boundary) } },
-                                    onUsage = { usage, anchor ->
-                                        turnUsage = TurnUsageTarget(usage = usage, anchor = anchor)
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    // 面板打开时铺一层透明遮罩：点/划「输入条以外的区域」就收面板。
-                    // 必须是消息区 Box 的最后一个孩子位：输入条与面板浮层都在它上层，点面板不会走到这里。
-                    // 早先误放进「待办条可见」的 if 分支里，没有待办的会话整个就没有遮罩：面板开着仍能
-                    // 滚列表、还能点开折叠条，面板赖着不走。
-                    ComposerScrim(
-                        visible = composerPanel.open,
-                        onDismiss = { composerPanel.dismiss() }
+                    // 消息流：列表 + 面板遮罩 + 分叉盖板
+                    ChatMessageList(
+                        viewModel = viewModel,
+                        ui = ui,
+                        context = context,
+                        imageRoot = imageRoot,
+                        items = items,
+                        listState = listState
                     )
-
-                    // 分叉时的「瞬灭再加载」：用页面底色盖住消息区再淡出。
-                    // 放在这一层最后：要盖住列表与上面的透明遮罩；不挂手势，闪完就透明。
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer { alpha = forkReloadAlpha }
-                            .background(MaterialTheme.colorScheme.background)
-                    )
-                    }
 
                     viewModel.activityText?.let { activity ->
                         Text(
