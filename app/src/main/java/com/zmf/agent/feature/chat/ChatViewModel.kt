@@ -331,7 +331,7 @@ class ChatViewModel(context: Context) : AgentUi {
         reloadSessionDocs = { reloadSessionDocs() }
     )
 
-    /** 当前在干什么：「第 2 轮」「调用 read_file」之类，空闲时为 null。 */
+    /** 当前在干什么：「调用 read_file」「已返回 read_file」之类，空闲时为 null。 */
     var activityText by mutableStateOf<String?>(null)
         private set
 
@@ -922,9 +922,8 @@ class ChatViewModel(context: Context) : AgentUi {
 
     // ---- AgentUi ----
 
-    /** 新一轮开始：更新进行中提示，并记录本次回复已跑到的最大轮次。 */
+    /** 新一轮开始：只记本次回复已跑到的最大轮次；状态行的轮/步已有固定显示，不再重复提示。 */
     override fun onRound(round: Int) {
-        activityText = "第 " + round + " 轮"
         // 只记「本次回复」的步数口径，会话累计由流结束时的 commitSteps 加一次
         context.noteRound(round)
     }
