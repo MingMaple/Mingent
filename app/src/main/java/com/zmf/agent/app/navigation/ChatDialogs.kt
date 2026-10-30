@@ -251,7 +251,7 @@ internal fun ChatDialogs(
                     page = null
                 } else {
                     // 目录不可用（未授权 / 已被删 / 不可写）：说一句，别让人以为建好了
-                    Toast.makeText(context, "这个目录不可用，换一个再试", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "该目录不可用，请更换后重试", Toast.LENGTH_SHORT).show()
                 }
             }
         )
