@@ -419,15 +419,16 @@ internal fun ChatPageLayers(
                     globalRequests = viewModel.stats.globalRequests,
                     // 活跃时长 = 本会话首末消息的时间差（对话实际占用的时间）；模型 / 工具耗时另有时间账
                     activeMillis = viewModel.statusActiveMillis,
-                    modelMillis = viewModel.sessionTiming.modelMillis,
-                    toolMillis = viewModel.sessionTiming.toolMillis,
-                    outputTokens = viewModel.sessionTiming.completionTokens,
+                    // 时间账与步数用洞察口径：分叉会话已减掉继承的基线，只报自分支起的真实数据
+                    modelMillis = viewModel.insightTiming.modelMillis,
+                    toolMillis = viewModel.insightTiming.toolMillis,
+                    outputTokens = viewModel.insightTiming.completionTokens,
                     // 趋势是最近几次回复的输入 tokens（refreshInsight 里算好），页面只负责画
                     trend = viewModel.insightTrend,
                     rounds = viewModel.statusRounds,
-                    steps = viewModel.statusSteps,
-                    lastTurnModelMillis = viewModel.sessionTiming.lastTurnModelMillis,
-                    lastTurnOutputTokens = viewModel.sessionTiming.lastTurnOutputTokens,
+                    steps = viewModel.insightSteps,
+                    lastTurnModelMillis = viewModel.insightTiming.lastTurnModelMillis,
+                    lastTurnOutputTokens = viewModel.insightTiming.lastTurnOutputTokens,
                     sessionFirstAt = viewModel.messages.firstOrNull()?.createdAt ?: 0L,
                     firstUsedDate = viewModel.stats.firstUsedDate,
                     // 总账是进程内单例，进页面时读一次盘拿最后使用时刻

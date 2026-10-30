@@ -79,8 +79,41 @@ data class ChatSession(
     /** 摘要覆盖到第几条消息（**user 消息边界**，从此下标起发原文；0 = 没有摘要）。 */
     val summaryUpTo: Int = 0,
     /** 最近一次摘要成功的时间戳（0 = 从没摘要过）。 */
-    val lastSummaryAt: Long = 0L
+    val lastSummaryAt: Long = 0L,
+    /**
+     * 分叉时从父会话继承下来的用量基线；普通会话是全 0 的空值。
+     *
+     * 分叉 = 克隆当前会话：状态行的轮数/步数/命中率、右下角的用量胶囊都按继承后的累计值显示；
+     * 上下文洞察页只统计自分支起的真实用量，需要靠这份基线做减法（见 [InheritedUsage]）。
+     */
+    val inheritedUsage: InheritedUsage = InheritedUsage()
 )
+
+/**
+ * 分叉时继承的用量快照。
+ *
+ * 为什么不事后去查父会话：父会话分叉之后还在继续增长，事后算不出「当时克隆了多少」，
+ * 所以只能在创建分支的那一刻把计数器留一份。
+ *
+ * [messages] 是克隆过来的消息条数（分叉边界）：洞察页的提示词趋势据此排除继承部分。
+ */
+data class InheritedUsage(
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0,
+    val requests: Int = 0,
+    val steps: Int = 0,
+    val modelMillis: Long = 0,
+    val toolMillis: Long = 0,
+    val lastTurnModelMillis: Long = 0,
+    val lastTurnCompletionTokens: Int = 0,
+    val messages: Int = 0
+) {
+    /** 全 0 表示「不是从别的会话分叉来的」：落盘时整个对象都不写。 */
+    val isEmpty: Boolean
+        get() = promptTokens == 0 && completionTokens == 0 && requests == 0 && steps == 0 &&
+            modelMillis == 0L && toolMillis == 0L && lastTurnModelMillis == 0L &&
+            lastTurnCompletionTokens == 0 && messages == 0
+}
 
 /**
  * 会话落盘（M6）。
@@ -124,6 +157,7 @@ object SessionStore {
     private const val KEY_TTFT_COUNT = "ttftCount"
     private const val KEY_GEN_MILLIS = "genMillis"
     private const val KEY_GEN_TOKENS = "genTokens"
+    private const val KEY_INHERITED_USAGE = "inheritedUsage"
     private const val KEY_CONTEXT_SUMMARY = "contextSummary"
     private const val KEY_SUMMARY_UP_TO = "summaryUpTo"
     private const val KEY_LAST_SUMMARY_AT = "lastSummaryAt"
@@ -305,15 +339,43 @@ object SessionStore {
      * 从 [base] 分叉出一条新会话：新 id、标题「分支 · 原标题」、沿用工作区，
      * 只带 [messages] 这一段历史；父会话原样不动。
      *
+     * 分叉即克隆：历史一致，用量记录也整份继承（状态行的轮数/步数/命中率、右下角用量胶囊
+     * 都按克隆后的累计值显示）。继承的那一份另存进 [InheritedUsage]，洞察页靠它做减法，
+     * 只显示自分支起的真实用量。
+     *
      * 摘要三件套必须清零：summaryUpTo 记的是父会话里的消息下标，照搬到被截断的分支上，
-     * 请求视图会从错误的位置开始发原文。用量计数同样从 0 起算：分支是一个新会话，
-     * 父会话已经付过的 token 不能在两条会话里各算一次。
+     * 请求视图会从错误的位置开始发原文。
      */
     fun forked(base: ChatSession, messages: List<ChatMessage>): ChatSession =
         newSession().copy(
             title = "分支 · " + base.title.ifBlank { "新会话" },
             messages = messages,
-            workspaceId = base.workspaceId
+            workspaceId = base.workspaceId,
+            promptTokens = base.promptTokens,
+            completionTokens = base.completionTokens,
+            requests = base.requests,
+            steps = base.steps,
+            modelMillis = base.modelMillis,
+            toolMillis = base.toolMillis,
+            lastTurnModelMillis = base.lastTurnModelMillis,
+            lastTurnCompletionTokens = base.lastTurnCompletionTokens,
+            cacheHitTokens = base.cacheHitTokens,
+            cacheMissTokens = base.cacheMissTokens,
+            ttftMillis = base.ttftMillis,
+            ttftCount = base.ttftCount,
+            genMillis = base.genMillis,
+            genTokens = base.genTokens,
+            inheritedUsage = InheritedUsage(
+                promptTokens = base.promptTokens,
+                completionTokens = base.completionTokens,
+                requests = base.requests,
+                steps = base.steps,
+                modelMillis = base.modelMillis,
+                toolMillis = base.toolMillis,
+                lastTurnModelMillis = base.lastTurnModelMillis,
+                lastTurnCompletionTokens = base.lastTurnCompletionTokens,
+                messages = messages.size
+            )
         )
 
     /** 侧边栏用的相对时间：刚刚 / N 分钟前 / N 小时前 / MM-dd。 */
@@ -365,11 +427,43 @@ object SessionStore {
         if (session.contextSummary.isNotEmpty()) obj.put(KEY_CONTEXT_SUMMARY, session.contextSummary)
         if (session.summaryUpTo != 0) obj.put(KEY_SUMMARY_UP_TO, session.summaryUpTo)
         if (session.lastSummaryAt != 0L) obj.put(KEY_LAST_SUMMARY_AT, session.lastSummaryAt)
+        // 分叉继承基线：只有真的是从别的会话分叉来的才写（普通会话一个字节都不多出）
+        if (!session.inheritedUsage.isEmpty) {
+            obj.put(KEY_INHERITED_USAGE, inheritedUsageToJson(session.inheritedUsage))
+        }
         val array = JSONArray()
         for (message in session.messages) array.put(messageToJson(message))
         obj.put(KEY_MESSAGES, array)
         return obj
     }
+
+    /** 分叉继承基线落盘：键名与会话级的同名计数复用，读起来一眼能对上。 */
+    private fun inheritedUsageToJson(usage: InheritedUsage): JSONObject {
+        val obj = JSONObject()
+        obj.put(KEY_PROMPT_TOKENS, usage.promptTokens)
+        obj.put(KEY_COMPLETION_TOKENS, usage.completionTokens)
+        obj.put(KEY_REQUESTS, usage.requests)
+        obj.put(KEY_STEPS, usage.steps)
+        obj.put(KEY_MODEL_MILLIS, usage.modelMillis)
+        obj.put(KEY_TOOL_MILLIS, usage.toolMillis)
+        obj.put(KEY_LAST_TURN_MODEL_MILLIS, usage.lastTurnModelMillis)
+        obj.put(KEY_LAST_TURN_COMPLETION, usage.lastTurnCompletionTokens)
+        // 这里不是消息数组，是克隆过来的消息条数（分叉边界）
+        obj.put(KEY_MESSAGES, usage.messages)
+        return obj
+    }
+
+    private fun inheritedUsageFromJson(obj: JSONObject): InheritedUsage = InheritedUsage(
+        promptTokens = obj.optInt(KEY_PROMPT_TOKENS, 0),
+        completionTokens = obj.optInt(KEY_COMPLETION_TOKENS, 0),
+        requests = obj.optInt(KEY_REQUESTS, 0),
+        steps = obj.optInt(KEY_STEPS, 0),
+        modelMillis = obj.optLong(KEY_MODEL_MILLIS, 0L),
+        toolMillis = obj.optLong(KEY_TOOL_MILLIS, 0L),
+        lastTurnModelMillis = obj.optLong(KEY_LAST_TURN_MODEL_MILLIS, 0L),
+        lastTurnCompletionTokens = obj.optInt(KEY_LAST_TURN_COMPLETION, 0),
+        messages = obj.optInt(KEY_MESSAGES, 0)
+    )
 
     /**
      * 可空字段（reasoning / toolCallId / toolName）为空时**不写这个 key**：
@@ -516,7 +610,11 @@ object SessionStore {
                     // 旧文件没有摘要三件套，optString/optInt/optLong 的默认值兜住：没有摘要就是空串 + 0
                     contextSummary = obj.optString(KEY_CONTEXT_SUMMARY, ""),
                     summaryUpTo = obj.optInt(KEY_SUMMARY_UP_TO, 0),
-                    lastSummaryAt = obj.optLong(KEY_LAST_SUMMARY_AT, 0L)
+                    lastSummaryAt = obj.optLong(KEY_LAST_SUMMARY_AT, 0L),
+                    // 旧文件没有分叉基线：读不到就是空值（普通会话，减 0 等于不减）
+                    inheritedUsage = obj.optJSONObject(KEY_INHERITED_USAGE)
+                        ?.let { inheritedUsageFromJson(it) }
+                        ?: InheritedUsage()
                 )
             )
         }

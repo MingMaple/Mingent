@@ -390,6 +390,9 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 本会话的时间账；换会话、收到 usage、回复收尾都会从会话记录重新读回。 */
     val sessionTiming: TimingSnapshot get() = context.sessionTiming
 
+    /** 洞察页的时间账：分叉会话已减掉继承的基线，只报自分支起的真实用量。 */
+    val insightTiming: TimingSnapshot get() = context.insightTiming
+
     /** 洞察页的提示词长度趋势（最近若干次回复的输入 tokens）；由 [refreshInsight] 刷新。 */
     val insightTrend: List<Int> get() = context.insightTrend
 
@@ -425,6 +428,9 @@ class ChatViewModel(context: Context) : AgentUi {
 
     /** 状态行显示的步数：本会话已提交的步数 + 本次回复跑过的步数。 */
     val statusSteps: Int get() = context.statusSteps
+
+    /** 洞察页显示的步数：与状态行同口径，但分叉会话减掉继承的步数。 */
+    val insightSteps: Int get() = context.insightSteps
 
     /** 本会话的「活跃时长」：第一条与最后一条消息的时间差。 */
     val statusActiveMillis: Long get() = context.statusActiveMillis

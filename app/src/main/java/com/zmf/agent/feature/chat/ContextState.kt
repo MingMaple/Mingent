@@ -25,6 +25,7 @@ import com.zmf.agent.core.llm.ApiDefaults
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.store.ChatSession
+import com.zmf.agent.core.store.InheritedUsage
 import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.infra.llm.LlmProvider
 import com.zmf.agent.infra.llm.UsageBuckets
@@ -117,6 +118,15 @@ class ContextState(
 
     /** 本会话的时间账；换会话、收到 usage、回复收尾都会从会话记录重新读回。 */
     var sessionTiming by mutableStateOf(TimingSnapshot())
+        private set
+
+    /**
+     * 洞察页专用时间账：只算自分支起的真实用量（分叉继承的那一段已经减掉）。
+     *
+     * 状态行要「克隆会话」的观感（命中率、token 都继承），洞察页反过来只报真实数据，
+     * 两者口径不同，所以分成两份快照，别在一个字段里拐弯。
+     */
+    var insightTiming by mutableStateOf(TimingSnapshot())
         private set
 
     /** 洞察页的提示词长度趋势（最近若干次回复的输入 tokens）；由 [refreshInsight] 刷新。 */
@@ -561,11 +571,15 @@ class ContextState(
         val ledger = UsageLedger.snapshot()
         // 本会话累计的唯一来源是会话记录本身（重启后 stats 是空的，必须从那里读回来）
         val session = sessions().firstOrNull { it.id == currentSessionId() }
+        // 分叉会话克隆了父会话的记录：这里报的是洞察页口径，只算自分支起的真实用量，
+        // 所以统一减掉分叉时继承的基线（普通会话基线是 0，减 0 等于不减）
+        val inherited = session?.inheritedUsage ?: InheritedUsage()
         stats = stats.copy(
             rounds = messages.count { it.role == "user" },
-            totalPromptTokens = session?.promptTokens ?: 0,
-            totalCompletionTokens = session?.completionTokens ?: 0,
-            totalRequests = session?.requests ?: 0,
+            totalPromptTokens = ((session?.promptTokens ?: 0) - inherited.promptTokens).coerceAtLeast(0),
+            totalCompletionTokens = ((session?.completionTokens ?: 0) - inherited.completionTokens)
+                .coerceAtLeast(0),
+            totalRequests = ((session?.requests ?: 0) - inherited.requests).coerceAtLeast(0),
             contextTokens = contextSnapshot.estimatedTokens,
             contextWindow = ApiDefaults.CONTEXT_WINDOW,
             // 全局历史总账：只增不减，删会话 / 归档 / 清工作区都不动它
@@ -664,6 +678,21 @@ class ContextState(
             genMillis = session?.genMillis ?: 0L,
             genTokens = session?.genTokens ?: 0
         )
+        // 洞察页口径：减掉分叉继承的基线，只留自分支起的真实部分。
+        // 缓存与速度三类累计（cacheHit/Miss、ttft、gen）洞察页不展示，这里不填，
+        // 免得把继承值误当成这条分支自己的数据。
+        val inherited = session?.inheritedUsage ?: InheritedUsage()
+        insightTiming = TimingSnapshot(
+            modelMillis = ((session?.modelMillis ?: 0L) - inherited.modelMillis).coerceAtLeast(0L),
+            toolMillis = ((session?.toolMillis ?: 0L) - inherited.toolMillis).coerceAtLeast(0L),
+            promptTokens = ((session?.promptTokens ?: 0) - inherited.promptTokens).coerceAtLeast(0),
+            completionTokens = ((session?.completionTokens ?: 0) - inherited.completionTokens)
+                .coerceAtLeast(0),
+            lastTurnModelMillis = ((session?.lastTurnModelMillis ?: 0L) - inherited.lastTurnModelMillis)
+                .coerceAtLeast(0L),
+            lastTurnOutputTokens = ((session?.lastTurnCompletionTokens ?: 0) -
+                inherited.lastTurnCompletionTokens).coerceAtLeast(0)
+        )
     }
 
     /** 全部会话的消息总数，统计页「会话与消息」用；当前会话按内存里的 messages 算，避免落盘滞后。 */
@@ -676,7 +705,11 @@ class ContextState(
         refreshContextBreakdown()
         // 总账在内存里读一次就够（load 重复调用是空操作）
         UsageLedger.load(appContext)
+        // 分叉会话：克隆过来的历史请求属于父会话的统计，洞察页只画自分支起的请求
+        val inheritedMessages =
+            sessions().firstOrNull { it.id == currentSessionId() }?.inheritedUsage?.messages ?: 0
         insightTrend = messages
+            .drop(inheritedMessages)
             .filter { it.role == "assistant" && it.promptTokens != 0 }
             .takeLast(INSIGHT_TREND_POINTS)
             .map { it.promptTokens }
@@ -867,6 +900,18 @@ class ContextState(
      */
     val statusSteps: Int get() =
         (sessions().firstOrNull { it.id == currentSessionId() }?.steps ?: 0) + stats.steps
+
+    /**
+     * 洞察页显示的步数：跟 [statusSteps] 同一口径，但减掉分叉继承的步数。
+     *
+     * 状态行要「克隆会话」的观感（步数继承），洞察页只报自分支起的真实步数。
+     */
+    val insightSteps: Int
+        get() {
+            val inherited =
+                sessions().firstOrNull { it.id == currentSessionId() }?.inheritedUsage ?: InheritedUsage()
+            return (statusSteps - inherited.steps).coerceAtLeast(0)
+        }
 
     /**
      * 本会话的「活跃时长」：第一条与最后一条消息的时间差。
