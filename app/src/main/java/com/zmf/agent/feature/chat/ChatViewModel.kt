@@ -241,15 +241,9 @@ private const val MEMORY_ACTION_TIMEOUT_MS = 120_000L
 class ChatViewModel(context: Context) : AgentUi {
 
     /**
-     * 待发队列与单条消息的数量上限：对齐 DSH。
+     * 单轮工具调用次数的上限：对齐 DSH 的「一次提问内尽量跑完」。
      */
     companion object {
-        /** 单条消息最多带几张图片：对齐 DSH。待发图片行的展示上限也复用它，别另写数字。 */
-        internal const val MAX_IMAGES = 20
-
-        /** 单张图片的源文件上限：20 MB（模型看到的是压缩后的 JPEG，这条只拦超大原图）。 */
-    private const val MAX_IMAGE_BYTES = 20L * 1024 * 1024
-
         /**
          * 单轮最多跑多少次工具。
          *
@@ -426,19 +420,31 @@ class ChatViewModel(context: Context) : AgentUi {
     var goal by mutableStateOf<Goal?>(null)
         private set
 
+    /**
+     * 输入区状态与动作（草稿、附件、图片、占用文案），实现与依赖装配见 [ComposerState]。
+     *
+     * 下面几个成员保持原有调用口，界面与发送流程无需改动。
+     */
+    private val composer = ComposerState(
+        appContext = appContext,
+        workspaceRoot = { currentWorkspaceRoot() },
+        sessionsReferencingUploads = { sessionsOfCurrentWorkspace() },
+        scope = summaryScope,
+        reportError = { lastError = it }
+    )
+
     /** 输入框内容（受控状态）。回滚时把被删掉的那条提问填回这里，光标落在末尾。 */
-    var inputText by mutableStateOf(TextFieldValue(""))
-        private set
+    val inputText: TextFieldValue get() = composer.inputText
 
     /** 待发送附件：选中的文件已经复制进当前工作区，点发送时才拼进提问内容。 */
-    val attachments = mutableStateListOf<PendingFile>()
+    val attachments: SnapshotStateList<PendingFile> get() = composer.attachments
 
     /**
      * 待发送图片：单独一条队列，因为图片除了路径还要读盘编码成 data URL 直接发给模型。
      *
      * relPath 仍是工作区相对路径：界面靠它解码缩略图，会话落盘也只存这个路径。
      */
-    val pendingImages = mutableStateListOf<PendingFile>()
+    val pendingImages: SnapshotStateList<PendingFile> get() = composer.pendingImages
 
     /** 当前会话的待办清单（模型用 todo_write 写、TodoStore 落盘）；换会话与每轮结束后都重读一次。 */
     var todos by mutableStateOf<List<Todo>>(emptyList())
@@ -1597,163 +1603,38 @@ class ChatViewModel(context: Context) : AgentUi {
     }
 
     /** 把输入框的内容（含光标位置）同步进状态；不触发任何发送或落盘。 */
-    fun updateInput(text: TextFieldValue) {
-        inputText = text
-    }
+    fun updateInput(text: TextFieldValue) = composer.updateInput(text)
 
     /** 清掉顶栏的错误提示，只改界面状态。 */
     fun clearError() {
         lastError = null
     }
 
-    // ---- 附件 ----
+    // ---- 附件（状态与实现见 ComposerState.kt，这里只留对外的调用口）----
 
     /** 当前工作区 uploads 的占用文本（含未引用部分）；null = 还没统计。 */
-    var attachmentUsageText by mutableStateOf<String?>(null)
-        private set
+    val attachmentUsageText: String? get() = composer.attachmentUsageText
 
-    /**
-     * 选中的文件复制进当前工作区；IO 线程做，结果回主线程。
-     *
-     * 图片走 [UploadStore.importImage]（降采样 + 压 JPEG），其它文件原样复制：
-     * 图片要「直接被模型看见」，只有压过尺寸的 JPEG 才能当 data URL 塞进请求。
-     */
-    fun attachFile(uri: Uri, scope: CoroutineScope) {
-        // 有些 provider 给不出类型（null）：取不到就按普通文件处理，别把文件当图片压坏
-        val mime = runCatching { appContext.contentResolver.getType(uri) }.getOrNull()
-        val isImage = mime?.startsWith("image/") == true
-        // 满了就不再导入：连文件都不往工作区复制，省得白留一份没人引用的附件
-        if (!canEnqueuePending(isImage)) return
-        // 单张图片源文件上限 20 MB（对齐 DSH）：拿不到长度（-1）就不拦，交给导入时的压缩兜底
-        if (isImage) {
-            val bytes = runCatching {
-                appContext.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
-            }.getOrNull() ?: -1L
-            if (bytes > MAX_IMAGE_BYTES) {
-                lastError = "单张图片最大 20 MB"
-                return
-            }
-        }
-        scope.launch(Dispatchers.IO) {
-            // 取当前工作区的口径和 send 完全一致：未分类 / 找不到时用默认工作区
-            val space = workspaceList.firstOrNull { it.id == currentWorkspaceId }
-                ?: WorkSpaceStore.defaultSpace(appContext)
-            val root = rootOf(space)
-            val result = if (isImage) {
-                UploadStore.importImage(appContext, uri, root)
-            } else {
-                UploadStore.import(appContext, uri, root)
-            }
-            result.fold(
-                onSuccess = { imported ->
-                    val added = withContext(Dispatchers.Main) {
-                        // 并发选多张时这里再查一次：入口那次检查可能都没满，回来却已经超了
-                        if (!canEnqueuePending(isImage)) return@withContext false
-                        val pending = PendingFile(imported.name, imported.relPath)
-                        if (isImage) pendingImages.add(pending) else attachments.add(pending)
-                        true
-                    }
-                    // 没进队列（超上限）就别记「已加入发送队列」，免得日志和界面说法对不上
-                    if (added) {
-                        FileLog.log(
-                            "upload",
-                            (if (isImage) "图片已加入发送队列：" else "附件已加入发送队列：") +
-                                imported.relPath + "（" + imported.size + " 字节）"
-                        )
-                    }
-                },
-                onFailure = { e ->
-                    val message = e.message ?: e.javaClass.simpleName
-                    withContext(Dispatchers.Main) { lastError = "上传失败：" + message }
-                    FileLog.log("upload", (if (isImage) "图片上传失败：" else "附件上传失败：") + message)
-                }
-            )
-        }
-    }
-
-    /** 队列还有空位就返回 true；满了顺手把提示写进 lastError，调用方只管按结果决定加不加。 */
-    private fun canEnqueuePending(isImage: Boolean): Boolean {
-        // 只有图片有数量上限：普通附件按 DSH 口径不限个数，正文里给的是路径
-        if (isImage && pendingImages.size >= MAX_IMAGES) {
-            lastError = "图片最多 " + MAX_IMAGES + " 张"
-            return false
-        }
-        return true
-    }
+    /** 选中的文件复制进当前工作区；IO 线程做，结果回主线程。 */
+    fun attachFile(uri: Uri, scope: CoroutineScope) = composer.attachFile(uri, scope)
 
     /** 从待发列表里移除一个普通附件；下标越界时忽略。 */
-    fun detachFile(index: Int) {
-        if (index in attachments.indices) attachments.removeAt(index)
-    }
+    fun detachFile(index: Int) = composer.detachFile(index)
 
     /** 清空全部待发普通附件（图片有自己的列表，不受影响）。 */
-    fun clearAttachments() {
-        attachments.clear()
-    }
+    fun clearAttachments() = composer.clearAttachments()
 
     /** 从待发图片里移除一张；下标越界时忽略。 */
-    fun detachImage(index: Int) {
-        if (index in pendingImages.indices) pendingImages.removeAt(index)
-    }
+    fun detachImage(index: Int) = composer.detachImage(index)
 
     /** 清空全部待发图片（普通附件不受影响）。 */
-    fun clearPendingImages() {
-        pendingImages.clear()
-    }
+    fun clearPendingImages() = composer.clearPendingImages()
 
     /** 设置页进入时刷一次占用：IO 里扫 uploads 目录，回来只更新一句文本。 */
-    fun refreshAttachmentUsage() {
-        summaryScope.launch { attachmentUsageText = computeAttachmentUsageText() ?: "统计失败" }
-    }
+    fun refreshAttachmentUsage() = composer.refreshAttachmentUsage()
 
-    /**
-     * 清理当前工作区里没有被任何会话引用的附件（设置页「清理未引用附件」）。
-     *
-     * 删除必须放 IO：uploads 里可能是几千个小文件；扫完回主线程拼一句中文给界面。
-     * 会话里的路径都是工作区相对的，所以只跟「本工作区 + 未分类」的会话比对，别的工作区不算引用。
-     */
-    fun cleanOrphanImages(onDone: (String) -> Unit) {
-        summaryScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    UploadStore.cleanOrphans(appContext, sessionsOfCurrentWorkspace(), currentWorkspaceRoot())
-                }.onFailure {
-                    FileLog.log("upload", "清理未引用附件失败：" + it)
-                }.getOrNull()
-            }
-            val text = if (result == null) {
-                "清理失败，请查看日志"
-            } else if (result.first == 0) {
-                "没有可清理的附件"
-            } else {
-                "已删除 " + result.first + " 个文件，释放 " + mbText(result.second)
-            }
-            // 清完立刻重算占用，界面上的数字和磁盘一致
-            attachmentUsageText = computeAttachmentUsageText() ?: "统计失败"
-            onDone(text)
-            FileLog.log("upload", "清理未引用附件：" + text)
-        }
-    }
-
-    /** 「总占用（未引用 N）」文本；统计失败回 null，由调用方给一句失败提示。 */
-    private suspend fun computeAttachmentUsageText(): String? {
-        val pair = withContext(Dispatchers.IO) {
-            runCatching {
-                val root = currentWorkspaceRoot()
-                val total = UploadStore.usageBytes(root)
-                val orphans = UploadStore.orphanReport(appContext, sessionsOfCurrentWorkspace(), root).second
-                total to orphans
-            }.getOrNull()
-        } ?: return null
-        return if (pair.second > 0) {
-            mbText(pair.first) + "（未引用 " + mbText(pair.second) + "）"
-        } else {
-            mbText(pair.first)
-        }
-    }
-
-    /** 字节数 → 一位小数的 MB，跟导出成功那句用同一种写法。 */
-    private fun mbText(bytes: Long): String = "%.1f".format(bytes / 1024.0 / 1024.0) + " MB"
+    /** 清理当前工作区里没有被任何会话引用的附件（设置页「清理未引用附件」）。 */
+    fun cleanOrphanImages(onDone: (String) -> Unit) = composer.cleanOrphanImages(onDone)
 
     /**
      * 给一个已结束的子智能体追加一条消息，接着它自己的上下文再跑一次。
@@ -2516,7 +2397,7 @@ class ChatViewModel(context: Context) : AgentUi {
         restorePending(root, attachmentPathsIn(message.content), attachments, Int.MAX_VALUE)
         // 输入框只放正文：图片路径段是写给模型看的，界面另有图片网格，裁完没字就留空
         val restore = userBubbleBody(message)
-        inputText = TextFieldValue(restore, selection = TextRange(restore.length))
+        composer.inputText = TextFieldValue(restore, selection = TextRange(restore.length))
         cutFrom(userIndex)
         usageText = null
         activityText = null
@@ -2655,11 +2536,11 @@ class ChatViewModel(context: Context) : AgentUi {
         if (edited.isEmpty()) return
         cutFrom(index)
         // 文本先填回输入框：send 提前返回（导入后未重启等）时，用户改完还能自己再发一次
-        inputText = TextFieldValue(edited, selection = TextRange(edited.length))
+        composer.inputText = TextFieldValue(edited, selection = TextRange(edited.length))
         FileLog.log("chat", "编辑重发第 " + index + " 条：" + edited.take(80))
         send(edited, scope)
         // send 真的跑起来就清掉输入框：这句话已经变成一条消息，再留一份只会重复
-        if (isStreaming) inputText = TextFieldValue("")
+        if (isStreaming) composer.inputText = TextFieldValue("")
         // send 内部流结束时也会落盘；这里再写一次，兜住「send 提前返回」的情况
         persistCurrent()
         persistAll()
@@ -3696,6 +3577,3 @@ class ChatViewModel(context: Context) : AgentUi {
         syncSessionTiming()
     }
 }
-
-/** 待发送的附件：只记显示名和文件在工作区里的相对路径，模型靠 read_file 读。 */
-data class PendingFile(val name: String, val relPath: String)
