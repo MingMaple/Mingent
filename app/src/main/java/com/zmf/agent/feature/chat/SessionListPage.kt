@@ -64,6 +64,7 @@ import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.zmf.agent.uikit.common.saltFieldColors
 
@@ -374,12 +375,14 @@ private fun SessionTabContent(
                     .alpha(if (streaming) 0.4f else 1f)
                     .verticalScroll(rememberScrollState())
             ) {
+                val now = rememberMinuteNow()
                 sessions.forEach { session ->
                     SessionRow(
                         session = session,
                         workspaceName = workspaceNameOf(session.workspaceId),
                         isCurrent = session.id == currentId,
                         streaming = streaming,
+                        now = now,
                         onPick = { onPick(session.id) },
                         onMenu = { onMenu(session) }
                     )
@@ -483,12 +486,14 @@ private fun SessionSearchResults(
                     .alpha(if (streaming) 0.4f else 1f)
                     .verticalScroll(rememberScrollState())
             ) {
+                val now = rememberMinuteNow()
                 matched.forEach { session ->
                     SessionRow(
                         session = session,
                         workspaceName = workspaceNameOf(session.workspaceId),
                         isCurrent = session.id == currentId,
                         streaming = streaming,
+                        now = now,
                         onPick = { onPick(session.id) },
                         onMenu = { onMenu(session) }
                     )
@@ -512,6 +517,25 @@ private fun sessionMatches(session: ChatSession, query: String): Boolean {
 }
 
 /**
+ * 每分钟更新一次的「现在」。
+ *
+ * 「刚刚 / N 分钟前」是纯函数算出来的，只有重组才会重算；列表本身没有状态变化，
+ * 所以时间会停在进入那一刻——一小时前的会话一直显示「刚刚」，进一次会话才跳成「1 小时前」。
+ * 这个节拍只负责推它一把，不参与任何业务状态。
+ */
+@Composable
+private fun rememberMinuteNow(): Long {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000L)
+            now = System.currentTimeMillis()
+        }
+    }
+    return now
+}
+
+/**
  * 一行会话：标题 + 一条副标题（时间 · 消息数 · 工作区名），右侧「⋯」开菜单。
  *
  * 长按整行也能开同一个菜单：手机上一行右边那个「⋯」不太好点，长按更顺手。
@@ -523,11 +547,12 @@ private fun SessionRow(
     workspaceName: String,
     isCurrent: Boolean,
     streaming: Boolean,
+    now: Long,
     onPick: () -> Unit,
     onMenu: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val meta = SessionStore.relativeTime(session.updatedAt) +
+    val meta = SessionStore.relativeTime(session.updatedAt, now) +
         " · " + session.messages.size + " 条消息" +
         " · " + workspaceName
     Row(

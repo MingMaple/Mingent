@@ -317,8 +317,8 @@ object SessionStore {
         )
 
     /** 侧边栏用的相对时间：刚刚 / N 分钟前 / N 小时前 / MM-dd。 */
-    fun relativeTime(updatedAt: Long): String {
-        val diff = System.currentTimeMillis() - updatedAt
+    fun relativeTime(updatedAt: Long, now: Long = System.currentTimeMillis()): String {
+        val diff = now - updatedAt
         return when {
             // 负数（时钟回拨）也走「刚刚」，不出现「-1 分钟前」
             diff < MINUTE -> "刚刚"
