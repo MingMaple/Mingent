@@ -6,7 +6,7 @@ import android.os.Process
 import com.zmf.agent.core.log.AuditLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.PermissionLevel
-import com.zmf.agent.core.terminal.TerminalEnv
+import com.zmf.agent.infra.terminal.TerminalEnv
 import com.zmf.agent.tools.file.TrashStore
 import java.io.File
 import java.security.MessageDigest

@@ -1,9 +1,8 @@
 package com.zmf.agent.agent.memory
+import com.zmf.agent.infra.terminal.ShellResult
+import com.zmf.agent.infra.terminal.TerminalApi
 
 import android.content.Context
-import com.ai.assistance.operit.terminal.TerminalManager
-import com.ai.assistance.operit.terminal.provider.type.HiddenExecResult
-import com.ai.assistance.operit.terminal.view.domain.ansi.AnsiUtils
 import com.zmf.agent.core.log.FileLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -230,7 +229,7 @@ object MemoryKernel {
         val command = buildCommand(workspaceRoot.name, prootLibRoot, prootDataRoot, args, isVectorEnabled(context))
         FileLog.log(TAG, "执行：" + command)
         val result = try {
-            TerminalManager.getInstance(context).executeHiddenCommand(command, EXECUTOR_KEY, timeoutMs)
+            TerminalApi.exec(context, command, EXECUTOR_KEY, timeoutMs)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -242,7 +241,7 @@ object MemoryKernel {
             )
         }
 
-        if (result.state != HiddenExecResult.State.OK) {
+        if (result !is ShellResult.Ok) {
             return@withContext Result.failure(IllegalStateException(describeExecFailure(result, prootLibRoot)))
         }
 
@@ -345,7 +344,7 @@ object MemoryKernel {
         val probe = "import numpy, onnxruntime; print(onnxruntime.__version__ + ' / numpy ' + numpy.__version__)"
         val command = "python3 -c " + shellQuote(probe)
         val result = try {
-            TerminalManager.getInstance(context).executeHiddenCommand(command, EXECUTOR_KEY, 30_000L)
+            TerminalApi.exec(context, command, EXECUTOR_KEY, 30_000L)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -353,9 +352,9 @@ object MemoryKernel {
                 IllegalStateException("依赖检测失败：" + (e.message ?: e.javaClass.simpleName), e)
             )
         }
-        if (result.state != HiddenExecResult.State.OK) {
+        if (result !is ShellResult.Ok) {
             return@withContext Result.failure(
-                IllegalStateException("依赖检测失败：" + result.error.ifBlank { "Ubuntu 环境未就绪" })
+                IllegalStateException("依赖检测失败：" + shellFailureText(result, "Ubuntu 环境未就绪"))
             )
         }
         val text = clean(result.output)
@@ -385,7 +384,7 @@ object MemoryKernel {
             "python3 -m pip install --no-cache-dir --break-system-packages \"onnxruntime>=1.18\" \"numpy>=1.24\"",
         ).joinToString("\n")
         val result = try {
-            TerminalManager.getInstance(context).executeHiddenCommand(script, EXECUTOR_KEY, 600_000L)
+            TerminalApi.exec(context, script, EXECUTOR_KEY, 600_000L)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -393,9 +392,9 @@ object MemoryKernel {
                 IllegalStateException("依赖安装失败：" + (e.message ?: e.javaClass.simpleName), e)
             )
         }
-        if (result.state != HiddenExecResult.State.OK) {
+        if (result !is ShellResult.Ok) {
             return@withContext Result.failure(
-                IllegalStateException("依赖安装失败：" + result.error.ifBlank { result.state.name })
+                IllegalStateException("依赖安装失败：" + shellFailureText(result, "未知状态"))
             )
         }
         val text = clean(result.output)
@@ -427,7 +426,7 @@ object MemoryKernel {
 
     /** 去 ANSI、去首尾空白；proot 的登录提示偶尔会混进来，留着只会干扰 JSON 解析。 */
     private fun clean(raw: String): String =
-        runCatching { AnsiUtils.stripAnsi(raw) }.getOrElse { raw }.trim()
+        runCatching { TerminalApi.stripAnsi(raw) }.getOrElse { raw }.trim()
 
     private fun orPlaceholder(text: String): String = text.ifEmpty { "（没有输出）" }
 
@@ -453,18 +452,32 @@ object MemoryKernel {
         return head + "\n…（" + note + "，省略 " + (text.length - MAX_OUTPUT_CHARS) + " 字符）…\n" + tail
     }
 
+    /** 非 Ok 状态的一句话描述：优先用上游给的细节，没有就退回状态名，再没有就用调用方给的兜底话术。 */
+    private fun shellFailureText(result: ShellResult, fallback: String): String = when (result) {
+        is ShellResult.ShellNotReady -> fallback
+        is ShellResult.Failed -> result.detail.ifBlank { result.reason }.ifBlank { fallback }
+        is ShellResult.Ok -> fallback
+    }
+
     /** 把隐藏执行的失败态翻译成「卡在哪一步 + 怎么办」。 */
-    private fun describeExecFailure(result: HiddenExecResult, prootLibRoot: String): String {
-        val reason = when (result.state) {
-            HiddenExecResult.State.SHELL_NOT_READY ->
+    private fun describeExecFailure(result: ShellResult, prootLibRoot: String): String {
+        val reason = when (result) {
+            is ShellResult.ShellNotReady ->
                 "Ubuntu 环境尚未就绪：请先在侧边栏打开一次「终端」完成初始化，然后重试"
-            HiddenExecResult.State.TIMEOUT ->
-                "执行超时：大型记忆库执行周期扫描或重建索引耗时较长，可增大 timeoutMs 后重试"
-            HiddenExecResult.State.SHELL_START_FAILED ->
-                "隐藏执行通道未能启动：" + result.error.ifBlank { "原因未知" }
-            else -> result.error.ifBlank { "状态 " + result.state.name }
+            is ShellResult.Failed -> when (result.reason) {
+                "TIMEOUT" ->
+                    "执行超时：大型记忆库执行周期扫描或重建索引耗时较长，可增大 timeoutMs 后重试"
+                "SHELL_START_FAILED" ->
+                    "隐藏执行通道未能启动：" + result.detail.ifBlank { "原因未知" }
+                else -> result.detail.ifBlank { "状态 " + result.reason }
+            }
+            // 成功态不该走到这里；真走到了说明调用处判断写反了，留一句话便于定位
+            is ShellResult.Ok -> "未预期的成功状态（调用处判断有误）"
         }
-        val preview = clean(result.rawOutputPreview)
+        val preview = when (result) {
+            is ShellResult.Failed -> clean(result.rawPreview)
+            else -> ""
+        }
         val tail = if (preview.isEmpty()) "" else "\n原始输出片段：\n" + truncate(preview, "片段过长")
         return "第 3 步（启动 Ubuntu 环境）失败：" + reason + "\n库根：" + prootLibRoot + tail
     }

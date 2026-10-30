@@ -60,7 +60,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.agent.provider.ProviderConfig
 import com.zmf.agent.agent.provider.ProviderStore
-import com.zmf.agent.core.api.BalanceResult
+import com.zmf.agent.infra.api.BalanceResult
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable

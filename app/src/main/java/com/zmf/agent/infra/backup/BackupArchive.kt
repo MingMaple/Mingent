@@ -1,4 +1,4 @@
-package com.zmf.agent.core.backup
+package com.zmf.agent.infra.backup
 
 import android.content.Context
 import android.net.Uri
@@ -6,7 +6,7 @@ import android.provider.OpenableColumns
 import android.util.Xml
 import com.zmf.agent.core.AppPaths
 import com.zmf.agent.core.log.FileLog
-import com.zmf.agent.core.terminal.TerminalEnv
+import com.zmf.agent.infra.terminal.TerminalEnv
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive

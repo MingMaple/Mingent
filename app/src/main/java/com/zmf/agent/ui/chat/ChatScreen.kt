@@ -152,11 +152,11 @@ import com.zmf.agent.agent.session.TodoStore
 import com.zmf.agent.agent.subagent.SubAgentRegistry
 import com.zmf.agent.agent.workspace.WorkSpace
 import com.zmf.agent.agent.workspace.WorkSpaceStore
-import com.zmf.agent.core.api.BalanceClient
-import com.zmf.agent.core.api.BalanceResult
-import com.zmf.agent.core.backup.BackupArchive
-import com.zmf.agent.core.backup.BackupOptions
-import com.zmf.agent.core.capability.ShizukuBridge
+import com.zmf.agent.infra.api.BalanceClient
+import com.zmf.agent.infra.api.BalanceResult
+import com.zmf.agent.infra.backup.BackupArchive
+import com.zmf.agent.infra.backup.BackupOptions
+import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.service.FloatingBallService

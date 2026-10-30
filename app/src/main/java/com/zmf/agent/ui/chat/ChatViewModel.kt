@@ -58,10 +58,10 @@ import com.zmf.agent.agent.workspace.UploadStore
 import com.zmf.agent.agent.workspace.WorkSpace
 import com.zmf.agent.agent.workspace.WorkSpaceStore
 import com.zmf.agent.core.AppForeground
-import com.zmf.agent.core.backup.BackupArchive
-import com.zmf.agent.core.backup.BackupManifest
-import com.zmf.agent.core.backup.BackupOptions
-import com.zmf.agent.core.backup.ImportReport
+import com.zmf.agent.infra.backup.BackupArchive
+import com.zmf.agent.infra.backup.BackupManifest
+import com.zmf.agent.infra.backup.BackupOptions
+import com.zmf.agent.infra.backup.ImportReport
 import com.zmf.agent.core.log.AuditLog
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage

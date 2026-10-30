@@ -1,4 +1,4 @@
-package com.zmf.agent.core.terminal
+package com.zmf.agent.infra.terminal
 
 import android.content.Context
 import com.zmf.agent.core.log.FileLog

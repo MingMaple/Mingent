@@ -1,6 +1,6 @@
 package com.zmf.agent.tools.system
 
-import com.zmf.agent.core.capability.ShizukuBridge
+import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.tools.HighRiskGate
 import com.zmf.agent.tools.Tool

@@ -42,8 +42,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.zmf.agent.core.capability.AndroidPermissions
-import com.zmf.agent.core.capability.ShizukuBridge
+import com.zmf.agent.infra.system.AndroidPermissions
+import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
 

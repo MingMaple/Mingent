@@ -6,15 +6,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.ai.assistance.operit.terminal.TerminalManager
-import com.ai.assistance.operit.terminal.main.TerminalScreen
-import com.ai.assistance.operit.terminal.rememberTerminalEnv
+import com.zmf.agent.infra.terminal.TerminalScreenHost
 
 /** 全屏终端页：承载终端模块的 [TerminalScreen]，状态栏与导航栏按沉浸式收起。 */
 class TerminalActivity : ComponentActivity() {
@@ -38,16 +34,8 @@ class TerminalActivity : ComponentActivity() {
         }
         setContent {
             Box(modifier = Modifier.fillMaxSize()) {
-                val context = LocalContext.current
-                val manager = remember { TerminalManager.getInstance(context) }
-                val env = rememberTerminalEnv(manager)
-                // 首帧兜底刷新已下沉到 CanvasTerminalView.refreshNow()（由 CanvasTerminalCompose 定时触发）：
-                // 早先在这里 invalidate decorView 的做法无效，因为画布是自绘 Surface，不吃 View 系统的脏区重绘。
-                TerminalScreen(
-                    env = env,
-                    useLocalImeHandling = true,
-                    checkUpdatesOnEnter = false
-                )
+                // 上游的 manager / env / Screen 参数都收在 infra 里，这里只负责「放一个终端」
+                TerminalScreenHost()
             }
         }
     }

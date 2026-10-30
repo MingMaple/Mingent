@@ -1,4 +1,4 @@
-package com.zmf.agent.core.api
+package com.zmf.agent.infra.api
 
 import android.content.Context
 import com.zmf.agent.agent.ApiConfig

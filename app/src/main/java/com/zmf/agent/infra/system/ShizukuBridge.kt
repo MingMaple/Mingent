@@ -1,4 +1,4 @@
-package com.zmf.agent.core.capability
+package com.zmf.agent.infra.system
 
 import android.content.Context
 import android.content.pm.PackageManager

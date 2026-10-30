@@ -16,7 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.zmf.agent.core.AppForeground
-import com.zmf.agent.core.capability.ShizukuBridge
+import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.schedule.ScheduleRunner
 import com.zmf.agent.ui.chat.ChatScreen

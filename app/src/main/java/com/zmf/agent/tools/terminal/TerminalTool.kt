@@ -1,9 +1,8 @@
 package com.zmf.agent.tools.terminal
+import com.zmf.agent.infra.terminal.ShellResult
+import com.zmf.agent.infra.terminal.TerminalApi
 
 import android.content.Context
-import com.ai.assistance.operit.terminal.TerminalManager
-import com.ai.assistance.operit.terminal.provider.type.HiddenExecResult
-import com.ai.assistance.operit.terminal.view.domain.ansi.AnsiUtils
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.tools.HighRiskGate
 import com.zmf.agent.tools.Tool
@@ -86,7 +85,7 @@ class TerminalTool : Tool {
 
         return try {
             val result = withContext(Dispatchers.IO) {
-                TerminalManager.getInstance(ctx.context).executeHiddenCommand(full, "agent", timeoutMs)
+                TerminalApi.exec(ctx.context, full, "agent", timeoutMs)
             }
             render(result)
         } catch (e: CancellationException) {
@@ -97,27 +96,27 @@ class TerminalTool : Tool {
         }
     }
 
-    private fun render(result: HiddenExecResult): ToolResult = when (result.state) {
-        HiddenExecResult.State.OK -> {
+    private fun render(result: ShellResult): ToolResult = when (result) {
+        is ShellResult.Ok -> {
             val body = cleanOutput(result.output)
             ToolResult.Ok("exit=" + result.exitCode + "\n" + (body.ifEmpty { "(无输出)" }))
         }
 
-        HiddenExecResult.State.SHELL_NOT_READY -> ToolResult.Error(
+        is ShellResult.ShellNotReady -> ToolResult.Error(
             "Ubuntu 环境还没起来：先在侧边栏打开一次「终端」完成初始化，再重试。"
         )
 
-        else -> {
-            val detail = result.error.ifBlank { "(没有更多错误信息)" }
-            val preview = cleanOutput(result.rawOutputPreview)
+        is ShellResult.Failed -> {
+            val detail = result.detail.ifBlank { "(没有更多错误信息)" }
+            val preview = cleanOutput(result.rawPreview)
             val suffix = if (preview.isEmpty()) "" else "\n原始输出片段：\n" + preview
-            ToolResult.Error("执行失败（" + result.state.name + "）：" + detail + suffix)
+            ToolResult.Error("执行失败（" + result.reason + "）：" + detail + suffix)
         }
     }
 
     /** 去 ANSI、去首尾空白，再按「前 4000 + 省略标注 + 后 8000」截断，免得把上下文撑爆。 */
     private fun cleanOutput(raw: String): String {
-        val clean = runCatching { AnsiUtils.stripAnsi(raw) }.getOrElse { raw }.trim()
+        val clean = runCatching { TerminalApi.stripAnsi(raw) }.getOrElse { raw }.trim()
         if (clean.length <= MAX_OUTPUT_CHARS) return clean
         val head = clean.take(HEAD_CHARS)
         val tail = clean.takeLast(TAIL_CHARS)
