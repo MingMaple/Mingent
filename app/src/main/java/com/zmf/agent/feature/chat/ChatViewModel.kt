@@ -36,7 +36,6 @@ import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.Todo
-import com.zmf.agent.core.store.TodoStore
 import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.capability.subagent.SubAgentDeps
 import com.zmf.agent.capability.subagent.SubAgentRunner
@@ -188,6 +187,16 @@ class ChatViewModel(context: Context) : AgentUi {
     /** tool_call_id -> 工具是否成功；只用于界面给工具卡上色，不参与请求。 */
     val toolOutcomes: Map<String, Boolean> get() = toolCalls.outcomes
 
+    /** 当前会话的待办清单，实现与依赖装配见 [TodoController]；界面仍通过 [todos] 读。 */
+    private val todoStore = TodoController(
+        appContext = appContext,
+        scope = summaryScope,
+        currentSessionId = { currentSessionId }
+    )
+
+    /** 当前会话的待办清单（模型用 todo_write 写、TodoStore 落盘）；换会话与每轮结束后都重读一次。 */
+    val todos: List<Todo> get() = todoStore.todos
+
     /** 备份 / 恢复的状态与动作，实现与依赖装配见 [BackupController]；下面成员保持原有调用口。 */
     private val backup = BackupController(appContext = appContext)
 
@@ -202,7 +211,7 @@ class ChatViewModel(context: Context) : AgentUi {
             composer.attachments.map { it.relPath } + composer.pendingImages.map { it.relPath }
         },
         clearToolOutcomes = { toolCalls.clear() },
-        clearTodos = { todos = emptyList() },
+        clearTodos = { todoStore.clearTodos() },
         reloadTodos = { reloadTodos() },
         resetStats = { resetStats() },
         reportError = { lastError = it },
@@ -338,10 +347,6 @@ class ChatViewModel(context: Context) : AgentUi {
         persistAll = { persistAll() },
         reloadSessionDocs = { reloadSessionDocs() }
     )
-
-    /** 当前会话的待办清单（模型用 todo_write 写、TodoStore 落盘）；换会话与每轮结束后都重读一次。 */
-    var todos by mutableStateOf<List<Todo>>(emptyList())
-        private set
 
     /** 当前在干什么：「第 2 轮」「调用 read_file」之类，空闲时为 null。 */
     var activityText by mutableStateOf<String?>(null)
@@ -834,41 +839,14 @@ class ChatViewModel(context: Context) : AgentUi {
     private fun sessionsOfCurrentWorkspace(): List<ChatSession> = sessionStore.sessionsOfCurrentWorkspace()
 
     /**
-     * 重读当前会话的待办清单：IO 里读、主线程赋值。
-     *
-     * 清单是模型用 todo_write 写的，App 侧只读不算，所以换会话与每轮结束后各对齐一次。
-     * 读盘期间又切走了会话就丢弃这次结果，别把上一个会话的清单显示到当前会话上。
+     * 重读当前会话的待办清单（口径见 [TodoController.reloadTodos]）。
      */
-    private fun reloadTodos() {
-        val id = currentSessionId
-        if (id.isEmpty()) {
-            todos = emptyList()
-            return
-        }
-        summaryScope.launch {
-            val loaded = withContext(Dispatchers.IO) { TodoStore.load(appContext, id) }
-            if (currentSessionId == id) todos = loaded
-        }
-    }
+    private fun reloadTodos() = todoStore.reloadTodos()
 
     /**
-     * 新一轮提问前清掉上一轮「全部完成」的清单；还有 pending / in_progress 就保留。
-     *
-     * 清单是这一轮的执行计划：全部打勾说明这一轮已经收尾，留着只会挡住新一轮的进度；
-     * 没做完的还得继续挂着，否则用户会以为任务自己消失了。
-     * 落盘必须在这一轮开跑之前同步做完：模型的 todo_write 紧接着就会写同一份文件，
-     * 放到 IO 线程里异步清，可能反过来把刚写好的新清单抹掉。
+     * 新一轮提问前清掉上一轮「全部完成」的清单（口径见 [TodoController.dropFinishedTodosBeforeNewRound]）。
      */
-    private fun dropFinishedTodosBeforeNewRound() {
-        val id = currentSessionId
-        if (id.isEmpty()) return
-        // 以盘上的清单为准：reloadTodos 是异步的，刚结束的那一轮可能还没读回来
-        val stored = TodoStore.load(appContext, id)
-        if (stored.isEmpty() || stored.any { it.status != TodoStore.COMPLETED }) return
-        TodoStore.save(appContext, id, emptyList())
-        todos = emptyList()
-        FileLog.log("todo", "上一轮清单已全部完成，新一轮提问时清空")
-    }
+    private fun dropFinishedTodosBeforeNewRound() = todoStore.dropFinishedTodosBeforeNewRound()
 
     // ---- 备份 / 恢复（状态与实现见 BackupController.kt，这里只留对外的调用口）----
 
