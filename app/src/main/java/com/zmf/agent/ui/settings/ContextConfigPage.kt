@@ -43,11 +43,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.agent.context.ContextEvent
-import com.zmf.agent.agent.context.ContextEventKind
-import com.zmf.agent.agent.context.ContextPolicy
-import com.zmf.agent.agent.context.ContextSnapshot
-import com.zmf.agent.agent.context.ContextStore
+import com.zmf.agent.capability.context.ContextEvent
+import com.zmf.agent.capability.context.ContextEventKind
+import com.zmf.agent.capability.context.ContextPolicy
+import com.zmf.agent.capability.context.ContextSnapshot
+import com.zmf.agent.capability.context.ContextStore
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.ui.shell.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette

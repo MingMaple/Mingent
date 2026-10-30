@@ -58,7 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.zmf.agent.agent.ApiConfig
+import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.infra.llm.ProviderConfig
 import com.zmf.agent.infra.llm.ProviderStore
 import com.zmf.agent.infra.api.BalanceResult

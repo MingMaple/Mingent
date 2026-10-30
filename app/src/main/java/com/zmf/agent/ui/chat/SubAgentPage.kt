@@ -37,7 +37,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.agent.subagent.SubAgentRegistry
+import com.zmf.agent.capability.subagent.SubAgentRegistry
 import com.zmf.agent.uikit.theme.Palette
 
 /**

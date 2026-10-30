@@ -146,11 +146,11 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.zmf.agent.agent.ApiConfig
+import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.core.store.GoalPhase
 import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.TodoStore
-import com.zmf.agent.agent.subagent.SubAgentRegistry
+import com.zmf.agent.capability.subagent.SubAgentRegistry
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.infra.api.BalanceClient
@@ -161,7 +161,7 @@ import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.service.FloatingBallService
-import com.zmf.agent.tools.displayName
+import com.zmf.agent.capability.tools.displayName
 import com.zmf.agent.ui.float.ChatBridge
 import com.zmf.agent.ui.settings.AboutPage
 import com.zmf.agent.ui.settings.CreateWorkspaceDialog
@@ -180,7 +180,7 @@ import com.zmf.agent.ui.settings.GeneralSettingsPage
 import com.zmf.agent.ui.settings.ModelSettingsPage
 import com.zmf.agent.ui.settings.SettingsHomePage
 import com.zmf.agent.core.store.UsageLedger
-import com.zmf.agent.agent.prompt.PromptStore
+import com.zmf.agent.capability.prompt.PromptStore
 import com.zmf.agent.ui.chat.ChatComposer
 import com.zmf.agent.ui.chat.ComposerCommand
 import com.zmf.agent.ui.chat.ComposerStatus

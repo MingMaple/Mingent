@@ -48,8 +48,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.zmf.agent.uikit.theme.Motion
-import com.zmf.agent.agent.memory.MemoryHit
-import com.zmf.agent.agent.memory.MemoryState
+import com.zmf.agent.capability.memory.MemoryHit
+import com.zmf.agent.capability.memory.MemoryState
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable

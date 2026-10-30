@@ -34,7 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.store.SessionStore
-import com.zmf.agent.tools.file.TrashStore
+import com.zmf.agent.capability.tools.file.TrashStore
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette

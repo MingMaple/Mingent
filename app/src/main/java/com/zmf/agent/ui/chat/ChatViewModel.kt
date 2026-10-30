@@ -14,35 +14,35 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
-import com.zmf.agent.agent.ApiConfig
-import com.zmf.agent.agent.context.ContextCompactor
-import com.zmf.agent.agent.context.ContextEvent
-import com.zmf.agent.agent.context.ContextEventKind
-import com.zmf.agent.agent.context.ContextEventStore
-import com.zmf.agent.agent.context.ContextPolicy
-import com.zmf.agent.agent.context.ContextSnapshot
-import com.zmf.agent.agent.context.ContextStore
-import com.zmf.agent.agent.context.ContextSummarizer
-import com.zmf.agent.agent.context.ToolResultPruner
-import com.zmf.agent.agent.context.contextSummarySystemText
+import com.zmf.agent.capability.config.ApiConfig
+import com.zmf.agent.capability.context.ContextCompactor
+import com.zmf.agent.capability.context.ContextEvent
+import com.zmf.agent.capability.context.ContextEventKind
+import com.zmf.agent.capability.context.ContextEventStore
+import com.zmf.agent.capability.context.ContextPolicy
+import com.zmf.agent.capability.context.ContextSnapshot
+import com.zmf.agent.capability.context.ContextStore
+import com.zmf.agent.capability.context.ContextSummarizer
+import com.zmf.agent.capability.context.ToolResultPruner
+import com.zmf.agent.capability.context.contextSummarySystemText
 import com.zmf.agent.core.store.Goal
 import com.zmf.agent.core.store.GoalPhase
 import com.zmf.agent.core.store.GoalStore
 import com.zmf.agent.core.store.label
-import com.zmf.agent.agent.loop.AgentLoop
-import com.zmf.agent.agent.mcp.McpManager
-import com.zmf.agent.agent.instructions.AgentInstructions
-import com.zmf.agent.agent.loop.AgentUi
-import com.zmf.agent.agent.memory.MemoryAdmin
-import com.zmf.agent.agent.memory.MemoryKernel
-import com.zmf.agent.agent.memory.MemoryState
-import com.zmf.agent.agent.loop.ContextSummaryState
-import com.zmf.agent.agent.loop.OutputTiming
-import com.zmf.agent.agent.permission.PermissionStore
-import com.zmf.agent.agent.prompt.PromptBuilder
-import com.zmf.agent.agent.prompt.PromptInput
-import com.zmf.agent.agent.prompt.PromptStore
-import com.zmf.agent.agent.skill.SkillStore
+import com.zmf.agent.capability.loop.AgentLoop
+import com.zmf.agent.capability.mcp.McpManager
+import com.zmf.agent.capability.prompt.AgentInstructions
+import com.zmf.agent.capability.loop.AgentUi
+import com.zmf.agent.capability.memory.MemoryAdmin
+import com.zmf.agent.capability.memory.MemoryKernel
+import com.zmf.agent.capability.memory.MemoryState
+import com.zmf.agent.capability.loop.ContextSummaryState
+import com.zmf.agent.capability.loop.OutputTiming
+import com.zmf.agent.capability.permission.PermissionStore
+import com.zmf.agent.capability.prompt.PromptBuilder
+import com.zmf.agent.capability.prompt.PromptInput
+import com.zmf.agent.capability.prompt.PromptStore
+import com.zmf.agent.capability.skill.SkillStore
 import com.zmf.agent.infra.llm.DeepSeekProvider
 import com.zmf.agent.infra.llm.ProviderConfig
 import com.zmf.agent.infra.llm.ProviderStore
@@ -54,8 +54,8 @@ import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.core.store.Todo
 import com.zmf.agent.core.store.TodoStore
 import com.zmf.agent.core.store.UsageLedger
-import com.zmf.agent.agent.subagent.SubAgentDeps
-import com.zmf.agent.agent.subagent.SubAgentRunner
+import com.zmf.agent.capability.subagent.SubAgentDeps
+import com.zmf.agent.capability.subagent.SubAgentRunner
 import com.zmf.agent.core.store.UploadStore
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
@@ -70,13 +70,13 @@ import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.core.notify.Notifier
-import com.zmf.agent.tools.ToolContext
-import com.zmf.agent.tools.ToolRegistry
-import com.zmf.agent.tools.ToolResult
-import com.zmf.agent.tools.SandboxRegression
-import com.zmf.agent.tools.file.TrashStore
-import com.zmf.agent.tools.displayName
-import com.zmf.agent.tools.spill.SpillStore
+import com.zmf.agent.capability.tools.ToolContext
+import com.zmf.agent.capability.tools.ToolRegistry
+import com.zmf.agent.capability.tools.ToolResult
+import com.zmf.agent.capability.tools.SandboxRegression
+import com.zmf.agent.capability.tools.file.TrashStore
+import com.zmf.agent.capability.tools.displayName
+import com.zmf.agent.capability.tools.spill.SpillStore
 import com.zmf.agent.ui.settings.BusySendMode
 import com.zmf.agent.ui.settings.GeneralPrefs
 import androidx.compose.ui.text.TextRange
@@ -2159,7 +2159,7 @@ class ChatViewModel(context: Context) : AgentUi {
      *
      * @param programmatic true = 本句由 App 代发（点按钮触发的「按计划开始执行」、目标续跑等），
      *   不是用户亲手打的一句话。它照常进历史、照常显示，但**不获得高危操作授权资格**：
-     *   授权码只认最近一条 programmatic=false 的 user 消息（见 [com.zmf.agent.tools.HighRiskGate]）。
+     *   授权码只认最近一条 programmatic=false 的 user 消息（见 [com.zmf.agent.capability.tools.HighRiskGate]）。
      */
     fun send(text: String, scope: CoroutineScope, programmatic: Boolean = false) {
         // 命令闸门放在最前：任何入口（输入框、队列补发、脚本式调用）都先把 /xxx 吃掉
@@ -3077,7 +3077,7 @@ class ChatViewModel(context: Context) : AgentUi {
     /**
      * 落盘检查点：把当前会话写进磁盘，但**剔掉在飞的那条 assistant 占位**。
      *
-     * 由 [com.zmf.agent.agent.loop.AgentLoop] 在两个边界调用（发模型请求前、执行有副作用的工具前）。
+     * 由 [com.zmf.agent.capability.loop.AgentLoop] 在两个边界调用（发模型请求前、执行有副作用的工具前）。
      * 为什么剔占位：loop 会先 append 一条空 assistant 再流式填字，这条在崩掉后没有任何内容，
      * 写进去只会让重载后的界面多一个空气泡（未完成的 assistant frame 保持瞬态）。
      * 有 tool_calls 的 assistant 不能剔：它正是「已派发」的证据。

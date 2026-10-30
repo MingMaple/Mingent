@@ -50,8 +50,8 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zmf.agent.agent.prompt.PromptBuilder
-import com.zmf.agent.agent.prompt.PromptInput
+import com.zmf.agent.capability.prompt.PromptBuilder
+import com.zmf.agent.capability.prompt.PromptInput
 import com.zmf.agent.uikit.common.BoundedScrollColumn
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable
