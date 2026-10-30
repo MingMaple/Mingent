@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -191,8 +192,9 @@ internal fun LegendRow(
         )
         Text(
             text = label,
-            modifier = Modifier.weight(1f).padding(start = 8.dp).alignByBaseline(),
+            modifier = Modifier.weight(1f).padding(start = 8.dp),
             fontSize = 13.sp,
+            lineHeight = 16.sp,
             color = onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -200,8 +202,8 @@ internal fun LegendRow(
         Text(
             text = (if (tokens > 0) "≈" + tokenText(tokens) else "—") +
                 (if (fraction != null) "  " + percentText(fraction) else ""),
-            modifier = Modifier.alignByBaseline(),
-            fontSize = 11.sp,
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
             color = onSurface.copy(alpha = 0.45f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -231,7 +233,7 @@ internal fun LegendTwoLine(
             )
             Text(
                 text = label,
-                modifier = Modifier.weight(1f).padding(start = 8.dp).alignByBaseline(),
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
                 fontSize = 12.sp,
                 lineHeight = 14.sp,
                 color = onSurface,
@@ -240,7 +242,7 @@ internal fun LegendTwoLine(
             )
             Text(
                 text = rightTop,
-                modifier = Modifier.alignByBaseline(),
+                modifier = Modifier.offset(y = 0.5.dp),
                 fontSize = 12.sp,
                 lineHeight = 14.sp,
                 color = onSurface.copy(alpha = 0.65f)

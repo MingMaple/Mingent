@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -84,7 +87,6 @@ fun ContextInsightPage(
     initialSessionId: String,
     currentSessionId: String,
     workspaces: List<Pair<String, String>>,
-    initialWorkspaceId: String?,
     onBack: () -> Unit,
     loadSession: (String) -> InsightSessionView,
     loadGlobal: (InsightRange) -> InsightGlobalView
@@ -155,8 +157,7 @@ fun ContextInsightPage(
                         viewedId = row.id
                         scope.launch { scroll.animateScrollTo(0) }
                     },
-                    workspaces = workspaces,
-                    initialWorkspaceId = initialWorkspaceId
+                    workspaces = workspaces
                 )
             }
         }
@@ -365,8 +366,7 @@ private fun GlobalSection(
     range: InsightRange,
     onRange: (InsightRange) -> Unit,
     onPickSession: (InsightSessionRow) -> Unit,
-    workspaces: List<Pair<String, String>>,
-    initialWorkspaceId: String?
+    workspaces: List<Pair<String, String>>
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Text(
@@ -540,55 +540,60 @@ private fun GlobalSection(
     SessionListCard(
         rows = global.rows,
         onPick = onPickSession,
-        workspaces = workspaces,
-        initialWorkspaceId = initialWorkspaceId
+        workspaces = workspaces
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionListCard(
     rows: List<InsightSessionRow>,
     onPick: (InsightSessionRow) -> Unit,
-    workspaces: List<Pair<String, String>>,
-    initialWorkspaceId: String?
+    workspaces: List<Pair<String, String>>
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     var query by remember { mutableStateOf("") }
-    var workspaceFilter by remember { mutableStateOf(initialWorkspaceId) }
+    var workspaceFilter by remember { mutableStateOf<String?>(null) }
     var archiveFilter by remember { mutableIntStateOf(0) }
     var visibleCount by remember { mutableIntStateOf(5) }
     var menuOpen by remember { mutableStateOf(false) }
     LaunchedEffect(workspaceFilter, archiveFilter, query) {
         visibleCount = 5
     }
-    val filtered = rows.filter { row ->
+    val archiveRows = rows.filter { row ->
+        when (archiveFilter) {
+            1 -> !row.archived
+            2 -> row.archived
+            else -> true
+        }
+    }
+    val filtered = archiveRows.filter { row ->
         val workspaceOk = when (workspaceFilter) {
             null -> true
             WORKSPACE_NONE -> row.workspaceId == null
             else -> row.workspaceId == workspaceFilter
         }
-        val archiveOk = when (archiveFilter) {
-            1 -> !row.archived
-            2 -> row.archived
-            else -> true
-        }
-        workspaceOk && archiveOk &&
-            (query.isBlank() || row.title.contains(query, ignoreCase = true))
+        workspaceOk && (query.isBlank() || row.title.contains(query, ignoreCase = true))
     }
     val shown = filtered.take(visibleCount)
-    val workspaceTitle = when (workspaceFilter) {
-        null -> "全部工作区"
-        WORKSPACE_NONE -> "未分类"
-        else -> workspaces.firstOrNull { it.first == workspaceFilter }?.second ?: "全部工作区"
+    val archiveLabel = when (archiveFilter) {
+        1 -> "隐藏已归档"
+        2 -> "仅显示已归档"
+        else -> "全部会话（显示已归档）"
     }
     InsightCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = "会话",
-                modifier = Modifier.weight(1f),
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = onSurface
+            )
+            Text(
+                text = " " + archiveRows.size,
+                modifier = Modifier.weight(1f),
+                fontSize = 12.sp,
+                color = onSurface.copy(alpha = 0.45f)
             )
             Box {
                 Row(
@@ -597,37 +602,27 @@ private fun SessionListCard(
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(text = workspaceTitle, fontSize = 13.sp, color = onSurface.copy(alpha = 0.65f))
+                    Text(text = archiveLabel, fontSize = 12.sp, color = onSurface.copy(alpha = 0.65f))
                     Text(text = " ▾", fontSize = 11.sp, color = onSurface.copy(alpha = 0.45f))
                 }
                 DropdownMenu(
                     expanded = menuOpen,
-                    onDismissRequest = { menuOpen = false }
+                    onDismissRequest = { menuOpen = false },
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(16.dp),
+                    tonalElevation = 0.dp,
+                    shadowElevation = 8.dp
                 ) {
                     DropdownMenuItem(
-                        text = { Text(prefix("全部工作区", workspaceFilter == null)) },
-                        onClick = { workspaceFilter = null; menuOpen = false }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(prefix("未分类", workspaceFilter == WORKSPACE_NONE)) },
-                        onClick = { workspaceFilter = WORKSPACE_NONE; menuOpen = false }
-                    )
-                    for (space in workspaces) {
-                        DropdownMenuItem(
-                            text = { Text(prefix(space.second, workspaceFilter == space.first)) },
-                            onClick = { workspaceFilter = space.first; menuOpen = false }
-                        )
-                    }
-                    DropdownMenuItem(
-                        text = { Text(prefix("显示：全部会话", archiveFilter == 0)) },
+                        text = { Text(prefix("全部会话", archiveFilter == 0)) },
                         onClick = { archiveFilter = 0; menuOpen = false }
                     )
                     DropdownMenuItem(
-                        text = { Text(prefix("显示：未归档", archiveFilter == 1)) },
+                        text = { Text(prefix("隐藏已归档", archiveFilter == 1)) },
                         onClick = { archiveFilter = 1; menuOpen = false }
                     )
                     DropdownMenuItem(
-                        text = { Text(prefix("显示：归档", archiveFilter == 2)) },
+                        text = { Text(prefix("仅显示已归档", archiveFilter == 2)) },
                         onClick = { archiveFilter = 2; menuOpen = false }
                     )
                 }
@@ -654,7 +649,33 @@ private fun SessionListCard(
                 inner()
             }
         )
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(6.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            WorkspaceChip(
+                text = "全部 " + archiveRows.size,
+                selected = workspaceFilter == null
+            ) { workspaceFilter = null }
+            for (space in workspaces) {
+                val count = archiveRows.count { it.workspaceId == space.first }
+                if (count > 0) {
+                    WorkspaceChip(
+                        text = space.second + " " + count,
+                        selected = workspaceFilter == space.first
+                    ) { workspaceFilter = space.first }
+                }
+            }
+            val noneCount = archiveRows.count { it.workspaceId == null }
+            if (noneCount > 0) {
+                WorkspaceChip(
+                    text = "未分组 " + noneCount,
+                    selected = workspaceFilter == WORKSPACE_NONE
+                ) { workspaceFilter = WORKSPACE_NONE }
+            }
+        }
+        Spacer(Modifier.height(2.dp))
         if (filtered.isEmpty()) {
             DashBlock()
         } else {
@@ -721,6 +742,30 @@ private fun SessionListCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun WorkspaceChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
+            )
+            .saltRowClickable(RoundedCornerShape(16.dp), onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+    ) {
+        Text(
+            text = text,
+            fontSize = 12.sp,
+            color = if (selected) onSurface else onSurface.copy(alpha = 0.55f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 140.dp)
+        )
     }
 }
 
