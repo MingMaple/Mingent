@@ -1,6 +1,6 @@
 package com.zmf.agent.tools
 
-import com.zmf.agent.agent.provider.ToolSpec
+import com.zmf.agent.infra.llm.ToolSpec
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.core.model.ToolCall

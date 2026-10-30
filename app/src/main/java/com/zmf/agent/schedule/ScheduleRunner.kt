@@ -9,8 +9,8 @@ import com.zmf.agent.agent.loop.AgentLoop
 import com.zmf.agent.agent.loop.AgentUi
 import com.zmf.agent.agent.permission.PermissionStore
 import com.zmf.agent.agent.prompt.PromptInput
-import com.zmf.agent.agent.provider.DeepSeekProvider
-import com.zmf.agent.agent.provider.UsageBuckets
+import com.zmf.agent.infra.llm.DeepSeekProvider
+import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.agent.session.ChatSession
 import com.zmf.agent.agent.session.SessionStore
 import com.zmf.agent.agent.workspace.WorkSpaceStore

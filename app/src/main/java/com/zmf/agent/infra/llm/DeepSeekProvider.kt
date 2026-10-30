@@ -1,4 +1,4 @@
-package com.zmf.agent.agent.provider
+package com.zmf.agent.infra.llm
 
 import com.zmf.agent.core.model.ChatMessage
 import kotlinx.coroutines.flow.Flow
@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
  * DeepSeek（OpenAI 兼容）流式实现。
  *
  * 多提供商后它同时是「任何 OpenAI 兼容端点」的实现：baseUrl / apiKey 由调用方按当前
- * [com.zmf.agent.agent.provider.ProviderConfig] 传进来，类名保留是为了不牵动调用方与日志口径。
+ * [com.zmf.agent.infra.llm.ProviderConfig] 传进来，类名保留是为了不牵动调用方与日志口径。
  *
  * 关键约束：请求若带 tools，历史里每条 assistant 消息都必须回传 reasoning_content，
  * 否则服务端直接 400。见 https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
@@ -203,7 +203,7 @@ class DeepSeekProvider(
      * 只保留最近 [WIRE_KEEP] 份，避免占空间。
      */
     private fun dumpWireIfEnabled(request: ChatRequest) {
-        val dir = com.zmf.agent.agent.ApiConfig.wireDumpDir ?: return
+        val dir = WireDump.dir ?: return
         try {
             if (!dir.exists()) dir.mkdirs()
             val stamp = System.currentTimeMillis()

@@ -1,7 +1,8 @@
 package com.zmf.agent.agent
+import com.zmf.agent.core.llm.ApiDefaults
 
 import android.content.Context
-import com.zmf.agent.agent.provider.ProviderStore
+import com.zmf.agent.infra.llm.ProviderStore
 
 /**
  * 全局 API 配置。
@@ -16,60 +17,9 @@ import com.zmf.agent.agent.provider.ProviderStore
  */
 object ApiConfig {
 
-    /**
-     * 源码兜底 Key：一律为空。
-     *
-     * 开源包里不能出现任何能直接用的真实 Key（历史上这里塞过一个个人 Key）。
-     * 保留这个常量名是为了让首启迁移（ProviderStore 的 defaultsFromLegacy）不用改签名；
-     * 空串的语义就是「未配置」，界面显示未填写，请求时由 provider 明确报错。
-     */
-    const val DEFAULT_API_KEY = ""
-
-    /**
-     * 调试开关：非 null 时把**每一条真正发出的请求 JSON** 落盘到这个目录（只留最近 12 份）。
-     *
-     * 为什么要有：前缀缓存只在「两个请求从第 0 个 token 起逐字节相同」时命中，光看命中百分比
-     * 永远分不清「输入侧哪里变了」和「提供方侧行为」。存下真实请求，离线 diff 就能定位第一处差异。
-     * App 启动时按 pref `wire_dump` 设一次，默认关闭。
-     */
-    @Volatile
-    var wireDumpDir: java.io.File? = null
-
-    /** 内置 DeepSeek 模板的对话端点，也是 baseUrl 留空时的回落值。 */
-    const val BASE_URL = "https://api.deepseek.com"
-
-    /**
-     * 官方检索端点（Anthropic Messages 兼容）。
-     *
-     * 实测口径：POST /messages + x-api-key + anthropic-version: 2023-06-01，
-     * body 里带 tools:[{type:"web_search_20250305",name:"web_search"}] 即可拿到
-     * web_search_tool_result；返回 10 条 title/url/page_age，与同类检索实现的结果结构一致。
-     */
-    const val SEARCH_BASE_URL = "https://api.deepseek.com/anthropic/v1"
-
-    /** 检索用的模型（Anthropic 格式的名字，和对话模型不是一套 id）。 */
-    const val SEARCH_MODEL = "deepseek-v4-flash"
-
-    /** 默认对话模型名，也是 provider 没记过模型且可选列表为空时的回落值。 */
-    const val MODEL = "deepseek-flash"
-
-    /**
-     * 模型上下文窗口（token 数），统计页拿它当「上下文水位」的分母。
-     *
-     * 官方接口值：context_window 1,048,576、max_output 393,216。
-     */
-    const val CONTEXT_WINDOW = 1_048_576
-
-    /**
-     * 可选模型：第一个是接口里的 model 名，第二个是设置页显示的名字。
-     *
-     * 官方接口（GET https://api.deepseek.com/models）：两个模型 context_window
-     * 1,048,576、max_output 393,216，思考强度支持 low / high / max；deepseek-flash 另支持图片输入。
-     */
-    val MODELS: List<Pair<String, String>> = listOf(
-        "deepseek-flash" to "DeepSeek-V4.1-Flash",
-        "deepseek-v4-pro" to "DeepSeek-V4-Pro"
-    )
+    // 端点默认值、模型清单、思考强度可选值都已下沉到 core/llm/ApiDefaults：
+    // 那些是 core 的 ProviderStore 与 infra 的 DeepSeekProvider 也要用的默认值，
+    // 留在这个更高层的配置对象里，会让 core/infra 反向依赖它。
 
     private const val PREFS_NAME = "app_prefs"
     private const val KEY_THINKING = "thinking_enabled"
@@ -80,15 +30,6 @@ object ApiConfig {
 
     /** 检索端点（Anthropic 兼容，官方 web_search 用），空串＝用 SEARCH_BASE_URL。 */
     private const val KEY_SEARCH_BASE_URL = "search_base_url"
-
-    /**
-     * 思考强度可选项：直接用接口取值（官方 reasoning_effort 支持 low / high / max，默认 high）。
-     *
-     * 界面上也原样显示这三个词，不再翻成「低/中/高」：中文标签和接口值对不上，排查时容易看错。
-     */
-    val EFFORTS: List<String> = listOf("low", "high", "max")
-
-    const val DEFAULT_EFFORT = "high"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -117,7 +58,7 @@ object ApiConfig {
         val saved = cfg.baseUrl.trim().trimEnd('/')
         // 空地址只对内置 DeepSeek 回落官方端点；别家留空就保持空（DeepSeekProvider 会明确报错），
         // 否则用户填的自定义 Key 会被悄悄发到 DeepSeek 的域名上去
-        return if (saved.isEmpty() && cfg.id == ProviderStore.DEEPSEEK_ID) BASE_URL else saved
+        return if (saved.isEmpty() && cfg.id == ProviderStore.DEEPSEEK_ID) ApiDefaults.BASE_URL else saved
     }
 
     /** 写回当前 provider 的对话端点，末尾斜杠统一去掉。 */
@@ -133,7 +74,7 @@ object ApiConfig {
      */
     fun loadSearchBaseUrl(context: Context): String {
         val saved = prefs(context).getString(KEY_SEARCH_BASE_URL, null)
-        return if (saved.isNullOrBlank()) SEARCH_BASE_URL else saved.trimEnd('/')
+        return if (saved.isNullOrBlank()) ApiDefaults.SEARCH_BASE_URL else saved.trimEnd('/')
     }
 
     /** 写回检索端点；保存空串即恢复使用 [SEARCH_BASE_URL]。 */
@@ -157,7 +98,7 @@ object ApiConfig {
             // 空列表 = 用户自己填的模型名，记住什么就用什么，不做校验
             saved.isNotEmpty() && (cfg.models.isEmpty() || cfg.models.contains(saved)) -> saved
             cfg.models.isNotEmpty() -> cfg.models.first()
-            else -> MODEL
+            else -> ApiDefaults.MODEL
         }
     }
 
@@ -178,7 +119,7 @@ object ApiConfig {
     /** 思考强度，默认「高」。只在思考开启时随请求发出。 */
     fun loadThinkingEffort(context: Context): String {
         val saved = prefs(context).getString(KEY_EFFORT, null)
-        return if (saved.isNullOrBlank()) DEFAULT_EFFORT else saved
+        return if (saved.isNullOrBlank()) ApiDefaults.DEFAULT_EFFORT else saved
     }
 
     /** 保存思考强度；非法值由 [loadThinkingEffort] 与 [effortLabel] 负责回落。 */
@@ -188,5 +129,5 @@ object ApiConfig {
 
     /** 强度标签：就是接口取值本身（low / high / max），非法值回落默认。 */
     fun effortLabel(effort: String): String =
-        if (EFFORTS.contains(effort)) effort else DEFAULT_EFFORT
+        if (ApiDefaults.EFFORTS.contains(effort)) effort else ApiDefaults.DEFAULT_EFFORT
 }

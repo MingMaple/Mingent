@@ -1,4 +1,5 @@
 package com.zmf.agent.agent.prompt
+import com.zmf.agent.core.llm.ApiDefaults
 
 import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.core.model.PermissionLevel
@@ -20,7 +21,7 @@ import com.zmf.agent.core.model.PermissionLevel
  * @param goalText 当前目标的一句话（含轮次），空串 = 没有目标；只进尾部快照，不进 system
  */
 data class PromptInput(
-    val model: String = ApiConfig.MODEL,
+    val model: String = ApiDefaults.MODEL,
     val workspacePath: String = "",
     val permission: PermissionLevel = PermissionLevel.WORKSPACE,
     val androidVersion: String = "",

@@ -1,4 +1,5 @@
 package com.zmf.agent.ui.settings
+import com.zmf.agent.core.llm.ApiDefaults
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -58,8 +59,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.zmf.agent.agent.ApiConfig
-import com.zmf.agent.agent.provider.ProviderConfig
-import com.zmf.agent.agent.provider.ProviderStore
+import com.zmf.agent.infra.llm.ProviderConfig
+import com.zmf.agent.infra.llm.ProviderStore
 import com.zmf.agent.infra.api.BalanceResult
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
@@ -232,7 +233,7 @@ fun ModelSettingsPage(
                                     )
                                 }
                                 // 三档只显示接口取值本身：中文标签和 reasoning_effort 对不上，排查时容易看错
-                                ApiConfig.EFFORTS.forEach { value ->
+                                ApiDefaults.EFFORTS.forEach { value ->
                                     EffortRow(
                                         text = ApiConfig.effortLabel(value),
                                         selected = thinkingEnabled &&

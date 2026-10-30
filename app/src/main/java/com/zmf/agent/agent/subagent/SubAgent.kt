@@ -5,8 +5,8 @@ import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.agent.loop.AgentLoop
 import com.zmf.agent.agent.loop.AgentUi
 import com.zmf.agent.agent.prompt.PromptInput
-import com.zmf.agent.agent.provider.LlmProvider
-import com.zmf.agent.agent.provider.UsageBuckets
+import com.zmf.agent.infra.llm.LlmProvider
+import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.core.AppForeground
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage

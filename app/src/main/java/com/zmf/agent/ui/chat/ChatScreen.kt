@@ -1,4 +1,5 @@
 package com.zmf.agent.ui.chat
+import com.zmf.agent.core.llm.ApiDefaults
 import com.zmf.agent.uikit.common.BoundedScrollColumn
 import com.zmf.agent.uikit.common.blockTapsOnly
 
@@ -1605,13 +1606,13 @@ fun ChatScreen(
                 onSelectProvider = { id -> viewModel.selectProvider(id) },
                 onSaveProvider = { cfg -> viewModel.saveProvider(cfg) },
                 onDeleteProvider = { id -> viewModel.deleteProvider(id) },
-                // 模型候选跟着当前 provider 走：内置 DeepSeek 才用 ApiConfig.MODELS 的显示名
+                // 模型候选跟着当前 provider 走：内置 DeepSeek 才用 ApiDefaults.MODELS 的显示名
                 models = viewModel.providers
                     .firstOrNull { it.id == viewModel.currentProviderId }
                     ?.models
                     .orEmpty()
                     .map { id ->
-                        id to (ApiConfig.MODELS.firstOrNull { it.first == id }?.second ?: id)
+                        id to (ApiDefaults.MODELS.firstOrNull { it.first == id }?.second ?: id)
                     },
                 // 思考开关与强度都并进模型页的行内展开：配置在一处，翻开关不用再跳一层
                 thinkingEnabled = viewModel.thinkingEnabled,

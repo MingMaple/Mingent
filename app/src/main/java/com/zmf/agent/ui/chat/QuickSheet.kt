@@ -1,4 +1,5 @@
 package com.zmf.agent.ui.chat
+import com.zmf.agent.core.llm.ApiDefaults
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -44,7 +45,7 @@ data class QuickSheetState(
     val providers: List<QuickProvider> = emptyList(),
     val currentProviderId: String = "",
     val currentModelId: String = "",
-    val effort: String = ApiConfig.DEFAULT_EFFORT,
+    val effort: String = ApiDefaults.DEFAULT_EFFORT,
     val thinkingEnabled: Boolean = true,
     val onPickModel: (providerId: String, modelId: String) -> Unit = { _, _ -> },
     val onPickEffort: (effortKey: String) -> Unit = {}
@@ -53,12 +54,12 @@ data class QuickSheetState(
 /** 二级窗当前停在哪一层。 */
 internal enum class QuickSheetPage { ROOT, MODEL, EFFORT }
 
-/** 「关」不是接口取值（不在 [ApiConfig.EFFORTS] 里），只作界面上的一个选项。 */
+/** 「关」不是接口取值（不在 [ApiDefaults.EFFORTS] 里），只作界面上的一个选项。 */
 internal const val EFFORT_OFF = "off"
 
 /** 模型显示名：内置两个用模板里的中文别名，其余（自定义 provider）直接显示 id。 */
 internal fun modelDisplayName(modelId: String): String =
-    ApiConfig.MODELS.firstOrNull { it.first == modelId }?.second ?: modelId
+    ApiDefaults.MODELS.firstOrNull { it.first == modelId }?.second ?: modelId
 
 /** 强度显示名：界面上一律用英文，接口取值（low / high / max）仍只在数据层出现。 */
 internal fun effortDisplayName(effort: String): String = when (effort) {
@@ -122,7 +123,7 @@ internal fun QuickModelPage(
                     fontSize = 11.sp,
                     color = Palette.Neutral
                 )
-                val models = provider.models.ifEmpty { ApiConfig.MODELS.map { it.first } }
+                val models = provider.models.ifEmpty { ApiDefaults.MODELS.map { it.first } }
                 for (model in models) {
                     QuickOptionRow(
                         label = modelDisplayName(model),
@@ -139,7 +140,7 @@ internal fun QuickModelPage(
 internal fun QuickEffortPage(state: QuickSheetState, onPick: (String) -> Unit) {
     val current = if (state.thinkingEnabled) state.effort else EFFORT_OFF
     Column(modifier = Modifier.fillMaxWidth()) {
-        for (key in listOf(EFFORT_OFF) + ApiConfig.EFFORTS) {
+        for (key in listOf(EFFORT_OFF) + ApiDefaults.EFFORTS) {
             QuickOptionRow(label = effortDisplayName(key), selected = key == current) { onPick(key) }
         }
     }

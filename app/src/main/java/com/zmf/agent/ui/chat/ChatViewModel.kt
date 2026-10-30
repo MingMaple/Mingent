@@ -1,4 +1,6 @@
 package com.zmf.agent.ui.chat
+import com.zmf.agent.infra.llm.WireDump
+import com.zmf.agent.core.llm.ApiDefaults
 
 import android.content.Context
 import android.os.Build
@@ -41,10 +43,10 @@ import com.zmf.agent.agent.prompt.PromptBuilder
 import com.zmf.agent.agent.prompt.PromptInput
 import com.zmf.agent.agent.prompt.PromptStore
 import com.zmf.agent.agent.skill.SkillStore
-import com.zmf.agent.agent.provider.DeepSeekProvider
-import com.zmf.agent.agent.provider.ProviderConfig
-import com.zmf.agent.agent.provider.ProviderStore
-import com.zmf.agent.agent.provider.UsageBuckets
+import com.zmf.agent.infra.llm.DeepSeekProvider
+import com.zmf.agent.infra.llm.ProviderConfig
+import com.zmf.agent.infra.llm.ProviderStore
+import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.agent.session.ChatSession
 import com.zmf.agent.agent.session.PlanDoc
 import com.zmf.agent.agent.session.PlanStore
@@ -295,7 +297,7 @@ class ChatViewModel(context: Context) : AgentUi {
         // 调试用线上请求落盘：pref `wire_dump`=true 时，每条请求 JSON 存到 appdata/wire/（只留最近 12 份）。
         // 排查「为什么没命中前缀缓存」时打开它，离线 diff 两条请求即可定位第一处差异。
         val prefs = appContext.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
-        ApiConfig.wireDumpDir = if (prefs.getBoolean("wire_dump", false)) {
+        WireDump.dir = if (prefs.getBoolean("wire_dump", false)) {
             java.io.File(com.zmf.agent.core.AppPaths.dataDir(appContext), "wire")
         } else {
             null
@@ -681,14 +683,14 @@ class ChatViewModel(context: Context) : AgentUi {
     /**
      * 重算快照：估算的是「真正会发出去的那份请求视图」。
      * 有摘要就是 system(摘要) + summaryUpTo 之后的原文，没有摘要就是全量（摘要失败时按兜底轮数裁）。
-     * 分母是 ApiConfig.CONTEXT_WINDOW；不另写估算器，直接复用 ContextCompactor.estimate。
+     * 分母是 ApiDefaults.CONTEXT_WINDOW；不另写估算器，直接复用 ContextCompactor.estimate。
      */
     fun refreshContext() {
         val summary = contextSummary
         val upTo = if (summary.isEmpty()) 0 else normalizedSummaryUpTo()
         val start = requestStart(summary, upTo)
         val tokens = ContextCompactor.estimate(requestView(start, summary, upTo))
-        val window = ApiConfig.CONTEXT_WINDOW
+        val window = ApiDefaults.CONTEXT_WINDOW
         val session = sessionList.firstOrNull { it.id == currentSessionId }
         contextSnapshot = ContextSnapshot(
             estimatedTokens = tokens,
@@ -3218,7 +3220,7 @@ class ChatViewModel(context: Context) : AgentUi {
      *
      * 上下文水位的口径：真正发给模型的那份请求视图（摘要 + 最近若干轮原文），
      * 就是 refreshContext() 算出的 contextSnapshot.estimatedTokens：界面上的全量历史不算在内；
-     * 分母是 ApiConfig.CONTEXT_WINDOW。不另写估算器。
+     * 分母是 ApiDefaults.CONTEXT_WINDOW。不另写估算器。
      */
     fun refreshStats() {
         refreshContext()
@@ -3233,7 +3235,7 @@ class ChatViewModel(context: Context) : AgentUi {
             totalCompletionTokens = session?.completionTokens ?: 0,
             totalRequests = session?.requests ?: 0,
             contextTokens = contextSnapshot.estimatedTokens,
-            contextWindow = ApiConfig.CONTEXT_WINDOW,
+            contextWindow = ApiDefaults.CONTEXT_WINDOW,
             // 全局历史总账：只增不减，删会话 / 归档 / 清工作区都不动它
             globalPromptTokens = ledger.totalPromptTokens,
             globalCompletionTokens = ledger.totalCompletionTokens,
@@ -3558,7 +3560,7 @@ class ChatViewModel(context: Context) : AgentUi {
         val provider = providers.firstOrNull { it.id == currentProviderId }?.id
             ?: currentProviderId.takeIf { it.isNotBlank() }
             ?: "内置"
-        val model = model.takeIf { it.isNotBlank() } ?: ApiConfig.MODEL
+        val model = model.takeIf { it.isNotBlank() } ?: ApiDefaults.MODEL
         return provider + "/" + model
     }
 

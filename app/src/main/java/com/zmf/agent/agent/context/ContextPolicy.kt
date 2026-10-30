@@ -1,4 +1,5 @@
 package com.zmf.agent.agent.context
+import com.zmf.agent.core.llm.ApiDefaults
 
 import android.content.Context
 import com.zmf.agent.agent.ApiConfig
@@ -199,7 +200,7 @@ object ContextStore {
      */
     fun retainBudgetTokens(
         policy: ContextPolicy,
-        windowTokens: Int = ApiConfig.CONTEXT_WINDOW,
+        windowTokens: Int = ApiDefaults.CONTEXT_WINDOW,
         outputReserveTokens: Int = 0
     ): Int {
         val window = windowTokens.coerceAtLeast(0)
@@ -213,7 +214,7 @@ object ContextStore {
     /** 现在的保留预算是否因为「不小于触发阈值」被回落了（日志与设置页提示用）。 */
     fun retainClamped(
         policy: ContextPolicy,
-        windowTokens: Int = ApiConfig.CONTEXT_WINDOW
+        windowTokens: Int = ApiDefaults.CONTEXT_WINDOW
     ): Boolean {
         val window = windowTokens.coerceAtLeast(1)
         val threshold = (window * policy.triggerRatio).toInt()
@@ -229,7 +230,7 @@ object ContextStore {
      */
     private fun warnIfRetainClamped(policy: ContextPolicy) {
         if (!retainClamped(policy)) return
-        val window = ApiConfig.CONTEXT_WINDOW
+        val window = ApiDefaults.CONTEXT_WINDOW
         val threshold = (window * policy.triggerRatio).toInt()
         FileLog.log(
             "context",
@@ -332,7 +333,7 @@ object ContextCompactor {
     fun retainStart(
         history: List<ChatMessage>,
         policy: ContextPolicy,
-        windowTokens: Int = ApiConfig.CONTEXT_WINDOW,
+        windowTokens: Int = ApiDefaults.CONTEXT_WINDOW,
         outputReserveTokens: Int = 0
     ): Int {
         if (history.isEmpty()) return 0

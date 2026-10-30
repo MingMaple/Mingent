@@ -1,4 +1,5 @@
 package com.zmf.agent.tools.web
+import com.zmf.agent.core.llm.ApiDefaults
 
 import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.core.log.FileLog
@@ -167,7 +168,7 @@ class WebSearchTool : Tool {
     }
 
     private fun buildBody(query: String): JSONObject = JSONObject()
-        .put("model", ApiConfig.SEARCH_MODEL)
+        .put("model", ApiDefaults.SEARCH_MODEL)
         .put("max_tokens", MAX_TOKENS)
         .put(
             "messages",

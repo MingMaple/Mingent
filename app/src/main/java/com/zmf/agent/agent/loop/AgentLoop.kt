@@ -6,10 +6,10 @@ import com.zmf.agent.agent.context.ToolResultPruner
 import com.zmf.agent.agent.instructions.AgentInstructions
 import com.zmf.agent.agent.prompt.PromptBuilder
 import com.zmf.agent.agent.prompt.PromptInput
-import com.zmf.agent.agent.provider.ChatRequest
-import com.zmf.agent.agent.provider.LlmEvent
-import com.zmf.agent.agent.provider.LlmProvider
-import com.zmf.agent.agent.provider.UsageBuckets
+import com.zmf.agent.infra.llm.ChatRequest
+import com.zmf.agent.infra.llm.LlmEvent
+import com.zmf.agent.infra.llm.LlmProvider
+import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.tools.displayName
 import com.zmf.agent.core.model.ChatMessage
@@ -594,7 +594,7 @@ class AgentLoop(
             " tools=" + specs.size + "/" + shortHash(cacheTools)
          // 一次性诊断：把本轮请求「最后一条消息」的尾部记下来，直接确认状态块到底进没进请求。
         // 只在「线上请求落盘」打开时才记：这是排查用的，平时每轮打一行只会把日志淹掉。
-        if (com.zmf.agent.agent.ApiConfig.wireDumpDir != null) {
+        if (com.zmf.agent.infra.llm.WireDump.dir != null) {
             val lastRequest = request.lastOrNull()
             FileLog.log(
                 "request",

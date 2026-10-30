@@ -1,4 +1,5 @@
-package com.zmf.agent.agent.provider
+package com.zmf.agent.infra.llm
+import com.zmf.agent.core.llm.ApiDefaults
 
 import android.content.Context
 import com.zmf.agent.agent.ApiConfig
@@ -183,9 +184,9 @@ object ProviderStore {
         ProviderConfig(
             id = DEEPSEEK_ID,
             name = "DeepSeek",
-            baseUrl = ApiConfig.BASE_URL,
+            baseUrl = ApiDefaults.BASE_URL,
             apiKey = "",
-            models = ApiConfig.MODELS.map { it.first },
+            models = ApiDefaults.MODELS.map { it.first },
             builtIn = true
         ),
         ProviderConfig(
@@ -298,16 +299,16 @@ object ProviderStore {
     private fun defaultsFromLegacy(context: Context): List<ProviderConfig> {
         val p = prefs(context)
         val key = p.getString(LEGACY_KEY_API_KEY, null)?.trim().orEmpty()
-            .ifEmpty { ApiConfig.DEFAULT_API_KEY }
+            .ifEmpty { ApiDefaults.DEFAULT_API_KEY }
         val base = p.getString(LEGACY_KEY_BASE_URL, null)?.trim()?.trimEnd('/').orEmpty()
-            .ifEmpty { ApiConfig.BASE_URL }
-        val model = p.getString(LEGACY_KEY_MODEL, null)?.trim().orEmpty().ifEmpty { ApiConfig.MODEL }
+            .ifEmpty { ApiDefaults.BASE_URL }
+        val model = p.getString(LEGACY_KEY_MODEL, null)?.trim().orEmpty().ifEmpty { ApiDefaults.MODEL }
 
         val modelKey = KEY_MODEL_PREFIX + DEEPSEEK_ID
         if (!p.contains(modelKey)) p.edit().putString(modelKey, model).apply()
 
         // 老模型也要在可用列表里（自定义端点上的模型可能根本不在 MODELS 里）
-        val models = (ApiConfig.MODELS.map { it.first } + model).distinct()
+        val models = (ApiDefaults.MODELS.map { it.first } + model).distinct()
         return listOf(
             ProviderConfig(
                 id = DEEPSEEK_ID,

@@ -1,4 +1,5 @@
 package com.zmf.agent.tools.agent
+import com.zmf.agent.core.llm.ApiDefaults
 
 import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.agent.subagent.SubAgentDeps
@@ -86,8 +87,8 @@ class TaskTool : Tool {
         // 三个覆盖项：没传/传 null 一律当 null（= 继承父会话），不做任何猜测性兜底
         val thinking = optBooleanOrNull(args, "thinking")
         val effort = optTextOrNull(args, "thinking_effort")
-        if (effort != null && !ApiConfig.EFFORTS.contains(effort)) {
-            return ToolResult.Error("thinking_effort 只能是 " + ApiConfig.EFFORTS.joinToString(" / "))
+        if (effort != null && !ApiDefaults.EFFORTS.contains(effort)) {
+            return ToolResult.Error("thinking_effort 只能是 " + ApiDefaults.EFFORTS.joinToString(" / "))
         }
         val model = optTextOrNull(args, "model")
 

@@ -1,4 +1,5 @@
 package com.zmf.agent.agent.prompt
+import com.zmf.agent.core.llm.ApiDefaults
 
 import com.zmf.agent.agent.ApiConfig
 import com.zmf.agent.core.log.FileLog
@@ -51,7 +52,7 @@ object PromptBuilder {
     private const val MIN_PROMPT_TOKENS = 4000
 
     /** 提示词总长告警线（粗估 tokens）：窗口的 0.5%，且不低于 [MIN_PROMPT_TOKENS]。 */
-    private fun maxPromptTokens(windowTokens: Int = ApiConfig.CONTEXT_WINDOW): Int {
+    private fun maxPromptTokens(windowTokens: Int = ApiDefaults.CONTEXT_WINDOW): Int {
         val byWindow = (windowTokens.coerceAtLeast(1) * PROMPT_WINDOW_RATIO).toInt()
         return maxOf(MIN_PROMPT_TOKENS, byWindow)
     }
@@ -212,7 +213,7 @@ object PromptBuilder {
         FileLog.log(
             TAG,
             label + "偏长：约 " + tokens + " tokens（告警线 " + limit + " = 窗口 " +
-                ApiConfig.CONTEXT_WINDOW + " 的 0.5%，不低于 " + MIN_PROMPT_TOKENS + "），" +
+                ApiDefaults.CONTEXT_WINDOW + " 的 0.5%，不低于 " + MIN_PROMPT_TOKENS + "），" +
                 "模型=" + input.model + detail
         )
     }

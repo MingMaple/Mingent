@@ -1,4 +1,5 @@
 package com.zmf.agent.ui.chat
+import com.zmf.agent.core.llm.ApiDefaults
 
 /**
  * 统计快照：ChatViewModel 每次变化都整体换一个新对象，页面直接读。
@@ -14,7 +15,7 @@ package com.zmf.agent.ui.chat
  * - total*Tokens / totalRequests：本会话累计（落盘在 sessions.json 的会话记录里，切会话能接上）。
  * - contextTokens：真正发给模型的那份请求视图的估算 token 数
  *   （ContextCompactor.compact(messages, contextPolicy).estimatedTokens，不含界面上的全量历史）。
- * - contextWindow：分母，取 ApiConfig.CONTEXT_WINDOW。
+ * - contextWindow：分母，取 ApiDefaults.CONTEXT_WINDOW。
  * - global* / today* / firstUsedDate：全局历史总账（UsageLedger 落盘 stats.json，只增不减）。
  */
 data class UsageStats(
@@ -26,7 +27,7 @@ data class UsageStats(
     val totalCompletionTokens: Int = 0, // 会话累计输出
     val totalRequests: Int = 0,         // 本会话成功请求次数（收到 usage 的次数）
     val contextTokens: Int = 0,         // 当前请求视图的估算 token 数
-    val contextWindow: Int = 0,         // 模型窗口，取 ApiConfig.CONTEXT_WINDOW
+    val contextWindow: Int = 0,         // 模型窗口，取 ApiDefaults.CONTEXT_WINDOW
     // ---- 全局历史总账（UsageLedger）----
     val globalPromptTokens: Int = 0,
     val globalCompletionTokens: Int = 0,

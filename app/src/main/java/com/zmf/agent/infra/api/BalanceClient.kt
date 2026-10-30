@@ -37,7 +37,7 @@ data class BalanceResult(
 /**
  * DeepSeek 余额查询客户端：GET {baseUrl}/user/balance，Bearer 鉴权。
  *
- * 为什么不走 [com.zmf.agent.agent.provider.DeepSeekProvider]：那条路是流式对话，
+ * 为什么不走 [com.zmf.agent.infra.llm.DeepSeekProvider]：那条路是流式对话，
  * 这里只要一次普通 GET + 一个小 JSON，单独一个客户端更简单，也不会和对话的
  * 「读超时 0（流式）」配置互相污染。
  */

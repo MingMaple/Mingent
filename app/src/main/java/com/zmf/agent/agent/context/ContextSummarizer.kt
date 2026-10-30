@@ -1,12 +1,13 @@
 package com.zmf.agent.agent.context
+import com.zmf.agent.core.llm.ApiDefaults
 
 import com.zmf.agent.agent.ApiConfig
-import com.zmf.agent.agent.provider.ChatRequest
-import com.zmf.agent.agent.provider.LlmEvent
-import com.zmf.agent.agent.provider.LlmProvider
+import com.zmf.agent.infra.llm.ChatRequest
+import com.zmf.agent.infra.llm.LlmEvent
+import com.zmf.agent.infra.llm.LlmProvider
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
-import com.zmf.agent.agent.provider.ToolSpec
+import com.zmf.agent.infra.llm.ToolSpec
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.takeWhile
@@ -51,9 +52,9 @@ object ContextSummarizer {
     /**
      * 摘要输出上限（token）：min(65536, 窗口的 2%)。
      *
-     * 窗口取 [ApiConfig.CONTEXT_WINDOW]（全 App 只有一个口径），换更小的模型时它跟着变小。
+     * 窗口取 [ApiDefaults.CONTEXT_WINDOW]（全 App 只有一个口径），换更小的模型时它跟着变小。
      */
-    fun maxOutputTokens(windowTokens: Int = ApiConfig.CONTEXT_WINDOW): Int {
+    fun maxOutputTokens(windowTokens: Int = ApiDefaults.CONTEXT_WINDOW): Int {
         val byWindow = (windowTokens.coerceAtLeast(1) * SUMMARY_WINDOW_RATIO).toInt()
         return minOf(DSH_DEFAULT_MAX_TOKENS, byWindow.coerceAtLeast(1))
     }
