@@ -54,6 +54,8 @@ data class LedgerUsage(
     val prompt: Int = 0,
     val completion: Int = 0,
     val requests: Int = 0,
+    /** 用户亲手输入的轮次（不含分叉克隆与 App 代发）；只增不减，删会话也不回落。 */
+    val rounds: Int = 0,
     val steps: Int = 0,
     val cacheHit: Int = 0,
     val cacheMiss: Int = 0,
@@ -121,6 +123,7 @@ object UsageLedger {
     private const val KEY_FIRST_USED_AT = "firstUsedAt"
     private const val KEY_LAST_USED_AT = "lastUsedAt"
     private const val KEY_COST_BACKFILLED = "costBackfilled"
+    private const val KEY_ROUNDS_BACKFILLED = "roundsBackfilled"
 
     // v1 扁平键：只读迁移用，不再新写
     private const val KEY_TOTAL_PROMPT = "totalPromptTokens"
@@ -141,6 +144,7 @@ object UsageLedger {
     private var lastUsedAt = 0L
     /** 历史费用是否已从现存会话回填（只做一次）。 */
     private var costBackfilled = false
+    private var roundsBackfilled = false
 
     /** 落盘位置：filesDir/appdata/stats.json（首次读时由 [AppPaths] 从旧位置迁过来）。 */
     private fun storeFile(context: Context): File = AppPaths.dataFile(context, FILE_NAME)
@@ -194,6 +198,7 @@ object UsageLedger {
                 firstUsedAt = root.optLong(KEY_FIRST_USED_AT, 0L)
                 lastUsedAt = root.optLong(KEY_LAST_USED_AT, 0L)
                 costBackfilled = root.optBoolean(KEY_COST_BACKFILLED, false)
+                roundsBackfilled = root.optBoolean(KEY_ROUNDS_BACKFILLED, false)
             } catch (e: Exception) {
                 FileLog.log(TAG, "读取总账失败，从 0 开始：" + e)
                 clearMemory()
@@ -225,6 +230,46 @@ object UsageLedger {
         }
         if (sum > 0.0) total = total.copy(costCny = total.costCny + sum)
         costBackfilled = true
+        save(context)
+    }
+
+    /**
+     * 一次性回填历史轮次：只数现存会话自分叉边界之后、用户亲手输入的 user 消息。
+     *
+     * 回填后轮次进入总账，之后删会话不再让全局轮次回落。
+     */
+    @Synchronized
+    fun backfillRounds(context: Context, sessions: List<ChatSession>) {
+        load(context)
+        if (roundsBackfilled) return
+        var sum = 0
+        for (session in sessions) {
+            for (message in session.messages.drop(session.inheritedUsage.messages)) {
+                if (message.role != "user" || message.programmatic) continue
+                val date = dateText(message.createdAt)
+                if (date.isEmpty()) continue
+                days[date] = (days[date] ?: LedgerUsage()).copy(
+                    rounds = (days[date]?.rounds ?: 0) + 1
+                )
+                sum++
+            }
+        }
+        if (sum > 0) total = total.copy(rounds = total.rounds + sum)
+        roundsBackfilled = true
+        save(context)
+    }
+
+    /** 记一次用户亲手提问：轮次只增不减，删会话不影响。 */
+    @Synchronized
+    fun recordRound(context: Context) {
+        load(context)
+        val now = System.currentTimeMillis()
+        val date = dateText(now)
+        total = total.copy(rounds = total.rounds + 1)
+        days[date] = (days[date] ?: LedgerUsage()).copy(rounds = (days[date]?.rounds ?: 0) + 1)
+        trimDays()
+        if (firstUsedAt <= 0L) firstUsedAt = now
+        lastUsedAt = now
         save(context)
     }
 
@@ -327,6 +372,7 @@ object UsageLedger {
         prompt = prompt + other.prompt,
         completion = completion + other.completion,
         requests = requests + other.requests,
+        rounds = rounds + other.rounds,
         steps = steps + other.steps,
         cacheHit = cacheHit + other.cacheHit,
         cacheMiss = cacheMiss + other.cacheMiss,
@@ -379,6 +425,7 @@ object UsageLedger {
             root.put(KEY_FIRST_USED_AT, firstUsedAt)
             root.put(KEY_LAST_USED_AT, lastUsedAt)
             root.put(KEY_COST_BACKFILLED, costBackfilled)
+            root.put(KEY_ROUNDS_BACKFILLED, roundsBackfilled)
 
             val file = storeFile(context)
             file.parentFile?.mkdirs()
@@ -397,6 +444,7 @@ object UsageLedger {
         put("prompt", usage.prompt)
         put("completion", usage.completion)
         put("requests", usage.requests)
+        put("rounds", usage.rounds)
         put("steps", usage.steps)
         put("cacheHit", usage.cacheHit)
         put("cacheMiss", usage.cacheMiss)
@@ -422,6 +470,7 @@ object UsageLedger {
             prompt = obj.optInt("prompt", 0),
             completion = obj.optInt("completion", 0),
             requests = obj.optInt("requests", 0),
+            rounds = obj.optInt("rounds", 0),
             steps = obj.optInt("steps", 0),
             cacheHit = obj.optInt("cacheHit", 0),
             cacheMiss = obj.optInt("cacheMiss", 0),

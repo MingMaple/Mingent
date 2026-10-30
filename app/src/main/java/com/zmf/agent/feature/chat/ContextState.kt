@@ -1266,6 +1266,7 @@ class ContextState(
         var miss = 0
         var tokens = 0L
         var requests = 0
+        var rounds = 0
         var genMs = 0L
         var genTokens = 0
         var costCny = 0.0
@@ -1283,6 +1284,7 @@ class ContextState(
             miss = t.cacheMiss
             tokens = t.prompt.toLong() + t.completion
             requests = t.requests
+            rounds = t.rounds
             genMs = t.genMs
             genTokens = t.genTokens
             costCny = t.costCny
@@ -1301,6 +1303,7 @@ class ContextState(
                 miss += day.cacheMiss
                 tokens += day.prompt.toLong() + day.completion
                 requests += day.requests
+                rounds += day.rounds
                 genMs += day.genMs
                 genTokens += day.genTokens
                 costCny += day.costCny
@@ -1323,7 +1326,7 @@ class ContextState(
             sessions = all.size,
             archived = all.count { it.archived },
             totalTokens = tokens,
-            rounds = rows.sumOf { it.rounds },
+            rounds = rounds,
             costCny = costCny.takeIf { it > 0.0 },
             pricedSessions = UsageCost.pricedSessionCount(all, fromMs, now),
             cacheRate = cacheRate,

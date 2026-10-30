@@ -23,6 +23,7 @@ import com.zmf.agent.core.store.Goal
 import com.zmf.agent.core.store.GoalPhase
 import com.zmf.agent.core.store.GoalStore
 import com.zmf.agent.core.store.UploadStore
+import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.core.prefs.GeneralPrefs
 import kotlinx.coroutines.CancellationException
@@ -268,6 +269,8 @@ class SendController(
             }
         }.trim()
 
+        // 用户亲手提问记一轮：轮次进总账，删会话不会让全局轮次下降（App 代发不算）
+        if (!programmatic) UsageLedger.recordRound(appContext)
         // 第一句话顺便当会话标题，侧边栏就不用显示一串「新会话」；只有附件/图片时用文件名
         session.autoTitleIfNeeded(
             if (text.isBlank()) (files.firstOrNull() ?: used.firstOrNull())?.name ?: prompt else text.trim()

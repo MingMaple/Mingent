@@ -456,6 +456,8 @@ class ChatViewModel(context: Context) : AgentUi {
             appContext,
             sessionList.flatMap { it.messages.drop(it.inheritedUsage.messages) }
         )
+        // 轮次总账一次性回填：同样只数现存会话，之后删会话不再让「轮次」回落
+        UsageLedger.backfillRounds(appContext, sessionList)
         // 顺带扫一次 Skill 目录：提示词里的 available_skills 段要用，不能等到第一次请求再读盘
         refreshSkillCatalog()
         // 顺手清掉 7 天前的 spill 落盘（后台做，失败也无所谓，不阻塞启动）
