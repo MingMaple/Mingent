@@ -191,7 +191,7 @@ internal fun LegendRow(
         )
         Text(
             text = label,
-            modifier = Modifier.weight(1f).padding(start = 8.dp),
+            modifier = Modifier.weight(1f).padding(start = 8.dp).alignByBaseline(),
             fontSize = 13.sp,
             color = onSurface,
             maxLines = 1,
@@ -200,6 +200,7 @@ internal fun LegendRow(
         Text(
             text = (if (tokens > 0) "≈" + tokenText(tokens) else "—") +
                 (if (fraction != null) "  " + percentText(fraction) else ""),
+            modifier = Modifier.alignByBaseline(),
             fontSize = 11.sp,
             color = onSurface.copy(alpha = 0.45f),
             maxLines = 1,
@@ -230,7 +231,7 @@ internal fun LegendTwoLine(
             )
             Text(
                 text = label,
-                modifier = Modifier.weight(1f).padding(start = 8.dp),
+                modifier = Modifier.weight(1f).padding(start = 8.dp).alignByBaseline(),
                 fontSize = 12.sp,
                 lineHeight = 14.sp,
                 color = onSurface,
@@ -239,6 +240,7 @@ internal fun LegendTwoLine(
             )
             Text(
                 text = rightTop,
+                modifier = Modifier.alignByBaseline(),
                 fontSize = 12.sp,
                 lineHeight = 14.sp,
                 color = onSurface.copy(alpha = 0.65f)
