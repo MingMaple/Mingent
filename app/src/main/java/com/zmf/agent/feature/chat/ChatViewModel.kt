@@ -451,6 +451,11 @@ class ChatViewModel(context: Context) : AgentUi {
         UsageLedger.load(appContext)
         // 工作区表与会话表读回来，决定当前会话并载入它的消息（见 SessionController.loadInitial）
         sessionStore.loadInitial()
+        // 费用总账一次性回填：按现存会话自己的消息逐轮算钱（分叉克隆段不计），之后删会话不再影响全局费用
+        UsageLedger.backfillCost(
+            appContext,
+            sessionList.flatMap { it.messages.drop(it.inheritedUsage.messages) }
+        )
         // 顺带扫一次 Skill 目录：提示词里的 available_skills 段要用，不能等到第一次请求再读盘
         refreshSkillCatalog()
         // 顺手清掉 7 天前的 spill 落盘（后台做，失败也无所谓，不阻塞启动）

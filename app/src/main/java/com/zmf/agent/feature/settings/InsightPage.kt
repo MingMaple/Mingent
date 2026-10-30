@@ -25,10 +25,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -80,6 +83,8 @@ private object InsightPageMemory {
 fun ContextInsightPage(
     initialSessionId: String,
     currentSessionId: String,
+    workspaces: List<Pair<String, String>>,
+    initialWorkspaceId: String?,
     onBack: () -> Unit,
     loadSession: (String) -> InsightSessionView,
     loadGlobal: (InsightRange) -> InsightGlobalView
@@ -149,7 +154,9 @@ fun ContextInsightPage(
                     onPickSession = { row ->
                         viewedId = row.id
                         scope.launch { scroll.animateScrollTo(0) }
-                    }
+                    },
+                    workspaces = workspaces,
+                    initialWorkspaceId = initialWorkspaceId
                 )
             }
         }
@@ -191,13 +198,13 @@ private fun SessionModule(
                 )
             }
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TabPill(text = "当前上下文", selected = tab == 0) { onTab(0) }
             TabPill(text = "Token 统计", selected = tab == 1) { onTab(1) }
             TabPill(text = "耗时统计", selected = tab == 2) { onTab(2) }
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
         AnimatedContent(
             targetState = tab,
             transitionSpec = {
@@ -236,30 +243,30 @@ private fun CurrentContextTab(view: InsightSessionView) {
         )
         Text(
             text = " / " + tokenText(view.window.toLong()) + " tokens",
-            modifier = Modifier.padding(bottom = 3.dp),
-            fontSize = 13.sp,
+            modifier = Modifier.padding(bottom = 2.dp),
+            fontSize = 12.sp,
             color = onSurface.copy(alpha = 0.45f)
         )
         Spacer(Modifier.weight(1f))
         Text(
             text = percentText(view.ratio),
-            fontSize = 20.sp,
+            fontSize = 26.sp,
             fontWeight = FontWeight.SemiBold,
             color = onSurface
         )
         Text(
             text = "上下文已用",
-            modifier = Modifier.padding(start = 3.dp, bottom = 3.dp),
-            fontSize = 10.sp,
+            modifier = Modifier.padding(start = 3.dp, bottom = 2.dp),
+            fontSize = 12.sp,
             color = onSurface.copy(alpha = 0.45f)
         )
     }
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(6.dp))
     StackedBar(
         segments = view.parts.map { it.tokens to argb(it.colorArgb) },
         total = if (view.window > 0) view.window else partsSum
     )
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(6.dp))
     for (part in view.parts) {
         PartRow(part, partsSum)
     }
@@ -276,7 +283,7 @@ private fun TokenTab(view: InsightSessionView) {
             color = onSurface.copy(alpha = 0.45f)
         )
     }
-    Spacer(Modifier.height(6.dp))
+    Spacer(Modifier.height(4.dp))
     val composition = view.tokenComposition
     if (composition == null) {
         DashBlock()
@@ -312,7 +319,7 @@ private fun TimingTab(view: InsightSessionView) {
             color = onSurface.copy(alpha = 0.45f)
         )
     }
-    Spacer(Modifier.height(6.dp))
+    Spacer(Modifier.height(4.dp))
     val timing = InsightTiming(
         ttft = view.ttftMillis,
         reasoning = view.reasoningMillis,
@@ -357,7 +364,9 @@ private fun GlobalSection(
     global: InsightGlobalView,
     range: InsightRange,
     onRange: (InsightRange) -> Unit,
-    onPickSession: (InsightSessionRow) -> Unit
+    onPickSession: (InsightSessionRow) -> Unit,
+    workspaces: List<Pair<String, String>>,
+    initialWorkspaceId: String?
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Text(
@@ -374,7 +383,8 @@ private fun GlobalSection(
         RangePill("全部", range == InsightRange.ALL) { onRange(InsightRange.ALL) }
     }
 
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         KpiCard(
             label = "全部会话",
             value = global.sessions.toString(),
@@ -388,7 +398,7 @@ private fun GlobalSection(
             modifier = Modifier.weight(1f)
         )
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         KpiCard(
             label = "费用",
             value = global.costCny?.let { moneyText(it) } ?: "—",
@@ -402,7 +412,7 @@ private fun GlobalSection(
             modifier = Modifier.weight(1f)
         )
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         KpiCard(
             label = "工具调用",
             value = global.toolCalls.toString(),
@@ -415,6 +425,7 @@ private fun GlobalSection(
             sub = "模型调用 " + global.requests,
             modifier = Modifier.weight(1f)
         )
+    }
     }
 
     var dayMode by remember { mutableIntStateOf(0) }
@@ -528,25 +539,47 @@ private fun GlobalSection(
 
     SessionListCard(
         rows = global.rows,
-        onPick = onPickSession
+        onPick = onPickSession,
+        workspaces = workspaces,
+        initialWorkspaceId = initialWorkspaceId
     )
 }
 
 @Composable
 private fun SessionListCard(
     rows: List<InsightSessionRow>,
-    onPick: (InsightSessionRow) -> Unit
+    onPick: (InsightSessionRow) -> Unit,
+    workspaces: List<Pair<String, String>>,
+    initialWorkspaceId: String?
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     var query by remember { mutableStateOf("") }
-    var filter by remember { mutableIntStateOf(0) }
+    var workspaceFilter by remember { mutableStateOf(initialWorkspaceId) }
+    var archiveFilter by remember { mutableIntStateOf(0) }
+    var visibleCount by remember { mutableIntStateOf(5) }
+    var menuOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(workspaceFilter, archiveFilter, query) {
+        visibleCount = 5
+    }
     val filtered = rows.filter { row ->
-        val filterOk = when (filter) {
+        val workspaceOk = when (workspaceFilter) {
+            null -> true
+            WORKSPACE_NONE -> row.workspaceId == null
+            else -> row.workspaceId == workspaceFilter
+        }
+        val archiveOk = when (archiveFilter) {
             1 -> !row.archived
             2 -> row.archived
             else -> true
         }
-        filterOk && (query.isBlank() || row.title.contains(query, ignoreCase = true))
+        workspaceOk && archiveOk &&
+            (query.isBlank() || row.title.contains(query, ignoreCase = true))
+    }
+    val shown = filtered.take(visibleCount)
+    val workspaceTitle = when (workspaceFilter) {
+        null -> "全部工作区"
+        WORKSPACE_NONE -> "未分类"
+        else -> workspaces.firstOrNull { it.first == workspaceFilter }?.second ?: "全部工作区"
     }
     InsightCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -557,11 +590,48 @@ private fun SessionListCard(
                 fontWeight = FontWeight.SemiBold,
                 color = onSurface
             )
-            Text(
-                text = filtered.size.toString(),
-                fontSize = 13.sp,
-                color = onSurface.copy(alpha = 0.45f)
-            )
+            Box {
+                Row(
+                    modifier = Modifier
+                        .saltRowClickable(RoundedCornerShape(8.dp)) { menuOpen = true }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = workspaceTitle, fontSize = 13.sp, color = onSurface.copy(alpha = 0.65f))
+                    Text(text = " ▾", fontSize = 11.sp, color = onSurface.copy(alpha = 0.45f))
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(prefix("全部工作区", workspaceFilter == null)) },
+                        onClick = { workspaceFilter = null; menuOpen = false }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(prefix("未分类", workspaceFilter == WORKSPACE_NONE)) },
+                        onClick = { workspaceFilter = WORKSPACE_NONE; menuOpen = false }
+                    )
+                    for (space in workspaces) {
+                        DropdownMenuItem(
+                            text = { Text(prefix(space.second, workspaceFilter == space.first)) },
+                            onClick = { workspaceFilter = space.first; menuOpen = false }
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text(prefix("显示：全部会话", archiveFilter == 0)) },
+                        onClick = { archiveFilter = 0; menuOpen = false }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(prefix("显示：未归档", archiveFilter == 1)) },
+                        onClick = { archiveFilter = 1; menuOpen = false }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(prefix("显示：归档", archiveFilter == 2)) },
+                        onClick = { archiveFilter = 2; menuOpen = false }
+                    )
+                }
+            }
         }
         Spacer(Modifier.height(8.dp))
         BasicTextField(
@@ -571,7 +641,7 @@ private fun SessionListCard(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             textStyle = TextStyle(fontSize = 13.sp, color = onSurface),
             decorationBox = { inner ->
                 if (query.isBlank()) {
@@ -584,22 +654,16 @@ private fun SessionListCard(
                 inner()
             }
         )
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            RangePill("全部", filter == 0) { filter = 0 }
-            RangePill("未归档", filter == 1) { filter = 1 }
-            RangePill("归档", filter == 2) { filter = 2 }
-        }
         Spacer(Modifier.height(4.dp))
         if (filtered.isEmpty()) {
             DashBlock()
         } else {
-            for (row in filtered) {
+            for (row in shown) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .saltRowClickable(RoundedCornerShape(10.dp)) { onPick(row) }
-                        .padding(vertical = 10.dp),
+                        .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
@@ -629,9 +693,41 @@ private fun SessionListCard(
                     }
                 }
             }
+            if (filtered.size > visibleCount) {
+                Text(
+                    text = "展开其余 " + (filtered.size - visibleCount) + " 个会话",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .saltRowClickable(RoundedCornerShape(10.dp)) {
+                            visibleCount += 5
+                        }
+                        .padding(vertical = 10.dp),
+                    fontSize = 12.sp,
+                    color = Palette.AccentGreen,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            } else if (visibleCount > 5) {
+                Text(
+                    text = "收起",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .saltRowClickable(RoundedCornerShape(10.dp)) {
+                            visibleCount = 5
+                        }
+                        .padding(vertical = 10.dp),
+                    fontSize = 12.sp,
+                    color = onSurface.copy(alpha = 0.45f),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
         }
     }
 }
+
+private const val WORKSPACE_NONE = "__none__"
+
+private fun prefix(text: String, selected: Boolean): String =
+    if (selected) "✓ " + text else text
 
 // ---- 组件与格式化 ----
 
@@ -747,7 +843,7 @@ private fun InsightCard(content: @Composable ColumnScope.() -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             content = content
         )
     }
@@ -765,13 +861,13 @@ private fun KpiCard(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 14.dp, vertical = 12.dp)
+            .padding(horizontal = 14.dp, vertical = 9.dp)
     ) {
-        Text(text = label, fontSize = 12.sp, color = onSurface.copy(alpha = 0.45f), maxLines = 1)
-        Spacer(Modifier.height(2.dp))
+        Text(text = label, fontSize = 11.sp, color = onSurface.copy(alpha = 0.45f), maxLines = 1)
+        Spacer(Modifier.height(1.dp))
         Text(
             text = value,
-            fontSize = 22.sp,
+            fontSize = 20.sp,
             fontWeight = FontWeight.SemiBold,
             color = onSurface,
             maxLines = 1,
@@ -779,7 +875,7 @@ private fun KpiCard(
         )
         Text(
             text = sub,
-            fontSize = 11.sp,
+            fontSize = 10.sp,
             color = onSurface.copy(alpha = 0.35f),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
@@ -798,7 +894,7 @@ private fun TabPill(text: String, selected: Boolean, onClick: () -> Unit) {
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
             )
             .saltRowClickable(RoundedCornerShape(10.dp), onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
     ) {
         Text(
             text = text,
@@ -819,7 +915,7 @@ private fun RangePill(text: String, selected: Boolean, onClick: () -> Unit) {
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
             )
             .saltRowClickable(RoundedCornerShape(10.dp), onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
     ) {
         Text(
             text = text,

@@ -81,6 +81,8 @@ data class InsightSessionRow(
     val id: String,
     val title: String,
     val archived: Boolean = false,
+    /** 所属工作区；null = 未分类。 */
+    val workspaceId: String? = null,
     val updatedAt: Long,
     val rounds: Int,
     val tokens: Long,

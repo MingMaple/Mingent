@@ -22,6 +22,7 @@ import com.zmf.agent.capability.prompt.PromptBuilder
 import com.zmf.agent.capability.prompt.PromptInput
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.core.llm.ApiDefaults
+import com.zmf.agent.core.llm.CostBook
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.store.ChatSession
@@ -967,12 +968,23 @@ class ContextState(
         })
         persistCurrent()
         // 全局总账：只增不减，跟删会话 / 归档无关，记在同一次 usage 里
+        val now = System.currentTimeMillis()
+        val cost = CostBook.costOf(
+            usageModel = turnUsageModel,
+            promptTokens = promptTokens,
+            completionTokens = completionTokens,
+            cachedTokens = hitTokens,
+            uncachedTokens = missTokens,
+            cacheWriteTokens = usage.cacheWriteTokens ?: 0,
+            atMillis = now
+        )
         UsageLedger.record(
             context = appContext,
             promptTokens = promptTokens,
             completionTokens = completionTokens,
             cacheHitTokens = hitTokens,
             cacheMissTokens = missTokens,
+            costCny = cost ?: 0.0,
             composition = LedgerComposition(
                 system = scaled.system,
                 skills = scaled.skills,
@@ -1256,6 +1268,7 @@ class ContextState(
         var requests = 0
         var genMs = 0L
         var genTokens = 0
+        var costCny = 0.0
         if (range == InsightRange.ALL) {
             val t = ledger.total
             composition = t.composition
@@ -1272,6 +1285,7 @@ class ContextState(
             requests = t.requests
             genMs = t.genMs
             genTokens = t.genTokens
+            costCny = t.costCny
         } else {
             for (key in keys) {
                 val day = ledger.days[key] ?: continue
@@ -1289,6 +1303,7 @@ class ContextState(
                 requests += day.requests
                 genMs += day.genMs
                 genTokens += day.genTokens
+                costCny += day.costCny
             }
         }
         val cacheRate = if (hit + miss > 0) hit.toFloat() / (hit + miss) else null
@@ -1301,7 +1316,6 @@ class ContextState(
             null
         }
         val all = sessions().toList()
-        val cost = UsageCost.sessions(all, fromMs, now)
         val rows = all.map { session -> globalRow(session, fromMs, now) }
             .sortedByDescending { it.updatedAt }
         return InsightGlobalView(
@@ -1310,7 +1324,7 @@ class ContextState(
             archived = all.count { it.archived },
             totalTokens = tokens,
             rounds = rows.sumOf { it.rounds },
-            costCny = cost.takeIf { it.hasValue }?.cny,
+            costCny = costCny.takeIf { it > 0.0 },
             pricedSessions = UsageCost.pricedSessionCount(all, fromMs, now),
             cacheRate = cacheRate,
             toolCalls = toolCalls,
@@ -1358,6 +1372,7 @@ class ContextState(
             id = session.id,
             title = session.title.ifBlank { "新会话" },
             archived = session.archived,
+            workspaceId = session.workspaceId,
             updatedAt = session.updatedAt,
             rounds = rounds,
             tokens = tokens,

@@ -394,6 +394,8 @@ internal fun ChatPageLayers(
             ContextInsightPage(
                 initialSessionId = viewModel.currentSessionId,
                 currentSessionId = viewModel.currentSessionId,
+                workspaces = viewModel.workspaceList.map { it.id to it.name },
+                initialWorkspaceId = viewModel.currentWorkspaceId,
                 onBack = { page = if (contextHubFromHome) null else AppPage.SETTINGS },
                 loadSession = { viewModel.insightSession(it) },
                 loadGlobal = { viewModel.globalInsight(it) }

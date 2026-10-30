@@ -181,7 +181,7 @@ internal fun LegendRow(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Row(
-        modifier = modifier.fillMaxWidth().height(30.dp),
+        modifier = modifier.fillMaxWidth().height(24.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -192,7 +192,7 @@ internal fun LegendRow(
         Text(
             text = label,
             modifier = Modifier.weight(1f).padding(start = 8.dp),
-            fontSize = 14.sp,
+            fontSize = 13.sp,
             color = onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -200,7 +200,7 @@ internal fun LegendRow(
         Text(
             text = (if (tokens > 0) "≈" + tokenText(tokens) else "—") +
                 (if (fraction != null) "  " + percentText(fraction) else ""),
-            fontSize = 12.sp,
+            fontSize = 11.sp,
             color = onSurface.copy(alpha = 0.45f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -219,7 +219,7 @@ internal fun LegendTwoLine(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Column(
-        modifier = modifier.fillMaxWidth().padding(vertical = 3.dp)
+        modifier = modifier.fillMaxWidth().padding(vertical = 1.dp)
     ) {
         // 色标是标题行的兄弟节点：与标题文字垂直居中，不在两行之间居中
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -231,17 +231,24 @@ internal fun LegendTwoLine(
             Text(
                 text = label,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
-                fontSize = 13.sp,
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
                 color = onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(text = rightTop, fontSize = 12.sp, color = onSurface.copy(alpha = 0.65f))
+            Text(
+                text = rightTop,
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
+                color = onSurface.copy(alpha = 0.65f)
+            )
         }
         Text(
             text = rightBottom,
             modifier = Modifier.padding(start = 17.dp),
-            fontSize = 11.sp,
+            fontSize = 10.sp,
+            lineHeight = 12.sp,
             color = onSurface.copy(alpha = 0.40f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis

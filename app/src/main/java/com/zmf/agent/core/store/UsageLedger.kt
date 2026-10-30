@@ -3,6 +3,7 @@ package com.zmf.agent.core.store
 import android.content.Context
 import com.zmf.agent.core.AppPaths
 import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.core.model.ChatMessage
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -66,6 +67,8 @@ data class LedgerUsage(
     val toolArgMs: Long = 0L,
     val genTokens: Int = 0,
     val toolCalls: Int = 0,
+    /** 估算费用（人民币）；只累加已注册价目的供应商（目前 DeepSeek）。 */
+    val costCny: Double = 0.0,
     val composition: LedgerComposition = LedgerComposition()
 )
 
@@ -117,6 +120,7 @@ object UsageLedger {
     private const val KEY_DAYS = "days"
     private const val KEY_FIRST_USED_AT = "firstUsedAt"
     private const val KEY_LAST_USED_AT = "lastUsedAt"
+    private const val KEY_COST_BACKFILLED = "costBackfilled"
 
     // v1 扁平键：只读迁移用，不再新写
     private const val KEY_TOTAL_PROMPT = "totalPromptTokens"
@@ -135,6 +139,8 @@ object UsageLedger {
     private val days = HashMap<String, LedgerUsage>()
     private var firstUsedAt = 0L
     private var lastUsedAt = 0L
+    /** 历史费用是否已从现存会话回填（只做一次）。 */
+    private var costBackfilled = false
 
     /** 落盘位置：filesDir/appdata/stats.json（首次读时由 [AppPaths] 从旧位置迁过来）。 */
     private fun storeFile(context: Context): File = AppPaths.dataFile(context, FILE_NAME)
@@ -187,6 +193,7 @@ object UsageLedger {
                 }
                 firstUsedAt = root.optLong(KEY_FIRST_USED_AT, 0L)
                 lastUsedAt = root.optLong(KEY_LAST_USED_AT, 0L)
+                costBackfilled = root.optBoolean(KEY_COST_BACKFILLED, false)
             } catch (e: Exception) {
                 FileLog.log(TAG, "读取总账失败，从 0 开始：" + e)
                 clearMemory()
@@ -195,15 +202,42 @@ object UsageLedger {
         loaded = true
     }
 
+    /**
+     * 一次性回填历史费用：按现存会话自己的消息（分叉克隆段不计）逐轮算钱，写进按天桶与总额。
+     *
+     * 这样费用像 token 总账一样持久：之后删会话不会让费用下降。
+     */
+    @Synchronized
+    fun backfillCost(context: Context, messages: List<ChatMessage>) {
+        load(context)
+        if (costBackfilled) return
+        var sum = 0.0
+        for (message in messages) {
+            val cost = UsageCost.turnCost(message) ?: continue
+            sum += cost
+            val date = dateText(message.createdAt)
+            if (date.isNotEmpty()) {
+                days[date] = (days[date] ?: LedgerUsage()).copy(
+                    costCny = (days[date]?.costCny ?: 0.0) + cost,
+                    requests = days[date]?.requests ?: 0
+                )
+            }
+        }
+        if (sum > 0.0) total = total.copy(costCny = total.costCny + sum)
+        costBackfilled = true
+        save(context)
+    }
+
     /** 记一次成功请求：总账累加、当天桶累加、首次/最近使用时间跟着更新。 */
     @Synchronized
     fun record(
         context: Context,
         promptTokens: Int,
         completionTokens: Int,
-        cacheHitTokens: Int,
+       cacheHitTokens: Int,
         cacheMissTokens: Int,
-        composition: LedgerComposition = LedgerComposition()
+        composition: LedgerComposition = LedgerComposition(),
+        costCny: Double = 0.0
     ) {
         load(context)
         val now = System.currentTimeMillis()
@@ -214,6 +248,7 @@ object UsageLedger {
             requests = 1,
             cacheHit = cacheHitTokens,
             cacheMiss = cacheMissTokens,
+            costCny = costCny,
             composition = composition
         )
         total = total.merge(add)
@@ -305,6 +340,7 @@ object UsageLedger {
         toolArgMs = toolArgMs + other.toolArgMs,
         genTokens = genTokens + other.genTokens,
         toolCalls = toolCalls + other.toolCalls,
+        costCny = costCny + other.costCny,
         composition = composition + other.composition
     )
 
@@ -342,6 +378,7 @@ object UsageLedger {
             root.put(KEY_DAYS, dayObj)
             root.put(KEY_FIRST_USED_AT, firstUsedAt)
             root.put(KEY_LAST_USED_AT, lastUsedAt)
+            root.put(KEY_COST_BACKFILLED, costBackfilled)
 
             val file = storeFile(context)
             file.parentFile?.mkdirs()
@@ -373,6 +410,7 @@ object UsageLedger {
         put("toolArgMs", usage.toolArgMs)
         put("genTokens", usage.genTokens)
         put("toolCalls", usage.toolCalls)
+        put("costCny", usage.costCny)
         if (!usage.composition.isEmpty) {
             put("composition", compositionToJson(usage.composition))
         }
@@ -397,6 +435,7 @@ object UsageLedger {
             toolArgMs = obj.optLong("toolArgMs", 0L),
             genTokens = obj.optInt("genTokens", 0),
             toolCalls = obj.optInt("toolCalls", 0),
+            costCny = obj.optDouble("costCny", 0.0),
             composition = compositionFromJson(obj.optJSONObject("composition"))
         )
     }
