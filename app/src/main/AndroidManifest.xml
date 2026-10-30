@@ -39,7 +39,7 @@
         android:theme="@style/Theme.Agent">
         <!-- configChanges：系统切深浅色时不重建 Activity，否则 ChatViewModel 连同聊天记录一起没了 -->
         <activity
-            android:name=".MainActivity"
+            android:name=".app.MainActivity"
             android:exported="true"
             android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize|locale|layoutDirection|density"
             android:windowSoftInputMode="adjustNothing">
@@ -50,24 +50,24 @@
         </activity>
 
         <activity
-            android:name=".TerminalActivity"
+            android:name=".feature.terminal.TerminalActivity"
             android:exported="false"
             android:theme="@style/Theme.Agent.Terminal"
             android:windowSoftInputMode="adjustNothing" />
 
         <!-- 常驻前台服务：让进程退到后台后不被轻易回收 -->
         <service
-            android:name=".service.AgentForegroundService"
+            android:name=".capability.runtime.AgentForegroundService"
             android:exported="false" />
 
         <!-- 悬浮球：TYPE_APPLICATION_OVERLAY 悬浮窗 -->
         <service
-            android:name=".service.FloatingBallService"
+            android:name=".feature.float.FloatingBallService"
             android:exported="false" />
 
         <!-- 定时任务：AlarmManager 到点后由它转发给 ScheduleRunner；exported=false，只有本 App 的闹钟能发进来 -->
         <receiver
-            android:name=".schedule.ScheduleReceiver"
+            android:name=".feature.schedule.ScheduleReceiver"
             android:exported="false" />
 
         <!-- Shizuku：provider 必须有，Shizuku 应用才认这个客户端；V3_SUPPORT 开新版 binder 协议 -->

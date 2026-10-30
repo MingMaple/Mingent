@@ -176,6 +176,8 @@ val checkArchitecture by tasks.registering {
                 rest == "infra" || rest.startsWith("infra.") -> "infra"
                 rest == "capability" || rest.startsWith("capability.") -> "capability"
                 rest == "feature" || rest.startsWith("feature.") -> "feature"
+                // app 是装配层：谁都可以用它，它可以用任何人。
+                rest == "app" || rest.startsWith("app.") -> "app"
                 else -> null
             }
         }
@@ -190,13 +192,37 @@ val checkArchitecture by tasks.registering {
             "uikit" to setOf("core", "uikit"),
             "infra" to setOf("core", "infra"),
             "capability" to setOf("core", "infra", "capability"),
-            "feature" to setOf("core", "infra", "capability", "uikit", "feature")
+            "feature" to setOf("core", "infra", "capability", "uikit", "feature"),
+            "app" to setOf("core", "infra", "capability", "uikit", "feature", "app")
         )
 
-        // 编号: 层 / 被依赖包前缀 / 原因 / 台账编号
-        data class Wl(val layer: String, val prefix: String, val why: String)
-        // 当前没有待还项：字形已搬进 uikit/icons，uikit 不再反向依赖 ui.chat
-        val whiteList = emptyList<Wl>()
+        // 编号: 层 / 来源包前缀 / 被依赖包前缀 / 原因
+        // from 前缀不可省：feature 层如果只按「层」放行，等于整个 feature 之间都放开了
+        data class Wl(val layer: String, val fromPrefix: String, val toPrefix: String, val why: String)
+        val whiteList = listOf(
+            // ChatScreen 现在既是聊天页又是全 App 导航壳：它 import 了各设置页、
+            // 启动终端 Activity 与小窗 Service。R6 把页面装配抽到 app 层导航后，这条必须删掉。
+            // 注意 fromPrefix 不带尾点：pkg 可能正好等于它（层根/功能根包），
+            // 匹配时用「等于 或 前缀点」两种形态，否则会像层判定那样漏掉整包。
+            Wl(
+                "feature",
+                "com.zmf.agent.feature.float",
+                "com.zmf.agent.feature.chat.",
+                "R6: 小窗复用聊天的 ChatViewModel 与 MarkdownText，需抽会话门面后才能解"
+            ),
+            Wl(
+                "feature",
+                "com.zmf.agent.feature.schedule",
+                "com.zmf.agent.feature.float.",
+                "R6: 定时任务通过 ChatBridge 把消息投进会话，需抽投递接口"
+            ),
+            Wl(
+                "feature",
+                "com.zmf.agent.feature.chat",
+                "com.zmf.agent.feature.",
+                "R6-nav: ChatScreen 暂作导航壳，页面装配待抽到 app 层"
+            )
+        )
 
         val problems = mutableListOf<String>()
         val files = srcRoot.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
@@ -221,7 +247,12 @@ val checkArchitecture by tasks.registering {
             for (m in importRe.findAll(text)) {
                 val imp = m.groupValues[1]
                 if (!imp.startsWith("com.zmf.agent.")) continue
-                if (whiteList.any { it.layer == layer && imp.startsWith(it.prefix) }) continue
+                if (whiteList.any {
+                        it.layer == layer &&
+                            (pkg == it.fromPrefix || pkg.startsWith(it.fromPrefix + ".")) &&
+                            imp.startsWith(it.toPrefix)
+                    }
+                ) continue
                 val targetLayer = layerOf(imp)
                 val rel = f.relativeTo(srcRoot).toString().replace('\\', '/')
                 if (targetLayer == null) {

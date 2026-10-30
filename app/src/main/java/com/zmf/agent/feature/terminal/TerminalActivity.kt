@@ -1,0 +1,42 @@
+package com.zmf.agent.feature.terminal
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import com.zmf.agent.infra.terminal.TerminalScreenHost
+
+/** 全屏终端页：承载终端模块的 [TerminalScreen]，状态栏与导航栏按沉浸式收起。 */
+class TerminalActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        // 终端按全屏沉浸处理：状态栏/导航栏收起，避免压住内容
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
+        // 首帧兜底：SurfaceView 刚 attach 时画布内容往往已经渲染出来，但窗口这一层没有重新合成，
+        // 屏幕上就是一片黑；任何能让窗口重绘/重排一次的外部事件（滑动、收起输入法）都会让它出现。
+        // 这里主动补几次「重新应用 insets + 重新布局」，等价于触发一次窗口级重绘。
+        listOf(300L, 900L, 1800L).forEach { delayMs ->
+            window.decorView.postDelayed({
+                window.decorView.requestApplyInsets()
+                window.decorView.requestLayout()
+            }, delayMs)
+        }
+        setContent {
+            Box(modifier = Modifier.fillMaxSize()) {
+                // 上游的 manager / env / Screen 参数都收在 infra 里，这里只负责「放一个终端」
+                TerminalScreenHost()
+            }
+        }
+    }
+}
