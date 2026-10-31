@@ -96,7 +96,72 @@ data class LedgerSnapshot(
     val todayPromptTokens: Int get() = today.prompt
     val todayCompletionTokens: Int get() = today.completion
     val todayRequests: Int get() = today.requests
+
+    /** 按天账本逐字段求和；`null` 表示还没算过（由调用方缓存，别在大循环里反复调）。 */
+    val daysSum: LedgerUsage by lazy { days.values.fold(LedgerUsage()) { acc, day -> acc.merge(day) } }
+
+    /**
+     * 历史遗留：总账里有、按天账本里没有的那部分。
+     *
+     * 来源是 v1 时代的累计值（迁移时只把「今日三项」放进当天桶）与已删会话的用量，
+     * 它们没有可靠的日期归属。范围统计必须把它算进来，否则「全部」与「近 30 天」
+     * 会给出两个互相矛盾的数字。
+     */
+    val legacy: LedgerUsage by lazy {
+        val sum = daysSum
+        LedgerUsage(
+            prompt = (total.prompt - sum.prompt).coerceAtLeast(0),
+            completion = (total.completion - sum.completion).coerceAtLeast(0),
+            requests = (total.requests - sum.requests).coerceAtLeast(0),
+            rounds = (total.rounds - sum.rounds).coerceAtLeast(0),
+            steps = (total.steps - sum.steps).coerceAtLeast(0),
+            cacheHit = (total.cacheHit - sum.cacheHit).coerceAtLeast(0),
+            cacheMiss = (total.cacheMiss - sum.cacheMiss).coerceAtLeast(0),
+            modelMs = (total.modelMs - sum.modelMs).coerceAtLeast(0L),
+            toolMs = (total.toolMs - sum.toolMs).coerceAtLeast(0L),
+            activeMs = (total.activeMs - sum.activeMs).coerceAtLeast(0L),
+            ttftMs = (total.ttftMs - sum.ttftMs).coerceAtLeast(0L),
+            genMs = (total.genMs - sum.genMs).coerceAtLeast(0L),
+            reasoningMs = (total.reasoningMs - sum.reasoningMs).coerceAtLeast(0L),
+            textMs = (total.textMs - sum.textMs).coerceAtLeast(0L),
+            toolArgMs = (total.toolArgMs - sum.toolArgMs).coerceAtLeast(0L),
+            genTokens = (total.genTokens - sum.genTokens).coerceAtLeast(0),
+            toolCalls = (total.toolCalls - sum.toolCalls).coerceAtLeast(0),
+            costCny = (total.costCny - sum.costCny).coerceAtLeast(0.0)
+            // composition 不参与差额：v1 没有八段明细，凭空摊进某一段就是伪造
+        )
+    }
+
+    /** 有明细的最早一天（`yyyy-MM-dd`）；没记过明细返回空串。 */
+    val firstDay: String get() = days.keys.minOrNull() ?: ""
 }
+
+/**
+ * 逐字段相加。总账、按天桶、范围求和共用同一份加法，避免某个字段漏加。
+ *
+ * 放在文件级（而不是 [UsageLedger] 内部）是因为 [LedgerSnapshot] 求和也要用它。
+ */
+internal fun LedgerUsage.merge(other: LedgerUsage): LedgerUsage = LedgerUsage(
+    prompt = prompt + other.prompt,
+    completion = completion + other.completion,
+    requests = requests + other.requests,
+    rounds = rounds + other.rounds,
+    steps = steps + other.steps,
+    cacheHit = cacheHit + other.cacheHit,
+    cacheMiss = cacheMiss + other.cacheMiss,
+    modelMs = modelMs + other.modelMs,
+    toolMs = toolMs + other.toolMs,
+    activeMs = activeMs + other.activeMs,
+    ttftMs = ttftMs + other.ttftMs,
+    genMs = genMs + other.genMs,
+    reasoningMs = reasoningMs + other.reasoningMs,
+    textMs = textMs + other.textMs,
+    toolArgMs = toolArgMs + other.toolArgMs,
+    genTokens = genTokens + other.genTokens,
+    toolCalls = toolCalls + other.toolCalls,
+    costCny = costCny + other.costCny,
+    composition = composition + other.composition
+)
 
 /**
  * 全局用量总账（stats.json）：**只增不减的历史总账**。
@@ -367,28 +432,6 @@ object UsageLedger {
     }
 
     // ---- 内部 ----
-
-    private fun LedgerUsage.merge(other: LedgerUsage): LedgerUsage = LedgerUsage(
-        prompt = prompt + other.prompt,
-        completion = completion + other.completion,
-        requests = requests + other.requests,
-        rounds = rounds + other.rounds,
-        steps = steps + other.steps,
-        cacheHit = cacheHit + other.cacheHit,
-        cacheMiss = cacheMiss + other.cacheMiss,
-        modelMs = modelMs + other.modelMs,
-        toolMs = toolMs + other.toolMs,
-        activeMs = activeMs + other.activeMs,
-        ttftMs = ttftMs + other.ttftMs,
-        genMs = genMs + other.genMs,
-        reasoningMs = reasoningMs + other.reasoningMs,
-        textMs = textMs + other.textMs,
-        toolArgMs = toolArgMs + other.toolArgMs,
-        genTokens = genTokens + other.genTokens,
-        toolCalls = toolCalls + other.toolCalls,
-        costCny = costCny + other.costCny,
-        composition = composition + other.composition
-    )
 
     private fun trimDays() {
         if (days.size <= DAYS_KEEP) return

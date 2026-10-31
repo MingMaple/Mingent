@@ -427,7 +427,7 @@ private fun GlobalSection(
         KpiCard(
             label = "全部会话",
             value = global.sessions.toString(),
-            sub = "其中已归档 " + global.archived + " 个",
+            sub = "本范围活跃 " + global.activeSessions + " · 已归档 " + global.archived,
             modifier = Modifier.weight(1f)
         )
         KpiCard(
@@ -471,31 +471,36 @@ private fun GlobalSection(
     InsightCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "近 7 天用量",
+                text = "用量统计",
                 modifier = Modifier.weight(1f),
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = onSurface
             )
+            // 只有合并过才对用户说一句：否则标签会被误读成「一天」
+            if (global.bucketDays > 1) {
+                Text(
+                    text = "每 " + global.bucketDays + " 天",
+                    modifier = Modifier.padding(end = 8.dp),
+                    fontSize = 10.sp,
+                    color = onSurface.copy(alpha = 0.35f),
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
             TabPill(text = "Token", selected = dayMode == 0) { dayMode = 0 }
             Spacer(Modifier.width(6.dp))
             TabPill(text = "请求", selected = dayMode == 1) { dayMode = 1 }
         }
         Spacer(Modifier.height(8.dp))
-        val values = global.days.map { if (dayMode == 0) it.tokens else it.requests.toLong() }
-        SimpleBarChart(values = values, color = Palette.AccentGreen)
-        Spacer(Modifier.height(4.dp))
-        Row(Modifier.fillMaxWidth()) {
-            for (day in global.days) {
-                Text(
-                    text = day.date.takeLast(5),
-                    modifier = Modifier.weight(1f),
-                    fontSize = 10.sp,
-                    color = onSurface.copy(alpha = 0.35f),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
-            }
+        val values = global.series.map { if (dayMode == 0) it.tokens else it.requests.toLong() }
+        // 轴标签抽稀：最多 7 个，首末必留，其余等间隔
+        val labelStep = ((global.series.size + 6) / 7).coerceAtLeast(1)
+        val labels = global.series.mapIndexed { index, day ->
+            val keep = index == 0 || index == global.series.lastIndex || index % labelStep == 0
+            if (keep) day.label else ""
         }
+        UsageLineChart(values = values, labels = labels, color = Palette.AccentGreen)
     }
 
     InsightCard {

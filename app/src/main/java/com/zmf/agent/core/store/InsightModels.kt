@@ -60,8 +60,14 @@ data class InsightSessionView(
     val costCny: Double? = null
 )
 
-/** 全局近 7 天柱状图的一天。 */
-data class InsightDay(val date: String, val tokens: Long, val requests: Int)
+/** 用量折线图上的一个点；分桶聚合时一天代表若干天。 */
+data class InsightDay(
+    val date: String,
+    val tokens: Long,
+    val requests: Int,
+    /** 轴标签（如「10-31」）；分桶后取该档首日。 */
+    val label: String = ""
+)
 
 /** 耗时六段（毫秒）。 */
 data class InsightTiming(
@@ -99,6 +105,8 @@ data class InsightGlobalView(
     val range: InsightRange = InsightRange.ALL,
     val sessions: Int = 0,
     val archived: Int = 0,
+    /** 所选范围内有活动的会话数（有轮次或有 token）；会话卡副值用它体现范围。 */
+    val activeSessions: Int = 0,
     val totalTokens: Long = 0L,
     val rounds: Int = 0,
     val costCny: Double? = null,
@@ -108,7 +116,10 @@ data class InsightGlobalView(
     val toolMillis: Long = 0L,
     val activeMillis: Long = 0L,
     val requests: Int = 0,
-    val days: List<InsightDay> = emptyList(),
+    /** 用量折线序列：今天/近 7 天给 7 点，近 30 天给 30 点，全部按跨度分桶。 */
+    val series: List<InsightDay> = emptyList(),
+    /** 每个点代表几天；大于 1 表示已合并邻近日期。 */
+    val bucketDays: Int = 1,
     val composition: LedgerComposition? = null,
     val timing: InsightTiming = InsightTiming(),
     /** 全局输出速度 tok/s；null = 没有生成数据。 */

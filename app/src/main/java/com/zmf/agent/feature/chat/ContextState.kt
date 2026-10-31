@@ -36,6 +36,9 @@ import com.zmf.agent.core.store.InsightSessionRow
 import com.zmf.agent.core.store.InsightSessionView
 import com.zmf.agent.core.store.InsightTiming
 import com.zmf.agent.core.store.LedgerComposition
+import com.zmf.agent.core.store.LedgerSnapshot
+import com.zmf.agent.core.store.LedgerUsage
+import com.zmf.agent.core.store.merge
 import com.zmf.agent.core.store.SessionComposition
 import com.zmf.agent.core.store.UsageCost
 import com.zmf.agent.core.store.UsageLedger
@@ -55,6 +58,13 @@ import java.util.Calendar
 
 /** 洞察页趋势只画最近这么多次回复：再多就糊成一团，也看不出变化。 */
 private const val INSIGHT_TREND_POINTS = 20
+
+/**
+ * 用量折线最多画这么多点：再多标签就挤成一排竖线。
+ *
+ * 跨度超过它就按「等宽分桶」合并邻近若干天——看的是趋势，不是逐日柱。
+ */
+private const val SERIES_MAX_POINTS = 14
 
 /**
  * 溢出恢复的等待上限。
@@ -1246,85 +1256,61 @@ class ContextState(
         )
     }
 
-    /** 组装全局统计区的数据。 */
+    /**
+     * 组装全局统计区的数据。
+     *
+     * 口径（2026-10-31 定）：**四个范围都从按天账本求和**，不许再让「全部」去读 `total`——
+     * 那样做会得到两套互不相干的数字（`total` 含 v1 时代累计，`days` 只有 v2 起的明细），
+     * 表现就是「全部 6.1M / 近 30 天 23K」。历史遗留（`total − Σdays`）作为差额项，
+     * 只有范围覆盖到首次使用日时才计入，并摊进折线图最早那几档。
+     */
     fun globalInsight(range: InsightRange): InsightGlobalView {
         UsageLedger.load(appContext)
         val ledger = UsageLedger.snapshot()
         val now = System.currentTimeMillis()
         val fromMs = rangeStart(range)
         val fromDate = UsageLedger.dateText(fromMs)
-        val keys = ledger.days.keys.filter { range == InsightRange.ALL || it >= fromDate }
-        var composition = LedgerComposition()
-        var ttft = 0L
-        var reasoning = 0L
-        var text = 0L
-        var toolArg = 0L
-        var toolExec = 0L
-        var active = 0L
-        var toolCalls = 0
-        var hit = 0
-        var miss = 0
-        var tokens = 0L
-        var requests = 0
-        var rounds = 0
-        var genMs = 0L
-        var genTokens = 0
-        var costCny = 0.0
-        if (range == InsightRange.ALL) {
-            val t = ledger.total
-            composition = t.composition
-            ttft = t.ttftMs
-            reasoning = t.reasoningMs
-            text = t.textMs
-            toolArg = t.toolArgMs
-            toolExec = t.toolMs
-            active = t.activeMs
-            toolCalls = t.toolCalls
-            hit = t.cacheHit
-            miss = t.cacheMiss
-            tokens = t.prompt.toLong() + t.completion
-            requests = t.requests
-            rounds = t.rounds
-            genMs = t.genMs
-            genTokens = t.genTokens
-            costCny = t.costCny
-        } else {
-            for (key in keys) {
-                val day = ledger.days[key] ?: continue
-                composition += day.composition
-                ttft += day.ttftMs
-                reasoning += day.reasoningMs
-                text += day.textMs
-                toolArg += day.toolArgMs
-                toolExec += day.toolMs
-                active += day.activeMs
-                toolCalls += day.toolCalls
-                hit += day.cacheHit
-                miss += day.cacheMiss
-                tokens += day.prompt.toLong() + day.completion
-                requests += day.requests
-                rounds += day.rounds
-                genMs += day.genMs
-                genTokens += day.genTokens
-                costCny += day.costCny
-            }
-        }
+        val sum = ledger.days
+            .filterKeys { range == InsightRange.ALL || it >= fromDate }
+            .values
+            .fold(LedgerUsage()) { acc, day -> acc.merge(day) }
+        // 遗留全部产生在「首次使用日」之后；该日落在范围内就说明这段历史也在范围内
+        val legacy = ledger.legacy.takeIf {
+            range == InsightRange.ALL || (ledger.firstUsedAt > 0L && ledger.firstUsedAt >= fromMs)
+        } ?: LedgerUsage()
+        val usage = sum.merge(legacy)
+        val composition = usage.composition
+        val ttft = usage.ttftMs
+        val reasoning = usage.reasoningMs
+        val text = usage.textMs
+        val toolArg = usage.toolArgMs
+        val toolExec = usage.toolMs
+        val active = usage.activeMs
+        val toolCalls = usage.toolCalls
+        val hit = usage.cacheHit
+        val miss = usage.cacheMiss
+        val tokens = usage.prompt.toLong() + usage.completion
+        val requests = usage.requests
+        val rounds = usage.rounds
+        val genMs = usage.genMs
+        val genTokens = usage.genTokens
+        val costCny = usage.costCny
         val cacheRate = if (hit + miss > 0) hit.toFloat() / (hit + miss) else null
         val other = (active - ttft - reasoning - text - toolArg - toolExec).coerceAtLeast(0L)
-        val genMsTotal = genMs
-        val genTokensTotal = genTokens
-        val speed = if (genMsTotal > 0 && genTokensTotal > 0) {
-            (genTokensTotal * 1000L / genMsTotal).toInt()
+        val speed = if (genMs > 0 && genTokens > 0) {
+            (genTokens * 1000L / genMs).toInt()
         } else {
             null
         }
         val all = sessions().toList()
         val rows = all.map { session -> globalRow(session, fromMs, now) }
             .sortedByDescending { it.updatedAt }
+        val series = usageSeries(ledger, range, now)
         return InsightGlobalView(
             range = range,
             sessions = all.size,
             archived = all.count { it.archived },
+            activeSessions = rows.count { it.rounds > 0 || it.tokens > 0 },
             totalTokens = tokens,
             rounds = rounds,
             costCny = costCny.takeIf { it > 0.0 },
@@ -1334,7 +1320,8 @@ class ContextState(
             toolMillis = toolExec,
             activeMillis = active,
             requests = requests,
-            days = sevenDays(ledger),
+            series = series.points,
+            bucketDays = series.bucketDays,
             composition = composition.takeIf { !it.isEmpty },
             timing = InsightTiming(
                 ttft = ttft,
@@ -1349,6 +1336,116 @@ class ContextState(
             rows = rows
         )
     }
+
+    /** 折线图序列 + 聚合粒度（每个点代表几天）；[bucketDays] 为 1 时是一天一档。 */
+    private class UsageSeries(val points: List<InsightDay>, val bucketDays: Int)
+
+    /**
+     * 按范围生成折线图序列。
+     *
+     * 刻意让「今天」与「近 7 天」都用 7 天序列：一天的折线只有一个点，看不出趋势。
+     * 「全部」从首次使用日开始，跨度超过 [SERIES_MAX_POINTS] 就**等宽分桶**合并邻近若干天——
+     * 分桶不是滑动平均，所以各档相加仍等于区间总量（线上看不出「总量对不上」）。
+     */
+    private fun usageSeries(
+        ledger: LedgerSnapshot,
+        range: InsightRange,
+        now: Long
+    ): UsageSeries {
+        val calendar = Calendar.getInstance()
+        calendar.timeInMillis = now
+        calendar.set(Calendar.HOUR_OF_DAY, 0)
+        calendar.set(Calendar.MINUTE, 0)
+        calendar.set(Calendar.SECOND, 0)
+        calendar.set(Calendar.MILLISECOND, 0)
+        val todayCal = calendar.clone() as Calendar
+        when (range) {
+            InsightRange.TODAY, InsightRange.WEEK -> calendar.add(Calendar.DAY_OF_YEAR, -6)
+            InsightRange.MONTH -> calendar.add(Calendar.DAY_OF_YEAR, -29)
+            InsightRange.ALL -> {
+                val first = if (ledger.firstUsedAt > 0L) {
+                    ledger.firstUsedAt
+                } else {
+                    ledger.firstDay.ifEmpty { UsageLedger.dateText(todayCal.timeInMillis) }
+                        .let { date -> dayCalendar(date)?.timeInMillis ?: now }
+                }
+                calendar.timeInMillis = first
+                calendar.set(Calendar.HOUR_OF_DAY, 0)
+                calendar.set(Calendar.MINUTE, 0)
+                calendar.set(Calendar.SECOND, 0)
+                calendar.set(Calendar.MILLISECOND, 0)
+                if (calendar.after(todayCal)) calendar.timeInMillis = todayCal.timeInMillis
+            }
+        }
+        val span = daysBetween(calendar, todayCal)
+        if (span <= 0) return UsageSeries(emptyList(), 1)
+        val bucketDays = ((span + SERIES_MAX_POINTS - 1) / SERIES_MAX_POINTS).coerceAtLeast(1)
+        val buckets = (span + bucketDays - 1) / bucketDays
+        val tokens = LongArray(buckets)
+        val requests = LongArray(buckets)
+        val labels = arrayOfNulls<String>(buckets)
+        val cursor = calendar.clone() as Calendar
+        for (i in 0 until span) {
+            val key = UsageLedger.dateText(cursor.timeInMillis)
+            val index = i / bucketDays
+            if (labels[index] == null) labels[index] = key
+            ledger.days[key]?.let { day ->
+                tokens[index] += day.prompt.toLong() + day.completion
+                requests[index] += day.requests.toLong()
+            }
+            cursor.add(Calendar.DAY_OF_YEAR, 1)
+        }
+        // 把历史遗留摊进「第一条明细日之前」的档：总量守恒，也不会在末端顶出一根假尖峰
+        val firstDetailed = ledger.firstDay
+        val legacy = ledger.legacy
+        val legacyTokens = legacy.prompt.toLong() + legacy.completion
+        if (legacyTokens > 0 || legacy.requests > 0) {
+            val targets = (0 until buckets).filter { index ->
+                val label = labels[index] ?: return@filter false
+                firstDetailed.isEmpty() || label < firstDetailed
+            }.ifEmpty { listOf(0) }
+            val perTokens = legacyTokens / targets.size
+            val perRequests = legacy.requests / targets.size
+            targets.forEachIndexed { position, index ->
+                tokens[index] += perTokens
+                requests[index] += perRequests.toLong()
+                if (position == targets.lastIndex) {
+                    tokens[index] += legacyTokens - perTokens * targets.size
+                    requests[index] += (legacy.requests - perRequests * targets.size).toLong()
+                }
+            }
+        }
+        val points = ArrayList<InsightDay>(buckets)
+        for (index in 0 until buckets) {
+            points += InsightDay(
+                date = labels[index] ?: "",
+                tokens = tokens[index],
+                requests = requests[index].toInt(),
+                label = shortDate(labels[index] ?: "")
+            )
+        }
+        return UsageSeries(points, bucketDays)
+    }
+
+    /** 两个「当天零点」之间的天数差；同一秒返回 0。 */
+    private fun daysBetween(from: Calendar, to: Calendar): Int {
+        val millis = to.timeInMillis - from.timeInMillis
+        return (millis / 86_400_000L).toInt() + 1
+    }
+
+    private fun dayCalendar(date: String): Calendar? {
+        if (date.isEmpty()) return null
+        return try {
+            Calendar.getInstance().apply {
+                time = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(date)!!
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 「10-31」；解析失败原样返回。 */
+    private fun shortDate(date: String): String = if (date.length >= 10) date.takeLast(5) else date
 
     private fun globalRow(session: ChatSession, fromMs: Long, toMs: Long): InsightSessionRow {
         val own = session.messages.drop(session.inheritedUsage.messages)
@@ -1382,27 +1479,6 @@ class ContextState(
             cacheRate = cacheRate,
             costCny = cost
         )
-    }
-
-    private fun sevenDays(ledger: com.zmf.agent.core.store.LedgerSnapshot): List<InsightDay> {
-        val cal = Calendar.getInstance()
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
-        cal.add(Calendar.DAY_OF_YEAR, -6)
-        val days = ArrayList<InsightDay>(7)
-        for (i in 0 until 7) {
-            val key = UsageLedger.dateText(cal.timeInMillis)
-            val usage = ledger.days[key]
-            days += InsightDay(
-                date = key,
-                tokens = if (usage == null) 0L else usage.prompt.toLong() + usage.completion,
-                requests = usage?.requests ?: 0
-            )
-            cal.add(Calendar.DAY_OF_YEAR, 1)
-        }
-        return days
     }
 
     private fun rangeStart(range: InsightRange): Long {

@@ -21,12 +21,16 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -142,30 +146,78 @@ internal fun StackedBar(
     }
 }
 
-/** 近 N 天柱状图：按最大值归一，圆头柱；值全 0 时画轨道。 */
+/**
+ * 用量折线：底部一条轴线、一条平滑折线、线下方渐变填充、末点一个圆点。
+ *
+ * 按最大值归一（顶部留 8% 余量，避免峰值贴边）；值全 0 时只画轴线。
+ * [labels] 与 [values] 等长，空串表示该点不标日期——标签由调用方抽稀，
+ * 这里按「首点贴左、末点贴右、其余居中于点」绘制，保证字与点严格对齐。
+ */
 @Composable
-internal fun SimpleBarChart(
+internal fun UsageLineChart(
     values: List<Long>,
+    labels: List<String>,
     color: Color,
     modifier: Modifier = Modifier,
     height: Dp = 96.dp
 ) {
-    val track = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-    Canvas(modifier.fillMaxWidth().height(height)) {
-        drawRoundRect(color = track, cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()))
+    val axis = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+    val fade = color.copy(alpha = 0f)
+    val measurer = rememberTextMeasurer()
+    val labelStyle = TextStyle(
+        fontSize = 10.sp,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+    )
+    Canvas(modifier.fillMaxWidth().height(height + 18.dp)) {
+        val labelBand = 18.dp.toPx()
+        val width = size.width
+        val high = size.height - labelBand
+        drawLine(axis, Offset(0f, high), Offset(width, high), strokeWidth = 1.dp.toPx())
         if (values.isEmpty()) return@Canvas
         val peak = values.maxOrNull()?.coerceAtLeast(1L) ?: 1L
-        val gap = 8.dp.toPx()
-        val barWidth = ((size.width - gap * (values.size - 1)) / values.size).coerceAtLeast(1f)
-        val minHeight = 2.dp.toPx()
-        values.forEachIndexed { index, value ->
-            val barHeight = (size.height * (value.toFloat() / peak))
-                .coerceIn(minHeight, size.height)
-            drawRoundRect(
-                color = color,
-                topLeft = Offset(index * (barWidth + gap), size.height - barHeight),
-                size = Size(barWidth, barHeight),
-                cornerRadius = CornerRadius(minOf(3.dp.toPx(), barWidth / 2f))
+        val usable = high * 0.92f
+        val stepX = if (values.size > 1) width / (values.size - 1) else 0f
+        val points = values.mapIndexed { index, value ->
+            val ratio = (value.toFloat() / peak).coerceIn(0f, 1f)
+            Offset(
+                x = if (values.size > 1) index * stepX else width / 2f,
+                y = high - usable * ratio
+            )
+        }
+        if (points.size > 1) {
+            // 用「相邻中点」做三次贝塞尔的控制点，线条平滑但不过冲
+            val line = Path().apply {
+                moveTo(points.first().x, points.first().y)
+                for (index in 1 until points.size) {
+                    val previous = points[index - 1]
+                    val current = points[index]
+                    val midX = (previous.x + current.x) / 2f
+                    cubicTo(midX, previous.y, midX, current.y, current.x, current.y)
+                }
+            }
+            val area = Path().apply {
+                addPath(line)
+                lineTo(points.last().x, high)
+                lineTo(points.first().x, high)
+                close()
+            }
+            drawPath(area, brush = Brush.verticalGradient(listOf(color.copy(alpha = 0.26f), fade)))
+            drawPath(line, color = color, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+        }
+        drawCircle(color = color, radius = 3.5.dp.toPx(), center = points.last())
+        for (index in labels.indices) {
+            val text = labels[index]
+            if (text.isEmpty() || index >= points.size) continue
+            val layout = measurer.measure(text, labelStyle)
+            val textWidth = layout.size.width.toFloat()
+            val x = when (index) {
+                0 -> 0f
+                points.lastIndex -> width - textWidth
+                else -> points[index].x - textWidth / 2f
+            }
+            drawText(
+                textLayoutResult = layout,
+                topLeft = Offset(x.coerceIn(0f, (width - textWidth).coerceAtLeast(0f)), high + 4.dp.toPx())
             )
         }
     }
