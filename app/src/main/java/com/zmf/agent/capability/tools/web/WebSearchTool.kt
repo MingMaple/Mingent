@@ -170,6 +170,9 @@ class WebSearchTool : Tool {
     private fun buildBody(query: String): JSONObject = JSONObject()
         .put("model", ApiDefaults.SEARCH_MODEL)
         .put("max_tokens", MAX_TOKENS)
+        // 关掉思考：DSH 同款通道明确带 thinking:{type:"disabled"}，不关的话模型可能
+        // 走思考分支而不执行服务端搜索工具，结果块就回不来（表现为「没有 web_search_tool_result」）
+        .put("thinking", JSONObject().put("type", "disabled"))
         .put(
             "messages",
             JSONArray().put(

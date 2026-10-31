@@ -120,6 +120,9 @@ object PromptBuilder {
         input.workspacePath.takeIf { it.isNotBlank() }?.let {
             lines += "- 工作区绝对路径：" + it
         }
+        input.nowText.takeIf { it.isNotBlank() }?.let {
+            lines += "- 当前时间：" + it
+        }
         input.goalText.takeIf { it.isNotBlank() }?.let {
             lines += "- 当前目标：" + it
         }

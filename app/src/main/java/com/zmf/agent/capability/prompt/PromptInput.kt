@@ -12,7 +12,7 @@ import com.zmf.agent.core.model.PermissionLevel
  * @param workspacePath 当前工作区绝对路径，写进环境段
  * @param permission 当前权限档，决定用哪一档的能力边界说明
  * @param androidVersion 系统版本号（例如「14」），空串 = 未知
- * @param nowText 当前时间（调用方格式化好），空串 = 未知
+ * @param nowText 当前时间（调用方格式化好，含星期与时区偏移），空串 = 不注入时间行
  * @param skills 可用 Skill：名称 to 描述；空列表则不出 Skill 段
  * @param extraInstructions 用户附加指令，空串 = 不加
  * @param systemOverride 用户整份覆盖；非空时默认提示词全部不用
@@ -25,6 +25,7 @@ data class PromptInput(
     val workspacePath: String = "",
     val permission: PermissionLevel = PermissionLevel.WORKSPACE,
     val androidVersion: String = "",
+    val nowText: String = "",
     val skills: List<Pair<String, String>> = emptyList(),
     val extraInstructions: String = "",
     val systemOverride: String? = null,

@@ -63,6 +63,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /**
  * 图片路径说明这段文字在提问里的固定开头。
@@ -584,6 +588,8 @@ class ChatViewModel(context: Context) : AgentUi {
             // 于是「思考中途打开计划」从下一轮请求起就生效，不用重建循环
             planMode = planMode,
             androidVersion = Build.VERSION.RELEASE.orEmpty(),
+            // 当前时间进尾部快照（不进 system）：带星期与时区偏移，免得模型按 UTC 解释
+            nowText = nowText(),
             skills = skills,
             extraInstructions = PromptStore.loadExtra(appContext),
             systemOverride = PromptStore.loadOverride(appContext),
@@ -594,6 +600,19 @@ class ChatViewModel(context: Context) : AgentUi {
 
     /** 当前目标的一句话（口径见 [PlanGoalController.goalText]）。 */
     private fun goalText(): String = planGoal.goalText()
+
+    /**
+     * 当前时间的提示词表述：`yyyy-MM-dd HH:mm（周X，GMT+偏移）`。
+     *
+     * 写清星期与 GMT 偏移：模型容易把纯时间戳按 UTC 解读，或不知道今天星期几；
+     * 这两条都是「时间感知」最基础的缺口。每轮请求现取，所以时间始终是发请求那一刻的。
+     */
+    private fun nowText(): String {
+        val tz = TimeZone.getDefault()
+        val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm（E，'GMT'XXX）", Locale.getDefault())
+        fmt.timeZone = tz
+        return fmt.format(Date())
+    }
 
     /** 重新扫描 appdata/skills（导入/删除 Skill 之后调）。 */
     fun refreshSkillCatalog() {
