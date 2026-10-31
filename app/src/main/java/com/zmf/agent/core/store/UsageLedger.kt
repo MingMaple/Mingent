@@ -132,8 +132,20 @@ data class LedgerSnapshot(
         )
     }
 
-    /** 有明细的最早一天（`yyyy-MM-dd`）；没记过明细返回空串。 */
+    /** 有记录的最早一天（`yyyy-MM-dd`，轮次也算）；没记过返回空串。 */
     val firstDay: String get() = days.keys.minOrNull() ?: ""
+
+    /**
+     * 有**用量明细**的最早一天：只有轮次、没有 token/请求的那几天不算。
+     *
+     * 划定历史遗留的时间边界要靠它——`backfillRounds` 会把轮次铺到更早的日期上，
+     * 拿 [firstDay] 判会把「只有轮次的日子」误当成已有明细，导致遗留被排除在近 7 天之外。
+     */
+    val firstUsageDay: String
+        get() = days.entries
+            .filter { it.value.prompt > 0 || it.value.requests > 0 }
+            .map { it.key }
+            .minOrNull() ?: ""
 }
 
 /**

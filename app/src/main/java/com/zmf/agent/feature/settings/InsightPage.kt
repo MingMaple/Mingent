@@ -427,7 +427,7 @@ private fun GlobalSection(
         KpiCard(
             label = "全部会话",
             value = global.sessions.toString(),
-            sub = "本范围活跃 " + global.activeSessions + " · 已归档 " + global.archived,
+            sub = "活跃 " + global.activeSessions + " · 归档 " + global.archived,
             modifier = Modifier.weight(1f)
         )
         KpiCard(

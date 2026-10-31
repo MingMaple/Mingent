@@ -1274,9 +1274,10 @@ class ContextState(
             .filterKeys { range == InsightRange.ALL || it >= fromDate }
             .values
             .fold(LedgerUsage()) { acc, day -> acc.merge(day) }
-        // 遗留全部产生在「首次使用日」之后；该日落在范围内就说明这段历史也在范围内
+        // 遗留代表「第一条有明细的日子之前」那段历史。只要窗口起点早于那一天就与它重叠，
+        // 必须计入；窗口从明细第一天开始算（如「今天」）时不计，否则今天的数字会被历史撑起来。
         val legacy = ledger.legacy.takeIf {
-            range == InsightRange.ALL || (ledger.firstUsedAt > 0L && ledger.firstUsedAt >= fromMs)
+            range == InsightRange.ALL || ledger.firstUsageDay.isEmpty() || fromDate < ledger.firstUsageDay
         } ?: LedgerUsage()
         val usage = sum.merge(legacy)
         val composition = usage.composition
@@ -1383,6 +1384,8 @@ class ContextState(
         val buckets = (span + bucketDays - 1) / bucketDays
         val tokens = LongArray(buckets)
         val requests = LongArray(buckets)
+        // 每档的轮次数：既用于摊历史遗留（权重），也让「均匀摊」有个真实依据
+        val rounds = LongArray(buckets)
         val labels = arrayOfNulls<String>(buckets)
         val cursor = calendar.clone() as Calendar
         for (i in 0 until span) {
@@ -1392,11 +1395,19 @@ class ContextState(
             ledger.days[key]?.let { day ->
                 tokens[index] += day.prompt.toLong() + day.completion
                 requests[index] += day.requests.toLong()
+                rounds[index] += day.rounds.toLong()
             }
             cursor.add(Calendar.DAY_OF_YEAR, 1)
         }
-        // 把历史遗留摊进「第一条明细日之前」的档：总量守恒，也不会在末端顶出一根假尖峰
-        val firstDetailed = ledger.firstDay
+        /*
+         * 历史遗留摊进「第一条明细日之前」的档。
+         *
+         * 为什么要摊：这段用量（v1 时代与已删会话）确实发生过，但没有逐日记录，
+         * 不摊就会出现「总量 6.1M、折线只有 23K」的矛盾；全压在某一天又会顶出一根假尖峰。
+         * 按天轮次加权：轮次是回填时按消息时间落进按天桶的，是这里唯一可用的分布证据，
+         * 所以尖峰正好落在真实忙的那几天。权重全 0 时退化成均匀分布。
+         */
+        val firstDetailed = ledger.firstUsageDay
         val legacy = ledger.legacy
         val legacyTokens = legacy.prompt.toLong() + legacy.completion
         if (legacyTokens > 0 || legacy.requests > 0) {
@@ -1404,15 +1415,34 @@ class ContextState(
                 val label = labels[index] ?: return@filter false
                 firstDetailed.isEmpty() || label < firstDetailed
             }.ifEmpty { listOf(0) }
-            val perTokens = legacyTokens / targets.size
-            val perRequests = legacy.requests / targets.size
-            targets.forEachIndexed { position, index ->
-                tokens[index] += perTokens
-                requests[index] += perRequests.toLong()
-                if (position == targets.lastIndex) {
-                    tokens[index] += legacyTokens - perTokens * targets.size
-                    requests[index] += (legacy.requests - perRequests * targets.size).toLong()
+            val weights = targets.map { index -> rounds[index] }
+            val weightSum = weights.sum()
+            val share = LongArray(targets.size)
+            for (position in targets.indices) {
+                share[position] = if (weightSum > 0L) {
+                    legacyTokens * weights[position] / weightSum
+                } else {
+                    legacyTokens / targets.size
                 }
+            }
+            val deficit = legacyTokens - share.sum()
+            if (deficit != 0L) share[share.lastIndex] += deficit
+            targets.forEachIndexed { position, index ->
+                tokens[index] += share[position]
+            }
+            // 请求数按同一套权重摊；余数补最后一档，保证 Σ 与总账一致
+            val requestShare = LongArray(targets.size)
+            for (position in targets.indices) {
+                requestShare[position] = if (weightSum > 0L) {
+                    legacy.requests.toLong() * weights[position] / weightSum
+                } else {
+                    legacy.requests.toLong() / targets.size
+                }
+            }
+            val requestDeficit = legacy.requests - requestShare.sum()
+            if (requestDeficit != 0L) requestShare[requestShare.lastIndex] += requestDeficit
+            targets.forEachIndexed { position, index ->
+                requests[index] += requestShare[position]
             }
         }
         val points = ArrayList<InsightDay>(buckets)
