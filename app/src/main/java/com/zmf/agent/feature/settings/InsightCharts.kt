@@ -172,15 +172,18 @@ internal fun UsageLineChart(
         val labelBand = 18.dp.toPx()
         val width = size.width
         val high = size.height - labelBand
+        // 左右各留出半个点的位置：否则首末点的圆会被画布边缘切掉一半
+        val inset = 4.dp.toPx()
+        val plotWidth = (width - inset * 2).coerceAtLeast(1f)
         drawLine(axis, Offset(0f, high), Offset(width, high), strokeWidth = 1.dp.toPx())
         if (values.isEmpty()) return@Canvas
         val peak = values.maxOrNull()?.coerceAtLeast(1L) ?: 1L
         val usable = high * 0.92f
-        val stepX = if (values.size > 1) width / (values.size - 1) else 0f
+        val stepX = if (values.size > 1) plotWidth / (values.size - 1) else 0f
         val points = values.mapIndexed { index, value ->
             val ratio = (value.toFloat() / peak).coerceIn(0f, 1f)
             Offset(
-                x = if (values.size > 1) index * stepX else width / 2f,
+                x = if (values.size > 1) inset + index * stepX else width / 2f,
                 y = high - usable * ratio
             )
         }
@@ -205,21 +208,49 @@ internal fun UsageLineChart(
             drawPath(line, color = color, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
         }
         drawCircle(color = color, radius = 3.5.dp.toPx(), center = points.last())
+
+        /*
+         * 轴标签：调用方已经抽稀过一次，但窄屏 + 点数变化仍可能让相邻两字碰在一起
+         * （真机「近 30 天」上 `10-26` 和 `10-29` 就叠上了）。这里按实际字宽做碰撞剔除：
+         * 先钉住首末两个，再从左往右能放才放，保证任何宽度下都不重叠。
+         */
+        val textGap = 4.dp.toPx()
+        class LabelBox(val left: Float, val text: androidx.compose.ui.text.TextLayoutResult)
+
+        val boxes = ArrayList<LabelBox?>(labels.size)
         for (index in labels.indices) {
             val text = labels[index]
-            if (text.isEmpty() || index >= points.size) continue
+            if (text.isEmpty() || index >= points.size) {
+                boxes.add(null)
+                continue
+            }
             val layout = measurer.measure(text, labelStyle)
             val textWidth = layout.size.width.toFloat()
-            val x = when (index) {
+            val center = points[index].x
+            val left = when (index) {
                 0 -> 0f
                 points.lastIndex -> width - textWidth
-                else -> points[index].x - textWidth / 2f
+                else -> center - textWidth / 2f
             }
+            boxes.add(LabelBox(left.coerceIn(0f, (width - textWidth).coerceAtLeast(0f)), layout))
+        }
+        val occupied = ArrayList<FloatArray>(boxes.size)
+        val tryDraw: (Int) -> Unit = draw@{ index ->
+            val box = boxes[index] ?: return@draw
+            val boxWidth = box.text.size.width.toFloat()
+            val right = box.left + boxWidth
+            for (range in occupied) {
+                if (box.left < range[1] + textGap && right > range[0] - textGap) return@draw
+            }
+            occupied.add(floatArrayOf(box.left, right))
             drawText(
-                textLayoutResult = layout,
-                topLeft = Offset(x.coerceIn(0f, (width - textWidth).coerceAtLeast(0f)), high + 4.dp.toPx())
+                textLayoutResult = box.text,
+                topLeft = Offset(box.left, high + 4.dp.toPx())
             )
         }
+        tryDraw(0)
+        if (labels.lastIndex > 0) tryDraw(labels.lastIndex)
+        for (index in 1 until labels.lastIndex) tryDraw(index)
     }
 }
 

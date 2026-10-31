@@ -477,17 +477,8 @@ private fun GlobalSection(
                 fontWeight = FontWeight.SemiBold,
                 color = onSurface
             )
-            // 只有合并过才对用户说一句：否则标签会被误读成「一天」
-            if (global.bucketDays > 1) {
-                Text(
-                    text = "每 " + global.bucketDays + " 天",
-                    modifier = Modifier.padding(end = 8.dp),
-                    fontSize = 10.sp,
-                    color = onSurface.copy(alpha = 0.35f),
-                    maxLines = 1,
-                    softWrap = false
-                )
-            }
+            // 分桶粒度不写在标题行：只有这一张卡会合并邻近日期，贴个「每 N 天」
+            // 反而让标题行比其它卡多一截，视觉上像没对齐
             TabPill(text = "Token", selected = dayMode == 0) { dayMode = 0 }
             Spacer(Modifier.width(6.dp))
             TabPill(text = "请求", selected = dayMode == 1) { dayMode = 1 }

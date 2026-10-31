@@ -118,8 +118,6 @@ data class InsightGlobalView(
     val requests: Int = 0,
     /** 用量折线序列：今天/近 7 天给 7 点，近 30 天给 30 点，全部按跨度分桶。 */
     val series: List<InsightDay> = emptyList(),
-    /** 每个点代表几天；大于 1 表示已合并邻近日期。 */
-    val bucketDays: Int = 1,
     val composition: LedgerComposition? = null,
     val timing: InsightTiming = InsightTiming(),
     /** 全局输出速度 tok/s；null = 没有生成数据。 */

@@ -60,11 +60,13 @@ import java.util.Calendar
 private const val INSIGHT_TREND_POINTS = 20
 
 /**
- * 用量折线最多画这么多点：再多标签就挤成一排竖线。
+ * 用量折线最多画这么多点。
  *
- * 跨度超过它就按「等宽分桶」合并邻近若干天——看的是趋势，不是逐日柱。
+ * 取值要能容下「近 30 天」，否则 30 天会被提前合并成 10 档——用户要的是 30 天画 30 个点。
+ * 只有「全部」随天数无限增长时才触发合并：跨度超过它就按等宽分桶合并邻近若干天，
+ * 看的是趋势，不是逐日柱。
  */
-private const val SERIES_MAX_POINTS = 14
+private const val SERIES_MAX_POINTS = 31
 
 /**
  * 溢出恢复的等待上限。
@@ -1321,8 +1323,7 @@ class ContextState(
             toolMillis = toolExec,
             activeMillis = active,
             requests = requests,
-            series = series.points,
-            bucketDays = series.bucketDays,
+            series = series,
             composition = composition.takeIf { !it.isEmpty },
             timing = InsightTiming(
                 ttft = ttft,
@@ -1338,9 +1339,6 @@ class ContextState(
         )
     }
 
-    /** 折线图序列 + 聚合粒度（每个点代表几天）；[bucketDays] 为 1 时是一天一档。 */
-    private class UsageSeries(val points: List<InsightDay>, val bucketDays: Int)
-
     /**
      * 按范围生成折线图序列。
      *
@@ -1352,7 +1350,7 @@ class ContextState(
         ledger: LedgerSnapshot,
         range: InsightRange,
         now: Long
-    ): UsageSeries {
+    ): List<InsightDay> {
         val calendar = Calendar.getInstance()
         calendar.timeInMillis = now
         calendar.set(Calendar.HOUR_OF_DAY, 0)
@@ -1379,7 +1377,7 @@ class ContextState(
             }
         }
         val span = daysBetween(calendar, todayCal)
-        if (span <= 0) return UsageSeries(emptyList(), 1)
+        if (span <= 0) return emptyList()
         val bucketDays = ((span + SERIES_MAX_POINTS - 1) / SERIES_MAX_POINTS).coerceAtLeast(1)
         val buckets = (span + bucketDays - 1) / bucketDays
         val tokens = LongArray(buckets)
@@ -1454,7 +1452,7 @@ class ContextState(
                 label = shortDate(labels[index] ?: "")
             )
         }
-        return UsageSeries(points, bucketDays)
+        return points
     }
 
     /** 两个「当天零点」之间的天数差；同一秒返回 0。 */
