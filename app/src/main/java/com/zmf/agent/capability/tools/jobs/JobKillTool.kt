@@ -56,10 +56,9 @@ class JobKillTool : Tool {
         val reason = args.optString("reason", "").trim()
         val stopped = JobRegistry.requestKill(id)
         return if (stopped) {
-            ToolResult.Ok("已请求取消 " + id + "，进程停止后任务会以 killed 结算。")
+            ToolResult.Ok("已标记取消 " + id + "。当前版本不支持中断已在跑的命令，等它自然结束时会以 killed 结算。")
         } else {
-            // 进程句柄缺失（可能刚结束还没结算）：如实说明，让模型再读一次状态
-            ToolResult.Error("没能向进程发出停止信号：" + id + "（可能刚结束；用 job_output 或 job_list 看当前状态）")
+            ToolResult.Error("没能标记取消：" + id + "（可能已经结算；用 job_output 或 job_list 看当前状态）")
         }
     }
 }

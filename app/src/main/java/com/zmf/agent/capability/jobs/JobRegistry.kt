@@ -1,5 +1,8 @@
 package com.zmf.agent.capability.jobs
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
@@ -25,11 +28,15 @@ object JobRegistry {
 
     private val lock = Any()
 
+    /**
+     * 后台任务的执行作用域：生产方在这里 launch 长任务，生命周期独立于「起任务那次工具调用」的协程。
+     *
+     * SupervisorJob 保证一个任务崩掉不影响别的任务；Dispatchers.IO 让阻塞的终端执行不占主线程。
+     */
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     /** 全部任务；LinkedHashMap 记住创建顺序，`job_list` 按它输出。 */
     private val jobs = LinkedHashMap<String, Entry>()
-
-    /** 任务 id → 进程句柄（生产方起进程后挂上，`job_kill` 靠它真正停掉进程）。 */
-    private val handles = HashMap<String, JobHandle>()
 
     /**
      * 结算版本号：每有一个任务结束（completed / killed / failed）就 +1。
@@ -56,14 +63,10 @@ object JobRegistry {
         /** 结算时附的一句话（失败原因 / 退出码摘要 / kill 理由）。 */
         val note: String,
         /** 记录「上次 job_output 读到哪」：下一次读只给增量。 */
-        val deliveredBytes: Long
+        val deliveredBytes: Long,
+        /** 是否已请求取消：生产方结算时据此把 completed 改判成 killed。 */
+        val killRequested: Boolean = false
     )
-
-    /** 进程句柄的抽象：注册表不 import infra 的 HiddenProcess，只留「关掉」这一个动作。 */
-    fun interface JobHandle {
-        /** 请求进程结束（kill）。返回是否真的发起了关闭。 */
-        fun requestStop(): Boolean
-    }
 
     /** 起一个任务。返回任务 id；会话归属从 [sessionId] 来。 */
     fun begin(sessionId: String, kind: String, label: String): String {
@@ -115,25 +118,15 @@ object JobRegistry {
     /** 结算为被杀（job_kill 主动取消）。 */
     fun kill(id: String, note: String = "") = settle(id, Status.KILLED, note)
 
-    /** 请求取消：发信号给生产方停进程；真正结算等进程停掉后调 [kill]。 */
-    fun requestKill(id: String): Boolean {
-        val handle = synchronized(lock) {
-            val e = jobs[id] ?: return false
-            if (e.status != Status.RUNNING) return false
-            jobs[id] = e.copy(note = e.note.ifBlank { "已请求取消" })
-            handles[id]
-        }
-        return handle?.requestStop() ?: false
-    }
-
-    /** 生产方把进程句柄挂上来（起进程成功后）；进程结束后摘掉。 */
-    fun attachHandle(id: String, handle: JobHandle) {
-        synchronized(lock) { handles[id] = handle }
-    }
-
-    /** 生产方在进程结束后摘掉句柄，避免泄漏。 */
-    fun detachHandle(id: String) {
-        synchronized(lock) { handles.remove(id) }
+    /**
+     * 请求取消：第一版只标记「已请求取消」，不真正中断底层进程（终端执行是原子的、不可中途打断）。
+     * 生产方结算时若见到这个标记，会把 completed 改判成 killed。返回是否成功标记。
+     */
+    fun requestKill(id: String): Boolean = synchronized(lock) {
+        val e = jobs[id] ?: return false
+        if (e.status != Status.RUNNING) return false
+        jobs[id] = e.copy(killRequested = true)
+        true
     }
 
     /**
@@ -170,7 +163,9 @@ object JobRegistry {
     private fun settle(id: String, status: Status, note: String) {
         synchronized(lock) {
             val e = jobs[id] ?: return
-            jobs[id] = e.copy(status = status, note = note)
+            // 已请求取消的任务，即使命令正常跑完也按「被杀」结算，兑现 job_kill 的语义
+            val finalStatus = if (e.killRequested && status == Status.COMPLETED) Status.KILLED else status
+            jobs[id] = e.copy(status = finalStatus, note = note)
             // 结算即入「待通知」队列：由 AgentLoop 每轮开始（或空闲唤醒）取走并注入一条完成通知，
             // 每个结算恰好通知一次。这里记的是「结算结果」，不记状态机历史。
             pendingNotify += id

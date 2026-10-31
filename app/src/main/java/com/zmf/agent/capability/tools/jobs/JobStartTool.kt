@@ -8,18 +8,23 @@ import com.zmf.agent.capability.tools.Tool
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolPolicy
 import com.zmf.agent.capability.tools.ToolResult
+import com.zmf.agent.infra.terminal.ShellResult
 import com.zmf.agent.infra.terminal.TerminalApi
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
  * job_start：在后台起一个长任务，立刻返回任务 id，不阻塞当前回合。
  *
- * 第一个（也是目前唯一一个）kind 是**终端命令**：用 [TerminalApi.openProcess] 起一条常驻子进程，
- * 输出逐行写进 [JobRegistry] 的有界环，进程退出时结算为 completed / failed。模型起完就能先去做别的，
- * 完成后再用 job_output 把结果收回来。
+ * 第一个（也是目前唯一一个）kind 是**终端命令**：在 [JobRegistry.scope] 里异步跑
+ * [TerminalApi.exec]（与 terminal 工具同一条执行路径），跑完把输出一次性写进注册表并结算。
+ * 模型起完就能先去做别的，完成后再用 job_output 把结果收回来。
  *
- * 为什么不是「在 exec 里 sleep 等它跑完」：那样当前回合就卡死了，模型的「先干别的」根本无从谈起。
- * 起后台进程、把句柄挂进注册表、立即返回 id，才是「后台任务」的本意。
+ * 为什么用「协程里异步跑 exec」而不是「在 exec 里 sleep 等它跑完」：前者起完就返回 id，
+ * 当前回合不卡死；后者等于把「后台」做成了「前台干等」。
+ *
+ * 已知边界：exec 是原子的（一条命令一次执行、跑完才返回），所以输出是「跑完后一次性给」，
+ * 不是流式增量；job_kill 第一版也只标记取消、不真正中断已在跑的命令（终端执行不可中途打断）。
  *
  * 权限档 WORKSPACE：起进程是有副作用的动作，且终端命令本身需要工作区档。
  */
@@ -78,32 +83,31 @@ class JobStartTool : Tool {
         }
 
         val full = "cd " + cwd + " && " + command
+        val timeoutMs = args.optLong("timeout_ms", DEFAULT_TIMEOUT_MS).coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
         val id = JobRegistry.begin(ctx.sessionId, kind, label.ifBlank { command.take(60) })
 
-        // 逐行回调把输出写进注册表；onExit 结算。这两个回调在终端读线程里跑，JobRegistry 自己加锁，线程安全。
-        val handle = TerminalApi.openProcess(
-            context = ctx.context,
-            commandLine = full,
-            env = emptyMap(),
-            cwd = cwd,
-            onLine = { line -> JobRegistry.append(id, TerminalApi.stripAnsi(line) + "\n") },
-            onExit = { code ->
-                JobRegistry.detachHandle(id)
-                if (code == null) {
-                    JobRegistry.fail(id, "进程异常退出（拿不到退出码）")
-                } else if (code == 0) {
-                    JobRegistry.complete(id, "exit=" + code)
-                } else {
-                    JobRegistry.fail(id, "exit=" + code)
+        // 在注册表自己的 scope 里异步跑：工具返回后这条协程继续，命令跑完再结算
+        JobRegistry.scope.launch {
+            val result = runCatching { TerminalApi.exec(ctx.context, full, "job", timeoutMs) }
+            val (output, statusNote) = when {
+                result.isFailure -> "" to ("执行异常：" + (result.exceptionOrNull()?.message ?: "未知"))
+                else -> {
+                    val r = result.getOrThrow()
+                    when (r) {
+                        is ShellResult.Ok -> (cleanOutput(r.output) to ("exit=" + r.exitCode))
+                        is ShellResult.ShellNotReady -> "" to "Ubuntu 环境未初始化"
+                        is ShellResult.Failed -> cleanOutput(r.rawPreview) to (r.reason + "：" + r.detail)
+                    }
                 }
-                FileLog.log(TAG, "任务 " + id + " 结算 exit=" + (code?.toString() ?: "无"))
             }
-        )
-        if (handle == null) {
-            JobRegistry.fail(id, "没能起后台进程（Ubuntu 环境可能还没初始化）")
-            return ToolResult.Error("没能启动后台任务：Ubuntu 环境还没起来，先在侧边栏打开一次「终端」完成初始化再重试。")
+            if (output.isNotEmpty()) JobRegistry.append(id, output)
+            if (result.isSuccess && result.getOrNull() is ShellResult.Ok && (result.getOrNull() as ShellResult.Ok).exitCode == 0) {
+                JobRegistry.complete(id, statusNote)
+            } else {
+                JobRegistry.fail(id, statusNote)
+            }
+            FileLog.log(TAG, "任务 " + id + " 结算 " + statusNote)
         }
-        JobRegistry.attachHandle(id, JobRegistry.JobHandle { handle.close(); true })
 
         FileLog.log(TAG, "起后台任务 " + id + "：cd " + cwd + " && " + command.take(120))
         return ToolResult.Ok(
@@ -112,8 +116,24 @@ class JobStartTool : Tool {
         )
     }
 
+    /** 去 ANSI、去首尾空白，再按「前 4000 + 省略标注 + 后 8000」截断，和 terminal 工具同一口径。 */
+    private fun cleanOutput(raw: String): String {
+        val clean = runCatching { TerminalApi.stripAnsi(raw) }.getOrElse { raw }.trim()
+        if (clean.length <= MAX_OUTPUT_CHARS) return clean
+        val head = clean.take(HEAD_CHARS)
+        val tail = clean.takeLast(TAIL_CHARS)
+        val omitted = clean.length - head.length - tail.length
+        return head + "\n…（已省略 " + omitted + " 字符）…\n" + tail
+    }
+
     private companion object {
         const val TAG = "jobs"
         const val DEFAULT_CWD = "/root"
+        const val DEFAULT_TIMEOUT_MS = 600_000L
+        const val MIN_TIMEOUT_MS = 5_000L
+        const val MAX_TIMEOUT_MS = 600_000L
+        const val MAX_OUTPUT_CHARS = 12_000
+        const val HEAD_CHARS = 4_000
+        const val TAIL_CHARS = 8_000
     }
 }
