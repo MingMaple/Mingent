@@ -74,13 +74,24 @@ class SkillTool : Tool {
         return ToolResult.Ok(text)
     }
 
-    /** 加载一个 Skill 的正文，按 <skill_content name="…"> 包起来，模型能一眼看出边界。 */
+    /** 加载一个 Skill 的正文，按 DSH 同款信封包起来，模型能一眼看出边界与资源位置。 */
     private fun loadOne(ctx: ToolContext, key: String): ToolResult {
         // 先 find 拿到规范名字（用户/模型可能传的是目录 id），加载仍然走 SkillStore.load
         val entry = SkillStore.find(ctx.context, key)
             ?: return ToolResult.Error("没有这个 Skill：" + key + "（可用 list 查看）")
         val body = SkillStore.load(ctx.context, entry.id)
             ?: return ToolResult.Error("没有这个 Skill：" + key + "（可用 list 查看）")
-        return ToolResult.Ok("<skill_content name=\"" + entry.name + "\">\n" + body.trim() + "\n</skill_content>")
+        // 信封三段：名字 → 资源指引（base 目录，正文里的相对路径都相对它解析）→ 正文。
+        // 与 DSH 的 <skill_content>/<skill_resources>/<skill_instructions> 对齐；
+        // base 目录就是 SkillEntry.dir，本地技能天然有这个落点。
+        return ToolResult.Ok(
+            "<skill_content name=\"" + entry.name + "\">\n" +
+                "<skill_resources>\n" +
+                "Base directory for this skill: " + entry.dir.absolutePath + "\n" +
+                "Resolve relative paths mentioned by this skill against the base directory before using them.\n" +
+                "</skill_resources>\n\n" +
+                "<skill_instructions>\n" + body.trim() + "\n</skill_instructions>\n" +
+                "</skill_content>"
+        )
     }
 }

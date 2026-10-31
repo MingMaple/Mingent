@@ -178,5 +178,8 @@ object DefaultPrompts {
     """.trimIndent()
 
     /** Skill 目录的抬头；每个条目由 PromptBuilder 按名称和描述现拼。 */
-    val SKILLS_HEADER = "可用 Skill（需要时通过 skill 工具加载）："
+    val SKILLS_HEADER =
+        "可用 Skill（需要时通过 skill 工具加载）。目录里只有摘要：任务与某条描述明显相符时，" +
+            "先调 skill 工具加载该技能的完整正文再动手，不要凭摘要推断或臆测它的内容；" +
+            "也不要一次把多个技能都加载进来，只加载当前任务确实用得到的。"
 }
