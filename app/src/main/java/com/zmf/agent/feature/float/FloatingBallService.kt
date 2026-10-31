@@ -490,8 +490,11 @@ class FloatingBallService : Service() {
             if (isExpanded) {
                 FloatingChatWindow(
                     messages = ChatBridge.messages(),
-                    title = ChatBridge.title(),
+                    // 会话切换列表：桥每次重组都取最新快照，切完消息表跟着换
+                    sessions = ChatBridge.sessions(),
                     onSend = { text -> ChatBridge.send(text) },
+                    // 会话切换面板里点了某条：切过去（面板自己收起）
+                    onPickSession = { id -> ChatBridge.switchSession(id) },
                     // 「回主页」：先把主界面拉到前台（NEW_TASK 复用已有任务，不重建），
                     // 再把整套悬浮窗收掉：回到主页后小窗和球一起消失
                     onHome = {

@@ -46,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
@@ -63,7 +64,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zmf.agent.capability.runtime.ChatPortSession
 import com.zmf.agent.core.model.ChatMessage
+import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.FoldToggle
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.common.saltCursorBrush
@@ -96,9 +99,6 @@ private val TOP_BAR_HEIGHT = 48.dp
 /** 工具条圆按钮直径：30dp。 */
 private val TOOL_BUTTON_SIZE = 30.dp
 
-/** 标题栏中间那块「可拖空白」的最小宽度：窗口很窄时也尽量留一条按得到的拖动区。 */
-private val DRAG_MIN_WIDTH = 48.dp
-
 /** 右侧调宽手柄：命中区 16dp 宽 × 满高（窗内，贴右边缘）。 */
 private val RIGHT_HANDLE_HIT_W = 16.dp
 
@@ -130,19 +130,23 @@ val LocalFloatInputFocus = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 /**
  * 系统小窗里的对话面板（尺寸由服务给，默认 240x320dp，圆角 12dp，八级阴影）。
  *
- * 顶部 48dp 工具条：左边会话名（超长省略），右边三个 30dp 圆按钮：
- * 「回主页」把 App 拉到前台、「∨」折叠回球、「✕」关掉整套悬浮窗。
+ * 顶部 48dp 工具条按参考实现分两端：左边「会话切换 + 折叠回球」，
+ * 右边「回主页 + 关闭」，中间一条可拖空白；**不再显示会话名**。
+ * 会话切换点开后面板铺满消息区，列出未归档会话（无图标，当前会话标「当前」）。
  * 中间只读展示当前会话消息，底部一行输入（surface 面片 + 圆角，**不描白边**），
- * 回车 / 点发送都走 [onSend]。历史、放大/全屏这些入口本轮都不做。
+ * 回车 / 点发送都走 [onSend]。
  *
- * 图标：工程里没有 material-icons 依赖（也不许新增），所以三个图标用 Canvas 手画，
+ * 图标：工程里没有 material-icons 依赖（也不许新增），所以四个图标用 Canvas 手画，
  * 不新增任何资源文件，任何系统字体下都能渲染。
  *
  * 手势（锚点都是窗口左上角，热区与换算跟 Operit 的逆向结论一致）：
- * - 移动：**只有标题与按钮组之间那块空白**能拖（[onMoveBy]，位移直接透传 px）；
+ * - 移动：**只有左右按钮组之间那块空白**能拖（[onMoveBy]，位移直接透传 px）；
  * - 调宽：右边缘一条 16dp 宽 × 满高的竖条（[onResizeWidth]），只改宽、x 不动；
  * - 调高：底边一条 满宽 × 12dp 的横条（[onResizeHeight]），在输入行下方，只改高、y 不动；
  * - 松手：[onGestureEnd] 告诉服务「这一段手势结束」，服务只在这时落盘一次。
+ *
+ * 尺寸自适应：内距固定 8dp / 20dp（右侧给调宽手柄让位），按钮组固定宽度、
+ * 中间可拖区吃剩余宽度且没有最小宽度——窗口拖窄到极限时先让出可拖区，按钮始终完整可点。
  *
  * 这里仍然只负责画和把手指位移换算成增量，真正改窗口参数 / 夹取 / 落盘全在
  * FloatingBallService 里。
@@ -150,11 +154,12 @@ val LocalFloatInputFocus = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 @Composable
 fun FloatingChatWindow(
     messages: List<ChatMessage>,
-    title: String,
+    sessions: List<ChatPortSession>,
     onSend: (String) -> Unit,
     onHome: () -> Unit,
     onCollapse: () -> Unit,
     onClose: () -> Unit,
+    onPickSession: (String) -> Unit,
     onMoveBy: (Float, Float) -> Unit,
     onResizeWidth: (Float) -> Unit,
     onResizeHeight: (Float) -> Unit,
@@ -162,6 +167,8 @@ fun FloatingChatWindow(
 ) {
     val focusHook = LocalFloatInputFocus.current
     var text by remember { mutableStateOf("") }
+    // 会话切换面板是否展开：铺在消息区上，点某条会话即切换并收起
+    var sessionPanel by remember { mutableStateOf(false) }
     // 小窗不在 Activity 里，不用 rememberLazyListState（它走 rememberSaveable，需要 SavedStateRegistryOwner）
     val listState = remember { LazyListState() }
     // 消息区当前尺寸（px）：拖底边改窗口高度 / 拖右边改宽度都会让它变，用来触发一次「贴底」。
@@ -221,17 +228,20 @@ fun FloatingChatWindow(
                     // 标题栏固定 48dp、输入行 + 底部手柄贴在下面、中间那块 weight(1f) 吃满剩余高度：
                     // 窗口变宽变高时只有中间的消息区变大，标题栏 / 输入行不会被压缩
                     TopBar(
-                        title = title,
-                        onHome = onHome,
+                        sessionsOpen = sessionPanel,
+                        onSessions = { sessionPanel = !sessionPanel },
                         onCollapse = onCollapse,
+                        onHome = onHome,
                         onClose = onClose,
                         onMoveBy = onMoveBy,
                         onGestureEnd = onGestureEnd
                     )
 
+                    // 消息区：会话切换面板铺在它上面（同一块区域，切完自动收起）
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
                     if (visible.isEmpty()) {
                         Box(
-                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
@@ -243,7 +253,7 @@ fun FloatingChatWindow(
                     } else {
                         // 折叠阈值按**当前可视高**现算：窗口是用户随便拖的，同一段话
                         // 拉高时摊开、压矮时才折，写死的 dp 在很矮的窗口里会一折到底。
-                        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                             val foldAt = maxHeight * FLOAT_FOLD_AT_RATIO
                             val foldedHeight = maxHeight * FLOAT_FOLDED_RATIO
                             LazyColumn(
@@ -263,6 +273,18 @@ fun FloatingChatWindow(
                                 }
                             }
                         }
+                    }
+
+                    if (sessionPanel) {
+                        SessionPickerPanel(
+                            sessions = sessions,
+                            onPick = { id ->
+                                sessionPanel = false
+                                onPickSession(id)
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                     }
 
                     InputRow(
@@ -293,45 +315,43 @@ fun FloatingChatWindow(
 }
 
 /**
- * 顶部 48dp 工具条：会话名 + 中间可拖空白 + 「回主页」/「∨ 折叠」/「✕ 关闭」。
+ * 顶部 48dp 工具条：左「会话切换 + 转悬浮窗（折叠回球）」、右「回主页 + 关闭」，中间可拖。
  *
- * 可拖热区只有标题与按钮组之间那段空白（参考实现的移动热区也是这一段）：
- * 拖标题文字、拖按钮都不挪窗口，免得「想点 ✕ 结果窗口被拖走」。
+ * 按参考实现重排（2026-10-31）：**不再显示会话名**，四个按钮平均贴两端，
+ * 中间只剩一条可拖空白。窗口被拖窄时按钮不动、可拖区先被吃掉，
+ * 左右内距固定 8dp / 20dp（右侧 20dp 是给调宽手柄让位），所以任意尺寸下都不会压到内容。
  */
 @Composable
 private fun TopBar(
-    title: String,
-    onHome: () -> Unit,
+    sessionsOpen: Boolean,
+    onSessions: () -> Unit,
     onCollapse: () -> Unit,
+    onHome: () -> Unit,
     onClose: () -> Unit,
     onMoveBy: (Float, Float) -> Unit,
     onGestureEnd: () -> Unit
 ) {
     val iconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+    val activeColor = Palette.AccentGreen
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(TOP_BAR_HEIGHT)
             // end 让到 20dp：右边缘 16dp 是调宽手柄的命中区，别让它盖住「✕」按钮
-            .padding(start = 12.dp, end = 20.dp),
+            .padding(start = 8.dp, end = 20.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title.ifBlank { "会话" },
-            // 不给 weight：标题按内容取宽（最多 110dp），剩下的宽度全留给中间那块可拖空白
-            modifier = Modifier.widthIn(max = 110.dp),
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        // 可拖区：dragAmount 是布局 px（我们没有 scale，等于屏幕 px），原样透传给服务
+        CircleToolButton(onClick = onSessions) {
+            ListIcon(if (sessionsOpen) activeColor else iconColor)
+        }
+        Spacer(Modifier.width(6.dp))
+        CircleToolButton(onClick = onCollapse) { ChevronDownIcon(iconColor) }
+        // 可拖区：dragAmount 是布局 px（我们没有 scale，等于屏幕 px），原样透传给服务。
+        // 不给最小宽度：窗口拖窄到极限时可拖区先消失，按钮仍然完整可见可点。
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
-                .widthIn(min = DRAG_MIN_WIDTH)
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragEnd = { onGestureEnd() },
@@ -342,10 +362,69 @@ private fun TopBar(
                 }
         )
         CircleToolButton(onClick = onHome) { HomeIcon(iconColor) }
-        Spacer(Modifier.width(8.dp))
-        CircleToolButton(onClick = onCollapse) { ChevronDownIcon(iconColor) }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(6.dp))
         CircleToolButton(onClick = onClose) { CloseIcon(iconColor) }
+    }
+}
+
+/**
+ * 会话切换面板：铺满消息区，列出未归档会话（按最近更新排序，无图标）。
+ *
+ * 用页面底色而不是浮层灰色：小窗本身很小，再叠一层半透明会看不清标题；
+ * 当前会话用强调色标出来，点其它行即切换并自动收起。
+ */
+@Composable
+private fun SessionPickerPanel(
+    sessions: List<ChatPortSession>,
+    onPick: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    Box(modifier.background(MaterialTheme.colorScheme.background)) {
+        if (sessions.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    text = "还没有其它会话",
+                    fontSize = 13.sp,
+                    color = onSurface.copy(alpha = 0.45f)
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 4.dp)
+            ) {
+                items(sessions.size) { index ->
+                    val session = sessions[index]
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp)
+                            .saltRowClickable(RoundedCornerShape(8.dp)) { onPick(session.id) }
+                            .padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = session.title,
+                            modifier = Modifier.weight(1f),
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = if (session.isCurrent) Palette.AccentGreen else onSurface
+                        )
+                        if (session.isCurrent) {
+                            Text(
+                                text = "当前",
+                                fontSize = 10.sp,
+                                color = Palette.AccentGreen.copy(alpha = 0.7f),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -458,6 +537,26 @@ private fun CircleToolButton(onClick: () -> Unit, content: @Composable () -> Uni
         contentAlignment = Alignment.Center
     ) {
         content()
+    }
+}
+
+/** 会话列表图标：三条横线（上两条短、下一条长），展开面板时换成强调色。 */
+@Composable
+private fun ListIcon(color: Color) {
+    Canvas(Modifier.size(14.dp)) {
+        val w = size.width
+        val h = size.height
+        val stroke = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round)
+        val lines = listOf(0.24f to 0.78f, 0.50f to 0.78f, 0.76f to 0.56f)
+        for ((y, endX) in lines) {
+            drawLine(
+                color = color,
+                start = Offset(w * 0.14f, h * y),
+                end = Offset(w * endX, h * y),
+                strokeWidth = stroke.width,
+                cap = StrokeCap.Round
+            )
+        }
     }
 }
 

@@ -79,6 +79,19 @@ object ChatBridge {
         return runCatching { target.title() }.getOrDefault("会话").ifBlank { "会话" }
     }
 
+    /** 小窗会话切换列表；桥没绑上时给空表（小窗显示「还没有其它会话」）。 */
+    fun sessions(): List<ChatPortSession> {
+        val target = current() ?: return emptyList()
+        return runCatching { target.sessions() }.getOrDefault(emptyList())
+    }
+
+    /** 小窗里点了某条会话：切过去。切完消息表由实现方替换，小窗跟着重组。 */
+    fun switchSession(id: String) {
+        val target = current() ?: return
+        runCatching { target.switchSession(id) }
+            .onFailure { FileLog.log("float", "小窗切换会话失败：" + it) }
+    }
+
     /**
      * 后台（定时任务）改过会话文件之后通知界面重读一次（2026-10-25）。
      *
