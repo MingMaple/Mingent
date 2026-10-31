@@ -13,6 +13,10 @@ import com.zmf.agent.capability.tools.goal.GoalTool
 import com.zmf.agent.capability.tools.memory.MemTool
 import com.zmf.agent.capability.tools.plan.PlanTool
 import com.zmf.agent.capability.tools.file.WriteFileTool
+import com.zmf.agent.capability.tools.jobs.JobKillTool
+import com.zmf.agent.capability.tools.jobs.JobListTool
+import com.zmf.agent.capability.tools.jobs.JobOutputTool
+import com.zmf.agent.capability.tools.jobs.JobStartTool
 import com.zmf.agent.capability.tools.skill.SkillTool
 import com.zmf.agent.capability.tools.system.ShizukuTool
 import com.zmf.agent.capability.tools.task.TodoTool
@@ -50,7 +54,12 @@ fun defaultTools(): List<Tool> =
         // 计划与目标：都是只读档工具（各自只写 appdata 里自己的 JSON），
         // 所以计划模式（只暴露 READ_ONLY）下 write_plan 仍然可见
         PlanTool(),
-        GoalTool()
+        GoalTool(),
+        // 后台任务：job_start 起长任务，job_output/job_list/job_kill 读、列、取消
+        JobStartTool(),
+        JobOutputTool(),
+        JobListTool(),
+        JobKillTool()
     )
 
 /**
