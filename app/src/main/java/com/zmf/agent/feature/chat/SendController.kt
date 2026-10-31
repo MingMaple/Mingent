@@ -11,6 +11,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import com.zmf.agent.capability.loop.AgentLoop
 import com.zmf.agent.capability.loop.AgentUi
+import com.zmf.agent.capability.jobs.JobRegistry
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.displayName
 import com.zmf.agent.core.AppForeground
@@ -498,7 +499,32 @@ class SendController(
             }
             return
         }
-        // ③ 最后才轮到目标自动续跑：前面两条都是「用户还有话说」，不该被目标挤掉
+        // ③ 后台任务结算的「空闲唤醒」：没有用户待发内容、也不续目标时，若有后台任务刚结算，
+        // 把完成通知作为代发消息注入，再起一个不追加用户消息的回合把它接上（模型去 job_output 读结果）。
+        // 取走即清空，每个结算只唤醒一次；连续唤醒由 AgentLoop 的 drain 去重兜底。
+        val settled = JobRegistry.drainNotifications(session.currentSessionId)
+        if (settled.isNotEmpty()) {
+            messages.add(
+                ChatMessage(
+                    role = "user",
+                    content = JobRegistry.notificationText(settled),
+                    programmatic = true
+                )
+            )
+            FileLog.log("jobs", "空闲唤醒：会话 " + session.currentSessionId + " 有 " + settled.size + " 个后台任务已结算")
+            scope.launch {
+                if (isStreaming) return@launch
+                startTurn(
+                    userText = null,
+                    prompt = "",
+                    files = emptyList(),
+                    images = emptyList(),
+                    scope = scope
+                )
+            }
+            return
+        }
+        // ④ 最后才轮到目标自动续跑：前面几条都是「有更该先处理的事」，不该被目标挤掉
         continueGoal(scope)
     }
 

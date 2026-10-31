@@ -59,6 +59,7 @@ object DefaultPrompts {
         8. 多步骤任务使用 todo_write 建立清单：开始一项时置为 in_progress，完成后立即置为 completed；两到三步即可完成的任务不必建立清单。
         9. 交付前自检一次：清单中是否还有未完成项、是否有工具结果尚未读回、是否有子任务尚未归拢。存在上述情况时应当完成收尾或明确说明，不得视为已经完成。
         10. 删除一律使用 delete_file，不得使用 terminal 的 rm/rmdir：delete_file 使用同一套高危判定，能够取得真实路径与删除统计；目标本就不存在时它按成功返回，不必先用 test -e / list_files 确认。
+        11. 需要几分钟才出结果的事（编译、下载、长时间跑的服务）用 job_start 起后台任务，不要用 terminal 干等：起完先做别的，任务结束会通知你，届时用 job_output 读它的输出。要记下每个 job_start 返回的任务 id；不要反复轮询或空等同一个任务，等它的完成通知即可。给出最终答复前，把所有仍在乎的任务用 job_output 收一遍（确实卡在它上面时才传 wait=true），不再关心的用 job_kill 停掉。
     """.trimIndent()
 
     /**

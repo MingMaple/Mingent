@@ -171,8 +171,40 @@ object JobRegistry {
         synchronized(lock) {
             val e = jobs[id] ?: return
             jobs[id] = e.copy(status = status, note = note)
+            // 结算即入「待通知」队列：由 AgentLoop 每轮开始（或空闲唤醒）取走并注入一条完成通知，
+            // 每个结算恰好通知一次。这里记的是「结算结果」，不记状态机历史。
+            pendingNotify += id
         }
         finishedVersion.value += 1
+    }
+
+    /** 待通知的任务 id 队列（按结算先后）。 */
+    private val pendingNotify = ArrayList<String>()
+
+    /**
+     * 取走本会话「待通知」的任务，并清空。返回的每项是「任务快照」，用于拼通知文案。
+     *
+     * 为什么取走即清空：通知只该发一次；清空后这个结算不会再触发下一次注入，避免
+     * 「被唤醒的一轮又读到同一个已完成任务」的自激。
+     */
+    fun drainNotifications(sessionId: String): List<Entry> {
+        synchronized(lock) {
+            val out = ArrayList<Entry>()
+            val keep = ArrayList<String>()
+            for (id in pendingNotify) {
+                val e = jobs[id]
+                if (e != null && e.sessionId == sessionId) {
+                    out.add(e)
+                } else if (e != null) {
+                    // 别的会话的任务：留着，等那个会话来取
+                    keep.add(id)
+                }
+                // e == null（任务已被挤出注册表）：直接丢弃通知，不再保留
+            }
+            pendingNotify.clear()
+            pendingNotify.addAll(keep)
+            return out
+        }
     }
 
     private fun shortId(): String {
@@ -183,6 +215,25 @@ object JobRegistry {
             val n = (System.nanoTime() shr (i * 5)) and 0x7FFFFFFF
             sb.append(alpha[(n % alpha.length).toInt()])
         }
+        return sb.toString()
+    }
+
+    /**
+     * 完成通知的正文，对齐 DSH 的措辞：任务结算时，把「读它的输出」这个动作交给模型。
+     *
+     * 由 AgentLoop 与 SendController 共用，保证「繁忙注入」与「空闲唤醒」看到的是同一句话。
+     */
+    fun notificationText(entries: List<Entry>): String {
+        val sb = StringBuilder()
+        sb.append("你之前启动的后台任务已经结束：\n")
+        for (e in entries) {
+            sb.append("- ").append(e.id)
+            if (e.label.isNotBlank()) sb.append("（").append(e.label).append("）")
+            sb.append(" → ").append(e.status.name.lowercase())
+            if (e.note.isNotBlank()) sb.append("，").append(e.note)
+            sb.append('\n')
+        }
+        sb.append("用 job_output(job_id=\"<id>\") 读它们的输出；不再关心的用 job_kill 停掉（已结算的不用）。")
         return sb.toString()
     }
 }

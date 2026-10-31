@@ -18,6 +18,7 @@ import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
 import com.zmf.agent.capability.tools.spill.SpillStore
+import com.zmf.agent.capability.jobs.JobRegistry
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -266,6 +267,23 @@ class AgentLoop(
             while (round < maxRounds) {
                 round++
                 ui.onRound(round)
+                // 后台任务结算的「繁忙注入」：每轮开始前，把本会话新结算的任务作为一条代发 user 消息
+                // 接进历史，让模型在这一轮就去 job_output 读结果。取走即清空，每个结算只注入一次。
+                val finished = JobRegistry.drainNotifications(toolContext.sessionId)
+                if (finished.isNotEmpty()) {
+                    messages.add(
+                        ChatMessage(
+                            role = "user",
+                            content = JobRegistry.notificationText(finished),
+                            programmatic = true
+                        )
+                    )
+                    FileLog.log(
+                        "jobs",
+                        "繁忙注入：会话 " + toolContext.sessionId + " 有 " + finished.size +
+                            " 个后台任务已结算"
+                    )
+                }
                 var assistantIndex = messages.size
                 messages.add(ChatMessage(role = "assistant", content = ""))
                 var completed =
