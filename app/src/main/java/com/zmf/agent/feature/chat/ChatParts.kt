@@ -1274,13 +1274,18 @@ internal fun AssistantRow(
     val thinkCount = processSegments.count { it is TurnSegment.Think }
     val callCount = processSegments.count { it is TurnSegment.Call }
     val hasProcess = thinkCount > 0 || callCount > 0
-    // 折叠态只在「这一轮已经跑完」之后才成立：流式中途折起来，用户就看不见正在做的事了。
-    // 用户手动展开之后保持展开：只有下一轮流式结束（streaming 由 true 变 false）才会重新折回去。
+    // 折叠态只在「这一轮真的跑完」之后才成立：流式中途折起来，用户就看不见正在做的事了。
+    //
+    // 判据是上游算好的 [streaming]（= 这一轮还在流式，或这一轮结束后紧接着还要续跑）。
+    // 为什么不能只看「是否正在流式」：一轮结束到下一段开始之间有一个真实的空档——
+    // 续跑（目标模式）是在 finally 里落盘、刷新状态、发通知之后才起的，中间几百毫秒。
+    // 若那一瞬就折起来，下一段内容一到又展开，用户看到的就是「思考/工具中偶发折叠又被打开」。
+    // 那个空档由 SendController 的 chainPending 如实报出来，不靠猜时间。
     var expanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(streaming) { if (!streaming) expanded = false }
     val collapsed = hasProcess && !streaming && !expanded
     // 折叠时只留最终回答；本轮没有最终回答（模型以工具调用收尾 / 一句话没说）时什么都不留，
-    // 只剩上面那行计数。流式途中不折，看得见正在做什么。
+    // 只剩上面那行计数。流式途中（含续跑交接的空档）不折，看得见正在做什么。
     val shown = if (collapsed) listOfNotNull(finalSegment) else segments
     // 展开态：过程装进底板，最终回复留在底板外面
     val showPanel = expanded && hasProcess && !streaming

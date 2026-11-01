@@ -44,6 +44,14 @@ import java.io.File
 internal const val MAX_GOAL_ROUNDS = 8
 
 /**
+ * 连续「空闲唤醒」的上限。
+ *
+ * 后台任务结算会唤醒会话去读结果；被唤醒的回合若又起任务、又结算，就形成自激链，
+ * 用户不在场时白烧 token。三次足够接住正常的连续任务，再多就该等人回来。
+ */
+internal const val MAX_CONSECUTIVE_WAKES = 3
+
+/**
  * 发送与流式回合：发消息、排队/插话、续跑、重新生成、回滚、删改与停止。
  *
  * 从 [ChatViewModel] 搬出，行为不变：状态字段名与原成员逐字一致，方法体原样照搬；
@@ -98,6 +106,29 @@ class SendController(
      * 也可能这一轮已经结束（见 streamJob 的 finally）：后者要再跑一个不追加用户消息的回合接上。
      */
     private var steerPending = false
+
+    /**
+     * 连续「空闲唤醒」的计数。
+     *
+     * 唤醒是「有后台任务结算了，替用户追问一轮」。被唤醒的那一轮如果又起了新任务、又结算，
+     * 就会一直自己唤醒自己——用户不在场时烧 token。所以连续唤醒封顶 [MAX_CONSECUTIVE_WAKES]，
+     * 用户下一次发消息时清零。达到上限后不再唤醒，已结算通知留在队列里，等下一轮用户输入再注入。
+     */
+    private var consecutiveWakes = 0
+
+    /**
+     * 本轮结束后「已经排上了下一回合」。
+     *
+     * 一轮收尾不是原子的：`finally` 里先把 [isStreaming] 置 false，再落盘、刷新状态、发通知，
+     * 最后才由 [continueAfterTurn] 起下一回合——这中间有几百毫秒真的不是流式状态。
+     * 界面若只看 [isStreaming]，过程区会在这段空档里折起来、下一段内容一到又展开。
+     * 这个标记把「接着还要跑」如实报给界面：`isStreaming || chainPending` 才是「这一轮还没完」。
+     *
+     * 置位与清零都在主线程同步完成（[continueAfterTurn] 与 [startTurn] 都不挂起），
+     * 因此界面不会看到中间那一帧。
+     */
+    var chainPending by mutableStateOf(false)
+        private set
 
     /**
      * 发送按钮回调（旧入口，留给还没把「发送」与「停止」拆成两个键的界面）。
@@ -247,6 +278,8 @@ class SendController(
         val images = composer.pendingImages.toList()
         // 只发附件 / 只发图片、不写字也算一次提问；三者都空才真的没得发
         if (text.isBlank() && files.isEmpty() && images.isEmpty()) return
+        // 用户开口了：连续唤醒的预算复位（封顶只约束「用户不在场时的自激链」）
+        if (!programmatic) consecutiveWakes = 0
         // 新一轮提问：上一轮已经全部打勾的清单在这里收掉（必须在开跑前同步做完，见函数注释）
         dropFinishedTodos()
         // 用户没点按钮就直接接着聊：那份计划就此作废（按钮变灰），要执行得重新交一份新的
@@ -308,6 +341,8 @@ class SendController(
         programmatic: Boolean = false
     ) {
         reportError(null)
+        // 新回合已经真正开跑：交接空档到此结束，界面回到「正在流式」这一种状态
+        chainPending = false
         // 超过上限只在界面提示一句，不阻断发送（用户已经选了图，全丢掉比只发前几张更糟）。
         // 这句不算「本轮失败」：发通知那一步要排除它，否则成功的回合也会弹「回复失败」
         val imageNotice = if (tooManyImages) {
@@ -465,6 +500,9 @@ class SendController(
      * 用户点了「停止」时整段不执行（停止就是停止，不能自己又跑起来）。
      */
     private fun continueAfterTurn(scope: CoroutineScope) {
+        // 先按「不再续跑」记，下面哪个分支真要接一回合，再把它置真；
+        // 置位与清零都在同一个主线程帧里完成，界面不会看到中间态。
+        chainPending = false
         if (steerPending) {
             // 插话那条已经在后续请求里被回答了（末尾不再是 user）→ 收掉标记，别让下一轮误续跑
             val unanswered = messages.lastOrNull()?.role == "user"
@@ -502,27 +540,38 @@ class SendController(
         // ③ 后台任务结算的「空闲唤醒」：没有用户待发内容、也不续目标时，若有后台任务刚结算，
         // 把完成通知作为代发消息注入，再起一个不追加用户消息的回合把它接上（模型去 job_output 读结果）。
         // 取走即清空，每个结算只唤醒一次；连续唤醒由 AgentLoop 的 drain 去重兜底。
-        val settled = JobRegistry.drainNotifications(session.currentSessionId)
-        if (settled.isNotEmpty()) {
-            messages.add(
-                ChatMessage(
-                    role = "user",
-                    content = JobRegistry.notificationText(settled),
-                    programmatic = true
+        // 连续唤醒封顶：自激链（唤醒的回合又起任务）不能无限跑；超预算时**不 drain**，
+        // 通知留在队列里，下一轮（用户发消息时）自然注入。
+        if (consecutiveWakes < MAX_CONSECUTIVE_WAKES) {
+            val settled = JobRegistry.drainNotifications(session.currentSessionId)
+            if (settled.isNotEmpty()) {
+                messages.add(
+                    ChatMessage(
+                        role = "user",
+                        content = JobRegistry.notificationText(settled),
+                        programmatic = true
+                    )
                 )
-            )
-            FileLog.log("jobs", "空闲唤醒：会话 " + session.currentSessionId + " 有 " + settled.size + " 个后台任务已结算")
-            scope.launch {
-                if (isStreaming) return@launch
-                startTurn(
-                    userText = null,
-                    prompt = "",
-                    files = emptyList(),
-                    images = emptyList(),
-                    scope = scope
+                consecutiveWakes++
+                FileLog.log(
+                    "jobs",
+                    "空闲唤醒：会话 " + session.currentSessionId + " 有 " + settled.size +
+                        " 个后台任务已结算（连续第 " + consecutiveWakes + " 次）"
                 )
+                scope.launch {
+                    if (isStreaming) return@launch
+                    startTurn(
+                        userText = null,
+                        prompt = "",
+                        files = emptyList(),
+                        images = emptyList(),
+                        scope = scope
+                    )
+                }
+                return
             }
-            return
+        } else if (JobRegistry.forSession(session.currentSessionId).any { it.status != JobRegistry.Status.RUNNING }) {
+            FileLog.log("jobs", "连续唤醒已达上限 " + MAX_CONSECUTIVE_WAKES + " 次，暂停唤醒，通知留到下次用户输入")
         }
         // ④ 最后才轮到目标自动续跑：前面几条都是「有更该先处理的事」，不该被目标挤掉
         continueGoal(scope)
@@ -547,6 +596,8 @@ class SendController(
         setGoal(next)
         GoalStore.save(appContext, session.currentSessionId, next)
         FileLog.log("goal", "目标第 " + next.rounds + " 轮自动续跑：" + next.objective.take(60))
+        // 同一轮里接着跑：界面据此不把这轮的过程折起来（见 chainPending 的说明）
+        chainPending = true
         scope.launch {
             // 和插话/队列同样让路：真正开跑前忙起来了就让那一轮接管
             if (isStreaming) return@launch
@@ -746,6 +797,8 @@ class SendController(
         if (!isStreaming) return
         // 停止就不再续跑：留着这个标记，下一次回合收尾时可能凭空多跑一个空回合
         steerPending = false
+        // 停止即终止整条链：交接标记一并清掉，界面立刻按「这一轮结束」折叠
+        chainPending = false
         streamJob?.cancel()
         streamJob = null
         isStreaming = false

@@ -232,7 +232,10 @@ internal fun ColumnScope.ChatMessageList(
                                 is ChatItem.AssistantItem -> AssistantRow(
                                     all = viewModel.messages,
                                     indices = item.indices,
-                                    streaming = viewModel.isStreaming &&
+                                    // 「这一轮还没完」= 正在流式，或本轮结束后已经排上了下一回合（续跑）。
+                                    // 只看 isStreaming 的话，收尾落盘那几百毫秒里过程区会先折起来、
+                                    // 下一段内容一到又展开，用户看到的就是「偶发折叠」。
+                                    streaming = (viewModel.isStreaming || viewModel.chainPending) &&
                                         item.indices.lastOrNull() == lastAssistantIndex,
                                     toolOutcomes = viewModel.toolOutcomes,
                                     onCopy = { text -> copyToClipboard(context, text) },

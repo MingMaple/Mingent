@@ -382,6 +382,13 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 是否正在生成回复；只读转发。 */
     val isStreaming: Boolean get() = sender.isStreaming
 
+    /**
+     * 本轮结束后是否已经排上了下一回合（目标续跑）；只读转发。
+     *
+     * 收尾到续跑之间有几百毫秒 `isStreaming` 为 false，界面靠它避免在空档里把过程区折起来。
+     */
+    val chainPending: Boolean get() = sender.chainPending
+
     /** 繁忙时的发送行为；只读转发。 */
     val busyMode: BusySendMode get() = sender.busyMode
 
