@@ -1,5 +1,6 @@
 package com.zmf.agent.feature.settings
 import com.zmf.agent.core.llm.ApiDefaults
+import com.zmf.agent.core.model.PermissionLevel
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -70,7 +71,7 @@ import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
 
 /**
- * 「模型」页（二级）：多提供商目录 + 单个提供商的编辑表单 + 思考强度 + 余额。
+ * 「模型」页（二级）：多提供商目录 + 单个提供商的编辑表单 + 思考强度 + 执行权限 + 余额。
  *
  * 表单做成页内展开卡而不是新页面：改一个提供商就是名字/密钥/地址三件事，
  * 再压一层页面只会让「返回」到底回哪一层变含糊；展开卡用 animateContentSize 撑开，
@@ -89,6 +90,8 @@ fun ModelSettingsPage(
     thinkingEffort: String,
     onThinkingToggle: (Boolean) -> Unit,
     onPickEffort: (String) -> Unit,
+    permission: PermissionLevel,
+    onPickPermission: (PermissionLevel) -> Unit,
     balance: BalanceResult?,
     balanceBusy: Boolean,
     onBalance: () -> Unit
@@ -96,8 +99,9 @@ fun ModelSettingsPage(
     // null = 表单收起；草稿直接就是 ProviderConfig，保存时原样回传，页面不必知道字段清单
     var draft by remember { mutableStateOf<ProviderConfig?>(null) }
     var pickerOpen by remember { mutableStateOf(false) }
-    // 思考强度与余额都改行内展开：状态提到这里，收起再展开不会把刚查到的结果丢掉
+    // 思考强度、执行权限与余额都改行内展开：状态提到这里，收起再展开不会把刚查到的结果丢掉
     var thinkingOpen by remember { mutableStateOf(false) }
+    var permissionOpen by remember { mutableStateOf(false) }
     var balanceOpen by remember { mutableStateOf(false) }
 
     Surface(
@@ -263,6 +267,43 @@ fun ModelSettingsPage(
                                             ApiConfig.effortLabel(value) == ApiConfig.effortLabel(thinkingEffort),
                                         enabled = thinkingEnabled,
                                         onClick = { onPickEffort(value) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 执行权限：与输入区浮层的权限胶囊是同一份设置，在一处改动，另一处立即跟着变
+                SettingsCard {
+                    Column {
+                        ExpandRow(
+                            title = "执行权限",
+                            value = permissionTitle(permission),
+                            expanded = permissionOpen,
+                            onClick = { permissionOpen = !permissionOpen }
+                        )
+                        AnimatedVisibility(
+                            visible = permissionOpen,
+                            enter = expandVertically(animationSpec = Motion.spring()) + fadeIn(Motion.fadeIn()),
+                            exit = shrinkVertically(animationSpec = Motion.spring()) + fadeOut(Motion.fadeOut())
+                        ) {
+                            Column {
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+                                )
+                                Text(
+                                    text = "决定助手能碰多远。这里与输入区的权限开关是同一份设置，改一处两处同时生效。",
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                                )
+                                PermissionLevel.entries.forEach { level ->
+                                    PermissionTierRow(
+                                        title = permissionTitle(level),
+                                        detail = permissionDetail(level),
+                                        selected = level == permission,
+                                        onClick = { onPickPermission(level) }
                                     )
                                 }
                             }
@@ -830,6 +871,64 @@ private fun EffortRow(
             )
         }
     }
+}
+
+/** 一行执行权限：标题与说明上下排；选中行的标题为绿字，右侧一枚绿点。 */
+@Composable
+private fun PermissionTierRow(
+    title: String,
+    detail: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .saltCardRow { onClick() }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        // 顶端对齐：说明文字折成两三行时，圆点仍与标题同一行，不会被拉到卡片中间
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(
+                text = title,
+                fontSize = 15.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) Palette.AccentGreen else onSurface
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = detail,
+                fontSize = 12.sp,
+                color = onSurface.copy(alpha = 0.45f)
+            )
+        }
+        // 圆点始终占位：只有选中时才上色，换行时文字不会被它压住，三行的右侧也对得齐
+        Box(
+            modifier = Modifier
+                .padding(top = 6.dp)
+                .size(8.dp)
+                .background(
+                    color = if (selected) Palette.AccentGreen else Color.Transparent,
+                    shape = CircleShape
+                )
+        )
+    }
+}
+
+/** 三档的界面名：与输入区权限浮层同一套说法，两处看到的档位名必须一致。 */
+private fun permissionTitle(level: PermissionLevel): String = when (level) {
+    PermissionLevel.READ_ONLY -> "仅可查看"
+    PermissionLevel.WORKSPACE -> "工作区内修改"
+    PermissionLevel.FULL -> "完全权限"
+}
+
+/** 三档的能力说明：只陈述闸门实际放行的范围，不承诺它是沙箱。 */
+private fun permissionDetail(level: PermissionLevel): String = when (level) {
+    PermissionLevel.READ_ONLY -> "只读取工作区与系统信息，不改动任何文件。"
+    PermissionLevel.WORKSPACE -> "可读写工作区，系统其它位置与外部存储不可写。默认档位。"
+    PermissionLevel.FULL -> "可读写系统任意位置，危险命令不再拦截。仅在信任任务时使用。"
 }
 
 /** 胶囊按钮：主按钮吃 Salt 绿，次要按钮吃 6% 淡影（和 SchedulePage 的 chip 同一套观感）。 */

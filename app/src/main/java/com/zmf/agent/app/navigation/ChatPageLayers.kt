@@ -496,6 +496,9 @@ internal fun ChatPageLayers(
                     if (on != viewModel.thinkingEnabled) viewModel.toggleThinking()
                 },
                 onPickEffort = { effort -> viewModel.chooseThinkingEffort(effort) },
+                // 执行权限与输入区浮层共用 viewModel.permissionLevel 这一份状态，天然双向同步
+                permission = viewModel.permissionLevel,
+                onPickPermission = { level -> viewModel.setPermission(level) },
                 balance = balance,
                 balanceBusy = balanceBusy,
                 onBalance = {
