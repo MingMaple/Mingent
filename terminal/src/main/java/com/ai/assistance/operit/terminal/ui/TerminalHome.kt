@@ -475,6 +475,9 @@ fun TerminalHome(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                // 输入行自带不透明黑底：弹输入法时工具栏+输入行整体上移，露出下方
+                                // 透明区域，若这里不铺底，终端输出会从输入行背后透出来（穿帮）。
+                                .background(Color.Black)
                                 .padding(padding),
                             verticalAlignment = Alignment.CenterVertically
                         ) {

@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.NavHostController
 import com.ai.assistance.operit.terminal.TerminalEnv
 import com.ai.assistance.operit.terminal.TerminalManager
 import com.ai.assistance.operit.terminal.ui.SetupScreen
@@ -109,10 +110,16 @@ fun TerminalScreen(
                 env = env,
                 useLocalImeHandling = useLocalImeHandling,
                 onNavigateToSetup = {
-                    navController.navigate(TerminalRoutes.SETUP_ROUTE)
+                    // launchSingleTop：目标页已在栈顶时复用、不再叠新实例，
+                    // 修「反复点环境配置每点一次开一个新实例」。
+                    navController.navigate(TerminalRoutes.SETUP_ROUTE) {
+                        launchSingleTop = true
+                    }
                 },
                 onNavigateToSettings = {
-                    navController.navigate(TerminalRoutes.SETTINGS_ROUTE)
+                    navController.navigate(TerminalRoutes.SETTINGS_ROUTE) {
+                        launchSingleTop = true
+                    }
                 }
             )
         }
@@ -122,17 +129,13 @@ fun TerminalScreen(
                 onBack = {
                     val sharedPreferences = context.getSharedPreferences("terminal_prefs", Context.MODE_PRIVATE)
                     sharedPreferences.edit().putBoolean("is_first_launch", false).apply()
-                    navController.navigate(TerminalRoutes.TERMINAL_HOME_ROUTE) {
-                        popUpTo(TerminalRoutes.SETUP_ROUTE) { inclusive = true }
-                    }
+                    navController.goHome()
                 },
                 onSetup = { commands ->
                     val sharedPreferences = context.getSharedPreferences("terminal_prefs", Context.MODE_PRIVATE)
                     sharedPreferences.edit().putBoolean("is_first_launch", false).apply()
                     env.onSetup(commands)
-                    navController.navigate(TerminalRoutes.TERMINAL_HOME_ROUTE) {
-                        popUpTo(TerminalRoutes.SETUP_ROUTE) { inclusive = true }
-                    }
+                    navController.goHome()
                 }
             )
         }
@@ -153,6 +156,19 @@ fun TerminalScreen(
                 popUpTo(TerminalRoutes.TERMINAL_HOME_ROUTE) { inclusive = true }
             }
         }
+    }
+}
+
+/**
+ * 回终端主页：清空整个返回栈到根、只留一个干净的 home。
+ *
+ * 之前从 setup/settings 返回用 `navigate(home) + popUpTo(setup)`，会把 home 重复压栈，
+ * 反复「进环境配置→返回」就让栈越堆越深，每点一次环境配置都叠一个新实例。这里统一清栈，
+ * 保证任何时候回到主页都只有一个 home 实例。
+ */
+private fun NavHostController.goHome() {
+    navigate(TerminalRoutes.TERMINAL_HOME_ROUTE) {
+        popUpTo(0) { inclusive = false }
     }
 }
 
