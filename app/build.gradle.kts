@@ -148,7 +148,7 @@ dependencies {
 // 把「谁不许依赖谁」从文档约定变成构建失败：
 //   gradle :app:checkArchitecture
 //
-// 规则来源：_Docs/模块化重构/01_调研论文与结构设计.md §5.2
+// 规则来源：_Docs/模块化.md §2 依赖矩阵
 //
 // 存量豁免：ui/ agent/ tools/ core/ schedule/ service/ 等老目录还在搬迁中，不属于任何新层，
 // 一律跳过；只有新层（uikit/ infra/ capability/ feature/）被强制检查。
@@ -157,7 +157,7 @@ dependencies {
 // ---------------------------------------------------------------
 val checkArchitecture by tasks.registering {
     group = "verification"
-    description = "检查包依赖方向，违反即构建失败（见 _Docs/模块化重构/01）"
+    description = "检查包依赖方向，违反即构建失败（见 _Docs/模块化.md §2）"
     doLast {
         val srcRoot = file("src/main/java")
         val packageRe = Regex("""^\s*package\s+([\w.]+)""", RegexOption.MULTILINE)
