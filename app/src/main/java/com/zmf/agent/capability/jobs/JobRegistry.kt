@@ -64,7 +64,7 @@ object JobRegistry {
         val note: String,
         /** 记录「上次 job_output 读到哪」：下一次读只给增量。 */
         val deliveredBytes: Long,
-        /** 是否已请求取消：生产方结算时据此把 completed 改判成 killed。 */
+        /** 是否已请求取消：结算时据此把结果改判成 killed。 */
         val killRequested: Boolean = false
     )
 
@@ -119,13 +119,16 @@ object JobRegistry {
     fun kill(id: String, note: String = "") = settle(id, Status.KILLED, note)
 
     /**
-     * 请求取消：第一版只标记「已请求取消」，不真正中断底层进程（终端执行是原子的、不可中途打断）。
-     * 生产方结算时若见到这个标记，会把 completed 改判成 killed。返回是否成功标记。
+     * 请求取消：标记「已请求取消」，由调用方随后向进程组发终止信号（见
+     * [com.zmf.agent.infra.terminal.TerminalApi.killDetached]）。
+     *
+     * 标记与信号分两步，是因为「请求取消」是注册表的状态，「真的停掉」是生产方的事：
+     * 进程可能在信号到达前自己退出，先到的结算结果说了算。返回是否成功标记。
      */
-    fun requestKill(id: String): Boolean = synchronized(lock) {
+    fun requestKill(id: String, reason: String = ""): Boolean = synchronized(lock) {
         val e = jobs[id] ?: return false
         if (e.status != Status.RUNNING) return false
-        jobs[id] = e.copy(killRequested = true)
+        jobs[id] = e.copy(killRequested = true, note = reason.trim())
         true
     }
 
@@ -163,9 +166,18 @@ object JobRegistry {
     private fun settle(id: String, status: Status, note: String) {
         synchronized(lock) {
             val e = jobs[id] ?: return
+            // 已结算的任务不再改判：看门狗判超时与进程「正好在这时自己退出」会先后到达，
+            // 先写下的那个结果就是事实，后到的直接丢弃（也保证同一个任务只入队一条通知）
+            if (e.status != Status.RUNNING) return
             // 已请求取消的任务，即使命令正常跑完也按「被杀」结算，兑现 job_kill 的语义
-            val finalStatus = if (e.killRequested && status == Status.COMPLETED) Status.KILLED else status
-            jobs[id] = e.copy(status = finalStatus, note = note)
+            val finalStatus = if (e.killRequested) Status.KILLED else status
+            // 取消理由与退出码都要留下：只报 exit=143 看不出是人叫停的还是自己崩的
+            val finalNote = when {
+                e.note.isBlank() -> note
+                note.isBlank() -> e.note
+                else -> e.note + "，" + note
+            }
+            jobs[id] = e.copy(status = finalStatus, note = finalNote)
             // 结算即入「待通知」队列：由 AgentLoop 每轮开始（或空闲唤醒）取走并注入一条完成通知，
             // 每个结算恰好通知一次。这里记的是「结算结果」，不记状态机历史。
             pendingNotify += id

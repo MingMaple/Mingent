@@ -5,15 +5,17 @@ import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.capability.tools.Tool
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolResult
+import com.zmf.agent.infra.terminal.TerminalApi
 import org.json.JSONObject
 
 /**
- * job_kill：请求取消一个后台任务。
+ * job_kill：取消一个后台任务。
  *
- * 语义对齐 DSH：请求取消后，**进程真正停掉**才以 `killed` 结算（由生产方的 onExit 回调负责），
- * 这里只是发停止信号。已经结算的任务再 kill 就报「不在运行」。
+ * 语义对齐 DSH：先把注册表里的任务标记成「已请求取消」，再向**整个进程组**发终止信号
+ * （`SIGTERM`，一秒后 `SIGKILL` 兜底）；进程真正停掉之后，才由生产方的 onExit 回调以
+ * `killed` 结算。已结算的任务再 kill 就报「不在运行」。
  *
- * 为什么权限档是 WORKSPACE：取消一个正在跑的终端进程是有副作用的动作（可能打断正在进行的写入），
+ * 为什么权限档是 WORKSPACE：终止一个正在跑的终端进程是有副作用的动作（可能打断正在进行的写入），
  * 与「只读」不符，按能力声明为 WORKSPACE。
  */
 class JobKillTool : Tool {
@@ -54,11 +56,21 @@ class JobKillTool : Tool {
         }
 
         val reason = args.optString("reason", "").trim()
-        val stopped = JobRegistry.requestKill(id)
-        return if (stopped) {
-            ToolResult.Ok("已标记取消 " + id + "。当前版本不支持中断已在跑的命令，等它自然结束时会以 killed 结算。")
-        } else {
-            ToolResult.Error("没能标记取消：" + id + "（可能已经结算；用 job_output 或 job_list 看当前状态）")
+        val stopped = JobRegistry.requestKill(id, reason)
+        if (!stopped) {
+            return ToolResult.Error("没能标记取消：" + id + "（可能已经结算；用 job_output 或 job_list 看当前状态）")
         }
+
+        // 标记之后立刻向进程组发信号：先 SIGTERM 让命令自己收尾，一秒后 SIGKILL 兜底
+        val signalled = TerminalApi.killJob(ctx.context.applicationContext, id)
+        return ToolResult.Ok(
+            if (signalled) {
+                "已向 " + id + " 的进程组发送终止信号。进程真正退出后任务以 killed 结算，" +
+                    "可以用 job_output 或 job_list 确认。"
+            } else {
+                "已标记取消 " + id + "，但没能向进程发送终止信号：可能它已经自行退出，" +
+                    "也可能 pid 文件尚未写出。用 job_list 看当前状态。"
+            }
+        )
     }
 }
