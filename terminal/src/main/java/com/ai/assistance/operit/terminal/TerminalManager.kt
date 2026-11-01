@@ -1379,6 +1379,19 @@ $prootBindSetup
         }
     }
 
+    /**
+     * 关闭一条隐藏执行通道，释放它常驻的子进程。
+     *
+     * 隐藏执行按 executorKey 缓存 shell；一次性的调用方（例如后台任务）用完就该还回来，
+     * 否则每跑一条命令都会多留一个常驻 shell。异步执行：调用方（监视协程）不必等回收完成。
+     */
+    fun releaseHiddenExecutor(executorKey: String) {
+        coroutineScope.launch {
+            runCatching { getTerminalProvider().closeHiddenExecutor(executorKey) }
+                .onFailure { Log.w(TAG, "关闭隐藏执行通道失败：" + describe(it)) }
+        }
+    }
+
     fun prepareForMaintenance() {
         // 释放 provider 连接
         kotlinx.coroutines.runBlocking {

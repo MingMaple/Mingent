@@ -57,6 +57,15 @@ interface TerminalProvider {
      * 断开连接
      */
     suspend fun disconnect()
+
+    /**
+     * 关闭一条隐藏执行通道。
+     *
+     * 隐藏执行按 executorKey 缓存常驻 shell；调用方用完某条通道（例如一条后台任务跑完）后
+     * 应当把它关掉，否则每用一次就多留一个常驻子进程。默认空实现：只有本机 provider 会缓存
+     * 隐藏 shell，远程 provider 不必处理。
+     */
+    suspend fun closeHiddenExecutor(executorKey: String) {}
     
     /**
      * 启动终端会话

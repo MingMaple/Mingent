@@ -91,6 +91,10 @@ class LocalTerminalProvider(
         hiddenExecScope.cancel()
     }
 
+    override suspend fun closeHiddenExecutor(executorKey: String) {
+        closeHiddenExecShell(executorKey)
+    }
+
     override suspend fun startSession(sessionId: String): Result<Pair<TerminalSession, Pty>> {
         return withContext(Dispatchers.IO) {
             try {

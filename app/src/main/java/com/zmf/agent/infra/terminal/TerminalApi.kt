@@ -146,6 +146,16 @@ object TerminalApi {
     }
 
     /**
+     * 归还任务占用的执行通道。
+     *
+     * 每个任务独占一条通道（前台跑，不能与别的任务共用），任务结束后必须把它关掉：
+     * 通道背后是一个常驻的 Ubuntu 子进程，不还会随「起过多少任务」一路累积。
+     */
+    fun releaseJobChannel(context: Context, jobId: String) {
+        TerminalManager.getInstance(context).releaseHiddenExecutor(jobExecutorKey(jobId))
+    }
+
+    /**
      * 预检：这条终端通道能不能执行命令。
      *
      * `job_start` 先用它确认环境就绪，再把「已启动」回报给模型——避免先答应、后失败。

@@ -155,6 +155,8 @@ class JobStartTool : Tool {
                 break
             }
         }
+        // 任务结束即归还独占通道：不还的话每起一个任务就多留一个常驻 Ubuntu 子进程
+        TerminalApi.releaseJobChannel(context, id)
         if (!settled) {
             // 协程被取消（例如进程要退出了）：不结算，但把已知状态留在日志里
             FileLog.log(TAG, "任务 " + id + " 监视结束（未结算）")
