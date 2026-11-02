@@ -1,6 +1,7 @@
 package com.zmf.agent.infra.system
 
 import android.Manifest
+import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -35,6 +36,8 @@ object AndroidPermissions {
         val notification: Boolean,
         /** 是否已加入电池优化白名单。 */
         val batteryIgnore: Boolean,
+        /** 精确闹钟（Android 12+ 的「闹钟与提醒」特殊权限）；低版本恒 true。 */
+        val exactAlarm: Boolean,
         /** 同 storageLegacy，单独列一个字段是给「所有文件访问」那一行直接读。 */
         val allFiles: Boolean
     )
@@ -54,8 +57,23 @@ object AndroidPermissions {
                 true
             },
             batteryIgnore = isIgnoringBatteryOptimizations(context),
+            exactAlarm = exactAlarmAllowed(context),
             allFiles = allFiles
         )
+    }
+
+    /**
+     * 是否允许排精确闹钟。
+     *
+     * Android 12 起由「闹钟与提醒」特殊权限控制：没有授权时 AlarmManager 排精确闹钟会抛 SecurityException。
+     * 低版本没有这项限制，一律算可用。
+     */
+    fun exactAlarmAllowed(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        return runCatching {
+            val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+            manager?.canScheduleExactAlarms() == true
+        }.getOrDefault(false)
     }
 
     // ---- 跳系统页：统一 runCatching，回不来就 false ----
@@ -77,6 +95,12 @@ object AndroidPermissions {
         )
         if (start(context, request)) return true
         return start(context, Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+    }
+
+    /** 精确闹钟授权页；Android 12 以下没有这项设置，直接返回 false。 */
+    fun openExactAlarmSettings(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+        return start(context, Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, packageUri(context)))
     }
 
     /** 本 App 的「所有文件访问」页；Android 11 以下没有这项权限，直接返回 false。 */

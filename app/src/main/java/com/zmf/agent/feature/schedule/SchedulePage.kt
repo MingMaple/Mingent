@@ -22,6 +22,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +36,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.zmf.agent.infra.system.AndroidPermissions
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.core.store.WorkSpaceStore
@@ -67,6 +72,16 @@ fun SchedulePage(onBack: () -> Unit) {
     // 哪一条正在展开编辑（null = 全部折叠）。同一时刻只展开一条：两条表单叠在一起只会改错。
     var editingId by remember { mutableStateOf<String?>(null) }
     var pendingDelete by remember { mutableStateOf<ScheduleTask?>(null) }
+    // 系统保障项只在有启用任务时才值得提示；用户从系统设置回来时重新查一次
+    var permissions by remember { mutableStateOf(AndroidPermissions.status(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) permissions = AndroidPermissions.status(context)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val onSurface = MaterialTheme.colorScheme.onSurface
 
     Surface(
@@ -166,9 +181,21 @@ fun SchedulePage(onBack: () -> Unit) {
                 )
             }
 
+            // 只在「有启用任务、且系统保障缺项」时出现：没有任务或都已授权就不打扰
+            val enabledCount = tasks.count { it.enabled }
+            if (enabledCount > 0 && (!permissions.exactAlarm || !permissions.batteryIgnore)) {
+                ReliabilityHintCard(
+                    exactAlarmMissing = !permissions.exactAlarm,
+                    batteryMissing = !permissions.batteryIgnore,
+                    onOpenExactAlarm = { AndroidPermissions.openExactAlarmSettings(context) },
+                    onOpenBattery = { AndroidPermissions.openBatterySettings(context) }
+                )
+            }
+
             Text(
-                text = "定时任务由系统闹钟触发，不监听开机广播；应用重启后首次打开时会自动重新排期。" +
-                    "每个任务仅保留一条通知，点击通知可返回结果所在会话。",
+                text = "定时任务由系统闹钟触发；开机与应用更新后会自动重排，应用被系统停止后首次打开也会补排一次。" +
+                    "若重启后仍不触发，请在系统设置里允许本应用自启动。部分系统（如 ColorOS）从最近任务清除本应用会强制停止并取消闹钟，" +
+                    "请允许其后台运行，且不要在最近任务里清除。任务完成后会发系统通知，点击通知可返回结果所在会话。",
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                 fontSize = 11.sp,
                 color = onSurface.copy(alpha = 0.35f)
@@ -528,6 +555,64 @@ private fun ScheduleChip(
                 onSurface.copy(alpha = 0.6f * alpha)
             }
         )
+    }
+}
+
+/**
+ * 后台可靠性提示卡：只在有启用任务、且系统保障缺项时出现。
+ *
+ * 每行只说明缺什么并送去对应系统页，不在 App 内替用户做授权决定。
+ */
+@Composable
+private fun ReliabilityHintCard(
+    exactAlarmMissing: Boolean,
+    batteryMissing: Boolean,
+    onOpenExactAlarm: () -> Unit,
+    onOpenBattery: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+    ) {
+        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            if (exactAlarmMissing) {
+                ReliabilityHintRow(
+                    text = "精确闹钟未授权，触发可能延迟数分钟",
+                    onClick = onOpenExactAlarm
+                )
+            }
+            if (batteryMissing) {
+                ReliabilityHintRow(
+                    text = "电池优化未关闭，后台执行可能被系统中止",
+                    onClick = onOpenBattery
+                )
+            }
+        }
+    }
+}
+
+/** 提示卡里的一行：左侧说明，右侧链接档蓝字「去设置」。 */
+@Composable
+private fun ReliabilityHintRow(text: String, onClick: () -> Unit) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .saltRowClickable(RoundedCornerShape(10.dp), onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.weight(1f),
+            fontSize = 12.sp,
+            color = onSurface.copy(alpha = 0.6f)
+        )
+        Text(text = "去设置 ›", fontSize = 12.sp, color = UiColors.accentFg)
     }
 }
 

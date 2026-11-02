@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.capability.loop.AgentLoop
 import com.zmf.agent.capability.loop.AgentUi
@@ -18,6 +19,7 @@ import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.core.notify.Notifier
+import com.zmf.agent.infra.system.AndroidPermissions
 import com.zmf.agent.capability.runtime.AgentForegroundService
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
@@ -61,6 +63,16 @@ object ScheduleRunner {
     /** 已经错过的时间里的一律「马上」跑：等一个周期再跑，用户会以为任务丢了。 */
     private const val IMMEDIATE_DELAY_MS = 5_000L
 
+    /**
+     * 执行期唤醒锁的持有上限。
+     *
+     * 正常情况下任务几分钟内结束；超时是异常路径的兜底，避免协程卡死时把电耗光。
+     */
+    private const val WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
+
+    /** 唤醒锁标签：系统电池统计里能看出是定时任务持有的。 */
+    private const val WAKE_LOCK_TAG = "Mingent:schedule"
+
     /** 应用级作用域：广播返回后协程还得继续跑，所以不能挂在 Receiver 的生命周期上。 */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -100,14 +112,21 @@ object ScheduleRunner {
             return
         }
         val pi = pendingIntent(app, task.id)
-        val exact = runCatching {
-            // 用 setExactAndAllowWhileIdle 而不是 set：Doze 里也能准点叫醒，间隔分钟才不会被系统拖成几小时
-            manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, task.nextAt, pi)
-        }
-        if (exact.isFailure) {
-            // 个别 Android 12+ 机型按「没有精确闹钟授权」抛 SecurityException：
-            // 退回非精确闹钟（可能晚几分钟），宁可迟到也不能永远不跑
-            FileLog.log(TAG, "精确闹钟排不上（" + exact.exceptionOrNull() + "），改用非精确")
+        // 用 setExactAndAllowWhileIdle 而不是 set：Doze 里也能准点叫醒，间隔分钟才不会被系统拖成几小时。
+        // Android 12+ 先看「闹钟与提醒」权限：没授权就直接走非精确，省掉一次必然失败的调用。
+        if (AndroidPermissions.exactAlarmAllowed(app)) {
+            val exact = runCatching {
+                manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, task.nextAt, pi)
+            }
+            if (exact.isFailure) {
+                // 个别机型即使自检通过也会抛 SecurityException：退回非精确，
+                // 可能晚几分钟，但宁可迟到也不能永远不跑
+                FileLog.log(TAG, "精确闹钟排不上（" + exact.exceptionOrNull() + "），改用非精确")
+                runCatching { manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, task.nextAt, pi) }
+                    .onFailure { FileLog.log(TAG, "闹钟排不上：" + it) }
+            }
+        } else {
+            FileLog.log(TAG, "未获精确闹钟授权，改用非精确闹钟")
             runCatching { manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, task.nextAt, pi) }
                 .onFailure { FileLog.log(TAG, "闹钟排不上：" + it) }
         }
@@ -122,8 +141,10 @@ object ScheduleRunner {
     }
 
     /**
-     * 兜底重排：闹钟在重启 / 强停后全丢，而工程没有 RECEIVE_BOOT_COMPLETED（不加权限），
-     * 所以每次打开 App 调一次，把所有已启用任务的闹钟重新挂上。
+     * 重排全部已启用任务的闹钟。
+     *
+     * 闹钟在重启、应用覆盖更新与被系统强停后都会丢掉：开机与更新由 [ScheduleBootReceiver] 触发，
+     * 每次打开 App 再由 MainActivity 调一次兜底，两条入口都走这里，避免两套逻辑走岔。
      *
      * 还没到点的保持原路（每次都往后推会把「每 60 分钟」越推越晚）；
      * 已经错过的才重算：周期任务只排下一次（不补跑，免得一口气连跑好几遍），一次性任务当场补跑。
@@ -151,14 +172,44 @@ object ScheduleRunner {
 
     // ---- 触发 ----
 
-    /** 闹钟到点：先把进程钉住（前台服务），再交给应用级协程跑，广播本身立刻返回。 */
+    /**
+     * 闹钟到点：先把进程钉住（前台服务），再交给应用级协程跑，广播本身立刻返回。
+     *
+     * 前台服务只保证进程优先级，不保证 CPU 不休眠；执行期间必须自己持有部分唤醒锁，
+     * 否则设备进 Doze 后网络与协程都会停摆。锁带超时，异常路径也不会永久持有。
+     */
     fun fire(context: Context, taskId: String) {
         val app = context.applicationContext
         AgentForegroundService.start(app)
+        val lock = acquireWakeLock(app)
         scope.launch {
-            runCatching { runOnce(app, taskId) }
-                .onFailure { FileLog.log(TAG, "任务 " + taskId + " 执行异常：" + it) }
+            try {
+                runCatching { runOnce(app, taskId) }
+                    .onFailure { FileLog.log(TAG, "任务 " + taskId + " 执行异常：" + it) }
+            } finally {
+                releaseWakeLock(lock)
+            }
         }
+    }
+
+    /** 取部分唤醒锁；系统不给（权限缺失 / 厂商限制）就返回 null，任务照常尝试执行。 */
+    private fun acquireWakeLock(app: Context): PowerManager.WakeLock? {
+        return runCatching {
+            val power = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                ?: return null
+            power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+                // 不做引用计数：一次执行只取一次、只放一次，超时由系统兜底
+                setReferenceCounted(false)
+                acquire(WAKE_LOCK_TIMEOUT_MS)
+            }
+        }.onFailure { FileLog.log(TAG, "唤醒锁获取失败：" + it) }.getOrNull()
+    }
+
+    /** 释放唤醒锁；已超时自动释放时 isHeld 为 false，不重复释放。 */
+    private fun releaseWakeLock(lock: PowerManager.WakeLock?) {
+        if (lock == null) return
+        runCatching { if (lock.isHeld) lock.release() }
+            .onFailure { FileLog.log(TAG, "唤醒锁释放失败：" + it) }
     }
 
     /** 跑一次：先落「已触发」并排好下一次，再请求模型，最后写会话 + 发通知。 */
@@ -216,9 +267,9 @@ object ScheduleRunner {
             appendResult(app, session, task, content)
             // 界面可能正开着：让它立刻重读，别等用户杀进程重进
             ChatBridge.notifySessionsChanged()
-            Notifier.notifySchedule(app, "定时任务完成", preview(content), session.id)
+            Notifier.notifySchedule(app, "定时任务完成：" + task.title, preview(content), session.id)
         } else {
-            Notifier.notifySchedule(app, "定时任务失败", task.title + "：" + reason, session.id)
+            Notifier.notifySchedule(app, "定时任务失败：" + task.title, reason, session.id)
         }
         FileLog.log(
             TAG,

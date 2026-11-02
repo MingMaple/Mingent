@@ -200,6 +200,16 @@ fun PermissionPage(onBack: () -> Unit) {
                     granted = status.batteryIgnore,
                     onClick = { AndroidPermissions.openBatterySettings(context) }
                 )
+                PermissionRow(
+                    title = "精确闹钟",
+                    detail = if (status.exactAlarm) "" else "未授权",
+                    granted = status.exactAlarm,
+                    onClick = {
+                        if (!AndroidPermissions.openExactAlarmSettings(context)) {
+                            Toast.makeText(context, "当前系统没有精确闹钟开关", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
             }
 
             // Shizuku：状态由 ShizukuBridge 推，页面只读

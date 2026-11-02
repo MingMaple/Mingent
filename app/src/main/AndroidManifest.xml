@@ -24,6 +24,14 @@
     <!-- 后续在 App 内装 APK（插件/更新） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- 定时任务：开机与应用更新后重排闹钟（国产 ROM 还需用户在系统设置里允许自启动） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 定时任务：Android 12+ 精确闹钟；同时声明 USE_EXACT_ALARM，供 Android 13+ 装机即授予 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- 定时任务：执行期间持有部分唤醒锁，避免设备进入 Doze 后中断任务 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- Shizuku：动态授权的 shell 通道（见 core/capability/ShizukuBridge.kt） -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
@@ -69,6 +77,16 @@
         <receiver
             android:name=".feature.schedule.ScheduleReceiver"
             android:exported="false" />
+
+        <!-- 定时任务：开机完成 / 应用覆盖更新后重排闹钟；exported=false，系统广播仍可送达 -->
+        <receiver
+            android:name=".feature.schedule.ScheduleBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Shizuku：provider 必须有，Shizuku 应用才认这个客户端；V3_SUPPORT 开新版 binder 协议 -->
         <provider

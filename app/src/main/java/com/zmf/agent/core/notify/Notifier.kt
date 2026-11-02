@@ -114,6 +114,8 @@ object Notifier {
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_STATUS)
+                // 锁屏可见：定时任务常在后台完成，用户需要不解锁也能看到结果摘要
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .build()
             manager.notify(id, notification)
             FileLog.log(TAG, "通知[" + id + "] " + title)
