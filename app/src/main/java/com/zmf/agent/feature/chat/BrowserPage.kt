@@ -1,6 +1,5 @@
 package com.zmf.agent.feature.chat
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,7 +10,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -21,20 +19,21 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.zmf.agent.uikit.common.TopIconButton
 import com.zmf.agent.uikit.common.blockTapsOnly
-import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 全屏浏览页：真浏览器、多标签，逻辑与计划页对齐。
  *
  * 布局是两层：
- *   顶栏   ← 回主页（**不关网页**）｜当前标签的标题 + 域名｜‹ 网页内后退｜⟳ 刷新
+ *   顶栏   ← 回主页（**不关网页**）｜当前标签的标题 + 域名｜⟳ 刷新｜↗ 用系统默认浏览器打开当前页
  *   标签栏 一个地址一枚标签，点标签切过去（切走的页面不重载、登录态不丢），点 × 才真的关掉。
  *          标签多了左右滑，和计划页那条计划条同一套手势（[blockHorizontalAtEdge]）。
  *
@@ -46,6 +45,7 @@ import com.zmf.agent.uikit.theme.UiColors
 fun BrowserPage(onBack: () -> Unit) {
     val tabs = BrowserState.tabs
     val active = BrowserState.active
+    val context = LocalContext.current
 
     // 最后一个标签被关掉：这一页没有内容可留，直接回主页（顶栏的网页图标也随之消失）
     LaunchedEffect(tabs.size) {
@@ -67,20 +67,14 @@ fun BrowserPage(onBack: () -> Unit) {
             val onSurface = MaterialTheme.colorScheme.onSurface
             val headLine = active?.label.orEmpty()
             val host = browserHostOf(active?.url)
+            val shareable = active?.url?.isNotBlank() == true
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "←",
-                    modifier = Modifier
-                        .clickable(onClick = onBack)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    fontSize = 20.sp,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+                TopIconButton(glyph = "←", onClick = onBack)
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = headLine,
@@ -95,33 +89,26 @@ fun BrowserPage(onBack: () -> Unit) {
                         Text(
                             text = host,
                             fontSize = 11.sp,
-                            color = Palette.Neutral,
+                            color = UiColors.subText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
-                Spacer(Modifier.width(4.dp))
-                // 网页内部后退：退不了就画淡（不藏起来，否则顶栏左右会跳）
-                val canGoBack = active?.canGoBack == true
-                Box(
-                    modifier = Modifier
-                        .clickable(enabled = canGoBack) { BrowserHolder.goBack() }
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "‹",
-                        fontSize = 22.sp,
-                        color = if (canGoBack) onSurface else onSurface.copy(alpha = 0.28f)
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .clickable { BrowserHolder.reload() }
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Text(text = "⟳", fontSize = 17.sp, color = onSurface)
-                }
+                // 刷新：原先在右侧最外，现在挪到「‹」这一格（那个后退箭头没有历史时按不动，已撤掉）
+                TopIconButton(
+                    glyph = "⟳",
+                    enabled = active != null,
+                    fontSize = 17.sp,
+                    onClick = { BrowserHolder.reload() }
+                )
+                // 转发：把当前这一页交给系统默认浏览器打开，内置页的登录态与历史都留着不动
+                TopIconButton(
+                    glyph = "↗",
+                    enabled = shareable,
+                    fontSize = 17.sp,
+                    onClick = { BrowserHolder.openExternally(context) }
+                )
             }
 
             // 标签栏常驻：只有一个页面时也保留这一行（条目只有一个），
@@ -157,7 +144,7 @@ fun BrowserPage(onBack: () -> Unit) {
 
             if (active == null) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(text = "没有打开的网页", fontSize = 14.sp, color = Palette.Neutral)
+                    Text(text = "没有打开的网页", fontSize = 14.sp, color = UiColors.subText)
                 }
             } else {
                 // key(标签 id)：切换标签时整块换掉 AndroidView，新标签的壳挂进来、

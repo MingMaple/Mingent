@@ -4,17 +4,23 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.theme.LocalAccentFg
 
 /**
@@ -82,3 +88,35 @@ fun Modifier.saltRowClickable(
 @Composable
 fun Modifier.saltCardRow(enabled: Boolean = true, onClick: () -> Unit): Modifier =
     saltRowClickable(RectangleShape, enabled, onClick)
+
+/**
+ * 顶栏图标按钮：40dp 热区 + 10dp 圆角，波纹按自身圆角裁剪。
+ *
+ * 为什么不用裸 `Modifier.clickable`：默认 indication 不裁剪，按下去会在圆角按钮的
+ * 四角露出方形波纹，和按钮形状对不上（计划页、浏览页原先都是这个问题）。
+ * 这里统一走 [saltRowClickable]，顺带把键盘聚焦环也接上。
+ *
+ * @param glyph 图标字形（本 App 的顶栏一律用字形，不引图标包）
+ * @param enabled 为 false 时只画淡、不接点击：与「点了没反应」区分开
+ */
+@Composable
+fun TopIconButton(
+    glyph: String,
+    enabled: Boolean = true,
+    fontSize: TextUnit = 20.sp,
+    onClick: () -> Unit
+) {
+    val color = MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .saltRowClickable(RoundedCornerShape(10.dp), enabled, onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = glyph,
+            fontSize = fontSize,
+            color = if (enabled) color else color.copy(alpha = 0.28f)
+        )
+    }
+}

@@ -1,6 +1,5 @@
 package com.zmf.agent.feature.chat
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,8 +26,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.PlanStore
+import com.zmf.agent.uikit.common.TopIconButton
 import com.zmf.agent.uikit.common.blockTapsOnly
-import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.UiColors
 
 /**
@@ -68,14 +68,7 @@ fun PlanPage(
                 .statusBarsPadding()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "←",
-                    modifier = Modifier
-                        .clickable(onClick = onBack)
-                        .padding(horizontal = 12.dp, vertical = 14.dp),
-                    fontSize = 20.sp,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+                TopIconButton(glyph = "←", onClick = onBack)
                 Text(
                     text = "计划",
                     fontSize = 17.sp,
@@ -90,7 +83,7 @@ fun PlanPage(
                     text = "还没有计划",
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
                     fontSize = 14.sp,
-                    color = onSurface.copy(alpha = 0.45f)
+                    color = UiColors.subText
                 )
             } else {
                 // 计划条：横滑 + 选中项自动入视野 + 滑到头的余量就地吃掉：
@@ -136,7 +129,7 @@ fun PlanPage(
                                     modifier = Modifier.width(24.dp),
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium,
-                                    color = onSurface.copy(alpha = 0.55f)
+                                    color = UiColors.subText
                                 )
                                 Text(
                                     text = step,
@@ -154,7 +147,7 @@ fun PlanPage(
                                 modifier = Modifier.fillMaxWidth(),
                                 fontSize = 12.sp,
                                 lineHeight = 18.sp,
-                                color = onSurface.copy(alpha = 0.45f)
+                                color = UiColors.subText
                             )
                         }
                         Spacer(Modifier.height(16.dp))
@@ -170,7 +163,7 @@ fun PlanPage(
                                 .padding(horizontal = 20.dp, vertical = 2.dp),
                             fontSize = 12.sp,
                             lineHeight = 17.sp,
-                            color = onSurface.copy(alpha = 0.5f)
+                            color = UiColors.subText
                         )
                     }
 
@@ -206,9 +199,9 @@ fun PlanPage(
 }
 
 /**
- * 底部按钮：主按钮吃 Salt 绿实心，次按钮吃 8% 中性底（Salt 观感里不做白描边）。
+ * 底部按钮：主按钮吃强调填充面 + 反色字，次按钮吃 6% 中性底。
  *
- * 绿底上用深色字：白字压在 #8BCF00 上对比度太低（同 ModelSettingsPage 的 Pill）。
+ * 涟漪按 16dp 圆角裁剪，不会在四角露出方块。
  */
 @Composable
 private fun PlanButton(
@@ -219,24 +212,25 @@ private fun PlanButton(
     onClick: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
+    val shape = RoundedCornerShape(16.dp)
     // 灰态：两种按钮都退成同一种淡底淡字，表示「这一页现在没有可执行的动作」
     val background = when {
         !enabled -> onSurface.copy(alpha = 0.05f)
         primary -> UiColors.accentFill
-        else -> onSurface.copy(alpha = 0.08f)
+        else -> onSurface.copy(alpha = 0.06f)
     }
     val textColor = when {
         !enabled -> onSurface.copy(alpha = 0.3f)
         primary -> UiColors.onAccent
-        else -> onSurface.copy(alpha = 0.8f)
+        else -> UiColors.subText
     }
     Surface(
         modifier = modifier
             .height(44.dp)
-            // clickable(enabled = false) 连涟漪都不给：点了毫无反应的按钮才像「坏了」，
+            // 不可点时连涟漪都不给：点了毫无反应的按钮才像「坏了」，
             // 这里要的是「就是不能点」
-            .clickable(enabled = enabled, onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
+            .saltRowClickable(shape, enabled = enabled, onClick = onClick),
+        shape = shape,
         color = background
     ) {
         Box(

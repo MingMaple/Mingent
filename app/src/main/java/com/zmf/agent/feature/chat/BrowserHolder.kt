@@ -41,7 +41,6 @@ internal class BrowserTab(
 ) {
     var url by mutableStateOf("")
     var title by mutableStateOf("")
-    var canGoBack by mutableStateOf(false)
     var loading by mutableStateOf(false)
     /** 加载进度（0–100）：界面只在 1..99 时画进度条。 */
     var progress by mutableStateOf(0)
@@ -140,6 +139,21 @@ internal object BrowserHolder {
         BrowserState.active?.let { runCatching { it.web.reload() } }
     }
 
+    /**
+     * 用系统默认浏览器打开当前网页（顶栏「↗」）。
+     *
+     * 只发 ACTION_VIEW，不手动挑包：让系统按用户设定的默认浏览器去接，才是「转发」的本意。
+     * 打不开（没有可用浏览器）就什么也不做，绝不让一次分享把内置页面顶掉。
+     */
+    fun openExternally(context: Context): Boolean {
+        val url = BrowserState.active?.url?.takeIf { it.isNotBlank() } ?: return false
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return false
+        return runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+            true
+        }.getOrDefault(false)
+    }
+
     /** 把 cookie 刷到磁盘：进程被杀之后再进来，登录态还在（不然每次回来都要重登）。 */
     fun flushCookies() {
         runCatching { CookieManager.getInstance().flush() }
@@ -216,7 +230,6 @@ internal object BrowserHolder {
             web.webChromeClient = object : WebChromeClient() {
                 override fun onReceivedTitle(view: WebView, title: String?) {
                     if (!title.isNullOrBlank()) tab.title = title
-                    tab.canGoBack = view.canGoBack()
                 }
 
                 override fun onProgressChanged(view: WebView, newProgress: Int) {
@@ -232,9 +245,8 @@ internal object BrowserHolder {
         }
     }
 
-    /** 地址里能改的只有这两样：到哪儿了、能不能退。 */
+    /** 把网页状态同步回标签：到哪儿了、叫什么。 */
     private fun sync(tab: BrowserTab, view: WebView, pageUrl: String?) {
-        tab.canGoBack = view.canGoBack()
         val current = pageUrl ?: view.url
         if (!current.isNullOrBlank()) tab.url = current
         // 标题拿不到时浏览页会退回显示域名（见 BrowserTab.label），这里不塞占位文字

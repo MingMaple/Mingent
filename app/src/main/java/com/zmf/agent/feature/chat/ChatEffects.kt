@@ -199,8 +199,12 @@ internal fun ChatBackHandlers(
 
     // 返回键按「最具体」到「最宽」的顺序拦截，最后注册的优先级最高：
     // 选择页 > 长按小窗 > 抽屉 > 二级页（回各自上一级）> 设置首页 > 一级页 > 主页时退到桌面
-    // 浏览页的返回只回主页：网页实例留着（返回不关闭网页），顶栏网页图标再点回来
-    BackHandler(enabled = page == AppPage.BROWSER) { page = null }
+    // 浏览页的返回先走网页历史，退到头才回主页（网页实例留着，返回不关闭网页）。
+    // 这件事原先由顶栏那个「‹」承担，但它没有历史时会变成一枚按不动的箭头，看着像坏了，
+    // 已从顶栏撤掉，改由系统返回统一处理。
+    BackHandler(enabled = page == AppPage.BROWSER) {
+        if (!BrowserHolder.goBack()) page = null
+    }
     BackHandler(enabled = page == AppPage.WORKSPACE) { page = null }
     BackHandler(enabled = page == AppPage.SESSIONS) { page = null }
     BackHandler(enabled = page == AppPage.SUBAGENT) { page = null }
