@@ -46,6 +46,7 @@ import com.zmf.agent.infra.system.AndroidPermissions
 import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 「权限管理」页（设置下的二级页）：把手机端真正卡住功能的几项权限集中成一张清单。
@@ -286,7 +287,7 @@ private fun PermissionRow(
         Text(
             text = if (granted) "已授权" else actionText,
             fontSize = 12.sp,
-            color = if (granted) Palette.AccentGreen else onSurface.copy(alpha = 0.6f)
+            color = if (granted) onSurface else onSurface.copy(alpha = 0.6f)
         )
     }
 }

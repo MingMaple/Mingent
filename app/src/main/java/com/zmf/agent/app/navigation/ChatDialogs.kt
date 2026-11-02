@@ -191,6 +191,7 @@ import com.zmf.agent.uikit.components.salt.SaltFullPane
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.theme.ThemeMode
 import com.zmf.agent.uikit.theme.UiScaleStore
 import kotlinx.coroutines.CoroutineScope
@@ -312,7 +313,7 @@ internal fun ChatDialogs(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = Palette.AccentGreen
+                    color = UiColors.accentFg
                 )
             }
         }
@@ -367,7 +368,7 @@ internal fun ChatDialogs(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = Palette.AccentGreen
+                    color = UiColors.accentFg
                 )
             }
         }
@@ -408,7 +409,7 @@ internal fun ChatDialogs(
             Text(
                 text = "重启应用后全部生效。",
                 fontSize = 12.sp,
-                color = Palette.AccentGreen
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
             )
             Spacer(Modifier.height(10.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -418,7 +419,7 @@ internal fun ChatDialogs(
                         .clickable { viewModel.dismissImportReport() }
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     fontSize = 14.sp,
-                    color = Palette.AccentGreen
+                    color = UiColors.accentFg
                 )
             }
         }
@@ -449,7 +450,7 @@ internal fun ChatDialogs(
                             },
                             fontSize = 13.sp,
                             color = if (todo.status == TodoStore.COMPLETED) {
-                                Palette.AccentGreen
+                                UiColors.accentFg
                             } else {
                                 MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             }

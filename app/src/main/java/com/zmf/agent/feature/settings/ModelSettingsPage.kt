@@ -69,6 +69,9 @@ import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.common.saltFieldColors
+import com.zmf.agent.uikit.theme.isDarkSurface
+import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 「模型」页（二级）：多提供商目录 + 单个提供商的编辑表单 + 思考强度 + 执行权限 + 余额。
@@ -208,7 +211,7 @@ fun ModelSettingsPage(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .dashedOutline(Palette.AccentGreen.copy(alpha = 0.5f), 18.dp)
+                        .dashedOutline(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f), 18.dp)
                         .saltRowClickable(RoundedCornerShape(18.dp)) { pickerOpen = true }
                         .padding(vertical = 14.dp),
                     contentAlignment = Alignment.Center
@@ -401,11 +404,13 @@ private fun ProviderRow(
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = if (selected) UiColors.rowSelected else MaterialTheme.colorScheme.surface,
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp)),
-        border = if (selected) BorderStroke(1.5.dp, Palette.AccentGreen) else null
+        border = if (selected) {
+            BorderStroke(1.5.dp, if (isDarkSurface()) Palette.DarkStroke else Palette.LightStroke)
+        } else null
     ) {
         Row(
             modifier = Modifier
@@ -429,7 +434,7 @@ private fun ProviderRow(
                     .size(7.dp)
                     .background(
                         color = if (cfg.apiKey.isNotBlank()) {
-                            Palette.AccentGreen
+                            UiColors.success
                         } else {
                             MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
                         },
@@ -471,20 +476,8 @@ private fun ProviderFormCard(
     // 不再让「候选 chips / 输入框 / 已添加列表」三套东西同时铺在屏幕上。
     var addingModel by remember(initial.id) { mutableStateOf(false) }
 
-    // 输入框配色统一走这里：Material 默认把焦点边框和光标刷成 colorScheme.primary（蓝色），
-    // 在这个灰阶主题里非常跳：每个可点的输入框一点下去就冒出一圈蓝。
-    // 改成 onSurface 的深/浅两档，光标跟随正文色。
-    val fieldColors = OutlinedTextFieldDefaults.colors(
-        focusedBorderColor = onSurface.copy(alpha = 0.45f),
-        unfocusedBorderColor = onSurface.copy(alpha = 0.15f),
-        focusedTextColor = onSurface,
-        unfocusedTextColor = onSurface.copy(alpha = 0.9f),
-        cursorColor = onSurface,
-        focusedContainerColor = Color.Transparent,
-        unfocusedContainerColor = Color.Transparent,
-        focusedPlaceholderColor = onSurface.copy(alpha = 0.35f),
-        unfocusedPlaceholderColor = onSurface.copy(alpha = 0.35f)
-    )
+    // 输入框配色收归全局：见 uikit/common/SaltField.kt，本页不再自带一份。
+    val fieldColors = saltFieldColors()
 
     SettingsCard {
         Column(
@@ -859,17 +852,10 @@ private fun EffortRow(
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = when {
                 !enabled -> onSurface.copy(alpha = 0.3f)
-                selected -> Palette.AccentGreen
+                selected -> UiColors.accentFg
                 else -> onSurface
             }
         )
-        if (selected) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .background(Palette.AccentGreen, CircleShape)
-            )
-        }
     }
 }
 
@@ -895,7 +881,8 @@ private fun PermissionTierRow(
                 text = title,
                 fontSize = 15.sp,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) Palette.AccentGreen else onSurface
+                // 选中已由卡片底色 + 加粗表达，文字不再转蓝：行是「我停在哪」，不靠颜色说话
+                color = onSurface
             )
             Spacer(Modifier.height(3.dp))
             Text(
@@ -904,13 +891,13 @@ private fun PermissionTierRow(
                 color = onSurface.copy(alpha = 0.45f)
             )
         }
-        // 圆点始终占位：只有选中时才上色，换行时文字不会被它压住，三行的右侧也对得齐
+        // 选中点：卡片底色已经说明选中，这里只补一个 8dp 的实心点，颜色跟正文走
         Box(
             modifier = Modifier
                 .padding(top = 6.dp)
                 .size(8.dp)
                 .background(
-                    color = if (selected) Palette.AccentGreen else Color.Transparent,
+                    color = if (selected) onSurface else Color.Transparent,
                     shape = CircleShape
                 )
         )
@@ -942,7 +929,7 @@ private fun Pill(
     val onSurface = MaterialTheme.colorScheme.onSurface
     val background = when {
         !enabled -> onSurface.copy(alpha = 0.06f)
-        primary -> Palette.AccentGreen
+        primary -> UiColors.accentFg
         else -> onSurface.copy(alpha = 0.08f)
     }
     // 绿底上用深色字：白字压在 #8BCF00 上对比度太低
@@ -974,9 +961,11 @@ private fun SegmentChip(
     onClick: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
+    // 单选的分段控件照 DSH 的 chipActive：墨底反白，选中一眼能定。
+    // 多选胶囊不走这条（一屏可能选中好几个，黑块会堆起来），仍用中性淡底 + 蓝字。
     Surface(
         shape = RoundedCornerShape(13.dp),
-        color = if (selected) Palette.AccentGreen.copy(alpha = 0.16f) else Color.Transparent,
+        color = if (selected) onSurface else Color.Transparent,
         modifier = modifier.saltRowClickable(RoundedCornerShape(13.dp), onClick = onClick)
     ) {
         Box(
@@ -989,7 +978,7 @@ private fun SegmentChip(
                 text = text,
                 fontSize = 13.sp,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) Palette.AccentGreen else onSurface.copy(alpha = 0.6f),
+                color = if (selected) MaterialTheme.colorScheme.surface else onSurface.copy(alpha = 0.6f),
                 maxLines = 1
             )
         }
@@ -1038,7 +1027,7 @@ private fun ProviderBalanceLines(result: BalanceResult) {
     } else {
         BalanceText(
             text = if (result.isAvailable) "账户可用" else "账户不可用",
-            color = if (result.isAvailable) Palette.AccentGreen else MaterialTheme.colorScheme.error
+            color = if (result.isAvailable) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
         )
         if (result.infos.isEmpty()) {
             BalanceText(text = "无余额明细", color = onSurface.copy(alpha = 0.45f))

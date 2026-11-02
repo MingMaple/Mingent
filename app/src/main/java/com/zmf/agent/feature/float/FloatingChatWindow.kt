@@ -69,6 +69,7 @@ import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.FoldToggle
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.common.saltCursorBrush
 import com.zmf.agent.uikit.markdown.MarkdownText
 
@@ -332,7 +333,7 @@ private fun TopBar(
     onGestureEnd: () -> Unit
 ) {
     val iconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
-    val activeColor = Palette.AccentGreen
+    val activeColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -410,13 +411,13 @@ private fun SessionPickerPanel(
                             fontSize = 13.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            color = if (session.isCurrent) Palette.AccentGreen else onSurface
+                            color = if (session.isCurrent) onSurface else onSurface.copy(alpha = 0.62f)
                         )
                         if (session.isCurrent) {
                             Text(
                                 text = "当前",
                                 fontSize = 10.sp,
-                                color = Palette.AccentGreen.copy(alpha = 0.7f),
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                                 maxLines = 1,
                                 softWrap = false
                             )
@@ -637,14 +638,14 @@ private fun CloseIcon(color: Color) {
 private fun MessageBubble(message: ChatMessage, foldAt: Dp, foldedHeight: Dp) {
     val isUser = message.role == "user"
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    // 与主页气泡同一套配色：用户气泡 Palette.BubbleUser*（最亮）、AI 气泡 Palette.BubbleAi*
+    // 与主页气泡同一套配色：用户气泡 Palette.LightSurfaceHigh／DarkSurfaceHigh（最亮）、AI 气泡 Palette.LightSurface／DarkSurface
     // （比画布深一档）。窗口画布也换成了页面底色，所以这里直接用不透明的气泡色即可，
     // 折叠遮罩也能真的盖住最后一行。小窗原来用户气泡是 primary 的 14%：主题 primary 是
     // AccentBlue，整屏单色里就那两块是浅蓝，跟全局配色对不上。
     val bubbleColor = if (isUser) {
-        if (isDark) Palette.BubbleUserDark else Palette.BubbleUserLight
+        if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh
     } else {
-        if (isDark) Palette.BubbleAiDark else Palette.BubbleAiLight
+        if (isDark) Palette.DarkSurface else Palette.LightSurface
     }
     // 展开态只活在这一屏：滑出小窗视口再回来重新折起（与主页口径一致）
     var expanded by remember { mutableStateOf(false) }
@@ -735,24 +736,24 @@ private fun InputRow(
             )
         }
         Spacer(Modifier.width(8.dp))
-        // 发送键跟主页 Composer 同一套配色：底色 Palette.AccentGreen（本主题的强调色是
-        // 灰阶单色，不是 Material 的 primary 蓝），图标用 Palette.LightText，不可发时压到 35%。
+        // 发送键跟主页 Composer 同一套配色：底色 UiColors.accentFill（浅色 #4176E6 / 深色 #7AAAFF），
+        // 图标用 UiColors.onAccent（浅色白 / 深色墨），不可发时压到 40%。
         // 小窗原来直接刷 AccentBlue，是整屏里唯一一块饱和蓝，跟全局配色对不上。
         Box(
             modifier = Modifier
                 .size(36.dp)
                 .background(
                     color = if (canSend) {
-                        Palette.AccentGreen
+                        UiColors.accentFill
                     } else {
-                        Palette.AccentGreen.copy(alpha = 0.35f)
+                        UiColors.accentFill.copy(alpha = 0.40f)
                     },
                     shape = CircleShape
                 )
                 .clickable(enabled = canSend, onClick = onSubmit),
             contentAlignment = Alignment.Center
         ) {
-            Text(text = "↑", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Palette.LightText)
+            Text(text = "↑", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = UiColors.onAccent)
         }
     }
 }

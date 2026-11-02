@@ -47,6 +47,7 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.icons.FolderIcon
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -142,7 +143,7 @@ fun WorkspaceDirPicker(
                         .weight(1f)
                         .padding(vertical = 13.dp),
                     textStyle = TextStyle(fontSize = 13.sp, color = onSurface),
-                    cursorBrush = SolidColor(Palette.AccentGreen),
+                    cursorBrush = SolidColor(UiColors.accentFg),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     decorationBox = { inner ->
@@ -164,7 +165,7 @@ fun WorkspaceDirPicker(
                 // 不用 emoji：emoji 自带颜色，tint 对它无效，全局唯一一处彩色图标就是它
                 Box(
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(36.dp)
                         .saltRowClickable(RoundedCornerShape(50)) { openSystemPicker() },
                     contentAlignment = Alignment.Center
                 ) {
@@ -188,7 +189,7 @@ fun WorkspaceDirPicker(
             is DirProbe.Ready -> "该目录下有 " + current.subDirs.size + " 个子文件夹"
         }
         val hintColor = when (probe) {
-            is DirProbe.Ready -> Palette.AccentGreen
+            is DirProbe.Ready -> onSurface.copy(alpha = 0.6f)
             DirProbe.Blank -> onSurface.copy(alpha = 0.4f)
             else -> MaterialTheme.colorScheme.error
         }

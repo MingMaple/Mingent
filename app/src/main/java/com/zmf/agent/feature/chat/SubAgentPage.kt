@@ -33,12 +33,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.capability.subagent.SubAgentRegistry
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.markdown.MarkdownText
 
 /**
@@ -158,7 +160,7 @@ fun SubAgentPage(
                         onValueChange = { if (enabled) draft = it },
                         enabled = enabled,
                         textStyle = TextStyle(fontSize = 14.sp, color = onSurface),
-                        cursorBrush = SolidColor(Palette.AccentGreen),
+                        cursorBrush = SolidColor(UiColors.accentFg),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -166,10 +168,10 @@ fun SubAgentPage(
                 val canSend = enabled && draft.isNotBlank()
                 Box(
                     modifier = Modifier
-                        .height(40.dp)
-                        .width(40.dp)
+                        .height(36.dp)
+                        .width(36.dp)
                         .clip(CircleShape)
-                        .background(Palette.AccentGreen.copy(alpha = if (canSend) 1f else 0.3f))
+                        .background(UiColors.accentFill.copy(alpha = if (canSend) 1f else 0.40f))
                         .clickable(enabled = canSend) {
                             val text = draft.trim()
                             if (text.isNotEmpty()) {
@@ -179,7 +181,7 @@ fun SubAgentPage(
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(text = "↑", fontSize = 18.sp, color = Color.White)
+                    Text(text = "↑", fontSize = 18.sp, color = UiColors.onAccent)
                 }
             }
         }
@@ -227,11 +229,13 @@ private fun stateText(state: String?): String = when (state) {
     else -> ""
 }
 
-private val StateFailedColor = Color(0xFFE5484D)
-
-private fun stateColor(state: String?): Color = when (state) {
-    SubAgentRegistry.RUNNING -> Palette.AccentPurple
-    SubAgentRegistry.DONE -> Palette.AccentGreen
-    SubAgentRegistry.FAILED -> StateFailedColor
-    else -> Palette.AccentGreen
+@Composable
+private fun stateColor(state: String?): Color {
+    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    return when (state) {
+        SubAgentRegistry.RUNNING -> if (dark) Palette.DarkAccentFg else Palette.LightAccentFg
+        SubAgentRegistry.DONE -> if (dark) Palette.DarkSuccess else Palette.LightSuccess
+        SubAgentRegistry.FAILED -> MaterialTheme.colorScheme.error
+        else -> if (dark) Palette.DarkAccentFg else Palette.LightAccentFg
+    }
 }

@@ -63,6 +63,7 @@ import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -290,7 +291,7 @@ private fun SessionTabBar(pagerState: PagerState, scope: CoroutineScope) {
                         // 中心对齐到当前 tab，24dp 宽所以要减掉一半
                         .offset(x = tabWidth * (animated + 0.5f) - 12.dp)
                         .size(width = 24.dp, height = 3.dp)
-                        .background(Palette.AccentGreen, RoundedCornerShape(2.dp))
+                        .background(UiColors.accentFg, RoundedCornerShape(2.dp))
                 )
             }
         }
@@ -317,7 +318,7 @@ private fun SessionTab(
             fontSize = 15.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) {
-                Palette.AccentGreen
+                UiColors.accentFg
             } else {
                 MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
             }
@@ -350,7 +351,7 @@ private fun SessionTabContent(
                 Text(
                     text = "＋ 新会话",
                     fontSize = 15.sp,
-                    color = Palette.AccentBlue.copy(alpha = if (streaming) 0.35f else 1f)
+                    color = UiColors.accentFg.copy(alpha = if (streaming) 0.35f else 1f)
                 )
             }
             HorizontalDivider(color = onSurface.copy(alpha = 0.08f))
@@ -417,7 +418,7 @@ private fun SessionSearchField(query: String, onQueryChange: (String) -> Unit) {
                 modifier = Modifier.weight(1f),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, color = onSurface),
                 singleLine = true,
-                cursorBrush = SolidColor(Palette.AccentGreen),
+                cursorBrush = SolidColor(UiColors.accentFg),
                 // 占位符叠在输入文字同一格里：空串时输入区不会塌成一条线
                 decorationBox = { inner ->
                     Box {
@@ -573,7 +574,7 @@ private fun SessionRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (isCurrent) Palette.AccentBlue else onSurface
+                color = onSurface
             )
             Text(
                 text = meta,
@@ -686,7 +687,7 @@ private fun RenameSessionDialog(
         },
         confirmButton = {
             TextButton(onClick = { onSave(value) }) {
-                Text("保存", color = Palette.AccentGreen)
+                Text("保存", color = UiColors.accentFg)
             }
         },
         dismissButton = {

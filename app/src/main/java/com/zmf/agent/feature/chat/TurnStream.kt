@@ -43,6 +43,7 @@ import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.common.ChevronKind
 import com.zmf.agent.uikit.common.ChevronSize
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 import com.zmf.agent.uikit.markdown.MarkdownText
 import com.zmf.agent.uikit.markdown.copyCode
@@ -394,7 +395,7 @@ private fun TurnThinkBlock(
                 Text(
                     text = if (expanded) "收起" else "展开",
                     fontSize = 12.sp,
-                    color = Palette.AccentGreen
+                    color = UiColors.accentFg
                 )
             }
             if (expanded) {

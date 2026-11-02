@@ -48,6 +48,7 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltLongPress
 import java.util.Locale
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 「＋」浮窗：附件 / 指令 / 上下文 / 命令 / 技能，每行「图标 + 名字 + 英文 + 右侧说明」。
@@ -329,7 +330,7 @@ fun ComposerContextPanel(
                         .fillMaxWidth(fraction)
                         .height(3.dp)
                         .clip(RoundedCornerShape(2.dp))
-                        .background(Palette.AccentGreen)
+                        .background(UiColors.accentFill)
                 )
             }
             Spacer(modifier = Modifier.height(10.dp))
@@ -339,12 +340,12 @@ fun ComposerContextPanel(
                 tokens = usage.systemTokens
             )
             UsageRow(
-                color = Palette.AccentPurple,
+                color = onSurface.copy(alpha = 0.55f),
                 title = "工具定义",
                 tokens = usage.toolTokens
             )
             UsageRow(
-                color = Palette.AccentCyan,
+                color = onSurface.copy(alpha = 0.75f),
                 title = "对话消息",
                 tokens = usage.messageTokens
             )
@@ -624,7 +625,7 @@ private fun PanelCard(
     Surface(
         shape = RoundedCornerShape(24.dp),
         // 面板底比页面与气泡都亮一档，浮出来才看得出边界
-        color = if (isDark) Palette.DarkPanel else Palette.LightPanel,
+        color = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh,
         // 柔和扩散阴影：让卡片与页面分层，又不至于像描边。
         // 骨架跟随形状轮廓走圆角，四角不会露直角；数值由上面那段动画从 0 长上来。
         shadowElevation = panelShadow,
@@ -676,7 +677,7 @@ private fun CommandRow(
             Box(
                 modifier = Modifier
                     .size(6.dp)
-                    .background(Palette.AccentGreen, RoundedCornerShape(3.dp))
+                    .background(Palette.Neutral, RoundedCornerShape(3.dp))
             )
             Spacer(modifier = Modifier.width(6.dp))
         }

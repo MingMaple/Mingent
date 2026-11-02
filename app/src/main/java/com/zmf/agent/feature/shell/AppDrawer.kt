@@ -50,11 +50,13 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -94,6 +96,7 @@ import com.zmf.agent.uikit.common.Chevron
 import com.zmf.agent.uikit.common.ChevronSize
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.theme.ThemeMode
 
 /** 工作区展开后先只显示这么多条会话。 */
@@ -212,7 +215,7 @@ fun AppDrawerContent(
                 ) {
                     // 窗口图形：外框圆角矩形 + 顶部标题条 + 里面两条「消息」短线
                     Canvas(modifier = Modifier.size(20.dp)) {
-                        val green = Palette.AccentGreen
+                        val green = Palette.Neutral
                         val stroke = size.minDimension * 0.09f
                         val body = Rect(
                             left = 0f,
@@ -651,7 +654,7 @@ private fun WorkspaceSection(
                     .saltCardRow() { onShowAllChange(!showAll) }
                     .padding(start = 46.dp, end = 16.dp, top = 4.dp, bottom = 6.dp),
                 fontSize = 12.sp,
-                color = Palette.AccentGreen.copy(alpha = 0.9f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
             )
         }
     }
@@ -675,13 +678,20 @@ private fun SessionTreeRow(
     onMenu: (Rect) -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     var anchor by remember { mutableStateOf(Rect.Zero) }
     // 左右内距对称：左边缩进 34dp，右边也留 34dp，文字不再一路顶到卡片右缘。
     // 「⋯」画在这 34dp 里、不额外占宽，所以有没有「⋯」，两行文字的右边界都是同一条线。
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(if (isCurrent) Palette.AccentGreen.copy(alpha = 0.13f) else Color.Transparent)
+            .background(
+                when {
+                    !isCurrent -> Color.Transparent
+                    isDark -> Palette.DarkRowSelected
+                    else -> Palette.LightRowSelected
+                }
+            )
             .saltCardRow { onClick() }
     ) {
         Row(
@@ -823,7 +833,7 @@ private fun DrawerMenuPopover(
         LaunchedEffect(Unit) { shown = true }
         Surface(
             shape = RoundedCornerShape(18.dp),
-            color = if (isDark) Palette.DarkPanel else Palette.LightPanel,
+            color = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh,
             shadowElevation = 8.dp,
             modifier = Modifier
                 // 菜单按内容宽走：曾经给到 max 236dp，单条「重命名工作区」会撑出一大片空白，
@@ -915,7 +925,7 @@ private fun RenameDialog(
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 textStyle = TextStyle(fontSize = 15.sp, color = onSurface),
                 singleLine = true,
-                cursorBrush = SolidColor(Palette.AccentGreen),
+                cursorBrush = SolidColor(UiColors.accentFg),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { onSave(value.text) })
             )
@@ -930,7 +940,7 @@ private fun RenameDialog(
             }
             Spacer(Modifier.weight(1f))
             IconHit(40.dp, { onSave(value.text) }) {
-                Text(text = "✓", fontSize = 18.sp, color = Palette.AccentGreen)
+                Text(text = "✓", fontSize = 18.sp, color = UiColors.accentFg)
             }
         }
         // 聚焦请求跟输入框同层组合：先组合、后 attach，请求焦点才不会落空

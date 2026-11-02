@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 
 /** 条目栏里的一条：[key] 是稳定身份（选中 / 关闭都按它找），[label] 是显示名，[muted] 表示已消费。 */
@@ -139,13 +140,16 @@ private fun TabChip(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val content = if (selected) {
-        Palette.DarkBackground
+        UiColors.accentFg
     } else {
         onSurface.copy(alpha = if (muted) 0.42f else 0.75f)
     }
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = if (selected) Palette.AccentGreen else onSurface.copy(alpha = 0.08f),
+        color = when {
+            selected -> UiColors.rowSelected
+            else -> onSurface.copy(alpha = 0.08f)
+        },
         modifier = modifier
             .widthIn(max = 190.dp)
             .clickable(onClick = onClick)

@@ -46,6 +46,7 @@ import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -509,7 +510,8 @@ private fun ScheduleChip(
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = if (selected) {
-            Palette.AccentGreen.copy(alpha = 0.16f * alpha)
+            // 选中墨底反白：与模型页、洞察页的分段同一套规则
+            onSurface.copy(alpha = alpha)
         } else {
             onSurface.copy(alpha = 0.06f * alpha)
         },
@@ -521,7 +523,7 @@ private fun ScheduleChip(
             fontSize = 13.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) {
-                Palette.AccentGreen.copy(alpha = alpha)
+                MaterialTheme.colorScheme.surface.copy(alpha = alpha)
             } else {
                 onSurface.copy(alpha = 0.6f * alpha)
             }

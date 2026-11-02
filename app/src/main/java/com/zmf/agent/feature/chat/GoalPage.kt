@@ -25,6 +25,7 @@ import com.zmf.agent.core.store.GoalPhase
 import com.zmf.agent.core.store.label
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 「目标」页：看当前会话的长期目标，并按阶段给动作。
@@ -120,7 +121,7 @@ fun GoalPage(
                         fontWeight = FontWeight.Medium,
                         // 只有「进行中」是活的，用 Salt 绿；暂停/完成都是灰的，一眼看出没在跑
                         color = if (current.phase == GoalPhase.ACTIVE) {
-                            Palette.AccentGreen
+                            UiColors.accentFg
                         } else {
                             onSurface.copy(alpha = 0.45f)
                         }
@@ -169,7 +170,7 @@ private fun GoalAction(
 ) {
     val color = when {
         danger -> MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
-        primary -> Palette.AccentGreen
+        primary -> UiColors.accentFg
         else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
     }
     Text(

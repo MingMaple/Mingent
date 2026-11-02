@@ -55,6 +55,7 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -72,7 +73,7 @@ private const val DEFAULT_EXPORT_PATH = "/sdcard/Download"
  * 这样这一页不持有协程、不持有 Context，也不存在「页面拆掉了命令还在跑」的半死状态；
  * 代价是每次动作都会整份替换 state，所以 MemoryAdmin 每次都会带上一份概览（见那边的注释）。
  *
- * 视觉口径照 Salt Player：16dp 圆角大卡、底色用 colorScheme.surface、不描边、强调色只用 Palette.AccentGreen；
+ * 视觉口径照 Salt Player：16dp 圆角大卡、底色用 colorScheme.surface、不描边、强调色只用 Palette.Accent；
  * 卡片内的说明一律不做（界面上不留解释性小字），只有数据本身和必须写明的操作结果。
  */
 @Composable
@@ -267,7 +268,7 @@ private fun OverviewCard(state: MemoryState, doctorOpen: Boolean, onToggleDoctor
                 text = if (state.doctorOk) "通过" else "异常",
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
-                color = if (state.doctorOk) Palette.AccentGreen else MaterialTheme.colorScheme.error
+                color = if (state.doctorOk) onSurface else MaterialTheme.colorScheme.error
             )
             Text(
                 text = "▾",
@@ -446,7 +447,7 @@ private fun ExportCard(
                     .padding(horizontal = 16.dp, vertical = 6.dp),
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
-                color = Palette.AccentGreen.copy(alpha = if (state.busy) 0.4f else 1f)
+                color = UiColors.accentFg.copy(alpha = if (state.busy) 0.4f else 1f)
             )
         }
         if (state.exportPath.isNotEmpty()) {
@@ -654,7 +655,7 @@ private fun ExportPathField(value: String, onValueChange: (String) -> Unit) {
                 modifier = Modifier.weight(1f),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, color = onSurface),
                 singleLine = true,
-                cursorBrush = SolidColor(Palette.AccentGreen),
+                cursorBrush = SolidColor(UiColors.accentFg),
                 // 占位符与输入文字同格：清空后输入区不会塌成一条线
                 decorationBox = { inner ->
                     Box {
@@ -695,7 +696,7 @@ private fun MemorySearchField(value: String, onValueChange: (String) -> Unit, on
                 modifier = Modifier.weight(1f),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, color = onSurface),
                 singleLine = true,
-                cursorBrush = SolidColor(Palette.AccentGreen),
+                cursorBrush = SolidColor(UiColors.accentFg),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSearch() }),
                 // 占位符叠在输入文字同一格里：空串时输入区不会塌成一条线
@@ -740,7 +741,7 @@ private fun HitRow(hit: MemoryHit, onOpenDetail: (String) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Surface(
                 shape = RoundedCornerShape(6.dp),
-                color = Palette.AccentGreen.copy(alpha = 0.16f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
             ) {
                 Text(
                     text = hit.kind,

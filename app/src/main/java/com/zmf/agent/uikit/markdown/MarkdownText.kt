@@ -59,6 +59,7 @@ import com.zmf.agent.uikit.components.claimCopyOnGesture
 import com.zmf.agent.uikit.components.rememberCopyBlockKey
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 
 /**
@@ -253,8 +254,10 @@ private fun MarkdownParagraph(
     color: Color,
     codeBackground: Color
 ) {
-    val annotated = remember(content, fontSize, codeBackground) {
-        inlineAnnotatedCached(content, fontSize, codeBackground)
+    // 链接色跟着主题走：深色下强调蓝要提亮一档，否则贴在近黑底上只有 3.4:1
+    val linkColor = UiColors.accentFg
+    val annotated = remember(content, fontSize, codeBackground, linkColor) {
+        inlineAnnotatedCached(content, fontSize, codeBackground, linkColor)
     }
     Text(
         text = annotated,
@@ -279,8 +282,9 @@ private fun MarkdownHeading(
         else -> 1.16f
     }
     val headingSize = fontSize * scale
-    val annotated = remember(content, headingSize, codeBackground) {
-        inlineAnnotatedCached(content, headingSize, codeBackground)
+    val linkColor = UiColors.accentFg
+    val annotated = remember(content, headingSize, codeBackground, linkColor) {
+        inlineAnnotatedCached(content, headingSize, codeBackground, linkColor)
     }
     Text(
         text = annotated,
@@ -301,8 +305,10 @@ private fun MarkdownListItem(
     color: Color,
     codeBackground: Color
 ) {
-    val annotated = remember(content, fontSize, codeBackground) {
-        inlineAnnotatedCached(content, fontSize, codeBackground)
+    // 链接色跟着主题走：深色下强调蓝要提亮一档，否则贴在近黑底上只有 3.4:1
+    val linkColor = UiColors.accentFg
+    val annotated = remember(content, fontSize, codeBackground, linkColor) {
+        inlineAnnotatedCached(content, fontSize, codeBackground, linkColor)
     }
     val lineHeight = fontSize * 1.45f
     Row(
@@ -639,8 +645,8 @@ private const val MAX_INLINE_DEPTH = 4
 private const val MAX_LINKS = 64
 
 /** 链接色用全 App 的强调蓝；下划线是「这行字能点」的唯一直白提示。 */
-private fun linkStyles(): TextLinkStyles = TextLinkStyles(
-    style = SpanStyle(color = Palette.AccentBlue, textDecoration = TextDecoration.Underline)
+private fun linkStyles(linkColor: Color): TextLinkStyles = TextLinkStyles(
+    style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)
 )
 
 /**
@@ -656,7 +662,12 @@ private object LinkOpenListener : LinkInteractionListener {
     }
 }
 
-private fun inlineAnnotated(raw: String, fontSize: TextUnit, codeBackground: Color): AnnotatedString {
+private fun inlineAnnotated(
+    raw: String,
+    fontSize: TextUnit,
+    codeBackground: Color,
+    linkColor: Color
+): AnnotatedString {
     if (raw.isEmpty()) return AnnotatedString("")
     val sb = StringBuilder(raw.length)
     val spans = ArrayList<PendingSpan>()
@@ -682,7 +693,7 @@ private fun inlineAnnotated(raw: String, fontSize: TextUnit, codeBackground: Col
             addStyle(span.style, span.start, span.end)
         }
         for (link in links) {
-            addLink(LinkAnnotation.Clickable(link.url, linkStyles(), LinkOpenListener), link.start, link.end)
+            addLink(LinkAnnotation.Clickable(link.url, linkStyles(linkColor), LinkOpenListener), link.start, link.end)
         }
     }
 }
@@ -929,10 +940,17 @@ private fun parseMarkdownCached(source: String, keepBlankLines: Boolean): List<M
     return parsed
 }
 
-private fun inlineAnnotatedCached(content: String, fontSize: TextUnit, codeBackground: Color): AnnotatedString {
-    val key = content.length.toString() + "|" + fontSize.value + "|" + codeBackground.value + "|" + content
+private fun inlineAnnotatedCached(
+    content: String,
+    fontSize: TextUnit,
+    codeBackground: Color,
+    linkColor: Color
+): AnnotatedString {
+    // 链接色必须进 key：否则浅色解析出的蓝会被深色直接命中，深色下链接仍是那支暗蓝
+    val key = content.length.toString() + "|" + fontSize.value + "|" + codeBackground.value +
+        "|" + linkColor.value + "|" + content
     inlineCache.get(key)?.let { return it }
-    val built = inlineAnnotated(content, fontSize, codeBackground)
+    val built = inlineAnnotated(content, fontSize, codeBackground, linkColor)
     inlineCache.put(key, built)
     return built
 }

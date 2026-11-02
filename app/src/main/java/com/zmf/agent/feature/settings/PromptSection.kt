@@ -57,6 +57,7 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 「提示词」折叠卡：追加指令 / 整份覆盖 / 生效预览。
@@ -342,7 +343,7 @@ private fun PromptField(
                 .nestedScroll(eater)
                 .onFocusChanged { focused = it.isFocused },
             textStyle = textStyle,
-            cursorBrush = SolidColor(Palette.AccentGreen),
+            cursorBrush = SolidColor(UiColors.accentFg),
             keyboardOptions = KeyboardOptions(
                 capitalization = KeyboardCapitalization.None,
                 imeAction = ImeAction.Default
@@ -354,7 +355,7 @@ private fun PromptField(
                         .background(onSurface.copy(alpha = 0.04f), shape)
                         .border(
                             width = 1.dp,
-                            color = if (focused) Palette.AccentGreen else onSurface.copy(alpha = 0.12f),
+                            color = if (focused) UiColors.accentFg else onSurface.copy(alpha = 0.12f),
                             shape = shape
                         )
                         .padding(horizontal = 12.dp, vertical = 10.dp)

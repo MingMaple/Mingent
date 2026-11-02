@@ -43,6 +43,7 @@ import com.zmf.agent.feature.chat.ComposerCommand
 import com.zmf.agent.feature.chat.ComposerStatus
 import com.zmf.agent.feature.chat.ContextUsageInfo
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 import java.io.File
 import java.text.SimpleDateFormat
@@ -168,9 +169,9 @@ internal fun ChatComposerArea(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 color = if (doneCount == viewModel.todos.size) {
-                                    Palette.AccentGreen
+                                    UiColors.success
                                 } else {
-                                    Palette.AccentBlue
+                                    UiColors.warning
                                 }
                             )
                             Text(

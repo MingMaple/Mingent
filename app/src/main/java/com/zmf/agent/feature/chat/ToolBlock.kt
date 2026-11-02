@@ -39,6 +39,7 @@ import com.zmf.agent.uikit.common.ChevronKind
 import com.zmf.agent.uikit.common.ChevronSize
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
@@ -170,7 +171,7 @@ fun ToolBlock(
     // 状态只留一个词：拿到结果就写「完成」，没拿到就先空着。
     // 不再区分成功 / 失败 / 成败未知：调用结束就是结束，具体的错在输出里能看到，
     // 卡片上多一个红字反而更吵。
-    val statusColor = Palette.AccentGreen
+    val statusColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
     val statusText = if (running) "" else "完成"
     // 一句话总结（「读取 test.txt」「运行命令 tail -c 20 …」）：标题行告诉用户这条工具干了什么
     val headline = remember(toolName, arguments) { toolSummary(toolName, arguments) }

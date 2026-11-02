@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 
 /*
  * 模型 / 推理等级的二级窗：点一级窗里的某一行，就在同一张卡片里展开可选项。
@@ -87,10 +88,10 @@ internal fun QuickOptionRow(label: String, selected: Boolean, onClick: () -> Uni
             fontSize = 14.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            color = if (selected) Palette.AccentGreen else onSurface
+            color = onSurface
         )
         if (selected) {
-            Text(text = "✓", fontSize = 14.sp, color = Palette.AccentGreen)
+            Text(text = "✓", fontSize = 14.sp, color = onSurface)
         }
     }
 }

@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 全屏浏览页：真浏览器、多标签，逻辑与计划页对齐。
@@ -147,7 +148,7 @@ fun BrowserPage(onBack: () -> Unit) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(2.dp),
-                    color = Palette.AccentBlue,
+                    color = UiColors.accentFg,
                     trackColor = onSurface.copy(alpha = 0.08f)
                 )
             } else {

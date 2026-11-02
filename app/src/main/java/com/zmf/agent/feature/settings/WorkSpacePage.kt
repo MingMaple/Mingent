@@ -48,6 +48,7 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import java.io.File
 
 /**
@@ -129,7 +130,7 @@ fun CreateWorkspaceDialog(
                             .onFocusChanged { nameFocused = it.isFocused },
                         singleLine = true,
                         textStyle = TextStyle(fontSize = 15.sp, color = onSurface),
-                        cursorBrush = SolidColor(Palette.AccentGreen),
+                        cursorBrush = SolidColor(UiColors.accentFg),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = { submit() }),
                         decorationBox = { innerField ->
@@ -158,7 +159,7 @@ fun CreateWorkspaceDialog(
                             .saltRowClickable(RoundedCornerShape(50)) { submit() }
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                         fontSize = 20.sp,
-                        color = Palette.AccentBlue
+                        color = UiColors.accentFg
                     )
                     Text(
                         text = "×",

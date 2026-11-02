@@ -23,6 +23,8 @@ import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import com.zmf.agent.uikit.theme.Palette
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -45,7 +47,7 @@ internal fun DonutRing(
     centerBottom: String,
     modifier: Modifier = Modifier
 ) {
-    val track = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+    val track = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Palette.DarkStroke else Palette.LightStroke
     val onSurface = MaterialTheme.colorScheme.onSurface
     Box(
         modifier = modifier.size(size),
@@ -116,7 +118,7 @@ internal fun StackedBar(
     modifier: Modifier = Modifier,
     height: Dp = 12.dp
 ) {
-    val track = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+    val track = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Palette.DarkStroke else Palette.LightStroke
     Canvas(modifier.fillMaxWidth().height(height)) {
         val radius = CornerRadius(size.height / 2f, size.height / 2f)
         drawRoundRect(color = track, cornerRadius = radius)
@@ -161,7 +163,7 @@ internal fun UsageLineChart(
     modifier: Modifier = Modifier,
     height: Dp = 96.dp
 ) {
-    val axis = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+    val axis = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Palette.DarkStroke else Palette.LightStroke
     val fade = color.copy(alpha = 0f)
     val measurer = rememberTextMeasurer()
     val labelStyle = TextStyle(

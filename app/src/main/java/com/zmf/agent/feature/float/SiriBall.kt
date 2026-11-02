@@ -47,12 +47,17 @@ private const val RIPPLE_CYCLE_MS = 3_600
 private const val PRESS_SCALE = 0.85f
 private const val PRESS_MS = 200
 
-/** 球体的四个色块（蓝 / 紫 / 粉 / 青，取自 Operit 的球体配色）。 */
+/**
+ * 球体的四个色块：全部取自强调蓝这一族（主蓝 / 青 / 亮蓝 / 深蓝）。
+ *
+ * 球体是唯一允许出现「同族多档」的装饰元素——它是品牌符号，不是界面控件。
+ * 但这四支必须和 [Palette.Accent] 同族，否则球飞在页面上时会和按钮的蓝打架。
+ */
 private val BallColors = listOf(
-    Color(0xFF0A84FF),
-    Color(0xFFBF5AF2),
-    Color(0xFFFF375F),
-    Color(0xFF00D4FF)
+    Color(0xFF4176E6),
+    Color(0xFF2FB3C9),
+    Color(0xFF7AAAFF),
+    Color(0xFF1B6FD0)
 )
 
 /**

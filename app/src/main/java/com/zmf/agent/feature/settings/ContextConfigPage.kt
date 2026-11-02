@@ -36,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -54,6 +55,7 @@ import com.zmf.agent.infra.llm.ProviderStore
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -472,6 +474,13 @@ private fun ContextSliderRow(
                 color = onSurface.copy(alpha = if (enabled) 0.45f else 0.25f)
             )
         }
+        // 两套值必须同时给：只给启用态的话，禁用态会落回 M3 默认的 38%/12%，
+        // 与我们自定义的启用态在灰底上看着差不多，分不出「能不能拖」。
+        //
+        // 深浅各一套，因为同一个 alpha 在两种底上不是同一种观感：
+        // 浅色下 50% 墨已经是一根深灰棒，压在近白卡上像铅笔；深色下 45% 白是「发亮的中灰」，正好。
+        // 所以浅色整体下移（68% / 40% / 14%），深色保持（90% / 45% / 14%）。
+        val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
         // steps = 0：不要 Material 那排刻度点，滑起来是连续的；
         // 离散落点仍由调用方的 snapRatio / roundToInt 在 onChange 里吸附。
         // 只压整体高度，Slider 内部（轨道、滑块）交给 Material 自己画，不自绘。
@@ -483,9 +492,12 @@ private fun ContextSliderRow(
             valueRange = range,
             steps = 0,
             colors = SliderDefaults.colors(
-                thumbColor = Palette.AccentGreen,
-                activeTrackColor = Palette.AccentGreen,
-                inactiveTrackColor = onSurface.copy(alpha = 0.12f)
+                thumbColor = onSurface.copy(alpha = if (isDark) 0.90f else 0.68f),
+                activeTrackColor = onSurface.copy(alpha = if (isDark) 0.45f else 0.40f),
+                inactiveTrackColor = onSurface.copy(alpha = 0.14f),
+                disabledThumbColor = onSurface.copy(alpha = if (isDark) 0.28f else 0.22f),
+                disabledActiveTrackColor = onSurface.copy(alpha = 0.12f),
+                disabledInactiveTrackColor = onSurface.copy(alpha = 0.08f)
             )
         )
         if (hint.isNotEmpty()) {
@@ -676,7 +688,7 @@ private fun ContextEventRow(event: ContextEvent) {
     // 清除是用户主动动作，中性灰不用绿/红表态；其余按成败取色
     val statusColor = when {
         event.kind == ContextEventKind.CLEAR -> onSurface.copy(alpha = 0.35f)
-        event.ok -> Palette.AccentGreen
+        event.ok -> onSurface.copy(alpha = 0.75f)
         else -> MaterialTheme.colorScheme.error
     }
     Row(
@@ -810,7 +822,7 @@ private fun ContextTokenField(
             color = onSurface.copy(alpha = if (enabled) 1f else 0.35f)
         ),
         singleLine = true,
-        cursorBrush = SolidColor(Palette.AccentGreen),
+        cursorBrush = SolidColor(UiColors.accentFg),
         keyboardOptions = KeyboardOptions(
             keyboardType = KeyboardType.Number,
             imeAction = ImeAction.Done

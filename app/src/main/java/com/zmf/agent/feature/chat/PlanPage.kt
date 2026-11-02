@@ -29,6 +29,7 @@ import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.PlanStore
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 「计划」页：把模型交出来的**每一份**计划都摊在一条标签栏上，切着看、单独删，再决定继续改还是执行。
@@ -135,7 +136,7 @@ fun PlanPage(
                                     modifier = Modifier.width(24.dp),
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium,
-                                    color = Palette.AccentGreen
+                                    color = onSurface.copy(alpha = 0.55f)
                                 )
                                 Text(
                                     text = step,
@@ -221,12 +222,12 @@ private fun PlanButton(
     // 灰态：两种按钮都退成同一种淡底淡字，表示「这一页现在没有可执行的动作」
     val background = when {
         !enabled -> onSurface.copy(alpha = 0.05f)
-        primary -> Palette.AccentGreen
+        primary -> UiColors.accentFill
         else -> onSurface.copy(alpha = 0.08f)
     }
     val textColor = when {
         !enabled -> onSurface.copy(alpha = 0.3f)
-        primary -> Palette.DarkBackground
+        primary -> UiColors.onAccent
         else -> onSurface.copy(alpha = 0.8f)
     }
     Surface(

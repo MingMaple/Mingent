@@ -1,6 +1,6 @@
 package com.zmf.agent.core.store
 
-/** 洞察页的段色（ARGB）：与 uikit 的 Palette.Ctx* 同一套 Tailwind 500。 */
+/** 洞察页的段色（ARGB）：对齐 DSH「上下文洞察」插件的取色（Tailwind 500）。 */
 object InsightColors {
     const val SYSTEM = 0xFF6366F1
     const val TOOLS = 0xFFF59E0B

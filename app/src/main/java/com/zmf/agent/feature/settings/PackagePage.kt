@@ -71,6 +71,7 @@ import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -200,14 +201,14 @@ private fun PackageTabBar(pagerState: PagerState, scope: CoroutineScope) {
                         // 中心对齐到当前 tab，24dp 宽所以要减掉一半
                         .offset(x = tabWidth * (animated + 0.5f) - 12.dp)
                         .size(width = 24.dp, height = 3.dp)
-                        .background(Palette.AccentGreen, RoundedCornerShape(2.dp))
+                        .background(UiColors.accentFg, RoundedCornerShape(2.dp))
                 )
             }
         }
     }
 }
 
-/** 单个 tab：选中吃 Salt 绿，未选中是 onSurface 45%。 */
+/** 单个 tab：选中转强调文字色并对齐指示条，未选中是 onSurface 45%。 */
 @Composable
 private fun PackageTab(
     text: String,
@@ -226,7 +227,7 @@ private fun PackageTab(
             fontSize = 15.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) {
-                Palette.Neutral
+                UiColors.accentFg
             } else {
                 MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
             }
@@ -418,8 +419,8 @@ private fun McpRow(
     val onSurface = MaterialTheme.colorScheme.onSurface
     val state = status?.state
     val dotColor = when (state) {
-        McpManager.ServerState.READY -> Palette.AccentGreen
-        McpManager.ServerState.CONNECTING -> Palette.AccentBlue
+        McpManager.ServerState.READY -> UiColors.success
+        McpManager.ServerState.CONNECTING -> UiColors.warning
         McpManager.ServerState.FAILED -> MaterialTheme.colorScheme.error
         else -> onSurface.copy(alpha = 0.25f)
     }
@@ -637,13 +638,13 @@ private fun McpEditorDialog(
     }
 }
 
-/** 传输方式的小胶囊：选中吃 Salt 绿，未选中是 6% 淡影。 */
+/** 传输方式的小胶囊：选中墨底反白，未选中是 6% 淡影。 */
 @Composable
 private fun TransportChip(text: String, selected: Boolean, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = if (selected) Palette.AccentGreen.copy(alpha = 0.16f) else onSurface.copy(alpha = 0.06f),
+        color = if (selected) onSurface else onSurface.copy(alpha = 0.06f),
         // 点击反馈必须跟着 16dp 胶囊走：把 clickable 交给 Surface 的 modifier 时，
         // Surface 自己的 clip 在它之后生效，水波纹会按矩形铺开、四个角露出方角
         modifier = Modifier.saltCardRow(onClick = onClick)
@@ -653,7 +654,7 @@ private fun TransportChip(text: String, selected: Boolean, onClick: () -> Unit) 
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
             fontSize = 13.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) Palette.AccentGreen else onSurface.copy(alpha = 0.6f)
+            color = if (selected) MaterialTheme.colorScheme.surface else onSurface.copy(alpha = 0.6f)
         )
     }
 }
@@ -944,7 +945,7 @@ private fun PackageDialog(
                         Text(
                             text = confirmText,
                             color = if (confirmEnabled) {
-                                Palette.AccentGreen
+                                UiColors.accentFg
                             } else {
                                 MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
                             }

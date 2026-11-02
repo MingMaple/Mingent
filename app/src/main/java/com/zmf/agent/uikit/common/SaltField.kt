@@ -7,29 +7,36 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 文本输入框的统一配色。
  *
- * 为什么要单独抽一份：Material 3 的文本域默认从 `colorScheme.primary` 取焦点边框与光标颜色，
- * 而本应用的主题把这个位置留给了 `Palette.AccentBlue`（#0078FF）。结果凡是没显式传 `colors`
- * 的输入框，一旦获得焦点就刷出一圈饱和蓝，在单色界面里格外突兀：模型页、定时任务、包管理、
- * 日志搜索四处都踩过同一个坑。
+ * 分工：
+ * - **未聚焦**：边框是中性淡描边，与卡片、分割线同一档，不抢注意力；
+ * - **聚焦**：边框与光标转强调蓝。这是全 App 四类合法用蓝之一（主操作／选中／聚焦／进行中），
+ *   含义是「现在在这里打字」，不是为了好看。
+ *
+ * 之所以必须统一：Material 3 的文本域默认从 `colorScheme.primary` 取焦点边框与光标。
+ * 本主题的 primary 是中性墨色，不显式指定就会得到「黑框黑光标」；而一旦有人把 primary
+ * 改回品牌色，全 App 又会同时刷蓝。两种后果都靠本文件一处收口避免。
  *
  * 因此约定：界面里所有文本输入框都必须使用本文件的配色，不再依赖默认值。
- * 强调一律靠同色的浓淡，不引入第二种色相。
  */
 
-/** `OutlinedTextField` 用：焦点边框与光标取 onSurface，容器透明。 */
+/** `OutlinedTextField` 用：聚焦转强调蓝，其余中性，容器透明。 */
 @Composable
 fun saltFieldColors(): TextFieldColors {
     val onSurface = MaterialTheme.colorScheme.onSurface
+    val focus = UiColors.accentFg
     return OutlinedTextFieldDefaults.colors(
-        focusedBorderColor = onSurface.copy(alpha = 0.45f),
+        focusedBorderColor = focus,
         unfocusedBorderColor = onSurface.copy(alpha = 0.15f),
         focusedTextColor = onSurface,
         unfocusedTextColor = onSurface.copy(alpha = 0.9f),
-        cursorColor = onSurface,
+        cursorColor = focus,
+        focusedLabelColor = focus,
+        unfocusedLabelColor = onSurface.copy(alpha = 0.55f),
         focusedContainerColor = Color.Transparent,
         unfocusedContainerColor = Color.Transparent,
         focusedPlaceholderColor = onSurface.copy(alpha = 0.35f),
@@ -38,10 +45,10 @@ fun saltFieldColors(): TextFieldColors {
 }
 
 /**
- * `BasicTextField` 用：它不吃 [TextFieldColors]，光标靠 `cursorBrush` 单独给，
- * 不显式传同样会回落成主题的强调蓝。
+ * `BasicTextField` 用：它不吃 [TextFieldColors]，光标靠 `cursorBrush` 单独给。
+ * 与 [saltFieldColors] 同源，都取强调蓝，避免两种输入框光标不同色。
  */
 @Composable
 fun saltCursorBrush(): Brush {
-    return SolidColor(MaterialTheme.colorScheme.onSurface)
+    return SolidColor(UiColors.accentFg)
 }

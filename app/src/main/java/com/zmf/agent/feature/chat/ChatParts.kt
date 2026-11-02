@@ -114,6 +114,7 @@ import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -146,11 +147,11 @@ internal fun ChatTopBar(
     // 状态点四态：请求中蓝 / 出错红 / 就绪青 / 空闲绿
     val shizukuState by ShizukuBridge.state.collectAsState()
     val dotColor = when {
-        viewModel.isStreaming -> Palette.StatusBusy
+        viewModel.isStreaming -> UiColors.accentFg
         !viewModel.networkAvailable -> MaterialTheme.colorScheme.error
         viewModel.lastRequestOk == false -> MaterialTheme.colorScheme.error
-        shizukuState == ShizukuBridge.State.READY -> Palette.AccentCyan
-        else -> Palette.StatusIdle
+        shizukuState == ShizukuBridge.State.READY -> UiColors.success
+        else -> UiColors.success
     }
     Row(
         modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 12.dp),
@@ -182,7 +183,7 @@ internal fun ChatTopBar(
                     modifier = Modifier
                         .size(6.dp)
                         .background(
-                            if (subAgentRunning > 0) Palette.StatusBusy else Palette.StatusIdle,
+                            if (subAgentRunning > 0) UiColors.accentFg else UiColors.success,
                             CircleShape
                         )
                 )
@@ -225,7 +226,7 @@ internal fun ChatTopBar(
 @Composable
 internal fun PlanGlyph(onClick: () -> Unit) {
     // 只在这一份计划真的存在时画，所以永远是「有内容」的绿，不再有淡色的空态
-    val color = Palette.AccentGreen
+    val color = UiColors.success
     val strokeWidth = with(LocalDensity.current) { 1.5.dp.toPx() }
     Box(
         modifier = Modifier
@@ -404,11 +405,16 @@ internal fun subAgentStateText(state: String): String = when (state) {
     else -> "失败"
 }
 
-/** 面板里的状态颜色，和工具卡口径一致：运行紫 / 完成绿 / 失败红。 */
+/**
+ * 面板里的状态文字颜色：运行蓝 / 完成中性 / 失败红。
+ *
+ * 只有「异常」和「进行中」值得上色；「完成」是常态，给中性即可——
+ * 绿色留给 6–7dp 的状态点，11sp 的字配绿色读不清。
+ */
 @Composable
 internal fun subAgentStateColor(state: String): Color = when (state) {
-    SubAgentRegistry.RUNNING -> Palette.AccentPurple
-    SubAgentRegistry.DONE -> Palette.AccentGreen
+    SubAgentRegistry.RUNNING -> UiColors.accentFg
+    SubAgentRegistry.DONE -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
     else -> MaterialTheme.colorScheme.error
 }
 
@@ -469,7 +475,7 @@ internal fun NameInputDialog(
                 text = "✓",
                 modifier = Modifier.clickable { onSave(value.text) }.padding(horizontal = 8.dp),
                 fontSize = 20.sp,
-                color = Palette.AccentBlue
+                color = UiColors.accentFg
             )
             Text(
                 text = "×",
@@ -607,7 +613,7 @@ internal fun PendingImageThumb(
                 .clickable(onClick = onRemove)
                 .padding(horizontal = 4.dp, vertical = 1.dp),
             fontSize = 10.sp,
-            color = Color.White
+            color = Palette.OnAccent
         )
     }
 }
@@ -728,7 +734,7 @@ internal fun WorkSpacePage(
                 Text(
                     text = "＋ 新建工作区",
                     fontSize = 15.sp,
-                    color = Palette.AccentBlue.copy(alpha = if (streaming) 0.35f else 1f)
+                    color = UiColors.accentFg.copy(alpha = if (streaming) 0.35f else 1f)
                 )
             }
         }
@@ -795,7 +801,7 @@ internal fun WorkSpaceRow(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) Palette.AccentBlue else MaterialTheme.colorScheme.onSurface
+            color = MaterialTheme.colorScheme.onSurface
         )
         if (deletable) {
             Text(
@@ -885,7 +891,7 @@ internal fun UserRow(
     onImageLongPress: (String, Offset) -> Unit
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val bubbleColor = if (isDark) Palette.BubbleUserDark else Palette.BubbleUserLight
+    val bubbleColor = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh
     val text = userBubbleText(message)
     // 折叠口径：近三轮完全铺开，刚发出去的消息正是用户在读的那条，不该被收起来；
     // 更早的历史按屏幕 45% 折。折叠点落在整段末尾（由 MarkdownText 按块取整），
@@ -1225,9 +1231,9 @@ internal fun AssistantRow(
     val reasoning = indices.joinToString("") { all.getOrNull(it)?.reasoningContent.orEmpty() }
     val lastIndex = indices.lastOrNull()
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val bubbleColor = if (isDark) Palette.BubbleAiDark else Palette.BubbleAiLight
+    val bubbleColor = if (isDark) Palette.DarkSurface else Palette.LightSurface
     val thinkColor = if (isDark) Palette.BubbleThinkDark else Palette.BubbleThinkLight
-    val cardColor = if (isDark) Palette.BubbleCardDark else Palette.BubbleCardLight
+    val cardColor = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh
     val menuIndex = indices.firstOrNull() ?: 0
     // 本轮用量：只有最后一条 assistant 带数字（ChatViewModel.writeTurnUsage 只写那一条），
     // 所以扫一遍取那个非零的；流式途中还没写，这里就是 null，用量按钮不会闪出来。

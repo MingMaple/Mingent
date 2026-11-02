@@ -65,6 +65,7 @@ import com.zmf.agent.core.store.SessionComposition
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -206,7 +207,8 @@ private fun SessionModule(
                         .saltRowClickable(RoundedCornerShape(8.dp)) { onBackToCurrent() }
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     fontSize = 12.sp,
-                    color = Palette.AccentGreen,
+                    // 文字型的强调：深色要提亮一档，Palette.Accent 在深底上只有 3.4:1
+                    color = UiColors.accentFg,
                     maxLines = 1,
                     softWrap = false
                 )
@@ -491,7 +493,7 @@ private fun GlobalSection(
             val keep = index == 0 || index == global.series.lastIndex || index % labelStep == 0
             if (keep) day.label else ""
         }
-        UsageLineChart(values = values, labels = labels, color = Palette.AccentGreen)
+        UsageLineChart(values = values, labels = labels, color = UiColors.accentFill)
     }
 
     InsightCard {
@@ -775,7 +777,9 @@ private fun SessionListCard(
                         }
                         .padding(vertical = 10.dp),
                     fontSize = 12.sp,
-                    color = Palette.AccentGreen,
+                    // 与下面「收起」成对：这类展开/收起是次要操作，不染强调色。
+                    // 之前这里用了 Palette.Accent，一屏里只剩它在发蓝。
+                    color = onSurface.copy(alpha = 0.55f),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             } else if (visibleCount > 5) {
@@ -788,7 +792,7 @@ private fun SessionListCard(
                         }
                         .padding(vertical = 10.dp),
                     fontSize = 12.sp,
-                    color = onSurface.copy(alpha = 0.45f),
+                    color = onSurface.copy(alpha = 0.55f),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
@@ -803,7 +807,8 @@ private fun WorkspaceChip(text: String, selected: Boolean, onClick: () -> Unit) 
         modifier = Modifier
             .clip(RoundedCornerShape(16.dp))
             .background(
-                if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
+                // 胶囊一律墨底反白：全 App 的 chip 只这一种选中形态，不分单选多选
+                if (selected) onSurface
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
             )
             .saltRowClickable(RoundedCornerShape(16.dp), onClick = onClick)
@@ -812,7 +817,7 @@ private fun WorkspaceChip(text: String, selected: Boolean, onClick: () -> Unit) 
         Text(
             text = text,
             fontSize = 12.sp,
-            color = if (selected) onSurface else onSurface.copy(alpha = 0.55f),
+            color = if (selected) MaterialTheme.colorScheme.surface else onSurface.copy(alpha = 0.55f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.widthIn(max = 140.dp)
@@ -986,7 +991,9 @@ private fun TabPill(text: String, selected: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(
-                if (selected) Palette.AccentGreen.copy(alpha = 0.14f)
+                // 与模型页分段同一口径：单选控件选中即墨底反白。
+                // 数据本身的八色不动——这里只管外壳。
+                if (selected) onSurface
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
             )
             .saltRowClickable(RoundedCornerShape(10.dp), onClick = onClick)
@@ -995,7 +1002,7 @@ private fun TabPill(text: String, selected: Boolean, onClick: () -> Unit) {
         Text(
             text = text,
             fontSize = 13.sp,
-            color = if (selected) Palette.AccentGreen else onSurface.copy(alpha = 0.55f)
+            color = if (selected) MaterialTheme.colorScheme.surface else onSurface.copy(alpha = 0.55f)
         )
     }
 }
@@ -1007,7 +1014,8 @@ private fun RangePill(text: String, selected: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(
-                if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                // 与同页上方三个分段、模型页分段同一套：单选即墨底反白
+                if (selected) onSurface
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
             )
             .saltRowClickable(RoundedCornerShape(10.dp), onClick = onClick)
@@ -1016,7 +1024,7 @@ private fun RangePill(text: String, selected: Boolean, onClick: () -> Unit) {
         Text(
             text = text,
             fontSize = 13.sp,
-            color = if (selected) onSurface else onSurface.copy(alpha = 0.55f)
+            color = if (selected) MaterialTheme.colorScheme.surface else onSurface.copy(alpha = 0.55f)
         )
     }
 }

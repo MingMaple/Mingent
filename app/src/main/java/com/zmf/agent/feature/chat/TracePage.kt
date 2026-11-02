@@ -81,6 +81,8 @@ import com.zmf.agent.uikit.common.BoundedScrollColumn
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.isDarkSurface
+import com.zmf.agent.uikit.theme.UiColors
 import java.io.File
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -333,13 +335,6 @@ private const val ArgLimit = 36
 
 /** 工具还在跑时的行尾状态：单独提出来，配色和「→ 结果」区分开。 */
 private const val RunningText = "执行中…"
-
-/** 彩色标签上的字统一用近黑：绿 / 橙 / 紫三块实心底都够亮，深字才压得住。 */
-private val ChipInk = Color(0xFF14161A)
-
-/** 工具橙与子工具浅橙：截图里子工具那档明显更淡，一眼能分出「谁派出去的」。 */
-private val ChipOrange = Color(0xFFF0A93B)
-private val ChipOrangeSoft = Color(0xFFF7CC85)
 
 /** 连续空白折成一个空格；放常量里免得每行都新建正则。 */
 private val Spaces = Regex("[ \t]{2,}")
@@ -663,7 +658,7 @@ private fun TraceRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.End,
-                    color = if (line.running) Palette.AccentPurple else onSurface.copy(alpha = 0.42f)
+                    color = if (line.running) UiColors.accentFg else onSurface.copy(alpha = 0.42f)
                 )
             }
         }
@@ -686,23 +681,27 @@ private fun TraceRow(
     }
 }
 
-/** 行首彩色标签：实心底 + 近黑字，颜色就是这一行的类型。 */
+/** 行首标签：同色 14% 淡底 + 本色文字。类型由文字说明，色相只做辅助。 */
 @Composable
 private fun KindChip(kind: TraceKind) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    // 思考是「过程」不是「产物」，用中性灰才不跟产物抢注意力
-    val quiet = kind == TraceKind.Thinking
-    val chipColor = when (kind) {
-        TraceKind.Assistant -> Palette.AccentPurple
-        TraceKind.Tool -> ChipOrange
-        TraceKind.SubTool -> ChipOrangeSoft
-        TraceKind.User, TraceKind.Context -> Palette.AccentGreen
-        TraceKind.Thinking -> onSurface.copy(alpha = 0.12f)
+    val dark = isDarkSurface()
+    // 四色沿用 DSH 轨迹时间轴的语义：用户蓝、助手蓝紫、工具琥珀、上下文去饱和绿。
+    // 思考是「过程」不是「产物」，保持中性，不跟产物抢注意力。
+    val hue = when (kind) {
+        TraceKind.User -> TraceHue.User
+        TraceKind.Context -> TraceHue.Context
+        TraceKind.Assistant -> TraceHue.Assistant
+        TraceKind.Tool -> TraceHue.Tool
+        TraceKind.SubTool -> TraceHue.Tool
+        TraceKind.Thinking -> null
     }
+    val ink = hue?.let { hueColor(it, dark) } ?: onSurface.copy(alpha = 0.45f)
+    val fill = if (hue == null) onSurface.copy(alpha = 0.05f) else ink.copy(alpha = 0.14f)
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(ChipCorner))
-            .background(chipColor)
+            .background(fill)
             .padding(horizontal = 6.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -711,7 +710,7 @@ private fun KindChip(kind: TraceKind) {
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
-            color = if (quiet) onSurface.copy(alpha = 0.62f) else ChipInk
+            color = ink
         )
     }
 }
@@ -1051,10 +1050,26 @@ private const val OutsideSelectionAlpha = 0.25f
 /** 时间线里没被选中的行灰到多淡。 */
 private const val RowDimAlpha = 0.3f
 
-/** 三行 lane 的配色与时间线标签同色：输入绿、模型紫、工具橙。 */
-private val LaneInputColor = Palette.AccentGreen
-private val LaneModelColor = Palette.AccentPurple
-private val LaneToolColor = ChipOrange
+/** 三行 lane 的配色与时间线标签同色（色相照 DSH 的轨迹时间轴）。 */
+private val LaneInputHue = TraceHue.User
+private val LaneModelHue = TraceHue.Assistant
+private val LaneToolHue = TraceHue.Tool
+
+/** 轨迹页的四个色相槽，与 DSH 轨迹时间轴一一对应（用户 / 助手 / 工具 / 上下文）。 */
+private enum class TraceHue { User, Assistant, Tool, Context }
+
+/**
+ * 取具体色值。
+ *
+ * 不做成 `@Composable`：它要在 `Canvas` 的 draw lambda 里用，那里不是组合作用域。
+ * 把深浅判断交给调用方取一次，再作为参数传进来。
+ */
+private fun hueColor(hue: TraceHue, dark: Boolean): Color = when (hue) {
+    TraceHue.User -> if (dark) Palette.TraceUserDark else Palette.TraceUserLight
+    TraceHue.Assistant -> if (dark) Palette.TraceAssistantDark else Palette.TraceAssistantLight
+    TraceHue.Tool -> if (dark) Palette.TraceToolDark else Palette.TraceToolLight
+    TraceHue.Context -> if (dark) Palette.TraceContextDark else Palette.TraceContextLight
+}
 
 /** 时间线摊平后的一条：轮分隔（line 为 null）或一行内容。 */
 private data class TraceEntry(
@@ -1126,11 +1141,11 @@ private fun laneOf(kind: TraceKind): TraceLane = when (kind) {
     TraceKind.Tool, TraceKind.SubTool -> TraceLane.Tool
 }
 
-/** lane 配色沿用时间线标签：输入绿、模型紫、工具橙，一行一心智模型。 */
-private fun laneColor(lane: TraceLane): Color = when (lane) {
-    TraceLane.Input -> LaneInputColor
-    TraceLane.Model -> LaneModelColor
-    TraceLane.Tool -> LaneToolColor
+/** 一行内容落进哪条 lane 对应的色相。 */
+private fun laneHue(lane: TraceLane): TraceHue = when (lane) {
+    TraceLane.Input -> LaneInputHue
+    TraceLane.Model -> LaneModelHue
+    TraceLane.Tool -> LaneToolHue
 }
 
 /** 区间盖住的块：首末槽位取整到整块，中间整块全算。 */
@@ -1312,6 +1327,8 @@ private fun TraceOverview(
                         }
                     }
             ) {
+                // Canvas 的 draw lambda 不是组合作用域，主题只能在外面取一次再传进去
+                val dark = isDarkSurface()
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
@@ -1328,7 +1345,7 @@ private fun TraceOverview(
                             1f
                         }
                         drawRoundRect(
-                            color = laneColor(event.lane).copy(alpha = alpha),
+                            color = hueColor(laneHue(event.lane), dark).copy(alpha = alpha),
                             topLeft = Offset(geo.xOf(event.order), event.lane.ordinal * rowStep),
                             size = Size(geo.block, geo.blockHeight),
                             cornerRadius = corner
@@ -1354,13 +1371,13 @@ private fun TraceOverview(
                         right = geo.xOf(orders.last) + geo.block + half + pan
                     }
                     drawRoundRect(
-                        color = Palette.AccentBlue,
+                        color = Palette.Accent,
                         topLeft = Offset(left, 0f),
                         size = Size(bar, height),
                         cornerRadius = radius
                     )
                     drawRoundRect(
-                        color = Palette.AccentBlue,
+                        color = Palette.Accent,
                         topLeft = Offset(right - bar, 0f),
                         size = Size(bar, height),
                         cornerRadius = radius
@@ -1412,7 +1429,7 @@ private fun TraceOverview(
                 val room = size.width - thumb
                 val fraction = if (room > 0f) pan / maxPan else 0f
                 drawRoundRect(
-                    color = Palette.AccentGreen.copy(alpha = 0.9f),
+                    color = Palette.Accent.copy(alpha = 0.9f),
                     topLeft = Offset(room * fraction, 0f),
                     size = Size(thumb, size.height),
                     cornerRadius = radius

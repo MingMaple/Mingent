@@ -42,6 +42,7 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.zmf.agent.uikit.common.saltFieldColors
@@ -239,13 +240,13 @@ private fun logsToast(context: Context, text: String) {
     Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
 }
 
-/** chip：选中吃 Salt 绿半透明底，未选中是 6% 淡影（同 PackagePage 的胶囊）。 */
+/** 胶囊：选中墨底反白（同 DSH 的 chipActive），未选中是 6% 淡影。 */
 @Composable
 private fun LogChip(text: String, selected: Boolean, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = if (selected) Palette.AccentGreen.copy(alpha = 0.16f) else onSurface.copy(alpha = 0.06f),
+        color = if (selected) onSurface else onSurface.copy(alpha = 0.06f),
         modifier = Modifier.saltCardRow(onClick = onClick)
     ) {
         Text(
@@ -253,7 +254,7 @@ private fun LogChip(text: String, selected: Boolean, onClick: () -> Unit) {
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
             fontSize = 13.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) Palette.AccentGreen else onSurface.copy(alpha = 0.6f)
+            color = if (selected) MaterialTheme.colorScheme.surface else onSurface.copy(alpha = 0.6f)
         )
     }
 }

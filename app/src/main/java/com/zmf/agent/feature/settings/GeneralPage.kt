@@ -44,6 +44,7 @@ import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.theme.UiScaleStore
 import kotlin.math.abs
 import com.zmf.agent.core.prefs.GeneralPrefs
@@ -359,10 +360,11 @@ private fun GeneralOptionRow(
             modifier = Modifier.weight(1f),
             fontSize = 15.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) Palette.AccentGreen else onSurface.copy(alpha = 0.75f)
+            // 列表项选中：底色 + 加粗 + 勾，不把整行文字染蓝
+            color = if (selected) onSurface else onSurface.copy(alpha = 0.75f)
         )
         if (selected) {
-            Text(text = "✓", fontSize = 14.sp, color = Palette.AccentGreen)
+            Text(text = "✓", fontSize = 14.sp, color = onSurface)
         }
     }
 }

@@ -84,6 +84,7 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.theme.Motion
 import kotlin.math.roundToInt
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.UiColors
 
 /**
  * 输入框下面那行状态：左「轮 / 步 / 速度」、右「累计 token / 缓存命中」，两枚都可点开明细。
@@ -196,7 +197,11 @@ fun ChatComposer(
     // 插完 "/plan " 这类模板后面板必须马上让位：否则模板本身又被当成一次过滤，浮窗赖着不走
     var slashClosed by remember { mutableStateOf(false) }
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val accent = Palette.AccentGreen
+    // 三条分工：线/图标用 accentFg，填充面用 accentFill，压在填充上的图标用 onAccent。
+    // 浅色三者分别是 #4176E6 / #4176E6 / 白；深色是 #7AAAFF / #7AAAFF / 墨。
+    val accent = UiColors.accentFg
+    val accentFill = UiColors.accentFill
+    val onAccent = UiColors.onAccent
     // 只挂附件不写字也是有效发送：曾经只按文本判，图片/文件就永远发不出去
     val canSend = value.text.isNotBlank() || hasAttachment
     // 被编辑的那条已经被删掉 / 发出去时，描边跟着消失，不会留一条幽灵编辑态
@@ -502,8 +507,8 @@ fun ChatComposer(
                     // 停止和发送是两件事：一个是打断，一个是按繁忙策略投递，所以并排放两个键
                     Box(
                         modifier = Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(12.dp))
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(11.dp))
                             .background(onSurface.copy(alpha = 0.12f))
                             .clickable(onClick = onStop),
                         contentAlignment = Alignment.Center
@@ -520,18 +525,20 @@ fun ChatComposer(
                     Spacer(modifier = Modifier.width(6.dp))
                 }
                 Box(
+                    // 40dp 是视觉尺寸：屏幕只有 360dp，44 的圆钮在整屏里偏重
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
-                        .background(if (canSend) accent else accent.copy(alpha = 0.35f))
+                        // 不可发时整块压到 40%：DSH 的发送键禁用态就是 opacity .4
+                        .background(if (canSend) accentFill else accentFill.copy(alpha = 0.40f))
                         .clickable(enabled = canSend, onClick = onSend),
                     contentAlignment = Alignment.Center
                 ) {
                     // 忙时的发送键保留自己的身份：排队 / 插话，不跟停止键混用同一个图标
                     when {
-                        isStreaming && busyMode == BusySendMode.QUEUE -> QueueGlyph(Palette.LightText, 18.dp)
-                        isStreaming && busyMode == BusySendMode.STEER -> SteerGlyph(Palette.LightText, 18.dp)
-                        else -> ArrowUpGlyph(Palette.LightText, 18.dp)
+                        isStreaming && busyMode == BusySendMode.QUEUE -> QueueGlyph(onAccent, 18.dp)
+                        isStreaming && busyMode == BusySendMode.STEER -> SteerGlyph(onAccent, 18.dp)
+                        else -> ArrowUpGlyph(onAccent, 18.dp)
                     }
                 }
             }
@@ -708,9 +715,9 @@ private fun ComposerModelPanel(
         shape = shape,
         // 与其它伴随面板同一底色：比页面与气泡亮一档
         color = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
-            Palette.DarkPanel
+            Palette.DarkSurfaceHigh
         } else {
-            Palette.LightPanel
+            Palette.LightSurfaceHigh
         },
         shadowElevation = panelShadow,
         // 卡片自己吃掉点击，不然点空白处会落到输入框上把键盘拉起来
@@ -842,7 +849,7 @@ private fun ComposerPanelOverlay(
 
 /**
  * 一条排队消息：左边空心圆、中间单行文本、右边三个 36dp 热区（编辑 / 删除 / 立即发送）。
- * 正在编辑的那条描一圈 AccentGreen，因为用户改完回头看，需要知道改的是哪一条。
+ * 正在编辑的那条描一圈 accent，因为用户改完回头看，需要知道改的是哪一条。
  */
 @Composable
 private fun QueuedRow(
@@ -853,14 +860,14 @@ private fun QueuedRow(
     onSendOne: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val tint = if (editing) Palette.AccentGreen else onSurface.copy(alpha = 0.4f)
+    val tint = if (editing) UiColors.accentFg else onSurface.copy(alpha = 0.4f)
     val shape = RoundedCornerShape(14.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
             .background(onSurface.copy(alpha = 0.06f))
-            .then(if (editing) Modifier.border(1.dp, Palette.AccentGreen, shape) else Modifier)
+            .then(if (editing) Modifier.border(1.dp, UiColors.accentFg, shape) else Modifier)
             .height(40.dp)
             .padding(start = 12.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically
