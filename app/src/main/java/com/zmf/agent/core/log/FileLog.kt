@@ -10,25 +10,16 @@ import java.util.Locale
 /**
  * 文件日志。
  *
- * 这台 vivo 机型 adb logcat 完全没有输出，真机调试只能靠文件日志：
- * 写到 外部私有目录 files/logs/agent.log，再用 adb pull 取回。
- * 超过 512KB 自动轮转为 agent.log.1，避免长期运行把目录撑爆。
+ * 真机 adb logcat 无输出，调试依赖文件日志：写入外部私有目录 files/logs/agent.log，
+ * 可用 adb pull 取回；超过 512KB 自动轮转为 agent.log.1。
  *
- * 为什么是「长驻句柄 + 每行一次 write」，而不是队列 + 写线程：
- * 卡调用线程的根因不是 write，而是原来的 File.appendText 每行都 open/close 一次（外加一次 length()）。
- * 一次 write 到内核页缓存是微秒级，主线程扛得住；而 open/close 在外部存储（sdcardfs/FUSE）上要几十到上百微秒，
- * 长会话几百上千行下来就是一条条看得见的小卡顿。现在句柄常驻，每行只剩：
- * 拼字符串 + UTF-8 编码 + 一次 write + 一次字节累加。
+ * 采用「长驻句柄 + 每行一次 write」而非队列 + 写线程：卡顿根因是每行 open/close，而非 write；
+ * open/close 在外部存储（sdcardfs/FUSE）上需几十至上百微秒，写入内核页缓存仅微秒级。
+ * 该方案也保证进程被强杀时不丢失已写入字节：数据已在内核页缓存，进程终止仍会刷盘，
+ * 仅断电或内核崩溃会丢失；BufferedOutputStream 会将已写数据转为用户态缓冲，进程被杀即丢失，故不使用。
  *
- * 顺带解决了「用户从最近任务强杀」的丢日志问题：write() 过的字节已经在内核页缓存里，
- * 进程被杀照样会被刷盘，只有断电/内核崩溃才会丢。队列方案必须靠定时唤醒，天生有一个时间窗口；
- * 这里没有窗口：已经进 write() 的行不会被进程死亡带走，只有磁盘写失败才会丢。
- *
- * 为什么不套 BufferedOutputStream：那会把「已写」变成「还在用户态缓冲」，进程一被杀就丢，
- * 正好抵消上面那条唯一的优势。要批量就得自己攒，攒就有窗口，所以不攒。
- *
- * 代价：常驻一个 fd；轮转时先 close 再 rename 再重开（见 rotateLocked）。写操作全在一把对象锁里串行化，
- * 但锁里只做页缓存写，绝不做 fsync：fsync 只在 [flush] 里出现，且只给崩溃处理器 / onStop / 日志页用。
+ * 代价：常驻一个 fd；轮转按 close → rename → reopen 执行（见 rotateLocked）。
+ * 写操作在同一对象锁内串行化，锁内不执行 fsync；fsync 仅出现在 [flush]（崩溃处理器、onStop 与日志页使用）。
  */
 object FileLog {
 
@@ -36,7 +27,7 @@ object FileLog {
 
     private const val FILE_NAME = "agent.log"
 
-    /** 轮转出去的旧文件（见 rotateLocked）。读取时它排在当前文件前面。 */
+    /** 轮转后的备份文件（见 rotateLocked），读取时排在当前文件之前。 */
     private const val ROTATED_NAME = "agent.log.1"
 
     private val timeFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
@@ -44,23 +35,23 @@ object FileLog {
     @Volatile
     private var logFile: File? = null
 
-    /** 长驻的追加流；null = 还没打开，或上次写失败后被主动关掉了（下次 log 惰性重开）。 */
+    /** 长驻追加流；null 表示尚未打开，或上次写入失败后已关闭（下次 log 时惰性重开）。 */
     private var stream: FileOutputStream? = null
 
     /**
-     * 当前文件里已写的字节数（自己累加，不每行 stat）。
+     * 当前文件已写入的字节数（自行累加，不逐行 stat）。
      *
-     * 只在该文件被打开 / 轮转时用 file.length() 对齐一次，之后纯加法：
-     * 这是「每行只剩一次 write」的关键：stat 也要进内核，和省下的 open/close 是同一种成本。
+     * 仅在打开或轮转时用 file.length() 对齐一次，之后纯加法；stat 同样进入内核，
+     * 与省去的 open/close 属于同类成本。
      */
     private var writtenBytes = 0L
 
     /**
-     * 下一次允许尝试轮转的字节数（初始 = MAX_BYTES）。
+     * 下次允许尝试轮转的字节阈值（初始为 MAX_BYTES）。
      *
-     * 为什么要可变：rename 失败（目录只读、被外部占用）时文件不会变小，下一个行还会满足「超了」的条件，
-     * 于是每记一行就白做一次 close/rename/open，日志模块自己变成热点，比不轮转还糟。
-     * 失败后把阈值往后推一个 MAX_BYTES，最多每 512KB 重试一次。
+     * rename 失败（目录只读或被占用）时文件不会变小，后续每行仍会满足超限条件，
+     * 导致逐行执行无意义的 close/rename/open。失败后将阈值后移一个 MAX_BYTES，
+     * 最坏每 512KB 重试一次。
      */
     private var rotateLimit = MAX_BYTES
 
@@ -71,12 +62,11 @@ object FileLog {
     }
 
     /**
-     * 日志目录：外部私有目录 files/logs/（不存在就建）。
+     * 日志目录：外部私有目录 files/logs/（不存在时创建）。
      *
-     * 目录随取随建，因为日志页可能在任何时刻被打开，不能假设 init() 已经跑过：
-     * 页面要的是一个能读的目录，而不是空指针或运行目录 "/logs"。
-     * getExternalFilesDir 在外部存储没挂载时返回 null，此时退回内部 filesDir：
-     * 宁可日志落到内部空间，也不要落到 File(null, "logs") 解析出来的相对路径上。
+     * 目录按需创建：日志页可能随时打开，不能假设 init() 已执行。
+     * getExternalFilesDir 在外部存储未挂载时返回 null，此时退回内部 filesDir，
+     * 避免 File(null, "logs") 解析出相对路径。
      */
     fun logDir(context: Context): File {
         val app = context.applicationContext
@@ -86,15 +76,14 @@ object FileLog {
     }
 
     /**
-     * 记一条日志：拼行 → 编码 → 一次 write，返回。
+     * 记录一条日志：拼行 → 编码 → 一次 write。
      *
-     * 主线程可以放心调：锁内只有内存拼装 + 一次页缓存写（微秒级），没有 open/close/fsync。
-     * 唯一的例外是「这一刻正好要轮转」：那次会 close/rename/reopen，512KB 才发生一次，
-     * 摊到几千行上可以忽略；真要更平滑，可以把轮转挪到后台，但那会引入「轮转期间写哪」的状态机，不值得。
+     * 主线程可安全调用：锁内仅有内存拼装与一次页缓存写，无 open/close/fsync。
+     * 例外是恰好触发轮转，此时执行 close/rename/reopen，每 512KB 发生一次，可忽略。
      */
     @Synchronized
     fun log(tag: String, message: String) {
-        // 没 init 就静默丢掉：老实现同样直接 return，日志不该把调用方搞崩
+        // 未 init 时静默丢弃：日志失败不应影响调用方
         if (logFile == null) return
         val bytes = (format(tag, message) + '\n').toByteArray(Charsets.UTF_8)
         try {
@@ -102,15 +91,15 @@ object FileLog {
             if (stream == null) openLocked(file)
             if (writtenBytes + bytes.size > rotateLimit) {
                 rotateLocked(file)
-                // 轮转后 writtenBytes 归零；没归零说明 rename 没成，把阈值推后，别每行都重试一次
+                // 轮转后 writtenBytes 归零；未归零说明 rename 失败，将阈值后移，避免逐行重试
                 if (writtenBytes + bytes.size > rotateLimit) rotateLimit = writtenBytes + MAX_BYTES
             }
             val out = stream ?: return
             out.write(bytes)
             writtenBytes += bytes.size
         } catch (e: Exception) {
-            // 磁盘满 / 文件被外部删除 / 挂载点被卸：关掉流、下次惰性重开。
-            // 日志失败绝不能影响业务流程，所以这里吞掉异常，也不重试（重试只会把错误放大成循环）
+            // 磁盘满、文件被外部删除或挂载点卸载时关闭流，下次惰性重开。
+            // 日志失败不得影响业务流程，故忽略异常且不重试（重试会演变为循环）
             closeLocked()
         }
     }
@@ -118,29 +107,29 @@ object FileLog {
     /**
      * 把用户态缓冲推给内核，并做一次 fsync。
      *
-     * 只有关键路径该调：崩溃处理器（死之前保底）、MainActivity.onStop（从最近任务划走）、日志页读之前。
-     * fsync 是毫秒级真实等待，放到热路径上就等于把「同步写盘」又加回来了。
+     * 仅关键路径调用：崩溃处理器（崩溃前保底）、MainActivity.onStop（从最近任务移除）、日志页读取前。
+     * fsync 为毫秒级真实等待，置于热路径等同于同步写盘。
      *
-     * [timeoutMs] 只为调用点不改而保留：现在没有队列可等，它不参与任何逻辑。
+     * [timeoutMs] 仅为保持调用点不变而保留：目前没有队列可等待，它不参与任何逻辑。
      */
     @Synchronized
     fun flush(timeoutMs: Long = 500L) {
         runCatching {
             val out = stream ?: return
             out.flush()
-            // 只有这一步才保证「此刻断电也不丢」；平时 write 过的字节已在页缓存，进程死不掉
+            // 仅此步骤可保证断电不丢失；平时 write 的字节已在页缓存，进程终止后仍会写入磁盘
             out.fd.sync()
         }
     }
 
     /**
-     * 读日志：最新的在最前面，最多 [maxLines] 行。
+     * 读取日志：最新的在最前，最多 [maxLines] 行。
      *
-     * 顺序是「按时间正序拼接再整体倒序」：agent.log.1 是轮转出去的旧内容，排在当前 agent.log 前面。
-     * 只留末尾 maxLines 行的做法是边读边丢队头（两个文件加起来能到 1MB），
-     * 日志页只展示 2000 行，没必要把整份日志都变成 String 对象堆进内存。
+     * 按时间正序拼接后整体倒序：agent.log.1 为轮转后的内容，排在当前 agent.log 之前。
+     * 仅保留末尾 maxLines 行（两个文件合计可达 1MB），日志页只展示 2000 行，
+     * 无需将整份日志构造为 String 对象放入内存。
      *
-     * 读之前只 flush 流、不 fsync：读的是本进程刚写过的页缓存，flush 一下就够，没必要付落盘的钱。
+     * 读取前仅 flush 流、不执行 fsync：读取的是本进程刚写入的页缓存，无需承担落盘开销。
      */
     @Synchronized
     fun readLines(context: Context, maxLines: Int = 2000): List<String> {
@@ -164,11 +153,11 @@ object FileLog {
     }
 
     /**
-     * 清空日志：先关流再删文件。
+     * 清空日志：先关闭流再删除文件。
      *
-     * 顺序不能反：流开着删文件的话，后续 write 会写进那个已被 unlink 的 inode，
-     * 用户在文件系统里看不到，日志却还在占空间，是最难查的那种「日志写成功但打不开」。
-     * 故意不重置 logFile：下一次 log() 会惰性重开并重建 agent.log，不用重启进程。
+     * 顺序不可颠倒：流打开时删除文件，后续 write 会写入已被 unlink 的 inode，
+     * 文件系统中不可见但日志仍占用空间，形成「写入成功却无法打开」的问题。
+     * 有意不重置 logFile：下次 log() 会惰性重开并重建 agent.log，无需重启进程。
      */
     @Synchronized
     fun clear(context: Context) {
@@ -188,26 +177,26 @@ object FileLog {
             file.parentFile?.mkdirs()
             stream = FileOutputStream(file, true)
             writtenBytes = file.length()
-            // 新文件（含轮转后重开）把阈值复位：上一次失败留下的推后不该粘到新文件上
+            // 新文件（含轮转后重开）复位阈值：上次失败后移的阈值不应延续到新文件
             if (writtenBytes == 0L) rotateLimit = MAX_BYTES
         }.onFailure {
-            // 打不开（目录被删、权限异常）就保持 null，下次再来
+            // 无法打开（目录被删、权限异常）时保持 null，等待下次重试
             closeLocked()
         }
     }
 
     /**
-     * 轮转：close → 删旧备份 → rename → reopen。
+     * 轮转：close → 删除旧备份 → rename → reopen。
      *
-     * 顺序不能反：流开着改名的话，写会继续落到那个已改名的旧 inode 上，新文件一直是空的，
-     * 表现就是「日志看着停了」，所以必须关掉旧句柄再换个路径重新打开。
+     * 顺序不可颠倒：流打开时改名，写入会继续落到已改名的 inode，新文件始终为空，
+     * 表现为日志停止输出，因此必须先关闭旧句柄再以新路径重新打开。
      */
     private fun rotateLocked(file: File) {
         closeLocked()
         val backup = File(file.parentFile, ROTATED_NAME)
         runCatching { backup.delete() }
         runCatching { file.renameTo(backup) }
-        // reopen 会以真实长度重新对齐计数：rename 失败时文件还在，从原文末尾接着写
+        // reopen 会按真实长度重新对齐计数：rename 失败时文件仍在，从原文件末尾继续写入
         openLocked(file)
     }
 
@@ -218,7 +207,7 @@ object FileLog {
 
     /** 拼一行：「MM-dd HH:mm:ss.SSS [tag] message」。不带换行，由调用方补。 */
     private fun format(tag: String, message: String): String {
-        // 目前只有 log() 调它、而 log() 已持对象锁；这层锁是防以后有人从别的入口调它
+        // 仅 log() 调用且已持对象锁；此处加锁用于防止其他入口调用时缺少同步
         val stamp = synchronized(timeFormat) { timeFormat.format(Date()) }
         return stamp + " [" + tag + "] " + message
     }

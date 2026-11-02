@@ -111,8 +111,8 @@ class MemTool : Tool {
             is Plan.Ok -> built.argv
             is Plan.Fail -> return ToolResult.Error(built.message)
         }
-        // MemoryKernel.run 的失败信息里已经写明「卡在第几步 + 原文」，直接转给模型，
-        // 不再包一层「工具执行失败」把关键信息挤掉（卡在哪一步、为什么、缺什么都要说清）。
+        // MemoryKernel.run 的失败信息已注明「失败于第几步 + 原文」，直接转给模型，
+        // 不再额外包裹「工具执行失败」，以免关键信息被覆盖（失败步骤、原因与缺失项均应说明）。
         return MemoryKernel.run(ctx.context, ctx.workspaceRoot, argv).fold(
             onSuccess = { ToolResult.Ok(it) },
             onFailure = { error -> ToolResult.Error(error.message ?: ("记忆内核调用失败：" + error.javaClass.simpleName)) },
@@ -130,8 +130,8 @@ class MemTool : Tool {
     /**
      * 按子命令拼 CLI 参数。
      *
-     * 一律用 --flag=value 的等号形式：正文以「-」开头（比如「-23」这种）时，
-     * 分开写会被 argparse 当成另一个选项吃掉，等号形式不会有这个歧义。
+     * 一律使用 --flag=value 的等号形式：正文以「-」开头（例如「-23」）时，
+     * 分开书写会被 argparse 识别为另一个选项，等号形式不存在该歧义。
      */
     private fun plan(command: String, args: JSONObject): Plan {
         if (command !in COMMANDS) {

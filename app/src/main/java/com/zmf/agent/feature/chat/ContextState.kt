@@ -56,33 +56,30 @@ import kotlin.math.roundToInt
 import java.io.File
 import java.util.Calendar
 
-/** 洞察页趋势只画最近这么多次回复：再多就糊成一团，也看不出变化。 */
+/** 洞察页趋势只显示最近这几次回复，数量过多将无法辨识变化。 */
 private const val INSIGHT_TREND_POINTS = 20
 
 /**
- * 用量折线最多画这么多点。
+ * 用量折线最多显示的点数。
  *
- * 取值要能容下「近 30 天」，否则 30 天会被提前合并成 10 档——用户要的是 30 天画 30 个点。
- * 只有「全部」随天数无限增长时才触发合并：跨度超过它就按等宽分桶合并邻近若干天，
- * 看的是趋势，不是逐日柱。
+ * 取值需容纳「近 30 天」，否则会被提前合并。跨度超过上限时按等宽分桶合并邻近日期，
+ * 只保留趋势信息。
  */
 private const val SERIES_MAX_POINTS = 31
 
 /**
  * 溢出恢复的等待上限。
  *
- * 摘要请求自己有 60 秒超时（ContextSummarizer.TIMEOUT_MS），这里再宽 30 秒：
- * 超过还没回调，就说明这条链路不正常了，宁可放弃也不要挂着这一轮。
+ * 摘要请求自身超时为 60 秒（ContextSummarizer.TIMEOUT_MS），此处再放宽 30 秒；
+ * 超过仍未回调说明链路异常，应放弃本轮。
  */
 private const val OVERFLOW_COMPACT_TIMEOUT_MS = 90_000L
 
 /**
  * 上下文与用量的状态与动作：策略、水位、摘要压缩、统计快照、时间账、本轮 usage 计数。
  *
- * 从 [ChatViewModel] 搬出，行为不变：字段名与原成员逐字一致，方法体原样照搬；
- * 只把跨模块的只读依赖改成注入——消息表、会话表与其写入口、当前会话 id、
- * 流式标记、进行中提示、请求链路（provider / 工具表 / 提示词输入）、工作区根目录、
- * 落盘入口——免得这个类反过来攥住整个 ViewModel。
+ * 跨模块依赖通过构造参数注入（消息表、会话表及其写入口、当前会话 id、请求链路、
+ * 工作区根目录、落盘入口），避免本类直接持有整个 ViewModel。
  */
 class ContextState(
     private val appContext: Context,
@@ -104,7 +101,7 @@ class ContextState(
     private val reloadSessionDocs: () -> Unit
 ) {
 
-    /** 上下文压缩策略（摘要式滚动压缩）：只影响发给模型的请求视图，界面历史不动。 */
+    /** 上下文压缩策略（摘要式滚动压缩）：只作用于请求视图，不影响界面历史。 */
     var contextPolicy by mutableStateOf(ContextStore.load(appContext))
         private set
 
@@ -116,10 +113,10 @@ class ContextState(
     val contextSummary: String
         get() = sessions().firstOrNull { it.id == currentSessionId() }?.contextSummary.orEmpty()
 
-    /** 摘要失败后置 true：请求视图退成「只发最近 fallbackKeepRounds 轮」，不再阻塞主请求。 */
+    /** 摘要失败后置为 true：请求视图退化为只发送最近 fallbackKeepRounds 轮，不阻塞主请求。 */
     private var contextFallback = false
 
-    /** 上下文分段估算（系统提示词 / 工具表 / user / assistant / 工具结果）；由 [refreshContext] 顺带刷新。 */
+    /** 上下文分段估算（系统提示词 / 工具表 / user / assistant / 工具结果）；由 [refreshContext] 同时刷新。 */
     var contextBreakdown by mutableStateOf(Breakdown())
         private set
 
@@ -130,8 +127,7 @@ class ContextState(
     /**
      * 最近一次请求的用量文本。
      *
-     * 气泡里已经把「输入 / 输出」内嵌进去了，这条不再画在列表外面（用户要的就是外面少一行）；
-     * 字段留着兼容，别再加渲染。
+     * 气泡中已内嵌「输入 / 输出」，该字段不渲染；保留仅为兼容旧数据。
      */
     var usageText by mutableStateOf<String?>(null)
         private set
@@ -151,8 +147,8 @@ class ContextState(
     /**
      * 洞察页专用时间账：只算自分支起的真实用量（分叉继承的那一段已经减掉）。
      *
-     * 状态行要「克隆会话」的观感（命中率、token 都继承），洞察页反过来只报真实数据，
-     * 两者口径不同，所以分成两份快照，别在一个字段里拐弯。
+     * 状态行需呈现「克隆会话」的观感（命中率、token 均继承），洞察页只报真实数据，
+     * 两者口径不同，因此拆成两份快照。
      */
     var insightTiming by mutableStateOf(TimingSnapshot())
         private set
@@ -162,21 +158,21 @@ class ContextState(
         private set
 
     /**
-     * 本轮（这一次回复）累计的 usage：[recordUsage] 每来一次就加，收尾时一次性写进本轮最后一条 assistant。
+     * 本轮（这一次回复）累计的 usage：[recordUsage] 每收到一次就累加，收尾时一次性写入本轮最后一条 assistant。
      *
-     * 一轮里可能要问模型好几次（每次工具调用后都要再问一次），气泡只该显示这一整轮的总账，
-     * 所以先攒着，等 [writeTurnUsage] 才落笔。
+     * 一轮内可能多次请求模型（每次工具调用后都需再次请求），气泡只显示整轮总量，
+     * 因此先累计，待 [writeTurnUsage] 时再写入。
      */
     private var turnPromptTokens = 0
     private var turnCompletionTokens = 0
-    /** 本轮命中缓存的输入 tokens，以及服务端到底报没报这项（没报时面板整行不显示）。 */
+    /** 本轮命中缓存的输入 tokens，以及服务端是否上报该项（未上报时面板整行不显示）。 */
     private var turnCachedTokens = 0
     private var turnCacheReported = false
-    /** 本轮未缓存输入、缓存写入、推理 tokens：换别家模型时这几项才有数。 */
+    /** 本轮未缓存输入、缓存写入、推理 tokens：仅部分模型提供这几项数据。 */
     private var turnUncachedInputTokens = 0
     private var turnCacheWriteTokens: Int? = null
     private var turnReasoningTokens: Int? = null
-    /** 本轮用的「提供方/模型」，在开跑那一刻定格，面板照它显示。 */
+    /** 本轮使用的「提供方/模型」，在开始执行时固定，面板据此显示。 */
     private var turnUsageModel = ""
 
     /** 本回合从哪条消息开始（含）：收尾只在 [turnStartIndex, 末尾] 里找本轮最后一条 assistant。 */
@@ -200,12 +196,12 @@ class ContextState(
     private var turnToolArgMillis = 0L
     private var turnToolCalls = 0
 
-    /** 本轮起点（毫秒）：用于算总账的活跃时长（一次回复的墙钟）。 */
+    /** 本轮起点（毫秒）：用于计算总账的活跃时长（一次回复的实际耗时）。 */
     private var turnStartedAt = 0L
 
     // ---- 上下文摘要（滚动压缩） ----
 
-    /** 设置页改策略：夹到合法范围、落盘、立刻重算快照（下一次请求就用新的）。 */
+    /** 设置页修改策略：限制到合法范围、落盘、立即重算快照（下一次请求使用新策略）。 */
     fun applyContextPolicy(p: ContextPolicy) {
         contextPolicy = ContextStore.normalize(p)
         ContextStore.save(appContext, contextPolicy)
@@ -234,8 +230,7 @@ class ContextState(
             hasSummary = summary.isNotEmpty() && upTo > 0,
             lastSummaryAt = session?.lastSummaryAt ?: 0L
         )
-        // 三段估算在末尾顺带刷一次：用户只有看到「系统提示词 / 工具表 / 消息」各占多少，
-        // 才知道水位是被提示词撑起来的还是被历史撑起来的
+        // 分段估算在末尾同时刷新一次：便于判断水位主要由系统提示词还是消息历史占用
         refreshContextBreakdown()
     }
 
@@ -264,22 +259,16 @@ class ContextState(
     }
 
     /**
-     * 重算上下文分段估算。
-     *
-     * - system：AgentLoop 每次请求现拼的那条系统提示词。这里用同一份 [promptInput] 再拼一次
-     *   （PromptBuilder 是纯函数，多拼一次不产生副作用），拼不出来（全部为空）记 0；
-     * - tool：当前权限档 / 计划模式下的工具表，按 name + 描述 + 参数 JSON 文本长度估；
-     * - user / assistant / toolResult：把请求视图按 role 拆开估，工具结果是历史里涨得最快的部分。
-     *
-     * 各段是独立视角，加起来不保证等于水位（摘要抬头在 system 里，同时也在请求视图里）。
+     * 重算上下文分段估算：system 用同一份 [promptInput] 重新拼接（PromptBuilder 为纯函数），
+     * tool 按工具名、描述与参数 JSON 估算，user / assistant / toolResult 按角色拆分统计。
+     * 各段相互独立，合计不保证等于水位（摘要抬头同时计入 system 与请求视图）。
      */
     fun refreshContextBreakdown() {
         val summary = contextSummary
         val upTo = if (summary.isEmpty()) 0 else normalizedSummaryUpTo()
         val request = requestView(requestStart(summary, upTo), summary, upTo)
         val summaryText = if (summary.isNotEmpty() && upTo > 0) summary else ""
-        // planMode 由 promptInput() 自己带（与 AgentLoop 同一份输入）；摘要单独量一遍，
-        // 不然「提示词」这段把摘要也算进去，用户会以为提示词本身就有几千 token
+        // planMode 由 promptInput() 自带（与 AgentLoop 同源）；摘要单独计量，避免将摘要计入提示词段
         val promptOnly = PromptBuilder.build(promptInput().copy(summaryText = ""))
         val skillTokens = PromptBuilder.skillSectionTokens(promptInput())
         val systemTokens = ((promptOnly?.let { ContextCompactor.estimateText(it) } ?: 0) - skillTokens)
@@ -289,9 +278,8 @@ class ContextState(
         } else {
             ContextCompactor.estimateText(contextSummarySystemText(summaryText))
         }
-        // 工具表：真发出去的是 JSON，但引号逗号的开销相对整段可忽略；
-        // 不构造 JSON 也就没有「某个工具的参数 JSON 不合法直接抛」的风险
-        // 工具表恒定：与真正发出的那一份同源（见 ToolRegistry.specs 的说明），估算才不会偏
+        // 工具表按 name、描述与参数 JSON 估算；不构造 JSON 可避免参数非法导致异常。
+        // 工具表与真实请求同源（见 ToolRegistry.specs 的说明），估算才不会偏
         val specs = registry().specs()
         val toolTokens = if (specs.isEmpty()) {
             0
@@ -305,7 +293,7 @@ class ContextState(
         var toolResultTokens = 0
         for (message in request) {
             when (message.role) {
-                // 摘要抬头在 system 那一段已经算过，这里跳过 system，免得重复计入
+                // 摘要抬头已计入 system 段，此处跳过 system 以免重复
                 "user" -> userTokens += ContextCompactor.estimate(message)
                 "assistant" -> assistantTokens += ContextCompactor.estimate(message)
                 "tool" -> toolResultTokens += ContextCompactor.estimate(message)
@@ -337,10 +325,10 @@ class ContextState(
     }
 
     /**
-     * 真正跑压缩（不含「流式中」那道闸）。
+     * 执行压缩（不检查是否正在流式输出）。
      *
-     * 为什么要把闸门拆出去：溢出恢复必须在流式中调用。那一轮已经被提供方按上下文超限拒了，
-     * 不压缩就没法重发；「两路请求抢同一个会话」这条顾虑只适用于用户手点压缩。
+     * 溢出恢复必须在流式输出过程中调用：该轮已被提供方按上下文超限拒绝，不压缩则无法重发；
+     * 「两路请求争用同一会话」仅对用户手动压缩成立。
      */
     private fun startCompaction(onDone: (Boolean) -> Unit, force: Boolean) {
         if (!contextPolicy.enabled && !force) {
@@ -356,7 +344,7 @@ class ContextState(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // 手动路径同样不能抛：置兜底标记，请求视图退成最近几轮
+                // 手动路径同样不应抛出：置兜底标记，请求视图退化为最近几轮
                 contextFallback = true
                 refreshContext()
                 recordCompressFallback("手动压缩异常：" + (e.message ?: e.javaClass.simpleName))
@@ -371,11 +359,10 @@ class ContextState(
     }
 
     /**
-     * AgentLoop 的溢出恢复回调：压一次上下文，成功就让它重发同一轮。
+     * AgentLoop 的溢出恢复回调：压缩一次上下文，成功后允许重发同一轮。
      *
-     * 为什么套一层超时：summarizeNow 那套是回调式 API，任何一条路径漏掉回调都会把这一轮永久挂住；
-     * 超时之后最坏只是「这次没压成」，AgentLoop 会把提供方原话报给用户，不会卡死。
-     * 走 [startCompaction] 而不是 summarizeNow：溢出发生在流式中，那道「流式中别压」的闸必须绕开。
+     * summarizeNow 为回调式 API，任一分支遗漏回调都会使本轮永久挂起；超时最坏仅本次未压缩成功，
+     * AgentLoop 会将提供方原文返回给用户。此处走 [startCompaction] 以避开「流式中不压缩」的限制。
      */
     suspend fun onOverflowCompaction(): Boolean =
         withTimeoutOrNull(OVERFLOW_COMPACT_TIMEOUT_MS) {
@@ -392,7 +379,7 @@ class ContextState(
         if (isStreaming()) return
         contextFallback = false
         val id = currentSessionId()
-        // 清除前的分界要留证：清完这一条就没了，事件里得写上当时压到哪
+        // 清除前的分界需留存记录：该条清除后即不存在，事件中需记录当时压缩至何处
         val boundary = sessions().firstOrNull { it.id == id }?.summaryUpTo ?: 0
         writeSessions(sessions().map {
             if (it.id == id) it.copy(contextSummary = "", summaryUpTo = 0, lastSummaryAt = 0L) else it
@@ -413,7 +400,7 @@ class ContextState(
      * 记一条上下文事件并立刻刷新列表。
      *
      * 为什么写完马上重读：事件是给人排查用的，用户点完「立即压缩」就该在页面上看到这一条，
-     * 等他切会话再切回来才出现，等于告诉他「刚才那次压缩没记录」。
+     * 待其切换会话再切回后才出现，等同于提示「本次压缩未记录」。
      */
     private fun recordContextEvent(
         kind: ContextEventKind,
@@ -445,7 +432,7 @@ class ContextState(
      * 压缩失败 → 退兜底：两条事件一起记。
      *
      * 为什么分两条：失败原因是「这次没压成」，兜底窗口是「没压成之后发的是什么」，
-     * 合成一条就没法分别按类型过滤，页面上也说不清。
+     * 合并为一条则无法按类型分别过滤，页面也无法明确说明。
      */
     private fun recordCompressFallback(reason: String) {
         // 失败事件也要带上兜底轮数：描述行要写「已退回最近 N 轮」，不传就渲染成 0 轮
@@ -474,7 +461,7 @@ class ContextState(
      * 双触发闸门（或关系）：
      * ① 估算 tokens / 上下文窗口 ≥ triggerRatio；
      * ② 自上次摘要后新增 user 消息数 ≥ triggerCount（可关）。
-     * 前提是「分界确实往前走了」：没有可摘要的内容就不触发，免得空转重复调模型。
+     * 前提是「分界确实前移」：无可摘要内容时不触发，避免空转并重复调用模型。
      */
     fun shouldSummarize(): Boolean {
         val policy = contextPolicy
@@ -514,7 +501,7 @@ class ContextState(
             return provider() to modelName()
         }
         val baseUrl = cfg.baseUrl.trim().trimEnd('/').ifBlank {
-            // 只有内置 DeepSeek 允许回落到官方端点；别家空地址由 provider 明确报错
+            // 仅内置 DeepSeek 允许回退至官方端点；其他厂商的空地址由 provider 明确报错
             if (cfg.id == ProviderStore.DEEPSEEK_ID) ApiDefaults.BASE_URL else ""
         }
         return DeepSeekProvider(apiKey = cfg.apiKey, baseUrl = baseUrl) to model
@@ -578,7 +565,7 @@ class ContextState(
         )
 
         if (text.isNullOrBlank()) {
-            // 失败兜底：请求视图只发最近 fallbackKeepRounds 轮，绝不阻塞、也不破坏主请求
+            // 失败兜底：请求视图仅发送最近 fallbackKeepRounds 轮，绝不阻塞，也不影响主请求
             contextFallback = true
             refreshContext()
             recordCompressFallback("摘要结果为空（" + (System.currentTimeMillis() - startedAt) + "ms）")
@@ -647,7 +634,7 @@ class ContextState(
      */
     fun refreshStats() {
         refreshContext()
-        // 总账在内存里读一次就够（load 重复调用是空操作）；顺手兜住「进程刚起来还没读过盘」的情况
+        // 总账在内存中读取一次即可（重复调用 load 为空操作）；同时覆盖「进程刚启动尚未读盘」的情况
         UsageLedger.load(appContext)
         val ledger = UsageLedger.snapshot()
         // 本会话累计的唯一来源是会话记录本身（重启后 stats 是空的，必须从那里读回来）
@@ -676,23 +663,23 @@ class ContextState(
 
     /**
      * 换了会话（切换 / 新建 / 删除 / 工作区跳转 / 回滚）后统计跟着换：
-     * 累计与请求次数从这条会话自己的字段读回来（不再清零，切走再切回来能接上）；
+     * 累计与请求次数从该会话自身的字段读取（不清零，切换离开后返回仍可接续）；
      * 「本次回复步数」和「最近一次用量」归零，轮数与水位按新消息重算。
      */
     fun resetStats() {
         // 整体换一个新快照：steps / last* 归零；
-        // 累计与请求次数由 refreshStats 从当前会话的字段读回来（不再清零）
+        // 累计与请求次数由 refreshStats 从当前会话字段读取（不执行清零）
         // 摘要失败的兜底标记是「上一份会话」的状态（回滚也会走到这里），换会话必须清掉，
-        // 否则会把别的会话的历史也裁成最近几轮
+        // 否则会将其他会话的历史同样裁剪为最近几轮
         contextFallback = false
         stats = UsageStats()
         // refreshStats 内部会调 refreshContext，水位与覆盖条数一起重算
         refreshStats()
         // 时间账也是「这条会话」的：换会话必须从会话记录重新读，不能把上一条的耗时带过来
         syncSessionTiming()
-        // 计划与目标同样按会话存：切过去就得换成那条会话的，否则计划页会显示上一条会话的计划
+        // 计划与目标同样按会话存储：切换后需替换为该会话的数据，否则计划页会显示上一会话的计划
         reloadSessionDocs()
-        // 上下文事件也是按会话存的：切过去就该看到那条会话自己的压缩记录
+        // 上下文事件同样按会话存储：切换后应显示该会话自身的压缩记录
         reloadContextEvents()
     }
 
@@ -788,7 +775,7 @@ class ContextState(
         )
         // 洞察页口径：减掉分叉继承的基线，只留自分支起的真实部分。
         // 缓存与速度三类累计（cacheHit/Miss、ttft、gen）洞察页不展示，这里不填，
-        // 免得把继承值误当成这条分支自己的数据。
+        // 避免将继承值误认为该分支自身的数据。
         val inherited = session?.inheritedUsage ?: InheritedUsage()
         insightTiming = TimingSnapshot(
             modelMillis = ((session?.modelMillis ?: 0L) - inherited.modelMillis).coerceAtLeast(0L),
@@ -956,13 +943,13 @@ class ContextState(
         }
         usage.cacheWriteTokens?.let { turnCacheWriteTokens = (turnCacheWriteTokens ?: 0) + it }
         usage.reasoningTokens?.let { turnReasoningTokens = (turnReasoningTokens ?: 0) + it }
-        // 缓存命中 / 未命中只认服务端真的报过的那次：没报就别记，否则界面上会冒出一个
-        // 看着像「缓存一次都没命中」的 0%，其实只是这家服务商不给这个字段
+        // 缓存命中 / 未命中仅认可服务端实际上报的那一次：未上报则不记录，否则界面会显示一个
+        // 看似「缓存一次都未命中」的 0%，实际仅因该服务商不提供此字段
         val hitTokens = if (usage.cacheReadReported) usage.cacheReadTokens else 0
         val missTokens = if (usage.cacheReadReported) usage.uncachedInputTokens else 0
         // 计费构成：这次请求视图的估算占比 × 真实 prompt tokens；输出直接取 completion
         val scaled = scaledComposition(promptTokens, completionTokens)
-        // 本会话计数写回当前会话那条记录（切会话不丢、回来能接上），随后落盘
+        // 本会话计数写回当前会话记录（切换会话不丢失、返回后可接续），随后落盘
         val id = currentSessionId()
         writeSessions(sessions().map {
             if (it.id == id) {
@@ -1027,7 +1014,7 @@ class ContextState(
         // 水位跟着这次请求的上下文重算：一次回复里可能问模型好几次，圆环与状态行必须在
         // 这条回复跑的过程中就往前走，不能等到整轮收尾或者切会话才有变化
         refreshContext()
-        // 会话累计输出 tokens 变了：时间账面板读的是 sessionTiming，这里顺手同步
+        // 会话累计输出 tokens 变化：时间账面板读取 sessionTiming，此处同步更新
         syncSessionTiming()
     }
 
@@ -1208,13 +1195,13 @@ class ContextState(
         val textRaw = (session.textMillis - inherited.textMillis).coerceAtLeast(0L)
         val toolArg = (session.toolArgMillis - inherited.toolArgMillis).coerceAtLeast(0L)
         // 老会话只有 genMillis（思考+正文合在一起）：把「新细分没有覆盖到」的那部分补进模型回复，
-        // 免得整段旧生成时间掉进「其他开销」
+        // 避免整段旧生成时间归入「其他开销」
         val genLegacy = (session.genMillis - inherited.genMillis).coerceAtLeast(0L)
         val detailedGen = reasoning + textRaw + toolArg
         val text = textRaw + (genLegacy - detailedGen).coerceAtLeast(0L)
         val toolMs = (session.toolMillis - inherited.toolMillis).coerceAtLeast(0L)
         // 洞察页的「活跃时长」= 模型流 + 工具执行（DSH 同口径），
-        // 不用消息首末差：那个跨度含几天闲置，会把耗时环压成「其他 99.9%」
+        // 不使用消息首末差值：该跨度包含数日闲置时间，会使耗时环几乎全部归入「其他」
         val modelMs = (session.modelMillis - inherited.modelMillis).coerceAtLeast(0L)
         val active = modelMs + toolMs
         val speed = if (hasOwnUsage && session.lastTurnModelMillis > 0 &&
@@ -1276,7 +1263,7 @@ class ContextState(
             .filterKeys { range == InsightRange.ALL || it >= fromDate }
             .values
             .fold(LedgerUsage()) { acc, day -> acc.merge(day) }
-        // 遗留代表「第一条有明细的日子之前」那段历史。只要窗口起点早于那一天就与它重叠，
+        // 遗留项表示「第一条有明细的日期之前」的历史。窗口起点早于该日期时即与其重叠，
         // 必须计入；窗口从明细第一天开始算（如「今天」）时不计，否则今天的数字会被历史撑起来。
         val legacy = ledger.legacy.takeIf {
             range == InsightRange.ALL || ledger.firstUsageDay.isEmpty() || fromDate < ledger.firstUsageDay

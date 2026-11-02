@@ -36,7 +36,7 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
 
-/** 开源与致谢里用到的地址：只在这里出现一次，改动时不会漏掉某一行。 */
+/** 开源与致谢中使用的地址统一集中在此，便于集中维护。 */
 private object AboutLinks {
     const val REPO = "https://github.com/MingMaple/Mingent"
     const val ISSUES = REPO + "/issues"
@@ -52,8 +52,8 @@ private object AboutLinks {
 /**
  * 「关于」页：版本、开源地址、第三方组件与致谢。
  *
- * 单独成页而不是塞进通用设置：这里全是只读信息，混进可改的设置项里会让人以为能点。
- * 版式沿用设置层的卡片列表（16dp 圆角、surface 底、不描边），与 Salt 风格保持一致。
+ * 单独成页：内容均为只读信息，混入可修改的设置项容易引起误解。
+ * 版式沿用设置层的卡片列表（16dp 圆角、surface 底、不描边），与 Salt 风格一致。
  */
 @Composable
 fun AboutPage(onBack: () -> Unit) {
@@ -210,7 +210,7 @@ fun AboutPage(onBack: () -> Unit) {
     }
 }
 
-/** 打开外部链接：没有浏览器时不崩，静默忽略（这里没有可用的提示位）。 */
+/** 打开外部链接：无浏览器时静默忽略，此处没有可用的提示位。 */
 private fun openLink(context: Context, url: String) {
     runCatching {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -228,7 +228,7 @@ private fun AboutCard(title: String, content: @Composable () -> Unit) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
     ) {
-        // 行自己带内距：卡片 Column 不垫上下留白，末行的波纹才能贴到 16dp 圆弧上被裁成圆角
+        // 行自带内距，卡片 Column 不留上下留白，避免影响末行波纹的圆角裁剪
         Column(modifier = Modifier) {
             Text(
                 text = title,
@@ -248,7 +248,7 @@ private fun AboutDivider() {
     )
 }
 
-/** 一行「左标题 / 右值」；给了 onClick 就带「›」并且整行可点。 */
+/** 一行左右布局；提供 onClick 时整行可点并显示「›」。 */
 @Composable
 private fun AboutRow(
     label: String,

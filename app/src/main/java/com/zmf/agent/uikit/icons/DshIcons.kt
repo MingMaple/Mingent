@@ -11,12 +11,12 @@ import androidx.compose.ui.unit.dp
 /**
  * DSH 图标源里的几枚：加号（IconPlus）、列表 + 笔（IconListPen），以及侧边栏工作区分组用的文件夹。
  *
- * 口径照原图：viewBox 16×16、线宽 1、stroke / fill 都吃 currentColor。
- * 取色统一给 SolidColor(Color.Black)，真正的颜色交给调用方 Icon(tint = ...) 决定，
- * 深浅色主题直接复用同一份形状，不用各画一套。
+ * 规范沿用原图：viewBox 16×16、线宽 1，stroke 与 fill 均使用 currentColor。
+ * 取色统一为 SolidColor(Color.Black)，实际颜色由调用方 Icon(tint = ...) 决定；
+ * 深浅色主题复用同一形状，无需各绘一套。
  */
 
-/** 统一的 builder：16×16 的画布，尺寸也用 16dp，跟图标源一一对应。 */
+/** 统一 builder：16×16 画布，尺寸同为 16dp，与图标源一一对应。 */
 private fun dshIcon(): ImageVector.Builder = ImageVector.Builder(
     defaultWidth = 16.dp,
     defaultHeight = 16.dp,
@@ -26,7 +26,7 @@ private fun dshIcon(): ImageVector.Builder = ImageVector.Builder(
 
 /**
  * 只描边、不填色的路径；端点 / 拐角都收圆。
- * 线宽做成参数：文件夹这类「分组标题」的图标要比细线图标重一点才立得住，默认仍是 1。
+ * 线宽作为参数：文件夹这类分组标题图标需略粗于细线图标以保持视觉分量，默认仍为 1。
  */
 private fun ImageVector.Builder.strokePath(data: String, width: Float = 1f) = addPath(
     pathData = addPathNodes(data),
@@ -47,7 +47,7 @@ private fun ImageVector.Builder.fillPath(data: String) = addPath(
     strokeLineJoin = StrokeJoin.Round
 )
 
-/** 加号：两条 stroke，一眼看就是「添加」。 */
+/** 加号：两条 stroke，可直接识别为「添加」。 */
 val PlusIcon: ImageVector = dshIcon().apply {
     strokePath("M8 2V14")
     strokePath("M2 8H14")
@@ -55,7 +55,7 @@ val PlusIcon: ImageVector = dshIcon().apply {
 
 /**
  * IconListPen（列表 + 笔）：前两条 stroke 是列表里的两行字，
- * 后三条 fill 分别是纸片外框、笔身、笔尖，拼起来就是「边看清单边写东西」。
+ * 后三条 fill 分别为纸片外框、笔身与笔尖，组合后表示「查看清单并记录」。
  */
 val PlanIcon: ImageVector = dshIcon().apply {
     strokePath("M4.9375 5.90295H11.0625")
@@ -83,10 +83,10 @@ val PlanIcon: ImageVector = dshIcon().apply {
 }.build()
 
 /**
- * 工作区分组用的文件夹：圆角外框 + 顶部小盖（左半段是平顶，折一道斜边落到右半段的顶），纯描边。
+ * 工作区分组用的文件夹：圆角外框与顶部小盖（左半段为平顶，经一道斜边落至右半段顶部），纯描边。
  *
- * 线宽 1.4 而不是 1：这个图标跟 14sp 半粗的工作区名并排，细一号会显得比文字更弱，
- * 分组层级就压不住了。viewBox 仍是 16×16、走同一套 builder，颜色照旧交给调用方 tint。
+ * 线宽取 1.4 而非 1：该图标与 14sp 半粗工作区名并排，线宽更细会弱于文字，
+ * 无法体现分组层级。viewBox 仍为 16×16，使用同一套 builder，颜色仍交由调用方 tint。
  */
 val FolderIcon: ImageVector = dshIcon().apply {
     strokePath(
@@ -97,10 +97,10 @@ val FolderIcon: ImageVector = dshIcon().apply {
 }.build()
 
 /**
- * 24×24 网格的一套：抽屉里「主页 / 终端 / 设置」这三行，还有后面其它页面的界面骨架图标。
+ * 24×24 网格的一套：抽屉中「主页 / 终端 / 设置」三行，以及其他页面的界面骨架图标。
  *
- * 口径跟上面 16 网格那几枚一致（只描边、端点与拐角收圆、SolidColor 黑、实际颜色交给 Icon(tint)），
- * 只是网格提到 24、线宽统一 1.8：这三枚要跟 16sp 的正文并排，线太细会立不住。
+ * 规范与上述 16 网格图标一致（仅描边、端点与拐角圆角、SolidColor 黑、实际颜色交由 Icon(tint)），
+ * 仅网格改为 24、线宽统一为 1.8：这三枚需与 16sp 正文并排，线宽过细会显得单薄。
  */
 private fun saltIcon24(): ImageVector.Builder = ImageVector.Builder(
     defaultWidth = 24.dp,
@@ -120,7 +120,7 @@ private const val GEAR_OUTLINE =
         "L8.39 18.00L6.40 19.43L4.57 17.60L6.00 15.61L5.21 13.69L2.79 13.29L2.79 10.71" +
         "L5.21 10.31L6.00 8.39L4.57 6.40L6.40 4.57L8.39 6.00L10.31 5.21Z"
 
-/** 齿轮的内孔：半径 3.3 的圆，用四段三次贝塞尔拼（矢量路径里比弧线好对齐）。 */
+/** 齿轮的内孔：半径 3.3 的圆，由四段三次贝塞尔曲线构成（矢量路径中对齐更容易）。 */
 private const val GEAR_HUB =
     "M12 8.7C13.82 8.7 15.3 10.18 15.3 12C15.3 13.82 13.82 15.3 12 15.3" +
         "C10.18 15.3 8.7 13.82 8.7 12C8.7 10.18 10.18 8.7 12 8.7Z"
@@ -128,11 +128,11 @@ private const val GEAR_HUB =
 /**
  * 抽屉三行（主页 / 终端 / 设置）用的三枚图标：24 网格线稿，同一套线宽与圆角。
  *
- * 放在 object 里是为了调用方一眼看清「这三枚是一套」，也免得再往文件里撒两个同级 val。
+ * 置于 object 中便于调用方识别「这三枚属于同一套」，也避免在文件中新增多个同级 val。
  */
 object DshIcons {
 
-    /** 终端：圆角方框 + 里面一个「>」，尾巴带一小段下划线，读起来就是一行命令行。 */
+    /** 终端：圆角方框内含一个「>」，尾部带一小段下划线，表示一行命令行。 */
     val Terminal: ImageVector = saltIcon24().apply {
         strokePath(
             "M6.4 3.6C4.8 3.6 3.6 4.8 3.6 6.4V17.6C3.6 19.2 4.8 20.4 6.4 20.4H17.6" +
@@ -143,7 +143,7 @@ object DshIcons {
         strokePath("M12.4 15H16.2", width = ICON_STROKE)
     }.build()
 
-    /** 主页：一道屋顶折线 + 两侧墙与地面，墙顶压在屋顶线上，中间不留缝。 */
+    /** 主页：一道屋顶折线、两侧墙与地面，墙顶与屋顶线贴合，不留间隙。 */
     val Home: ImageVector = saltIcon24().apply {
         strokePath("M3.6 10.9L12 3.6L20.4 10.9", width = ICON_STROKE)
         strokePath(
@@ -158,10 +158,10 @@ object DshIcons {
         strokePath(GEAR_HUB, width = ICON_STROKE)
     }.build()
 
-    // ── 设置首页的一级入口：跟上面三枚同一套 24 网格、同一线宽，
-    //    只是这些行是 15sp 正文，图标缩到 18dp 使用。全部只描边，颜色交给 Icon(tint)。
+    // ── 设置首页的一级入口：与上述三枚使用同一套 24 网格与线宽，
+    //    仅这些行为 15sp 正文，图标缩至 18dp 使用。全部仅描边，颜色交由 Icon(tint)。
 
-    /** 包管理：立方包裹，顶面菱形 + 两条前棱，读起来就是「一个盒子」。 */
+    /** 包管理：立方包裹，顶面菱形与两条前棱，表示为「一个盒子」。 */
     val Package: ImageVector = saltIcon24().apply {
         strokePath("M12 3.4L20.1 8.0V16.0L12 20.6L3.9 16.0V8.0Z", width = ICON_STROKE)
         strokePath("M3.9 8.0L12 12.6L20.1 8.0", width = ICON_STROKE)
@@ -189,7 +189,7 @@ object DshIcons {
                 "C5.2 6.1 6.1 5.2 7.2 5.2Z",
             width = ICON_STROKE
         )
-        // 核心方块给到 5.2 单位：太小的话 18dp 下会糊成一个点，看着像「摄像头」而不是「芯片」
+        // 核心方块取 5.2 单位：过小在 18dp 下会合并为一点，形似摄像头而非芯片
         strokePath("M9.4 9.4H14.6V14.6H9.4Z", width = ICON_STROKE)
         strokePath("M12 3.4V5.2", width = ICON_STROKE)
         strokePath("M12 18.8V20.6", width = ICON_STROKE)
@@ -197,7 +197,7 @@ object DshIcons {
         strokePath("M18.8 12H20.6", width = ICON_STROKE)
     }.build()
 
-    /** 上下文洞察：眼睛，「只是看，不改」，中间是瞳孔。 */
+    /** 上下文洞察：眼睛造型，表示「仅查看、不修改」，中间为瞳孔。 */
     val Eye: ImageVector = saltIcon24().apply {
         strokePath(
             "M2.9 12C5.4 7.6 8.5 5.8 12 5.8C15.5 5.8 18.6 7.6 21.1 12" +
@@ -211,7 +211,7 @@ object DshIcons {
         )
     }.build()
 
-    /** 上下文配置：三根滑杆 + 各自的旋钮，位置错开以读出「可调」。 */
+    /** 上下文配置：三根滑杆与各自旋钮，位置错开以体现可调节。 */
     val Sliders: ImageVector = saltIcon24().apply {
         strokePath("M4.0 7.2H20.0", width = ICON_STROKE)
         strokePath("M4.0 12.0H20.0", width = ICON_STROKE)
@@ -230,7 +230,7 @@ object DshIcons {
         )
     }.build()
 
-    /** 长期记忆：书签，「留着的、以后还要翻的东西」。 */
+    /** 长期记忆：书签，表示「留存待查阅的内容」。 */
     val Bookmark: ImageVector = saltIcon24().apply {
         strokePath(
             "M7.2 3.8H16.8C17.3 3.8 17.7 4.2 17.7 4.7V20.2L12 16.2L6.3 20.2V4.7" +
@@ -239,7 +239,7 @@ object DshIcons {
         )
     }.build()
 
-    /** 关于：圆圈里一个 i（一点一竖），只读信息那一页的通用符号。 */
+    /** 关于：圆圈内含一个 i（一点一竖），只读信息页的通用符号。 */
     val Info: ImageVector = saltIcon24().apply {
         strokePath(
             "M12 3.4C16.75 3.4 20.6 7.25 20.6 12C20.6 16.75 16.75 20.6 12 20.6" +
@@ -253,4 +253,3 @@ object DshIcons {
         )
     }.build()
 }
-

@@ -16,8 +16,8 @@ import kotlinx.coroutines.launch
 /**
  * 数据备份与恢复：导出、读清单、导入，以及「导入后必须重启」这道闸。
  *
- * 从 [ChatViewModel] 搬出，行为不变：状态字段名与原成员逐字一致，方法体原样照搬；
- * 协程域仍由调用方传进来（导出/导入本来就是界面点起来的动作）。
+ * 从 [ChatViewModel] 拆出，行为不变：状态字段名与原成员逐字一致，方法体原样保留；
+ * 协程域仍由调用方传入（导出与导入本就由界面触发）。
  */
 class BackupController(private val appContext: Context) {
 
@@ -32,8 +32,8 @@ class BackupController(private val appContext: Context) {
     /**
      * 上一次导出 / 导入的结果，非空时在**数据页**里显示一行。
      *
-     * 为什么不再挂到主页那条状态行上：导出是从数据页点起来的，进度也在那儿看着；
-     * 结果却跑到主页去，人还留在数据页上等于什么都没看到。
+     * 为什么不挂到主页状态行：导出由数据页触发，进度也在该页显示；
+     * 结果若显示在主页，而用户仍停留在数据页，则无法看到。
      */
     var backupNotice by mutableStateOf<String?>(null)
         private set
@@ -50,7 +50,7 @@ class BackupController(private val appContext: Context) {
      * 刚导入完、还没重启。
      *
      * 磁盘上的数据已经是备份里的那一份，但内存里还是旧列表：这时任何一次落盘
-     * 都会把刚导入的数据盖掉。所以从导入成功起：发送直接拒绝、落盘全部跳过，
+     * 都会覆盖刚导入的数据。因此自导入成功起：发送直接拒绝、落盘全部跳过，
      * 等用户重启进程（内存从磁盘重新读）才放开。
      */
     var needsRestart by mutableStateOf(false)
@@ -75,7 +75,7 @@ class BackupController(private val appContext: Context) {
                         append("导出成功：")
                         append(displayNameOf(uri) ?: "备份文件")
                         append("（").append(size).append("）")
-                        // 终端环境被跳过时把原因说出来，别让人以为整包都齐了
+                        // 终端环境被跳过时说明原因，避免误认为整包已完整
                         outcome.note?.let { append("\n").append(it) }
                     }
                     FileLog.log(
@@ -159,7 +159,7 @@ class BackupController(private val appContext: Context) {
                     )
                 },
                 onFailure = { e ->
-                    // 导入失败也落在数据页那一行（报告对话框之外还能看到上一句）
+                    // 导入失败也显示在数据页那一行（报告对话框之外仍可看到前一句）
                     backupNotice = "导入失败：" + (e.message ?: e.javaClass.simpleName)
                     FileLog.log("backup", "导入失败：" + e)
                 }

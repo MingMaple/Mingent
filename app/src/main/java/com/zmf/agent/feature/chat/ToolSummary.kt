@@ -5,23 +5,23 @@ import org.json.JSONObject
 import java.io.File
 
 /*
- * 工具卡的两件「纯数据」活：一句话总结、输出里的图片附件。
+ * 工具卡的两项纯数据处理：一句话总结、输出中的图片附件。
  *
- * 为什么单独一个文件：主页卡（ToolBlock.kt）与轨迹卡（TraceToolCard.kt）刻意是两份 UI
- * （两页语义不同，见各自的 KDoc），但它们对「这条工具干了什么」「输出里有没有图」的判断
- * 必须一模一样。这两件事都是纯函数，抽出来共用不违反那条划分，反而少一处漂移的可能。
+ * 为什么单独一个文件：主页卡（ToolBlock.kt）与轨迹卡（TraceToolCard.kt）有意分为两份 UI
+ * （两页语义不同，见各自 KDoc），但其对「这条工具执行了什么」「输出中是否有图」的判断
+ * 必须一致。两项均为纯函数，抽出共用不违反该划分，且可减少一处不一致的可能。
  */
 
 /** 一句话总结的字符上限：标题行只有一行，再长就省略号。 */
 private const val SUMMARY_LIMIT = 44
 
-/** 参数里最像「宾语」的字段，按优先级取第一个非空值。 */
+/** 参数中最可能充当宾语的字段，按优先级取第一个非空值。 */
 private val SUMMARY_ARG_KEYS = listOf(
     "path", "file_path", "filePath", "command", "cmd", "query", "url",
     "description", "prompt", "title", "goal", "pattern", "name", "session_id"
 )
 
-/** 每个工具自己的动词：一眼能读出「在干什么」，不需要用户认工具名。 */
+/** 每个工具对应的动词：无需识别工具名即可读出「正在执行什么」。 */
 private val TOOL_VERBS = mapOf(
     "read_file" to "读取",
     "write_file" to "写入",
@@ -40,10 +40,10 @@ private val TOOL_VERBS = mapOf(
 )
 
 /**
- * 这条工具干了什么，一句话。
+ * 这条工具执行了什么，一句话说明。
  *
- * 规则：动词 + 参数里的「宾语」（路径 / 命令 / 查询词 …），截断到 SUMMARY_LIMIT。
- * 认不出的工具退化成「工具名 · 首参数」，至少不空着。
+ * 规则：动词 + 参数中的宾语（路径 / 命令 / 查询词 …），截断至 SUMMARY_LIMIT。
+ * 无法识别的工具退化为「工具名 · 首参数」，至少不为空。
  */
 internal fun toolSummary(name: String, arguments: String): String {
     val verb = TOOL_VERBS[name]
@@ -58,10 +58,10 @@ internal fun toolSummary(name: String, arguments: String): String {
 }
 
 /**
- * 参数是不是「等于没有」。
+ * 参数是否「等于空」。
  *
- * 空串、全空白、花括号空对象、只含 null / 空串 / 空数组的对象，一律算空：这种时候整块参数区
- * 都不该渲染，否则「参数」标题下面只会剩一个空花括号的空块。
+ * 空串、全空白、花括号空对象、仅含 null / 空串 / 空数组的对象，均视为空：此时参数区
+ * 不应渲染，否则「参数」标题下仅剩一个空花括号。
  */
 internal fun toolArgIsBlank(arguments: String): Boolean {
     if (arguments.isBlank()) return true
@@ -83,7 +83,7 @@ internal fun toolArgIsBlank(arguments: String): Boolean {
     return true
 }
 
-/** 参数里最像「宾语」的那一个值；取不到就整串压成一行。 */
+/** 参数中最可能充当宾语的值；取不到时将整串压为一行。 */
 private fun pickArg(arguments: String): String {
     if (arguments.isBlank()) return ""
     val flat = arguments.trim().let { raw ->
@@ -116,14 +116,14 @@ internal data class ToolAttachment(
 
 private val IMAGE_SUFFIXES = listOf(".png", ".jpg", ".jpeg", ".webp", ".gif")
 
-/** 一条输出里最多画几张附件卡：再多就不是「看结果」而是「翻相册」了。 */
+/** 一条输出最多绘制几张附件卡：再多则成为「翻阅相册」而非「查看结果」。 */
 private const val MAX_ATTACHMENTS = 6
 
 /**
- * 从工具输出里挑出真实存在的图片，做成附件卡的数据。
+ * 从工具输出中筛选真实存在的图片，生成附件卡数据。
  *
- * 只认**存在**的文件；解析不出来的路径直接忽略，绝不抛异常：
- * 输出是模型写的文本，不能假设它格式正确。
+ * 仅认可**存在**的文件；无法解析的路径直接忽略，绝不抛出异常：
+ * 输出为模型生成的文本，不可假设其格式正确。
  */
 internal fun toolAttachments(output: String?, root: File?): List<ToolAttachment> {
     if (output.isNullOrBlank()) return emptyList()

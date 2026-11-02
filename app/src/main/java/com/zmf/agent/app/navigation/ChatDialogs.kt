@@ -1,211 +1,38 @@
 package com.zmf.agent.app.navigation
-import com.zmf.agent.uikit.components.FoldToggle
-import com.zmf.agent.feature.terminal.TerminalActivity
-import com.zmf.agent.core.llm.ApiDefaults
-import com.zmf.agent.uikit.common.BoundedScrollColumn
-import com.zmf.agent.uikit.common.blockTapsOnly
 
-import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.ContentValues
 import android.content.Context
-import android.content.ContextWrapper
-import android.content.Intent
-import android.graphics.BitmapFactory
-import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.DocumentsContract
-import android.provider.MediaStore
-import android.provider.Settings
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.isImeVisible
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.animation.animateContentSize
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerInputScope
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.zmf.agent.capability.config.ApiConfig
-import com.zmf.agent.core.store.GoalPhase
-import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.TodoStore
-import com.zmf.agent.capability.subagent.SubAgentRegistry
-import com.zmf.agent.core.store.WorkSpace
-import com.zmf.agent.core.store.WorkSpaceStore
-import com.zmf.agent.infra.api.BalanceClient
-import com.zmf.agent.infra.api.BalanceResult
-import com.zmf.agent.infra.backup.BackupArchive
-import com.zmf.agent.infra.backup.BackupOptions
-import com.zmf.agent.infra.system.ShizukuBridge
-import com.zmf.agent.core.log.FileLog
-import com.zmf.agent.core.model.ChatMessage
-import com.zmf.agent.feature.float.FloatingBallService
-import com.zmf.agent.capability.tools.displayName
-import com.zmf.agent.feature.settings.AboutPage
 import com.zmf.agent.feature.settings.CreateWorkspaceDialog
-import com.zmf.agent.feature.settings.LogsPage
-import com.zmf.agent.feature.settings.ArchivePage
-import com.zmf.agent.feature.settings.TrashPage
-import com.zmf.agent.feature.settings.PackagePage
-import com.zmf.agent.feature.settings.PermissionPage
-import com.zmf.agent.feature.schedule.SchedulePage
-import com.zmf.agent.feature.settings.ContextConfigPage
-import com.zmf.agent.feature.settings.MemoryPage
-import com.zmf.agent.feature.settings.DataSettingsPage
-import com.zmf.agent.feature.settings.GeneralSettingsPage
-import com.zmf.agent.feature.settings.ModelSettingsPage
-import com.zmf.agent.feature.settings.SettingsHomePage
-import com.zmf.agent.core.store.UsageLedger
-import com.zmf.agent.capability.prompt.PromptStore
-import com.zmf.agent.feature.chat.ChatComposer
-import com.zmf.agent.feature.chat.ComposerCommand
-import com.zmf.agent.feature.chat.ComposerStatus
-import com.zmf.agent.feature.chat.ContextUsageInfo
-import com.zmf.agent.feature.chat.TracePage
-import com.zmf.agent.feature.shell.AppDrawerContent
-import com.zmf.agent.uikit.components.salt.SaltDrawer
-import com.zmf.agent.uikit.components.salt.SaltFullPane
-import com.zmf.agent.uikit.components.salt.SaltSwitch
-import com.zmf.agent.uikit.theme.Motion
-import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
-import com.zmf.agent.uikit.theme.ThemeMode
-import com.zmf.agent.uikit.theme.UiScaleStore
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
 import com.zmf.agent.feature.chat.MinimalDialog
 import com.zmf.agent.feature.chat.exportSizeText
 import com.zmf.agent.feature.chat.BackupToggleRow
@@ -215,8 +42,8 @@ import com.zmf.agent.feature.chat.ChatViewModel
 /**
  * 聊天页的全部模态框：新建工作区、导出选项、导入确认、导入结果、清单全表、回滚确认。
  *
- * 它们与主界面无关（不占布局位置、不吃手势），只读写 [ChatUiState] 与 [ChatViewModel]，
- * 所以从 [ChatScreen] 里整块搬出来，主函数只留一行调用。
+ * 它们与主界面布局无关（不占用布局位置、不拦截手势），仅读写 [ChatUiState] 与 [ChatViewModel]，
+ * 因此独立于 [ChatScreen] 实现，主函数仅保留一行调用。
  */
 @Composable
 internal fun ChatDialogs(
@@ -224,7 +51,7 @@ internal fun ChatDialogs(
     ui: ChatUiState,
     context: Context,
     scope: CoroutineScope,
-    /** 导出落点由调用方选（SAF），这一层只管把文件名递出去。 */
+    /** 导出位置由调用方选择（SAF），本层仅负责传递文件名。 */
     onExportLaunch: (String) -> Unit
 ) {
     var showCreateWorkspace by ui.showCreateWorkspace
@@ -243,13 +70,13 @@ internal fun ChatDialogs(
             onDismiss = { showCreateWorkspace = false },
             onCreate = { name, rootPath, treeUri ->
                 showCreateWorkspace = false
-                // createWorkspace 内部已建好一条空会话并切过去，这里只收抽屉、回主页
+                // createWorkspace 内部已创建一条空会话并切换，此处仅收起抽屉并返回主页
                 val created = viewModel.createWorkspace(name, rootPath, treeUri)
                 if (created) {
                     drawerOpen = false
                     page = null
                 } else {
-                    // 目录不可用（未授权 / 已被删 / 不可写）：说一句，别让人以为建好了
+                    // 目录不可用（未授权、已被删除或不可写）：提示用户，避免误认为创建成功
                     Toast.makeText(context, "该目录不可用，请更换后重试", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -267,7 +94,7 @@ internal fun ChatDialogs(
             Spacer(Modifier.height(12.dp))
             BackupToggleRow(
                 title = "包含 Ubuntu 环境",
-                // 体积跟着盘上装了多少走：量出来之前只说「会久一点」，不写死常量
+                // 体积随磁盘实际占用变化：测量完成前仅提示「会久一点」，不使用固定常量
                 hint = if (terminalBytes > 0L) "当前约 " + exportSizeText(terminalBytes) + "，导出会久一点"
                 else "导出会久一点",
                 checked = includeTerminal,
@@ -319,7 +146,7 @@ internal fun ChatDialogs(
         }
     }
 
-    // 导入前的确认：把清单摊开给用户看，避免手滑覆盖
+    // 导入前确认：向用户展示清单，避免误操作导致覆盖
     viewModel.pendingManifest?.let { manifest ->
         MinimalDialog(onDismiss = { viewModel.cancelImport() }) {
             Text(
@@ -374,7 +201,7 @@ internal fun ChatDialogs(
         }
     }
 
-    // 导入结果：成功/跳过/失败逐条列出来，不静默吞错
+    // 导入结果：逐条列出成功、跳过与失败项，不静默忽略错误
     viewModel.importReport?.let { report ->
         MinimalDialog(onDismiss = { viewModel.dismissImportReport() }) {
             Text(
@@ -425,7 +252,7 @@ internal fun ChatDialogs(
         }
     }
 
-    // 清单全表：只读。清单是模型写的，这里不提供勾选（手改会和下一轮写入打架）
+    // 清单全表：只读。清单由模型写入，此处不提供勾选（手动修改会与下一轮写入冲突）
     if (todoDialogVisible) {
         MinimalDialog(onDismiss = { todoDialogVisible = false }) {
             Text(

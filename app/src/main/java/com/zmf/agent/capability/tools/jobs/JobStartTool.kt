@@ -13,7 +13,6 @@ import com.zmf.agent.infra.terminal.ShellResult
 import com.zmf.agent.infra.terminal.TerminalApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -139,7 +138,7 @@ class JobStartTool : Tool {
 
             val done = withTimeoutOrNull(POLL_MS) { result.await() }
             if (done != null || result.isCompleted) {
-                // 收尾：把最后一段输出读干净再结算，免得结算时漏掉结尾几行
+                // 收尾：将最后一段输出完整读取后再结算，避免结算时遗漏结尾若干行
                 val (tail, _) = TerminalApi.readJobLog(context, id, offset)
                 if (tail.isNotEmpty()) JobRegistry.append(id, tail)
                 settle(id, result.await())

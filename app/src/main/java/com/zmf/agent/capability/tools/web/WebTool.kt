@@ -15,16 +15,16 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
 
 /**
- * 抓网页：GET 一次，把 HTML 正文压成纯文本给模型看。
+ * 网页抓取：执行一次 GET，将 HTML 正文转换为纯文本返回给模型。
  *
- * 只做静态抓取（不跑 JS、不装 WebView），所以 SPA 页面可能只拿到一具空壳；
- * 正文提取是最小实现：丢 script/style/noscript/注释，块级标签换行，抹掉剩余标签，反转义常见实体。
+ * 仅执行静态抓取（不运行 JS、不加载 WebView），因此 SPA 页面可能只返回空框架；
+ * 正文提取采用最小实现：移除 script/style/noscript/注释，块级标签换行，去除剩余标签，反转义常见实体。
  *
  * 两个硬约束：
- * - 响应体最多读 [MAX_BODY_BYTES] 字节，超大页面不能直接 body.string()，否则内存会被吃光；
- * - 返回正文按 max_chars 截断（默认 8000，上限 30000），避免把模型上下文撑爆。
+ * - 响应体最多读取 [MAX_BODY_BYTES] 字节，超大页面不得直接调用 body.string()，否则内存将被耗尽；
+ * - 返回正文按 max_chars 截断（默认 8000，上限 30000），避免模型上下文过度膨胀。
  *
- * 网络只在 [Dispatchers.IO] 上做，不碰本地文件，所以权限档是 READ_ONLY。
+ * 网络请求仅在 [Dispatchers.IO] 上执行，不访问本地文件，因此权限档为 READ_ONLY。
  */
 class WebTool : Tool {
 
@@ -130,7 +130,7 @@ class WebTool : Tool {
     /** HTML→纯文本：只用正则，不引 jsoup 之类的依赖。 */
     private fun htmlToText(html: String): String {
         var text = html
-        // 1. 整段丢掉脚本、样式、noscript 回退内容和注释（含标签本身）
+        // 1. 整体移除脚本、样式、noscript 回退内容与注释（含标签本身）
         text = DROP_BLOCKS.replace(text, "\n")
         // 2. 块级标签换成换行，保住段落结构
         text = BLOCK_TAGS.replace(text, "\n")

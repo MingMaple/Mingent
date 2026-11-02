@@ -1,7 +1,6 @@
 package com.zmf.agent.capability.tools.agent
 import com.zmf.agent.core.llm.ApiDefaults
 
-import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.capability.subagent.SubAgentDeps
 import com.zmf.agent.capability.subagent.SubAgentRunner
 import com.zmf.agent.core.model.PermissionLevel
@@ -11,10 +10,10 @@ import com.zmf.agent.capability.tools.ToolResult
 import org.json.JSONObject
 
 /**
- * subagent 工具：把一段能独立执行的任务交给子智能体，拿回它的结论。
+ * subagent 工具：将一段可独立执行的任务交给子智能体，并获取其结论。
  *
- * provider 与 registry 工具层拿不到，靠 [SubAgentDeps] 在启动时注入；
- * 没接线就明确报「子智能体未初始化」，不做「假装成功」的降级。
+ * provider 与 registry 在工具层无法获取，由 [SubAgentDeps] 在启动时注入；
+ * 未注入时明确返回「子智能体未初始化」，不采用伪成功的降级方案。
  */
 class TaskTool : Tool {
 
@@ -80,11 +79,11 @@ class TaskTool : Tool {
         if (prompt.isEmpty() || prompt == "null") {
             return ToolResult.Error("缺少 prompt 参数：把子智能体要独立完成的任务完整写进 prompt")
         }
-        // 显式 null 也按 false：org.json 区分不了「没传」和「传了 null」，这里统一兜住
+        // 显式 null 也按 false 处理：org.json 无法区分「未传」与「传 null」，此处统一处理
         val background = args.optBoolean("run_in_background", false)
         val multiTurn = args.optBoolean("multi_turn", false)
 
-        // 三个覆盖项：没传/传 null 一律当 null（= 继承父会话），不做任何猜测性兜底
+        // 三个覆盖项：未传或传 null 一律视为 null（即继承父会话），不做猜测性兜底
         val thinking = optBooleanOrNull(args, "thinking")
         val effort = optTextOrNull(args, "thinking_effort")
         if (effort != null && !ApiDefaults.EFFORTS.contains(effort)) {
@@ -113,17 +112,17 @@ class TaskTool : Tool {
             multiTurn = multiTurn
         )
         val body = if (background) "[background] " + outcome.answer else outcome.answer
-        // 末尾带回 id 供续聊；被闸拒掉没有记录，单轮的给了 id 也用不上，两种都不写 agent_id 行
+        // 末尾带回 id 供继续会话；被闸门拒绝时无记录，单轮任务返回的 id 也无法使用，两种情况均不写 agent_id 行
         val text = if (outcome.id.isBlank() || !multiTurn) body else body + "\n\nagent_id=" + outcome.id
-        // 失败文本按 Error 回给模型，界面上工具卡才不会显示成「成功」
+        // 失败文本按 Error 返回给模型，界面上的工具卡才不会显示为「成功」
         return if (outcome.ok) ToolResult.Ok(text) else ToolResult.Error(text)
     }
 
-    /** 没传或传了 null 都返回 null（= 继承父会话），交给 Runner 现读。 */
+    /** 未传或传 null 均返回 null（即继承父会话），由 Runner 在执行时读取。 */
     private fun optBooleanOrNull(args: JSONObject, key: String): Boolean? =
         if (args.has(key) && !args.isNull(key)) args.getBoolean(key) else null
 
-    /** 同上，字符串版本：空串也当没传，免得把空白参数当成有效覆盖。 */
+    /** 同上，字符串版本：空串按未传处理，避免空白参数被当作有效覆盖。 */
     private fun optTextOrNull(args: JSONObject, key: String): String? {
         if (!args.has(key) || args.isNull(key)) return null
         return args.getString(key).trim().takeIf { it.isNotEmpty() }

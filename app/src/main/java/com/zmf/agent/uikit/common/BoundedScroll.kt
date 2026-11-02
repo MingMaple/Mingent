@@ -17,30 +17,30 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Dp
 
 /*
- * 有限高、但「只有真超了才吃滑动」的竖滚容器。
+ * 有限高度、仅在内容实际超出时拦截滑动的纵向滚动容器。
  *
- * 为什么不能只写 heightIn(max) + verticalScroll + nestedScroll：
- * 老实现里 nestedScroll 是无条件挂的，它会认领内层滚到边界后的所有剩余位移，
- * 于是内容只有两行、根本不需要滚的块，也会把整页的滑动吃掉，
- * 用户手指划在短文本上，聊天列表一动不动（「滑不动」的手感问题）。
+ * 不能仅使用 heightIn(max) + verticalScroll + nestedScroll 的原因：
+ * 原实现无条件挂载 nestedScroll，它会接收内层滚动到边界后的全部剩余位移，
+ * 导致内容仅两行、无需滚动的区块也会拦截整页滑动，
+ * 用户手指在短文本上滑动时，聊天列表无法移动。
  *
- * 这里的口径是两种：
- *  - 内容没超过上限：内层没有可滚的距离，verticalScroll 在边界不消费，
- *    位移自然交给外层 LazyColumn，等于「整页滚动」；
- *  - 内容超过上限：内层先滚；滚到边界后由 [EatRemainingScroll] 把余量吃掉，
- *    整页不跟着跑（否则滑动会「穿透」到列表，手指还停在块里页面却飞了）。
+ * 此处区分两种情况：
+ *  - 内容未超过上限：内层无可用滚动距离，verticalScroll 在边界不消费，
+ *    位移交由外层 LazyColumn 处理，等同于整页滚动；
+ *  - 内容超过上限：内层优先滚动；到达边界后由 [EatRemainingScroll] 接收剩余位移，
+ *    整页不随之滚动（否则滑动会传递至列表，手指仍在区块内而页面已移动）。
  *
- * 「有没有超过」不额外量一遍：ScrollState.maxValue 是 scrollable 在测量阶段写回的可滚距离，
- * 为 0 就说明装得下。省掉一次 SubcomposeLayout 二次测量，长文本（Markdown）也不会被量两遍。
+ * 「是否超出」不做额外测量：ScrollState.maxValue 为 scrollable 在测量阶段写回的可滚动距离，
+ * 为 0 即表示内容可容纳。如此可省去一次 SubcomposeLayout 二次测量，长文本（Markdown）不会被测量两次。
  */
 
 /**
- * 把内层滚到边界后的剩余位移认领掉，不让它继续往上冒。
+ * 接收内层滚动到边界后的剩余位移，使其不再向上传递。
  *
- * 判据放在事件里（state.maxValue > 0）而不是「挂不挂这个连接」上：
- * 以前按 overflowing 条件增删 nestedScroll，折叠动画期间 modifier 链会跟着变，
- * 同一次布局要重建节点：表现出来就是「动画走完了又跳一下」。条件判断挪进来之后，
- * modifier 链全程不变，短内容仍然把滑动交给外层（行为与原来一致）。
+ * 判定条件置于事件中（state.maxValue > 0），而非「是否挂载该连接」：
+ * 若按 overflowing 条件增删 nestedScroll，折叠动画期间 modifier 链会随之变化，
+ * 同一次布局需要重建节点，表现为动画结束后出现跳动。将条件判断移入事件后，
+ * modifier 链始终保持不变，短内容仍将滑动交由外层处理（行为一致）。
  */
 private class EatRemainingScroll(private val state: ScrollState) : NestedScrollConnection {
     override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
@@ -48,9 +48,9 @@ private class EatRemainingScroll(private val state: ScrollState) : NestedScrollC
 }
 
 /**
- * 内容最多 [maxHeight] 高，超出就在块内竖滚。
+ * 内容高度上限为 [maxHeight]，超出时在区块内纵向滚动。
  *
- * 装得下时整块高度自适应内容，滑动交给外层页面；装不下时才在边界截住滑动。
+ * 内容可容纳时区块高度自适应内容，滑动交由外层页面处理；超出时方在边界拦截滑动。
  */
 @Composable
 fun BoundedScrollColumn(
@@ -63,11 +63,11 @@ fun BoundedScrollColumn(
     Column(
         modifier = modifier
             .heightIn(max = maxHeight)
-            // nestedScroll 必须挂在 verticalScroll **外面**（写在它前面）：
-            // 它扮演的是这个滚动节点的「父级」，只有父级才收得到内层滚到边界后剩下的位移。
-            // 写在 verticalScroll 后面就成了它的子级，永远收不到余量，表现就是
-            // 「框里滑到底之后，整页对话跟着一起动」。
-            // 这里**无条件**挂着，要不要认领余量由 [EatRemainingScroll] 在事件里判（见它的注释）。
+            // nestedScroll 必须挂在 verticalScroll **之前**：
+            // 它充当该滚动节点的父级，只有父级能接收内层滚动到边界后的剩余位移。
+            // 若写在 verticalScroll 之后则成为其子级，永远无法接收剩余位移，表现为
+            // 「框内滚动到底后整页对话随之移动」。
+            // 此处**无条件**挂载，是否接收剩余位移由 [EatRemainingScroll] 在事件中判断（见其注释）。
             .nestedScroll(eater)
             .verticalScroll(scrollState),
         content = content

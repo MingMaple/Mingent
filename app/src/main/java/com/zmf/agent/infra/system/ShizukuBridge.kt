@@ -15,13 +15,13 @@ import moe.shizuku.server.IShizukuService
 /**
  * Shizuku 通道：借 shell(uid 2000) 的身份执行 adb 级命令。
  *
- * 只用它做「一键授权 + 少量系统操作」，不做多执行器那套体系。
+ * 仅用于「一键授权 + 少量系统操作」，不包含多执行器体系。
  *
- * 三条硬规矩：
- * 1. **动态生效**：binder 到手/丢失、权限授予回调都会刷新 [state]，不需要重启 App；
- * 2. **所有 Shizuku.* 调用都必须包 runCatching**：Shizuku 没装/没启动时这些静态方法会抛
- *    IllegalStateException 或 SecurityException，崩一次用户就再也不敢开；
- * 3. 状态判断顺序是「装没装 → 服务活没活 → 有没有授权」，顺序错了会把「没装」报成「没授权」。
+ * 三项约束：
+ * 1. **动态生效**：binder 获取、丢失及权限授予回调均会刷新 [state]，无需重启 App；
+ * 2. **所有 Shizuku.* 调用都必须以 runCatching 包裹**：Shizuku 未安装或未启动时这些静态方法会抛出
+ *    IllegalStateException 或 SecurityException，一旦崩溃将影响用户后续使用；
+ * 3. 状态判断顺序为「是否安装 → 服务是否运行 → 是否授权」，顺序错误会将「未安装」误报为「未授权」。
  */
 object ShizukuBridge {
 
@@ -31,10 +31,10 @@ object ShizukuBridge {
         /** 手机上没装 Shizuku（或 Sui）。 */
         NOT_INSTALLED,
 
-        /** 装了但服务没起来（用户没启动 Shizuku / 没开无线调试授权）。 */
+        /** 已安装但服务未启动（用户未启动 Shizuku 或未开启无线调试授权）。 */
         NOT_RUNNING,
 
-        /** 服务活着，但本 App 没被授权。 */
+        /** 服务正在运行，但本 App 未被授权。 */
         NO_PERMISSION,
 
         /** 可用。 */
@@ -52,7 +52,7 @@ object ShizukuBridge {
     @Volatile private var appContext: Context? = null
     @Volatile private var listenersRegistered = false
 
-    /** 权限授予结果回调（界面要刷新状态时挂一个）。 */
+    /** 权限授予结果回调（界面需要刷新状态时注册一个）。 */
     @Volatile var onPermissionResult: ((granted: Boolean) -> Unit)? = null
 
     // 必须持有引用，否则被 GC 后监听失效（Shizuku 内部弱引用不保证）
@@ -146,7 +146,7 @@ object ShizukuBridge {
             }
             outThread.start()
             errThread.start()
-            // waitFor() 本身没有超时：放到独立线程上 join，超时就 destroy，别把 IO 线程挂死
+            // waitFor() 本身无超时：置于独立线程 join，超时则 destroy，避免 IO 线程长期阻塞
             val waiter = Thread { runCatching { remote.waitFor() } }
             waiter.start()
             waiter.join(timeoutMs)

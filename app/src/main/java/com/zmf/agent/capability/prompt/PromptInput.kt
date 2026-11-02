@@ -1,12 +1,11 @@
 package com.zmf.agent.capability.prompt
 import com.zmf.agent.core.llm.ApiDefaults
 
-import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.core.model.PermissionLevel
 
 /**
- * 组装系统提示词的全部输入。字段全给默认值：没接线的调用方（比如 ChatViewModel 还没传）
- * 也能直接 `PromptInput()` 出一份能用的提示词，不会因为缺参数拿不到主提示词。
+ * 组装系统提示词的全部输入。各字段均提供默认值，
+ * 调用方可直接构造 `PromptInput()` 得到一份可用的提示词，不会因缺少参数而无法生成主提示词。
  *
  * @param model 当前对话模型（写进提示词超长告警日志，方便排查「换个模型提示词是否生效」）
  * @param workspacePath 当前工作区绝对路径，写进环境段

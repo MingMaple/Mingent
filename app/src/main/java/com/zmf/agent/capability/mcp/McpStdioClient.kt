@@ -17,8 +17,8 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * MCP 客户端的公共面：http/sse 走 [McpClient]，stdio 走 [McpStdioClient]。
  *
- * 三个方法的名字、参数、返回形状和 [McpClient] 完全一致（都是 Result），
- * 所以 McpManager / McpToolAdapter 不需要按传输分支，只认这个接口。
+ * 三个方法的名字、参数、返回类型与 [McpClient] 完全一致（均为 Result），
+ * 因此 McpManager / McpToolAdapter 无需按传输分支，只需依赖该接口。
  */
 interface McpTransport {
 
@@ -34,33 +34,33 @@ interface McpTransport {
     /**
      * 释放底层连接。
      *
-     * stdio 的「连接」就是一条本机进程，被 McpManager 从缓存里摘掉时必须真的杀掉，
-     * 否则配置改了/服务删了，旧进程还一直挂着。http/sse 没有持久状态，默认什么都不做。
+     * stdio 的「连接」是本机进程，被 McpManager 从缓存中移除时必须实际终止，
+     * 否则配置变更或服务删除后，旧进程会持续驻留。http/sse 没有持久状态，默认不执行任何操作。
      */
     fun close() {}
 }
 
 /**
- * stdio 传输的 MCP 客户端：在 App 内 Ubuntu（proot）里起一条命令，
- * 用「一行一个 JSON」的 JSON-RPC 通过它的 stdin/stdout 对话。
+ * stdio 传输的 MCP 客户端：在 App 内 Ubuntu（proot）中启动一条命令，
+ * 通过其 stdin/stdout 以「一行一个 JSON」的 JSON-RPC 通信。
  *
- * 协议面只做三件事：initialize（含 notifications/initialized）、tools/list、tools/call，
- * 和 [McpClient] 对齐，少一个依赖也少一层抽象。
+ * 协议面仅做三件事：initialize（含 notifications/initialized）、tools/list、tools/call，
+ * 与 [McpClient] 保持一致，同时减少一项依赖与一层抽象。
  *
  * 几条约定：
- * - 一行一个 JSON：读 stdout 按行切，不是 JSON 的行（proot 的 LOGIN_SUCCESSFUL、装 Ubuntu 的进度、
- *   服务自己的 printf 日志）只记日志、绝不喂给解析；
- * - 服务写 stderr 的内容由 TerminalManager 排空并记日志，不进协议流；
- * - 单次请求 30 秒超时（stdio 服务是本地进程，启动慢主要在首次进 proot，用超时兜住）；
- * - 进程退出只重连一次：第二次还退说明命令本身起不来，直接报错给用户；
- * - 前提：App 内的 Ubuntu 已经初始化过（和终端工具一样，首次要打开一次「终端」把 rootfs 装好）。
+ * - 一行一个 JSON：按行读取 stdout，非 JSON 行（proot 的 LOGIN_SUCCESSFUL、Ubuntu 安装进度、
+ *   服务自身的 printf 日志）仅记日志，不送入解析；
+ * - 服务写入 stderr 的内容由 TerminalManager 排空并记日志，不进入协议流；
+ * - 单次请求 30 秒超时（stdio 服务是本地进程，启动耗时主要在首次进入 proot，以超时作为兜底）；
+ * - 进程退出后仅重连一次：第二次仍退出说明命令本身无法启动，直接向用户报错；
+ * - 前提：App 内的 Ubuntu 已初始化（与终端工具一致，首次需打开一次「终端」完成 rootfs 安装）。
  */
 class McpStdioClient(
     private val context: Context,
     private val server: McpServer
 ) : McpTransport {
 
-    /** 进程生命周期与请求发送都走这把锁：stdio 服务本身是单进程串行的，并发发出去只会互相打架。 */
+    /** 进程生命周期与请求发送均由该锁保护：stdio 服务本身为单进程串行，并发发送只会互相干扰。 */
     private val mutex = Mutex()
 
     /** JSON-RPC 请求 id 自增，整个 client 生命周期内单调，重连也不回绕（避免旧响应对上新请求）。 */
@@ -69,7 +69,7 @@ class McpStdioClient(
     /** 发出去还没等到响应的请求：id -> 结果槽。 */
     private val pending = HashMap<Int, CompletableDeferred<JSONObject>>()
 
-    /** 三个状态都是「调用线程写、TerminalManager 的读线程读」，必须 volatile，否则迟到回调看不到新值。 */
+    /** 三个状态均由「调用线程写、TerminalManager 的读线程读」，必须声明为 volatile，否则迟到的回调无法看到新值。 */
     @Volatile
     private var handle: HiddenProcess? = null
 
@@ -77,11 +77,11 @@ class McpStdioClient(
     @Volatile
     private var handshakeDone = false
 
-    /** 每次起进程加一：迟到的 onExit / onLine 回调靠它识别「我已经不是当前那条进程了」。 */
+    /** 每次启动进程时加一：迟到的 onExit / onLine 回调据此识别「是否仍属于当前进程」。 */
     @Volatile
     private var generation = 0
 
-    /** 被 McpManager 从缓存里摘掉并 close 之后就永久关闭：不再重连，否则会留下没人管的进程。 */
+    /** 被 McpManager 从缓存中移除并 close 后永久关闭：不再重连，否则会残留无人管理的进程。 */
     @Volatile
     private var closed = false
 
@@ -89,8 +89,8 @@ class McpStdioClient(
 
     override suspend fun initialize(): Result<Unit> = guarded("初始化") {
         mutex.withLock {
-            // 已经握手过的进程直接复用：McpManager.reload 会重复调 initialize，
-            // 每次都重启一遍 stdio 进程等于把用户正在用的服务掐断
+            // 已握手的进程直接复用：McpManager.reload 会重复调用 initialize，
+            // 每次重启 stdio 进程等于中断用户正在使用的服务
             ensureReady()
         }
     }
@@ -150,7 +150,7 @@ class McpStdioClient(
 
     // ---- 进程 ----
 
-    /** 没有可用进程就起一条并握手；已有可用进程就直接返回。 */
+    /** 没有可用进程时启动一条并握手；已有可用进程则直接返回。 */
     private suspend fun ensureReady() {
         if (handle?.isAlive == true && handshakeDone) return
         closeHandle()
@@ -159,17 +159,17 @@ class McpStdioClient(
     }
 
     /**
-     * 一次完整操作：确保握手完成 → 干活。
-     * 干活途中进程没了，就重连一次（只一次）再重试；再失败交给上层报错。
+     * 一次完整操作：确保握手完成 → 执行操作。
+     * 执行过程中进程退出时，仅重连一次后重试；再次失败交由上层报错。
      */
     private suspend fun <T> withProcess(action: suspend () -> T): T = mutex.withLock {
         try {
             ensureReady()
             action()
         } catch (e: StdioProcessGone) {
-            // 服务已被卸载（close 过）就别重连了，免得留下没有主人的进程
+            // 服务已卸载（close 过）时不重连，避免残留无归属的进程
             if (closed) throw e
-            // 重连放在 catch 里而不是外面：第二次再断就让它抛出去，不无限重启
+            // 重连置于 catch 内而非外层：第二次再断开即直接抛出，避免无限重启
             FileLog.log(TAG, "服务「" + server.name + "」的 stdio 进程退出了，重连一次后重试：" + describe(e))
             closeHandle()
             startProcess()
@@ -184,9 +184,9 @@ class McpStdioClient(
         if (command.isEmpty()) throw IllegalStateException("stdio 服务没有配置命令")
         val commandLine = buildCommandLine(command, server.args)
         val current = ++generation
-        // 清掉上一条进程留下的等待者，免得它们的 id 被新响应对上
+        // 清除上一条进程遗留的等待者，避免其 id 与新响应匹配
         synchronized(pending) { pending.clear() }
-        val created = TerminalApi.openProcess(context, 
+        val created = TerminalApi.openProcess(context,
             commandLine = commandLine,
             onLine = { line -> if (current == generation) onStdoutLine(line) },
             env = server.env,
@@ -197,7 +197,7 @@ class McpStdioClient(
         FileLog.log(TAG, "服务「" + server.name + "」启动 stdio 进程：" + commandLine.take(MAX_ERROR_CHARS))
     }
 
-    /** 进程退出：握手作废，并把还在等的请求全部叫醒（让 withProcess 走重连分支）。 */
+    /** 进程退出：握手作废，并唤醒所有仍在等待的请求（使 withProcess 进入重连分支）。 */
     private fun onProcessExit(code: Int?) {
         handshakeDone = false
         val reason = "stdio 进程已退出" + (if (code != null) "（exit=" + code + "）" else "")
@@ -287,13 +287,13 @@ class McpStdioClient(
         }
     }
 
-    /** stdout 的一行：认出 JSON-RPC 响应就交给等它的请求，其余当日志丢掉。 */
+    /** stdout 的一行：识别为 JSON-RPC 响应时交给对应请求，其余仅记日志并丢弃。 */
     private fun onStdoutLine(line: String) {
         val text = line.trim()
         if (text.isEmpty()) return
         val obj = runCatching { JSONObject(text) }.getOrNull()
         if (obj == null || !obj.has("jsonrpc")) {
-            // proot 启动日志、服务自己的 printf 调试输出：不是协议，别让它污染 JSON 解析
+            // proot 启动日志、服务自身的 printf 调试输出：并非协议内容，不得混入 JSON 解析
             FileLog.log(TAG, "服务「" + server.name + "」非协议输出：" + text.take(MAX_ERROR_CHARS))
             return
         }
@@ -313,7 +313,7 @@ class McpStdioClient(
 
     // ---- 杂项 ----
 
-    /** 命令 + 参数拼成一行；参数逐个用单引号包住，带空格的参数才不会被 shell 拆开。 */
+    /** 命令与参数拼接为一行；参数逐个用单引号包裹，含空格的参数才不会被 shell 拆分。 */
     private fun buildCommandLine(command: String, args: List<String>): String {
         val builder = StringBuilder(command)
         for (arg in args) builder.append(' ').append(shellQuote(arg))
@@ -349,7 +349,7 @@ class McpStdioClient(
     private fun describe(e: Throwable): String =
         (e.message ?: e.javaClass.simpleName).take(MAX_ERROR_CHARS)
 
-    /** stdio 进程没了：只在内部用来触发「重连一次」，不会漏到 Result 外面。 */
+    /** stdio 进程已消失：仅在内部用于触发「重连一次」，不会传播到 Result 之外。 */
     private class StdioProcessGone(reason: String) : Exception(reason)
 
     private companion object {
@@ -365,7 +365,7 @@ class McpStdioClient(
         const val METHOD_LIST_TOOLS = "tools/list"
         const val METHOD_CALL_TOOL = "tools/call"
 
-        /** 单次调用（含 initialize）最长等 30 秒：本地进程还要先起 proot，给足但不无限等。 */
+        /** 单次调用（含 initialize）最长等待 30 秒：本地进程还需先启动 proot，时间需充足但不无限等待。 */
         const val CALL_TIMEOUT_MS = 30_000L
 
         const val MAX_ERROR_CHARS = 300

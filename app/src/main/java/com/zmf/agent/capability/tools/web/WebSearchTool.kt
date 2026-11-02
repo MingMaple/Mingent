@@ -92,7 +92,7 @@ class WebSearchTool : Tool {
                 }.awaitAll()
                 val elapsed = System.currentTimeMillis() - started
 
-                // 一条 query 失败就整次报错：只回半截结果，模型会误判成「网上只有这些」
+                // 任一 query 失败则整次报错：仅返回不完整结果会使模型误判为「网络上仅有这些内容」
                 val failed = outcomes.firstOrNull { it.second.isFailure }
                 if (failed != null) {
                     val reason = describe(failed.second.exceptionOrNull())
@@ -102,7 +102,7 @@ class WebSearchTool : Tool {
                     )
                 }
 
-                // 按 url 去重：同一条结果常在不同 query 里重复出现；LinkedHashMap 保住「先出现者优先」
+                // 按 url 去重：同一结果常在不同 query 中重复出现；LinkedHashMap 保留「先出现者优先」的顺序
                 val byUrl = LinkedHashMap<String, Hit>()
                 val answers = ArrayList<String>()
                 for ((_, outcome) in outcomes) {
@@ -263,7 +263,7 @@ class WebSearchTool : Tool {
         )
     }
 
-    /** 多个正文块接成一段：抹平空白，再按上限截断，免得复述把结果列表挤出 6000 字之外。 */
+    /** 将多个正文块拼接为一段：清除多余空白，再按上限截断，避免摘要内容将结果列表挤出 6000 字上限。 */
     private fun mergeAnswer(blocks: List<String>): String {
         if (blocks.isEmpty()) return ""
         val flat = blocks.joinToString(" ").replace(WHITESPACE, " ").trim()
@@ -271,8 +271,8 @@ class WebSearchTool : Tool {
     }
 
     /**
-     * 先给整段 answer（真没有就明写「检索未给摘要」，免得模型把「没摘要」读成「网上没这回事」），
-     * 再一行一条结果：标题 / 链接 / 摘要；摘要为空就只留前两段，不留占位符。
+     * 先输出整段 answer（确实没有时明确写入「检索未给摘要」，避免模型将「无摘要」理解为「网络无相关内容」），
+     * 再逐行输出结果：标题 / 链接 / 摘要；摘要为空时仅保留前两段，不写入占位符。
      */
     private fun format(
         queries: List<String>,
@@ -295,7 +295,7 @@ class WebSearchTool : Tool {
         }
     }.trimEnd()
 
-    /** 最多读 [MAX_BODY_BYTES] 字节：端点异常时可能回超大页面，直接 string() 会吃掉内存。 */
+    /** 最多读取 [MAX_BODY_BYTES] 字节：端点异常时可能返回超大页面，直接调用 string() 将耗尽内存。 */
     private fun readTextLimited(body: ResponseBody): String {
         val declared = body.contentLength()
         val limit = if (declared in 1L..MAX_BODY_BYTES) declared else MAX_BODY_BYTES
@@ -314,7 +314,7 @@ class WebSearchTool : Tool {
         return String(out.toByteArray(), Charsets.UTF_8)
     }
 
-    /** 引用段落常带换行和连续空格，压成一行，免得一条结果的摘要把整个版面撑歪。 */
+    /** 引用段落通常带有换行与连续空格，压缩为一行，避免单条结果的摘要影响整体版面。 */
     private fun compress(text: String): String {
         val flat = text.replace(WHITESPACE, " ").trim()
         return if (flat.length > MAX_SNIPPET_CHARS) flat.take(MAX_SNIPPET_CHARS) + "…" else flat
@@ -389,14 +389,14 @@ class WebSearchTool : Tool {
         val JSON = "application/json; charset=utf-8".toMediaType()
 
         /**
-         * 单次请求上限：官方检索通常 5-15 秒返回；因为 4 条 query 是并发的，
-         * 整次调用的最坏等待也就这 60 秒，不会乘 4。
+         * 单次请求上限：官方检索通常在 5-15 秒返回；4 条 query 并发执行，
+         * 整次调用的最长等待为 60 秒，而非 4 倍。
          */
         const val TIMEOUT_SECONDS = 60L
 
         /**
-         * 全局单例 client：多条 query 共用一个连接池；callTimeout 兜住「连接 + 读完整响应」，
-         * 只设 readTimeout 的话，慢速滴流的响应可以一直不读完。
+         * 全局单例 client：多条 query 共用同一连接池；由 callTimeout 覆盖「连接 + 读取完整响应」，
+         * 若仅设置 readTimeout，低速滴流的响应可能长期无法读完。
          */
         val CLIENT: OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)

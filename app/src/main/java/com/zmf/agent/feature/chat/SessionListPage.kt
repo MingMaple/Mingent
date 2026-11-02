@@ -62,7 +62,6 @@ import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.uikit.theme.Motion
-import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -72,14 +71,14 @@ import com.zmf.agent.uikit.common.saltFieldColors
 /**
  * 「会话列表」页（侧边栏一级页面）：上面两个 tab「会话」「归档」，左右滑动切换。
  *
- * 归档能力原来在设置页里单独一页，现在并进这里：归档 tab = sessions.filter { it.archived }，
+ * 归档能力此前为设置页中的单独页面，现并入此处：归档 tab = sessions.filter { it.archived }，
  * 行菜单里的「归档」在归档 tab 里换成「移回会话」，两个方向都走同一个 [onArchive]。
  *
  * 顶部搜索框按「标题 + 任意消息正文」过滤：有关键词时切成单列结果（不分组、按 updatedAt 倒序），
- * 两个 tab 都在这个结果里，找会话不用先猜它在不在归档里。
+ * 两个 tab 均包含在结果中，查找会话无需先判断其是否在归档中。
  *
- * 流式生成中（streaming）所有动作都点不动、整体压暗：ViewModel 的 new/switch/rename/delete/archive
- * 在流式时都会静默返回，界面要是还能点，就会出现「点了没反应」的假按钮。
+ * 流式生成中（streaming）所有动作均不可点击、整体压暗：ViewModel 的 new/switch/rename/delete/archive
+ * 在流式时均静默返回，若界面仍可点击，会出现「点击无反应」的无效按钮。
  */
 @Composable
 fun SessionListPage(
@@ -93,36 +92,36 @@ fun SessionListPage(
     onDelete: (String) -> Unit,
     onFork: (String) -> Unit,
     onBack: () -> Unit,
-    // 新建会话：可选，不传就不显示「＋ 新会话」那一行
+    // 新建会话：可选，不传入则不显示「＋ 新会话」一行
     onNew: () -> Unit = {},
-    // 把「当前是不是第 1 页」报给上层：上层据此决定抽屉要不要在 pager 之前抢向右的位移
+    // 将「当前是否为第 1 页」上报上层：上层据此决定抽屉是否需在 pager 之前拦截向右位移
     onFirstPage: (Boolean) -> Unit = {}
 ) {
-    // pageCount 用 lambda：跟 PackagePage 是同一套写法
+    // pageCount 使用 lambda：与 PackagePage 采用同一写法
     val pagerState = rememberPagerState(pageCount = { 2 })
     val scope = rememberCoroutineScope()
 
-    // 收进 rememberUpdatedState：上层每次重组都给新 lambda，不能让 effect 跟着重建
+    // 存入 rememberUpdatedState：上层每次重组均传入新 lambda，不可使 effect 随之重建
     val currentOnFirstPage by rememberUpdatedState(onFirstPage)
-    // 停在第 2 页时抽屉不该抢横滑，否则翻页翻不动；初值也要报，所以挂在 LaunchedEffect 上
+    // 停在第 2 页时抽屉不应拦截横滑，否则无法翻页；初值亦需上报，因此挂载于 LaunchedEffect
     LaunchedEffect(pagerState.currentPage) {
         currentOnFirstPage(pagerState.currentPage == 0)
     }
     // 搜索词：空 = 正常分 tab；非空 = 单列结果（不分组、按时间倒序）
     var query by remember { mutableStateOf("") }
 
-    // 行菜单 / 重命名 / 删除确认都留在页面内部，ChatScreen 只管接回调
+    // 行菜单 / 重命名 / 删除确认均保留在页面内部，ChatScreen 仅负责接收回调
     var menuTarget by remember { mutableStateOf<ChatSession?>(null) }
     var renameTarget by remember { mutableStateOf<ChatSession?>(null) }
     var deleteTarget by remember { mutableStateOf<ChatSession?>(null) }
 
-    // 工作区名查表：workspaceId 为 null 归「未分类」
+    // 工作区名查表：workspaceId 为 null 时归入「未分类」
     val names = remember(workspaces) { workspaces.associate { it.id to it.name } }
     /** 工作区 id → 显示名；null（未关联工作区）归「未分类」。 */
     fun workspaceNameOf(id: String?): String = id?.let { names[it] } ?: "未分类"
 
     Surface(
-        // 铺满且不透明；最外层吞掉点击，避免穿透点到下面的聊天界面
+        // 铺满且不透明；最外层消费点击，避免穿透到下方聊天界面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -158,7 +157,7 @@ fun SessionListPage(
 
                 HorizontalPager(
                     state = pagerState,
-                    // 两页都留着：滑回来不用重排序
+                    // 两页均保留：滑回时无需重新排序
                     beyondViewportPageCount = 1,
                     modifier = Modifier
                         .weight(1f)
@@ -250,9 +249,9 @@ fun SessionListPage(
 }
 
 /**
- * 两个 tab + 会滑动的指示条（照 PackagePage 的写法）：
- * 指示条追「currentPage + currentPageOffsetFraction」，手拖时跟着手指实时动，
- * 点 tab 时由 animateScrollToPage 驱动像素滚动，指示条同时被弹簧带过去。
+ * 两个 tab + 可滑动指示条（参照 PackagePage 的写法）：
+ * 指示条跟随「currentPage + currentPageOffsetFraction」，拖拽时随手指实时移动，
+ * 点击 tab 时由 animateScrollToPage 驱动像素滚动，指示条同时由弹簧带动。
  */
 @Composable
 private fun SessionTabBar(pagerState: PagerState, scope: CoroutineScope) {
@@ -288,7 +287,7 @@ private fun SessionTabBar(pagerState: PagerState, scope: CoroutineScope) {
             Box(modifier = Modifier.fillMaxWidth()) {
                 Box(
                     modifier = Modifier
-                        // 中心对齐到当前 tab，24dp 宽所以要减掉一半
+                        // 中心对齐至当前 tab，宽 24dp 因此需减去一半
                         .offset(x = tabWidth * (animated + 0.5f) - 12.dp)
                         .size(width = 24.dp, height = 3.dp)
                         .background(UiColors.accentFg, RoundedCornerShape(2.dp))
@@ -298,7 +297,7 @@ private fun SessionTabBar(pagerState: PagerState, scope: CoroutineScope) {
     }
 }
 
-/** 单个 tab：选中吃 Salt 绿，未选中是 onSurface 45%。 */
+/** 单个 tab：选中使用 Salt 绿，未选中使用 onSurface 45%。 */
 @Composable
 private fun SessionTab(
     text: String,
@@ -306,7 +305,7 @@ private fun SessionTab(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    // tab 是矩形区域、没有自己的圆角，波纹按 10dp 裁一下就够贴合（和设置页的 tab 同口径）
+    // tab 为矩形区域、无自身圆角，波纹按 10dp 裁剪即可贴合（与设置页的 tab 同一约定）
     Box(
         modifier = modifier
             .height(44.dp)
@@ -394,7 +393,7 @@ private fun SessionTabContent(
     }
 }
 
-/** 搜索结果上限：再多用户也读不完，50 条之后没有继续往下翻的意义。 */
+/** 搜索结果上限：超出后用户无法读完，50 条之后继续翻阅没有意义。 */
 private const val SESSION_SEARCH_LIMIT = 50
 
 /** 圆角搜索框：一行输入 + 清空 ✕（没有搜索词时不显示 ✕）。 */
@@ -419,7 +418,7 @@ private fun SessionSearchField(query: String, onQueryChange: (String) -> Unit) {
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, color = onSurface),
                 singleLine = true,
                 cursorBrush = SolidColor(UiColors.accentFg),
-                // 占位符叠在输入文字同一格里：空串时输入区不会塌成一条线
+                // 占位符与输入文字位于同一格：空串时输入区不会收缩为一条线
                 decorationBox = { inner ->
                     Box {
                         if (query.isEmpty()) {
@@ -447,7 +446,7 @@ private fun SessionSearchField(query: String, onQueryChange: (String) -> Unit) {
  * 搜索结果：标题或任意一条消息正文命中即算，不分组、按 updatedAt 倒序，
  * 最多 [SESSION_SEARCH_LIMIT] 条。
  *
- * 搜索期间不显示「＋ 新会话」：这时用户是在找已有会话，不是要新建。
+ * 搜索期间不显示「＋ 新会话」：此时用户正在查找已有会话，而非新建。
  */
 @Composable
 private fun SessionSearchResults(
@@ -460,7 +459,7 @@ private fun SessionSearchResults(
     onMenu: (ChatSession) -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    // 会话列表是普通的 list，量级是「人手工点出来的」，关键词一变就线性过滤一遍，不值得建索引
+    // 会话列表为普通 list，数量级为「用户手工创建」，关键词变化时线性过滤即可，无需建立索引
     val matched = remember(sessions, query) {
         sessions
             .filter { sessionMatches(it, query.trim()) }
@@ -508,8 +507,8 @@ private fun SessionSearchResults(
 /**
  * 命中口径：标题或任意一条消息的正文里出现这个子串（忽略大小写）。
  *
- * 用 contains(ignoreCase) 而不是先把全文转小写：后者要给每条消息再造一份副本，
- * 会话多了就是白占内存。
+ * 使用 contains(ignoreCase) 而非先将全文转为小写：后者需为每条消息再创建一份副本，
+ * 会话增多后将无谓占用内存。
  */
 private fun sessionMatches(session: ChatSession, query: String): Boolean {
     if (query.isEmpty()) return true
@@ -521,8 +520,8 @@ private fun sessionMatches(session: ChatSession, query: String): Boolean {
  * 每分钟更新一次的「现在」。
  *
  * 「刚刚 / N 分钟前」是纯函数算出来的，只有重组才会重算；列表本身没有状态变化，
- * 所以时间会停在进入那一刻——一小时前的会话一直显示「刚刚」，进一次会话才跳成「1 小时前」。
- * 这个节拍只负责推它一把，不参与任何业务状态。
+ * 因此时间会停留在进入时刻——一小时前的会话持续显示「刚刚」，进入一次会话后才变为「1 小时前」。
+ * 该节拍仅负责触发刷新，不参与任何业务状态。
  */
 @Composable
 private fun rememberMinuteNow(): Long {
@@ -539,7 +538,7 @@ private fun rememberMinuteNow(): Long {
 /**
  * 一行会话：标题 + 一条副标题（时间 · 消息数 · 工作区名），右侧「⋯」开菜单。
  *
- * 长按整行也能开同一个菜单：手机上一行右边那个「⋯」不太好点，长按更顺手。
+ * 长按整行也可打开同一菜单：手机上行尾的「⋯」较难点按，长按更为便捷。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -585,7 +584,7 @@ private fun SessionRow(
                 color = onSurface.copy(alpha = 0.45f)
             )
         }
-        // 菜单按钮单独接点击：长按走整行，点这里只开菜单
+        // 菜单按钮单独接收点击：长按作用于整行，点击此处仅打开菜单
         Text(
             text = "⋯",
             modifier = Modifier
@@ -598,9 +597,9 @@ private fun SessionRow(
 }
 
 /**
- * 行菜单：跟首页的极简弹窗同一套观感，没有标题、没有按钮，只有可点的行。
+ * 行菜单：与首页的极简弹窗保持同一观感，无标题、无按钮，仅含可点击的行。
  *
- * 「归档」这一项在归档 tab 里换成「移回会话」，其余三项两种 tab 一样。
+ * 「归档」项在归档 tab 中改为「移回会话」，其余三项两种 tab 一致。
  */
 @Composable
 private fun SessionActionSheet(
@@ -655,7 +654,7 @@ private fun SheetRow(
     )
 }
 
-/** 重命名弹窗：一行输入 + 取消 / 保存，打开就聚焦。 */
+/** 重命名弹窗：一行输入 + 取消 / 保存，打开后即聚焦。 */
 @Composable
 private fun RenameSessionDialog(
     initial: String,
@@ -670,7 +669,7 @@ private fun RenameSessionDialog(
         title = { Text("重命名会话", fontSize = 17.sp) },
         text = {
             Column {
-                // 聚焦跟输入框放在同一层组合里：先组合、后 attach，请求焦点才不会落空
+                // 聚焦与输入框置于同一层组合中：先组合、后 attach，焦点请求才不会失败
                 LaunchedEffect(Unit) { focusRequester.requestFocus() }
                 OutlinedTextField(
                 colors = saltFieldColors(),

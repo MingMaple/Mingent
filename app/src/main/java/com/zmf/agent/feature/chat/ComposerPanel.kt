@@ -155,7 +155,7 @@ private fun skillMatches(name: String, filter: String): Boolean =
     filter.isEmpty() || name.contains(filter, ignoreCase = true)
 
 /**
- * 斜杠模板：点了只把 [insert] 塞进输入框，真正的解析在 ViewModel。
+ * 斜杠模板：点击后仅将 [insert] 填入输入框，实际解析在 ViewModel。
  *
  * 面板不替用户执行，是因为 /plan 后面的那半句、/goal 的子命令都得由用户接着写。
  */
@@ -254,7 +254,7 @@ private fun SkillRow(name: String, onClick: () -> Unit) {
 /**
  * 权限浮窗：三档一字排开，当前档右侧打勾。
  *
- * 不做成「展开就是主页那一页」是因为切权限是输入前的顺手动作，跳页会打断输入。
+ * 不采用「展开即主页那一页」：切换权限属于输入前的辅助操作，跳页会打断输入。
  */
 @Composable
 fun ComposerPermissionPanel(
@@ -289,8 +289,8 @@ fun ComposerContextPanel(
     val onSurface = MaterialTheme.colorScheme.onSurface
     val window = if (usage.window > 0) usage.window else 1
     val fraction = (usage.used.toFloat() / window).coerceIn(0f, 1f)
-    // 用了但不足 1% 时仍然显示 1%，不然进度条有颜色、数字却是 0% 会看着像坏了。
-    // 算法收在 Composer.kt 的 contextPercent 里，输入条那颗圆环用的是同一份
+    // 使用但不足 1% 时仍显示 1%，否则进度条有色而数字为 0% 时看似故障。
+    // 算法位于 Composer.kt 的 contextPercent 中，输入条的圆环使用同一份
     val percent = contextPercent(usage)
 
     PanelCard(modifier = modifier) {
@@ -421,7 +421,7 @@ data class TurnUsageInfo(
     val cacheReadReported: Boolean,
     /**
      * 缓存写入。DeepSeek / OpenAI 没有这一项，但面板上**固定写 0 tok**：
-     * 参考图里那一行就是 0 tok，行缺一条反而像我们没统计。
+     * 参考图中该行即为 0 tok，缺少该行会被误认为未统计。
      */
     val cacheWriteTokens: Int,
     val completionTokens: Int,
@@ -464,8 +464,8 @@ fun TurnUsagePanel(usage: TurnUsageInfo, modifier: Modifier = Modifier) {
             trailing = countText(usage.total),
             rule = true
         )
-        // 六行固定：与参考图一致。没有数据的行写「—」，不整行消失：
-        // 少一行会被读成「这项没统计」，而事实只是这个服务商/这条老会话没报。
+        // 六行固定：与参考图一致。无数据的行写「—」，不整行消失：
+        // 少一行会被理解为「此项未统计」，实际仅为该服务商或该旧会话未上报。
         DetailRow(
             title = "提供方 / 模型",
             value = usage.model.ifBlank { "—" },
@@ -529,7 +529,7 @@ private fun PanelHeader(
  * 明细一行：左边名字、右边数值，行高 28dp：四行刚好在对话框中上方的浮窗里排开。
  *
  * [singleLine] 给「提供方 / 模型」这种可能很长又必须原样看全一半的值用：单行截尾加省略号，
- * 不换行也不把行高撑开。默认 false，输入框那几张浮窗的排布一个像素都不动。
+ * 不换行也不把行高撑开。默认 false，输入框相关浮窗的排布保持不变。
  */
 @Composable
 private fun DetailRow(
@@ -550,8 +550,8 @@ private fun DetailRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(text = title, fontSize = 13.sp, color = onSurface.copy(alpha = 0.6f))
-        // 单行值的行**不挂那个 weight 占位**：两个 weight(1f) 会平分剩余宽度，
-        // 值只剩一半，长一点的「提供方 / 模型」就会被截成 "deepseek/de…"（实测踩过）
+        // 单行值的行**不挂载 weight 占位**：两个 weight(1f) 会平分剩余宽度，
+        // 值仅剩一半，较长的「提供方 / 模型」会被截断为 "deepseek/de…"（实测已出现）
         if (singleLine) {
             Text(
                 text = value,
@@ -600,7 +600,7 @@ private fun countText(count: Int): String = String.format(Locale.US, "%,d", coun
  * 这两样都试过、都撤了：Compose 的 elevation 阴影是按节点的矩形包围盒落影的，
  * 圆角弧线之外会露出一圈直角阴影，外加一条沿着包围盒的浅灰「包边」，
  * 四角看起来就是「圆弧贴在一张方卡上」；再叠 1dp 发丝边只会让这圈包边更明显。
- * 这套界面本来就是扁平的，靠 surface 底色与页面底色的差别区分层次就够了。
+ * 本界面本身为扁平设计，通过 surface 底色与页面底色的差异区分层次即可。
  */
 @Composable
 private fun PanelCard(
@@ -608,15 +608,10 @@ private fun PanelCard(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    // 阴影跟着卡片一起长出来（阴影曾在面板「固定下来」那一瞬间才突然出现）。
-    // 病根是上一层做 alpha 淡入：Android 会把带透明度图层里的阴影一起按 alpha 压掉，
-    // alpha 接近 1 之前肉眼几乎看不见，于是看起来像「最后一刻才亮出来」。
-    // 现在让 elevation 自己从 0 长到 14dp，阴影与面板的位移/缩放同步出现。
+    // 阴影随卡片一同出现：根因是上一层 alpha 淡入，Android 会将带透明度图层中的阴影按 alpha 压暗，alpha 接近 1 前几乎不可见；现由 elevation 从 0 增至 14dp，阴影与面板位移/缩放同步出现。
     var risen by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { risen = true }
-    // 14dp 的阴影范围太大、太虚，可有可无又碍眼。
-    // 高度调低到 8dp：Compose 的 elevation 阴影半径与偏移都按高度线性放大，
-    // 14dp 时已经扩散到卡片外一大圈浅灰；8dp 收成贴着圆角的一圈，边界读得出来。
+    // 高度为 8dp：Compose 阴影半径与偏移随高度线性放大，14dp 会扩散至卡片外一大圈浅灰，8dp 则贴合圆角，边界清晰可辨。
     val panelShadow by animateDpAsState(
         targetValue = if (risen) 8.dp else 0.dp,
         animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
@@ -624,18 +619,18 @@ private fun PanelCard(
     )
     Surface(
         shape = RoundedCornerShape(24.dp),
-        // 面板底比页面与气泡都亮一档，浮出来才看得出边界
+        // 面板底色比页面与气泡亮一档，浮出时方可看出边界
         color = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh,
-        // 柔和扩散阴影：让卡片与页面分层，又不至于像描边。
-        // 骨架跟随形状轮廓走圆角，四角不会露直角；数值由上面那段动画从 0 长上来。
+        // 柔和扩散阴影：使卡片与页面分层，又不至于形成描边。
+        // 骨架跟随形状轮廓走圆角，四角不露直角；数值由上方动画从 0 增长。
         shadowElevation = panelShadow,
-        // 卡片自己吃掉点击：不然点卡片空白处会落到下面的输入框上，键盘会被拉起来
+        // 卡片自身消费点击：否则点击卡片空白处会落到下方输入框，导致键盘弹出
         modifier = modifier
             .fillMaxWidth()
             .blockTapsOnly()
     ) {
-        // 卡片内不再垫上下留白：行自己带内距，首/末行的波纹才能贴到 24dp 圆弧上被裁成圆角。
-        // 少这 6dp 也正好减轻「弹着键盘时面板顶出可视区」的压力（分组标题自带 top=5dp）
+        // 卡片内不设上下留白：行自带内距，首/末行的波纹方可贴至 24dp 圆弧并被裁为圆角。
+        // 省略这 6dp 亦可减轻「弹出键盘时面板顶出可视区」的压力（分组标题自带 top=5dp）
         Column(content = content)
     }
 }
@@ -665,7 +660,7 @@ private fun CommandRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // 38dp：弹着键盘时九行也要能完整落在可视区内
+            // 38dp：弹出键盘时九行亦需完整落在可视区内
             .height(38.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),

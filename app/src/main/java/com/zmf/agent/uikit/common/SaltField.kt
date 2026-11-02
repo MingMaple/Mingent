@@ -13,15 +13,15 @@ import com.zmf.agent.uikit.theme.UiColors
  * 文本输入框的统一配色。
  *
  * 分工：
- * - **未聚焦**：边框是中性淡描边，与卡片、分割线同一档，不抢注意力；
- * - **聚焦**：边框与光标转强调蓝。这是全 App 四类合法用蓝之一（主操作／选中／聚焦／进行中），
- *   含义是「现在在这里打字」，不是为了好看。
+ * - **未聚焦**：边框为中性淡描边，与卡片、分割线同一层级，避免分散注意力；
+ * - **聚焦**：边框与光标转为强调蓝。这是全局四类允许使用强调蓝的场景之一（主操作、选中、聚焦、进行中），
+ *   语义为「当前正在此处输入」，并非装饰。
  *
- * 之所以必须统一：Material 3 的文本域默认从 `colorScheme.primary` 取焦点边框与光标。
- * 本主题的 primary 是中性墨色，不显式指定就会得到「黑框黑光标」；而一旦有人把 primary
- * 改回品牌色，全 App 又会同时刷蓝。两种后果都靠本文件一处收口避免。
+ * 必须统一的原因：Material 3 文本域默认从 `colorScheme.primary` 获取焦点边框与光标。
+ * 本主题的 primary 为中性墨色，未显式指定时会呈现黑框黑光标；若将 primary
+ * 改为品牌色，全局输入框又会同步变为蓝色。两种结果均通过本文件统一设置避免。
  *
- * 因此约定：界面里所有文本输入框都必须使用本文件的配色，不再依赖默认值。
+ * 因此约定：界面中所有文本输入框必须使用本文件的配色，不依赖默认值。
  */
 
 /** `OutlinedTextField` 用：聚焦转强调蓝，其余中性，容器透明。 */
@@ -45,8 +45,8 @@ fun saltFieldColors(): TextFieldColors {
 }
 
 /**
- * `BasicTextField` 用：它不吃 [TextFieldColors]，光标靠 `cursorBrush` 单独给。
- * 与 [saltFieldColors] 同源，都取强调蓝，避免两种输入框光标不同色。
+ * `BasicTextField` 用：它不接受 [TextFieldColors]，光标需通过 `cursorBrush` 单独设置。
+ * 与 [saltFieldColors] 同源，均取强调蓝，避免两种输入框光标颜色不一致。
  */
 @Composable
 fun saltCursorBrush(): Brush {

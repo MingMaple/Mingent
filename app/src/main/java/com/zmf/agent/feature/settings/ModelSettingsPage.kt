@@ -33,7 +33,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -76,9 +75,9 @@ import com.zmf.agent.uikit.theme.UiColors
 /**
  * 「模型」页（二级）：多提供商目录 + 单个提供商的编辑表单 + 思考强度 + 执行权限 + 余额。
  *
- * 表单做成页内展开卡而不是新页面：改一个提供商就是名字/密钥/地址三件事，
- * 再压一层页面只会让「返回」到底回哪一层变含糊；展开卡用 animateContentSize 撑开，
- * 高度变化走 Motion 的弹簧，和抽屉、工具卡同一套手感。
+ * 表单做成页内展开卡而非新页面：修改一个提供商仅涉及名称/密钥/地址三项，
+ * 增加一层页面会使「返回」的层级语义变得含糊；展开卡使用 animateContentSize 展开，
+ * 高度变化使用 Motion 弹簧，与抽屉、工具卡一致。
  */
 @Composable
 fun ModelSettingsPage(
@@ -102,13 +101,13 @@ fun ModelSettingsPage(
     // null = 表单收起；草稿直接就是 ProviderConfig，保存时原样回传，页面不必知道字段清单
     var draft by remember { mutableStateOf<ProviderConfig?>(null) }
     var pickerOpen by remember { mutableStateOf(false) }
-    // 思考强度、执行权限与余额都改行内展开：状态提到这里，收起再展开不会把刚查到的结果丢掉
+    // 思考强度、执行权限与余额均改为行内展开：状态提升至此，收起后再次展开不会丢失已查询到的结果
     var thinkingOpen by remember { mutableStateOf(false) }
     var permissionOpen by remember { mutableStateOf(false) }
     var balanceOpen by remember { mutableStateOf(false) }
 
     Surface(
-        // 铺满且不透明；最外层吞掉点击，避免穿透点到下面的页面
+        // 铺满且不透明；最外层拦截点击，避免事件穿透到下方的页面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -150,9 +149,9 @@ fun ModelSettingsPage(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
 
-                // 提供商列表：点整行 = 选中，右侧胶囊 = 编辑。
-                // 表单紧贴被编辑的那一行展开：挂到列表末尾的话，编辑第一条时表单会在最下方
-                // 撑开，点的地方和内容出现的地方对不上，还会以为没反应。
+                // 提供商列表：点击整行即为选中，右侧胶囊为编辑。
+                // 表单紧贴被编辑的行展开：若挂到列表末尾，编辑第一条时表单会在最下方展开，
+                // 点击位置与内容出现位置不一致，易被误认为无响应。
                 providers.forEach { cfg ->
                     // 每一行自带一个可动画的容器：表单在这行下面展开/收起时由它撑高度
                     Column(
@@ -207,7 +206,7 @@ fun ModelSettingsPage(
                     }
                 }
 
-                // 虚线圈按钮：一眼看出这里是「加一条」而不是跳页
+                // 虚线圈按钮：明确表示此处为「新增一条」而非跳转页面
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -223,7 +222,7 @@ fun ModelSettingsPage(
                     )
                 }
 
-                // 思考强度：开关 + 三档就三行，值得就地展开，不必再压一层页面
+                // 思考强度：开关 + 三档共三行，宜就地展开，无需再增加一层页面
                 SettingsCard {
                     Column {
                         ExpandRow(
@@ -262,7 +261,7 @@ fun ModelSettingsPage(
                                         onCheckedChange = onThinkingToggle
                                     )
                                 }
-                                // 三档只显示接口取值本身：中文标签和 reasoning_effort 对不上，排查时容易看错
+                                // 三档仅显示接口取值本身：中文标签与 reasoning_effort 不一致，排查时易误读
                                 ApiDefaults.EFFORTS.forEach { value ->
                                     EffortRow(
                                         text = ApiConfig.effortLabel(value),
@@ -318,12 +317,12 @@ fun ModelSettingsPage(
                     Column {
                         ExpandRow(
                             title = "余额",
-                            // 查询在飞的时候行尾显示进度，且整行不可点：避免并发查同一份
+                            // 查询进行中时行尾显示进度，且整行不可点击：避免并发查询同一份数据
                             value = if (balanceBusy) "查询中…" else null,
                             expanded = balanceOpen,
                             enabled = !balanceBusy,
                             onClick = {
-                                // 收起不清结果：刚查完就收起，再点开还能看到上一次的数字
+                                // 收起不清除结果：查询后立即收起，再次展开仍可查看上一次的结果
                                 balanceOpen = !balanceOpen
                                 if (balanceOpen) onBalance()
                             }
@@ -371,7 +370,7 @@ fun ModelSettingsPage(
  * 目录模板映射为编辑草稿。
  *
  * 同一厂商允许多份配置并存（例如两把不同的密钥，或一个直连地址与一个中转地址），
- * 因此目标 id 已被占用时**新建一条**，而不是回落到既有那条：否则「添加」会变成
+ * 因此目标 id 已被占用时**新建一条**，而非回落到既有条目：否则「添加」会变成
  * 编辑现有配置，保存后覆盖原有内容。
  */
 private fun draftFrom(template: ProviderConfig, providers: List<ProviderConfig>): ProviderConfig {
@@ -428,7 +427,7 @@ private fun ProviderRow(
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.width(6.dp))
-            // 有 Key 才亮绿点：这一行是「能不能直接拿去用」的唯一提示
+            // 有 Key 时才显示绿点：该行是「能否直接使用」的唯一提示
             Box(
                 modifier = Modifier
                     .size(7.dp)
@@ -470,13 +469,13 @@ private fun ProviderFormCard(
     var modelList by remember(initial.id) { mutableStateOf(initial.models) }
     var modelInput by remember(initial.id) { mutableStateOf("") }
     var keyVisible by remember(initial.id) { mutableStateOf(false) }
-    // 地址为空时直接摊开自定义设置：必填项藏在折叠区里，人会以为「保存按不动」是坏了
+    // 地址为空时直接展开自定义设置：必填项若藏在折叠区，用户易误认为「保存无法点击」是故障
     var advancedOpen by remember(initial.id) { mutableStateOf(initial.baseUrl.isBlank()) }
     // 「＋ 添加模型」点开才出现输入行：默认只有列表 + 一个按钮，
-    // 不再让「候选 chips / 输入框 / 已添加列表」三套东西同时铺在屏幕上。
+    // 避免「候选 chips / 输入框 / 已添加列表」三者同时铺满屏幕。
     var addingModel by remember(initial.id) { mutableStateOf(false) }
 
-    // 输入框配色收归全局：见 uikit/common/SaltField.kt，本页不再自带一份。
+    // 输入框配色统一由全局管理：见 uikit/common/SaltField.kt，本页不单独维护一份。
     val fieldColors = saltFieldColors()
 
     SettingsCard {
@@ -484,7 +483,7 @@ private fun ProviderFormCard(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // 两个分段：第三方目录模板 / 自定义 API，区别只在于名字能不能改
+            // 两个分段：第三方目录模板 / 自定义 API，区别仅在于名称是否可修改
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -576,7 +575,7 @@ private fun ProviderFormCard(
                     FormLabel(text = "模型目录")
 
                     // 已添加的模型：一行一个（参考 DeepSeek 的信息结构：左边 id、右边删除），
-                    // 空态给一句人话，而不是留一片空白让人猜。
+                    // 空态给出明确说明，而非留白让用户猜测。
                     if (modelList.isEmpty()) {
                         Text(
                             text = "还没有模型。点下面的「＋ 添加模型」加一个。",
@@ -654,8 +653,7 @@ private fun ProviderFormCard(
                             )
                         }
                         // 候选模型：只有正在添加时才露出来，作为快捷选择（平时不占版面）。
-                        // 已经加进目录的不再出现在候选里，否则会出现「上面是 glm-4.6、下面又建议
-                        // ＋ glm-4.6」这种重复。
+                        // 已经加入目录的模型不重复出现在候选里，否则同一模型会在列表与候选区重复显示。
                         val remaining = candidates.filter { it.first !in modelList }
                         if (remaining.isNotEmpty()) {
                             Row(
@@ -697,7 +695,7 @@ private fun ProviderFormCard(
                 Pill(
                     text = "保存",
                     primary = true,
-                    // 地址必填：空着就保存等于存一条永远连不上的配置
+                    // 地址为必填项：留空保存会得到一条始终无法连接的配置
                     enabled = baseUrl.isNotBlank(),
                     onClick = {
                         onSave(
@@ -722,7 +720,7 @@ private fun CatalogPickerDialog(
     onDismiss: () -> Unit,
     onPick: (ProviderConfig) -> Unit
 ) {
-    // 目录是固定模板，取一次就够，没必要每次重组再问一遍
+    // 目录为固定模板，读取一次即可，无需在每次重组时重新读取
     val catalog = remember { ProviderStore.catalog() }
     Dialog(
         onDismissRequest = onDismiss,
@@ -765,7 +763,7 @@ private fun SettingsCard(content: @Composable () -> Unit) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
-        // 卡片自己裁一刀：行里的方波即使铺到边界，也只会出现在 16dp 的弧里
+        // 卡片自身裁剪：行内的矩形波纹即使铺到边界，也只会出现在 16dp 圆弧内
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
@@ -777,7 +775,7 @@ private fun SettingsCard(content: @Composable () -> Unit) {
 /**
  * 展开行：右侧只放状态值 + 会翻转的「▾」。
  *
- * 放「▾」而不是「›」：点了是在本行下面摊开，不是跳页，用箭头会让人以为要走一层。
+ * 使用「▾」而非「›」：点击后是在本行下方展开，而非跳转页面，使用箭头易被理解为需要进入下一层。
  * 翻转角度走弹簧，和展开区的高度动画同一条时间线。
  */
 @Composable
@@ -873,7 +871,7 @@ private fun PermissionTierRow(
             .fillMaxWidth()
             .saltCardRow { onClick() }
             .padding(horizontal = 16.dp, vertical = 10.dp),
-        // 顶端对齐：说明文字折成两三行时，圆点仍与标题同一行，不会被拉到卡片中间
+        // 顶端对齐：说明文字折成两三行时，圆点仍与标题同一行，不会移至卡片中部
         verticalAlignment = Alignment.Top
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
@@ -881,7 +879,7 @@ private fun PermissionTierRow(
                 text = title,
                 fontSize = 15.sp,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                // 选中已由卡片底色 + 加粗表达，文字不再转蓝：行是「我停在哪」，不靠颜色说话
+                // 选中状态已由卡片底色 + 加粗表达，文字不使用蓝色：选中位置由卡片表达，不依赖颜色
                 color = onSurface
             )
             Spacer(Modifier.height(3.dp))
@@ -932,7 +930,7 @@ private fun Pill(
         primary -> UiColors.accentFg
         else -> onSurface.copy(alpha = 0.08f)
     }
-    // 绿底上用深色字：白字压在 #8BCF00 上对比度太低
+    // 绿底上使用深色文字：白字置于 #8BCF00 上对比度过低
     val content = when {
         !enabled -> onSurface.copy(alpha = 0.3f)
         primary -> Palette.DarkBackground
@@ -961,8 +959,8 @@ private fun SegmentChip(
     onClick: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    // 单选的分段控件照 DSH 的 chipActive：墨底反白，选中一眼能定。
-    // 多选胶囊不走这条（一屏可能选中好几个，黑块会堆起来），仍用中性淡底 + 蓝字。
+    // 单选的分段控件与 DSH 的 chipActive 一致：墨底反白，选中状态可即时辨识。
+    // 多选胶囊不采用此形态（一屏可能选中多个，黑色块会形成堆叠），仍用中性淡底 + 蓝字。
     Surface(
         shape = RoundedCornerShape(13.dp),
         color = if (selected) onSurface else Color.Transparent,
@@ -985,7 +983,7 @@ private fun SegmentChip(
     }
 }
 
-/** 小胶囊：候选模型这种「点一下加一条」的动作用它，不抢视觉重心。 */
+/** 小胶囊：候选模型这类「点击一次添加一条」的动作用它，不抢视觉重心。 */
 @Composable
 private fun Chip(text: String, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -1057,7 +1055,7 @@ private fun BalanceText(text: String, color: Color) {
 
 /**
  * 虚线圆角描边：Compose 没有现成的虚线边框，这里自己画一层，
- * 免得为了「添加」这一个按钮去引额外依赖。
+ * 避免为「添加」这一个按钮引入额外依赖。
  */
 private fun Modifier.dashedOutline(color: Color, radius: Dp): Modifier = drawBehind {
     drawRoundRect(

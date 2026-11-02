@@ -1,6 +1,5 @@
 package com.zmf.agent.feature.chat
 
-import android.app.Activity
 import android.content.Context
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -25,14 +24,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.store.GoalPhase
@@ -51,9 +47,9 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 输入区之前那一摞「条」：进行中提示、错误条、待发附件、清单进度，最后是输入框本身。
+ * 输入区之前的一组「条」：进行中提示、错误条、待发附件、清单进度，最后为输入框本身。
  *
- * 都在 Column 里按顺序堆叠，誰也不吃 `weight`，所以是普通组合而不是作用域扩展。
+ * 均在 Column 中按顺序堆叠，均不使用 `weight`，因此为普通组合而非作用域扩展。
  */
 @Composable
 internal fun ChatComposerArea(
@@ -83,7 +79,7 @@ internal fun ChatComposerArea(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                             fontSize = 11.sp,
                             textAlign = TextAlign.End,
-                            // 提示条属于「状态文字」，不是可点强调项：跟图标/次要文字同一支中性灰
+                            // 提示条属于「状态文字」，非可点击强调项：与图标、次要文字使用同一中性灰
                             color = Palette.Neutral
                         )
                     }
@@ -102,22 +98,22 @@ internal fun ChatComposerArea(
                         )
                     }
 
-                    // 待发送附件：文件和图片合成**同一行**，按添加顺序从左往右排，超出屏幕左右滑。
-                    // 之前是上下两行（文件一行、图片一行），图片那层把文件顶上去还互相压住。
-                    // 两条队列在 ViewModel 里分开存（图片要单独压 JPEG），拿不到统一的入队顺序，
-                    // 所以按各自落盘的时间戳还原真实先后（见 mergePending）。
+                    // 待发送附件：文件与图片合并为**同一行**，按添加顺序从左至右排列，超出屏幕时左右滑动。
+                    // 此前为上下两行（文件一行、图片一行），图片行将文件行顶起并相互遮挡。
+                    // 两条队列在 ViewModel 中分开存储（图片需单独压缩 JPEG），无法获得统一入队顺序，
+                    // 故按各自落盘时间戳还原实际先后（见 mergePending）。
                     val pendingFiles = viewModel.attachments.toList()
                     val pendingImagesNow = viewModel.pendingImages.toList()
                     val pendingEntries = remember(imageRoot, pendingFiles, pendingImagesNow) {
                         mergePending(imageRoot, pendingFiles, pendingImagesNow)
                     }
                     if (pendingEntries.isNotEmpty()) {
-                        // 同一个 state 喂给拦截器和横向行：判断「到没到边」和真正滑动必须是同一份
+                        // 同一 state 提供给拦截器与横向行：判断「是否到达边界」与实际滑动必须基于同一份状态
                         val pendingScroll = rememberScrollState()
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                // blockHorizontalAtEdge 必须先挂（更外层），否则边界余量收不到
+                                // blockHorizontalAtEdge 必须先挂载（位于外层），否则边界余量无法接收
                                 .blockHorizontalAtEdge(pendingScroll)
                                 .horizontalScroll(pendingScroll)
                                 .padding(horizontal = 16.dp),
@@ -125,8 +121,8 @@ internal fun ChatComposerArea(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             pendingEntries.forEach { entry ->
-                                // relPath 在这次入队里唯一：列表中途插删时，缩略图的滑动位置和
-                                // 解码缓存不会被旁边的项顶掉
+                                // relPath 在本次入队中唯一：列表中途插入删除时，缩略图的滑动位置与
+                                // 解码缓存不会被相邻项覆盖
                                 key(entry.pending.relPath) {
                                     if (entry.isImage) {
                                         PendingImageThumb(
@@ -146,8 +142,8 @@ internal fun ChatComposerArea(
                         }
                     }
 
-                    // 清单条：模型用 todo_write 写过清单之后显示一行进度，点开看全表（只读）
-                    // 收起后清单内容一变（新一轮又写了表）就自动展开：否则收起一次就再也看不到进度
+                    // 清单条：模型通过 todo_write 写入清单后显示一行进度，点击可查看全表（只读）
+                    // 收起后清单内容一旦变化（新一轮再次写入）则自动展开：否则收起一次后将无法再看到进度
                     val todoSignature = viewModel.todos.joinToString("\n") { it.status + " " + it.content }
                     LaunchedEffect(todoSignature) { todoBarHidden = false }
                     if (viewModel.todos.isNotEmpty() && !todoBarHidden) {
@@ -180,7 +176,7 @@ internal fun ChatComposerArea(
                                 fontSize = 14.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
                             )
-                            // 内层可点会先吃掉这一次点击，整行的「打开全表」不会被误触发
+                            // 内层可点击优先消费本次点击，整行的「打开全表」不会被误触发
                             Text(
                                 text = "×",
                                 modifier = Modifier
@@ -201,20 +197,20 @@ internal fun ChatComposerArea(
                         value = viewModel.inputText,
                         onValueChange = { viewModel.updateInput(it) },
                         isStreaming = viewModel.isStreaming,
-                        // 只挂了图片/文件、一个字没写也算能发：发送键原来只按文本判可发
+                        // 仅挂载图片/文件、未输入文字也视为可发送：发送键此前仅按文本判断可发送
                         hasAttachment = viewModel.attachments.isNotEmpty() ||
                             viewModel.pendingImages.isNotEmpty(),
                         planMode = viewModel.planMode,
-                        // 目标激活时输入框右侧才长图标；流程结束（complete/pause）后 ViewModel 会把 goal 置成非 ACTIVE，图标自动消失
+                        // 目标激活时输入框右侧才显示图标；流程结束（complete/pause）后 ViewModel 会将 goal 置为非 ACTIVE，图标自动消失
                         activeGoal = viewModel.goal?.phase == GoalPhase.ACTIVE,
                         skills = viewModel.skillNames,
-                        // 技能不走命令枚举：面板把技能名递进来，这里只负责补成 /名字 交给用户继续写
+                        // 技能不走命令枚举：面板将技能名传入，此处仅补充为 /名字 交由用户继续填写
                         onSkillPick = { name -> viewModel.updateInput(TextFieldValue("/" + name)) },
                         busyMode = viewModel.busyMode,
                         permissionLabel = viewModel.permissionLevel.displayName(),
                         permissionLevel = viewModel.permissionLevel,
                         queue = viewModel.pendingQueue.toList(),
-                        // 「编辑」= 从队列取出回填输入框：不留在队列里，避免同一句话被发两次
+                        // 「编辑」= 从队列取出并回填输入框：不保留在队列中，避免同一内容被发送两次
                         onEditQueued = { queued ->
                             viewModel.updateInput(TextFieldValue(queued.text, TextRange(queued.text.length)))
                             viewModel.deleteQueued(queued.id)
@@ -222,29 +218,29 @@ internal fun ChatComposerArea(
                         onDeleteQueued = { queued -> viewModel.deleteQueued(queued.id) },
                         onSendQueued = { queued -> viewModel.sendQueuedNow(queued.id, scope) },
                         onPlus = {},
-                        // 我们没有 @ 会话/文件 的补全列表，「@」先等同「选文件」
+                        // 本项目没有 @ 会话/文件 的补全列表，「@」暂时等同「选择文件」
                         onMention = { onPickFile() },
                         onSend = {
-                            // 用户主动发送 = 要回到对话底部；否则翻在上面发消息后会停在原地
+                            // 用户主动发送 = 需回到对话底部；否则在向上翻阅时发送消息后仍停留在原位置
                             wasAtBottom = true
                             val text = viewModel.inputText.text
                             if (text.isNotBlank() || viewModel.attachments.isNotEmpty() ||
                                 viewModel.pendingImages.isNotEmpty()
                             ) {
-                                // 空闲 = 直接发；流式中按「繁忙时发送行为」排队或插话（不再等同停止）
+                                // 空闲 = 直接发送；流式中按「繁忙时发送行为」排队或插话（与停止不同）
                                 viewModel.sendWhileBusy(text, scope)
                                 viewModel.updateInput(TextFieldValue(""))
                             }
                         },
                         onStop = { viewModel.stop() },
-                        // 面板把手交给 Composer：它只用来让父层铺遮罩、不做别的事
+                        // 面板入口交由 Composer：仅用于让父层铺设遮罩，不承担其他职责
                         panelHost = composerPanel,
                         onPermissionPick = { level -> viewModel.setPermission(level) },
                         onComposerCommand = { command ->
                             when (command) {
                                 ComposerCommand.ADD_FILE -> onPickFile()
-                                // 目标没有页面了：往输入框里补一条 /goal 模板，由用户接着写内容再发，
-                                // 真正解析交给数据层的斜杠命令（和面板里「命令」组插的模板同一个口径，带尾空格）
+                                // 目标已无对应页面：向输入框补充 /goal 模板，由用户继续填写内容后发送，
+                                // 实际解析交由数据层的斜杠命令（与面板「命令」组插入的模板同一来源，带尾随空格）
                                 ComposerCommand.ADD_GOAL -> viewModel.updateInput(
                                     TextFieldValue("/goal ", TextRange("/goal ".length))
                                 )
@@ -254,17 +250,17 @@ internal fun ChatComposerArea(
                                     val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
                                     onLogLaunch("mingent-logs-" + stamp + ".zip")
                                 }
-                                // 上下文只有「洞察」一个入口了：加号面板进来的也是主页，返回回主页
+                                // 上下文仅保留「洞察」一个入口：从加号面板进入的同样为主页，返回时回主页
                                 ComposerCommand.CONTEXT -> openContextHub(true)
                             }
                         },
                         status = ComposerStatus(
-                            // 轮数 / 步数只认 ViewModel 里那份实时状态：stats 里那两个要等进统计页才刷，
-                            // 用户看到的就是「发完下一句数字才动」
+                            // 轮数 / 步数仅采用 ViewModel 中的实时状态：stats 中的对应字段需进入统计页才刷新，
+                            // 用户会看到「发送下一句后数字才变化」
                             rounds = statusRounds,
                             steps = statusSteps,
-                            // 速度、累计 token、缓存命中全部来自本会话的 timing 快照（会落盘，重启不丢）；
-                            // 水位不在这行了：「上下文」按钮的浮窗里本来就有百分比
+                            // 速度、累计 token、缓存命中均来自本会话的 timing 快照（会落盘，重启不丢失）；
+                            // 水位不在此行显示：「上下文」按钮的浮窗中已包含百分比
                             tokensPerSec = viewModel.sessionTiming.tokensPerSec,
                             totalTokens = viewModel.sessionTiming.promptTokens +
                                 viewModel.sessionTiming.completionTokens,
@@ -288,11 +284,11 @@ internal fun ChatComposerArea(
                             messageTokens = viewModel.contextBreakdown.messageTokens
                         ),
                         onOpenContextPage = { openContextHub(true) },
-                        // 当前模型显示名：内置 DeepSeek 的两个别名之外（自定义 provider）就显示 id 本身
+                        // 当前模型显示名：除内置 DeepSeek 的两个别名外（自定义 provider）显示 id 本身
                         modelLabel = modelDisplayName(viewModel.model),
-                        // 强度也一律显示中文：一级窗里给用户看的是「高／最高」，接口取值只在数据层出现
+                        // 强度一律显示中文：一级窗向用户展示「高／最高」，接口取值仅在数据层出现
                         effortLabel = if (viewModel.thinkingEnabled) effortDisplayName(viewModel.thinkingEffort) else "Off",
-                        // 二级窗就地展开：选完即生效并收起，不再离开对话去设置页
+                        // 二级窗就地展开：选择后即生效并收起，无需离开对话进入设置页
                         quick = QuickSheetState(
                             providers = viewModel.providers.map { QuickProvider(it.id, it.name, it.models) },
                             currentProviderId = viewModel.currentProviderId,
@@ -300,8 +296,8 @@ internal fun ChatComposerArea(
                             effort = viewModel.thinkingEffort,
                             thinkingEnabled = viewModel.thinkingEnabled,
                             onPickModel = { providerId, modelId ->
-                                // 先切服务商再切模型：切服务商会把模型重置成它上次用的那个，
-                                // 顺序反过来就会被这一步覆盖掉，用户点了像没生效
+                                // 先切换服务商再切换模型：切换服务商会将模型重置为其上次使用项，
+                                // 顺序相反时该步骤会被覆盖，用户点击后看似未生效
                                 if (providerId.isNotBlank() && providerId != viewModel.currentProviderId) {
                                     viewModel.selectProvider(providerId)
                                 }
@@ -311,8 +307,8 @@ internal fun ChatComposerArea(
                                 if (key == EFFORT_OFF) {
                                     if (viewModel.thinkingEnabled) viewModel.toggleThinking()
                                 } else {
-                                    // 选具体档位本身就意味着「要思考」：从「关」直接点「最高」应该是开+最高，
-                                    // 而不是把档位存进去却仍然关着
+                                    // 选择具体档位本身即意味着「启用思考」：自「关」直接点「最高」应为启用 + 最高，
+                                    // 而非保存档位但仍处于关闭
                                     if (!viewModel.thinkingEnabled) viewModel.toggleThinking()
                                     viewModel.chooseThinkingEffort(key)
                                 }

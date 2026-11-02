@@ -12,23 +12,23 @@ import org.json.JSONObject
 /**
  * write_plan：计划模式下「把计划交出来」的唯一出口。
  *
- * 为什么必须是工具、而不是让模型把计划写进正文：
- * 正文是纯文本，写完既没法被「同意执行」按钮接住，也没法在下一轮原样带回上下文；
- * 而计划要以结构化形式落盘（PlanDoc → plans.json），页面才能逐条渲染、逐条确认。
+ * 为何必须通过工具而非让模型写入正文：
+ * 正文是纯文本，无法被「同意执行」按钮接收，也无法在下一轮原样带回上下文；
+ * 计划需要以结构化形式落盘（PlanDoc → plans.json），页面才能逐条渲染并确认。
  *
- * 为什么是 READ_ONLY：计划模式的闸门就是「只暴露 minPermission == READ_ONLY 的工具」，
- * 这一档下模型读得到文件、列得了目录、抓得了网页，却写不了任何东西：它唯一被允许的「产出」就是这份计划。
- * 如果把权限抬到 WORKSPACE，计划模式就名存实亡了。
+ * 为何使用 READ_ONLY：计划模式的闸门是「只暴露 minPermission == READ_ONLY 的工具」，
+ * 该档位下模型可读取文件、列出目录、抓取网页，但不能写入任何内容，唯一允许的产出就是这份计划。
+ * 若提高到 WORKSPACE，计划模式将失去约束作用。
  *
- * 为什么是「追加一份」而不是覆盖：要能切着看多份方案、比较后单独删；
- * 覆盖写会把上一版直接抹掉，用户连对比的机会都没有。代价是同一轮里反复调用会堆出多份，
- * 但那正是用户在页面上一眼能删掉的东西，比悄悄丢历史划算。
+ * 为何采用「追加一份」而非覆盖：便于切换查看多份方案、比较后单独删除；
+ * 覆盖会直接抹去上一版，用户无法对比。代价是同一轮内反复调用会生成多份，
+ * 但用户可在页面上直接删除，优于静默丢弃历史。
  */
 class PlanTool : Tool {
 
     override val name = "write_plan"
 
-    /** 交计划会写 App 自己的计划存储：只读档下同样拒绝（只读就是只读）。 */
+    /** 交计划会写入 App 自身的计划存储：只读档下同样拒绝（只读档仅提供读取能力）。 */
     override val mutates = true
 
     /** 计划模式唯一放行的「写」：交计划就是该模式的产出，计划模式正是为它放行。 */
@@ -75,7 +75,7 @@ class PlanTool : Tool {
             return ToolResult.Error("缺 title：给这份计划起一个一句话标题（例如「重写登录页的输入校验」）")
         }
 
-        // 「缺参数」和「显式 null」要分开报：org.json 的 optJSONArray 分不出这两种情况
+        // 「缺少参数」与「显式 null」需分别报告：org.json 的 optJSONArray 无法区分这两种情况
         if (!args.has("steps") || args.isNull("steps")) {
             return ToolResult.Error("缺 steps：把计划拆成可执行的步骤，一步一条放进 steps 字符串数组")
         }
@@ -85,7 +85,7 @@ class PlanTool : Tool {
         val steps = ArrayList<String>(array.length())
         for (i in 0 until array.length()) {
             val step = array.optString(i, "").trim()
-            // 空串和字面 "null" 都算没写：宁可拦下来让模型补，也不要存一条「null」步骤进计划里
+            // 空串与字面 "null" 均视为未填写：宁可拒绝并让模型补充，也不将「null」写入计划步骤
             if (step.isEmpty() || step == "null") continue
             steps.add(step)
         }
@@ -94,11 +94,11 @@ class PlanTool : Tool {
         }
 
         if (ctx.sessionId.isBlank()) {
-            // 计划按会话存，没有会话 id 就没地方落盘；静默丢弃会让用户以为计划交上来了
+            // 计划按会话存储，缺少会话 id 则无法落盘；静默丢弃会使误以为计划已提交
             return ToolResult.Error("当前没有会话 id，计划无处可存：请在某个会话里重试")
         }
 
-        // 落盘失败由 PlanStore 自己记日志兜住（不抛），这里只把结果说清楚
+        // 落盘失败由 PlanStore 自行记录日志（不抛出），此处只需说明结果
         val saved = withContext(Dispatchers.IO) {
             PlanStore.appendPlan(
                 ctx.context,
@@ -109,7 +109,7 @@ class PlanTool : Tool {
             )
         }
         if (saved.isEmpty()) {
-            // appendPlan 一定至少加一份，空列表只能是写盘失败：这时报「已保存」会让用户以为计划在
+            // appendPlan 至少会加入一份，空列表只可能是写盘失败；此时返回「已保存」会误导用户
             return ToolResult.Error("计划没能写入磁盘（appdata/plans.json 不可写），请检查存储空间或应用私有目录权限后重试")
         }
         return ToolResult.Ok(

@@ -7,14 +7,14 @@ import java.io.File
 /**
  * 终端（PRoot Ubuntu）环境的体检与修复。
  *
- * 为什么需要「重装」这一手：Ubuntu 根文件系统里有成百上千个软链接（/bin → usr/bin、
- * /lib64/ld-linux-… 之类）和可执行位。备份包是 zip，而 zip **存不下软链接和权限位**：
- * 导入之后那些链接变成普通文件、脚本全丢了 x 位，PRoot 起得来、bash 却一进来就退：
- * 表现就是「终端一片黑、加进程闪一下就没」「记忆内核报 Hidden exec shell exited before ready」。
- * 镜像本身在 APK 里（assets/ubuntu-noble-…tar.xz），所以修法很直接：把解压出来的那份删掉，
- * 下次开终端时启动脚本会按内置镜像重新解压一份干净的。
+ * 需要重装机制的原因：Ubuntu 根文件系统包含大量软链接（/bin → usr/bin、
+ * /lib64/ld-linux-… 等）与可执行位。备份包为 zip，而 zip **无法保存软链接与权限位**：
+ * 导入后这些链接变为普通文件、脚本丢失可执行位，PRoot 可以启动，但 bash 一进入即退出：
+ * 表现为终端黑屏、进程短暂出现后消失，或记忆内核报告 Hidden exec shell exited before ready。
+ * 镜像位于 APK 内（assets/ubuntu-noble-…tar.xz），因此修复方式为删除已解压的根文件系统，
+ * 下次启动终端时由启动脚本依据内置镜像重新解压完整环境。
  *
- * usr/bin 下的 proot / busybox / bash 不用管：它们是 native so 的软链，每次启动都会重新建。
+ * usr/bin 下的 proot / busybox / bash 无需处理：它们是指向 native so 的软链接，每次启动都会重新创建。
  */
 object TerminalEnv {
 
@@ -28,36 +28,36 @@ object TerminalEnv {
         )
 
     /**
-     * 看起来装好了没：/bin/bash 与 /etc/os-release 都在。
+     * 是否看起来已安装：/bin/bash 与 /etc/os-release 均存在。
      *
-     * 只做「在不在」这种粗判：这里要回答的是「终端能不能起来」，
-     * 不是校验每一个文件的哈希：那样的体检又慢又容易误报。
+     * 仅做存在性粗判：此处判断的是终端能否启动，
+     * 而非校验每个文件的哈希；逐文件校验较慢且容易误报。
      */
     fun isInstalled(context: Context): Boolean {
         val root = rootfsDir(context)
         if (!root.isDirectory) return false
-        // /bin 在 Ubuntu 里是 → usr/bin 的软链；软链坏了之后这里会退化成普通目录，
-        // 所以两种落点都认一遍
+        // /bin 在 Ubuntu 中是指向 usr/bin 的软链接；软链接损坏后此处会退化为普通目录，
+        // 因此两种路径均需检查
         val bash = File(root, "bin/bash").takeIf { it.exists() } ?: File(root, "usr/bin/bash")
-        // 关键判据是**可执行位**：zip 导入把 x 位全丢了，文件还在、bash 却跑不起来，
-        // 只看 exist 会把坏环境报成「已安装」，用户照着点下去仍然是黑屏
+        // 关键判据为**可执行位**：zip 导入会丢失可执行位，文件仍存在但 bash 无法运行；
+        // 仅检查 exists 会将损坏环境误报为「已安装」，用户操作后仍然黑屏
         val runnable = bash.exists() && bash.canExecute()
         return runnable && File(root, "etc/os-release").exists()
     }
 
     /**
-     * 重装：删掉解压出来的根文件系统，下次进终端时由启动脚本按内置镜像重新解压。
+     * 重装：删除已解压的根文件系统，下次进入终端时由启动脚本依据内置镜像重新解压。
      *
-     * 代价说明（界面上也要说）：重装只清 Ubuntu 里的东西（apt 装的包、/root 下的文件），
-     * App 的会话、计划、记忆内核库都在别处，一个都不动。
+     * 代价说明（界面同样需提示）：重装仅清理 Ubuntu 环境中的内容（通过 apt 安装的包、/root 下的文件），
+     * App 的会话、计划与记忆内核库位于其他目录，均不受影响。
      *
-     * @return 释放的字节省略值（字节）；删除失败返回 0。
+     * @return 释放的字节数（近似值）；删除失败返回 0。
      */
     fun reinstall(context: Context): Long {
         val root = rootfsDir(context)
         val freed = sizeOf(root)
         val ok = deleteTree(root)
-        // 装到一半留下的进度标记：不清掉的话启动脚本会以为「已经装好」或「正在装」
+        // 安装中断残留的进度标记：若不清理，启动脚本会误判为「已安装」或「正在安装」
         File(context.filesDir, "tmp").let { tmp ->
             listOf("progress", "progress_des").forEach { name -> File(tmp, name).delete() }
         }
@@ -77,7 +77,7 @@ object TerminalEnv {
     private fun deleteTree(dir: File): Boolean {
         if (!dir.exists()) return true
         return try {
-            // walkBottomUp：先删子项再删目录，软链本身当文件删（不能跟着走进去）
+            // walkBottomUp：先删除子项再删除目录，软链接按文件删除（不得跟随链接进入目标）
             dir.walkBottomUp().forEach { file ->
                 if (file.isDirectory && !isSymlink(file)) file.delete() else file.delete()
             }

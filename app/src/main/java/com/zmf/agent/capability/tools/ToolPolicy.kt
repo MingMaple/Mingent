@@ -7,13 +7,13 @@ import java.io.File
 /**
  * 工具执行前的确定性闸门：工具真正动手之前必须过这一关。
  *
- * 只做两件事，别往里加业务逻辑：
+ * 只负责两件事，不在此处加入业务逻辑：
  * 1. **终端命令闸**：工作区档下不许碰外部挂载点（/sdcard、/storage、/mnt/media…），
- *    因为这些路径一旦能写，就等于「工作区档能改整台手机」，和档位承诺自相矛盾；
+ *    因为这些路径一旦可写，便等同于「工作区档可修改整台设备」，与档位承诺相矛盾；
  * 2. **危险命令黑名单**：完全档以外的档位一律拒绝会毁数据/毁系统的命令。
  *
- * 这是「确定性拦截」，不是沙箱：命令还可以用变量、管道、脚本绕，所以提示词和错误文案里
- * 都明说「这是闸门不是沙箱」。真正兜底的是 Android 自己的权限。
+ * 这是「确定性拦截」，而非沙箱：命令仍可通过变量、管道或脚本绕过，因此提示词与错误文案中
+ * 均明确说明「这是闸门而非沙箱」。最终保障来自 Android 自身的权限机制。
  *
  * 拒绝文案用固定的机器可读前缀（`[sandbox: file access denied under workspace mode]` /
  * `[sandbox: command denied under workspace mode]`）：Agent 侧与日志靠这个固定前缀区分
@@ -29,7 +29,7 @@ object ToolPolicy {
         "/sdcard", "/storage/", "/mnt/media", "/mnt/user", "/mnt/runtime", "/data/media"
     )
 
-    /** 危险命令：命中即拒绝（完全档放行）。写得宽一点，宁可误拦一条，不可放过 rm -rf /。 */
+    /** 危险命令：命中即拒绝（完全档放行）。规则适当放宽，宁可误拦一条，也不放过 rm -rf /。 */
     private val DANGEROUS = listOf(
         Regex("""\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rR][a-zA-Z]*\s+(/|/\*|~|/system|/data|/storage)(?:\s|;|\z)"""),
         Regex("""\brm\s+-[a-zA-Z]*f[a-zA-Z]*\s+/(?:\s|;|\z)"""),
@@ -112,12 +112,12 @@ object ToolPolicy {
     /**
      * 文件路径闸：把「三档」落到具体路径上，档位名与 mode 前缀一一对应。
      *
-     * - 只读：读随便读，写一律拒（只读档承诺的就是「不改盘」）；
-     * - 工作区：读随便读，写只能落在工作区根或 `<workspace>/tmp` 内（canonical 比较）；
+     * - 只读：读取全部放行，写入一律拒绝（只读档的承诺是不修改存储）；
+     * - 工作区：读取全部放行，写入只能落在工作区根或 `<workspace>/tmp` 内（canonical 比较）；
      * - 完全：全部放行。
      *
-     * 为什么读不设限：工作区档的目的是「不弄坏用户的东西」，读别人的文件弄不坏；
-     * 工作区档本来就是「写受限、读放开」，提示词与代码要判同一套，否则模型会按提示词乱试。
+     * 为什么读不设限：工作区档的目标是不破坏用户数据，读取他人文件不会造成破坏；
+     * 工作区档的语义是「写受限、读放开」，提示词与代码必须采用同一套判定，否则模型会按提示词反复试探。
      * 越界只拒绝 + 给提权提示，**不弹审批**：选择权留在设置的档位上，闸门保持确定性。
      */
     fun checkPath(permission: PermissionLevel, root: File, path: String, write: Boolean): Decision =
@@ -144,7 +144,7 @@ object ToolPolicy {
         if (!write) return Decision.ALLOW
 
         // 绝对禁区先于档位：App 核心数据目录任何档位都不许直写。
-        // 放在完全档提前返回之前，否则「完全档」会把它整个跳过。
+        // 放在完全档提前返回之前，否则「完全档」会使该检查被整体跳过。
         val guarded = root?.let { runCatching { PathGate.resolve(it, raw) }.getOrNull() }
             ?: if (raw.startsWith("/")) File(raw) else null
         guarded?.let { file ->
@@ -179,7 +179,7 @@ object ToolPolicy {
     fun deniedCommand(permission: PermissionLevel, reason: String): String =
         deny(SANDBOX_COMMAND, permission, reason, ESCALATE_COMMAND)
 
-    /** 旧签名的兼容层：历史调用点说的都是命令，语义等同 [deniedCommand]。 */
+    /** 旧签名的兼容层：历史调用点均用于命令类拒绝，语义等同 [deniedCommand]。 */
     fun deniedText(permission: PermissionLevel, reason: String): String = deniedCommand(permission, reason)
 
     /** 带工具名的命令类拒绝：原因前补一句「工具 <name>：」，便于定位是哪个工具触发的。 */

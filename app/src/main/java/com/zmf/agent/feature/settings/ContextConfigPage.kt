@@ -79,11 +79,11 @@ private data class SummaryOption(
 /**
  * 「上下文配置」页：提示词（最上面）+ 摘要式滚动压缩的全部可调项。
  *
- * 提示词排在最前，是因为它决定「模型是谁」；压缩只在上下文吃不下时才介入，
- * 顺序跟用户调参时的思维顺序一致。
+ * 提示词排在最前，因为它决定模型的身份设定；压缩仅在上下文容量不足时介入，
+ * 顺序与用户调参时的思路一致。
  *
- * 压缩区照旧没有任何「保存」按钮：每个开关 / 滑杆改完立刻 onApply 出去，改一点就生效一点；
- * 整列可竖向滚动，小屏也不会把底部说明挤没。
+ * 压缩区不设「保存」按钮：每个开关 / 滑杆修改后立即通过 onApply 生效；
+ * 整列可竖向滚动，小屏下底部说明也不会被挤出可视区域。
  */
 
 @Composable
@@ -103,13 +103,13 @@ fun ContextConfigPage(
     events: List<ContextEvent>
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    // 总局：关掉之后下面整片置灰不可点
+    // 总开关：关闭后下方整片置灰且不可点击
     val enabled = policy.enabled
 
     // 「立即压缩」一行有三态：空闲 → 压缩中… → 已更新摘要 / 压缩失败（3 秒后复原）
     var compressing by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf("") }
-    // 用一个递增的计数触发「3 秒后清掉结果」，避免另起协程还要管取消
+    // 用递增计数触发「3 秒后清除结果」，避免额外启动协程并管理取消
     var resultTick by remember { mutableStateOf(0) }
     LaunchedEffect(resultTick) {
         if (resultTick > 0) {
@@ -122,7 +122,7 @@ fun ContextConfigPage(
     LaunchedEffect(Unit) { onRefresh() }
 
     Surface(
-        // 页面铺满且不透明；最外层吞掉点击，避免穿透点到下面的聊天界面
+        // 页面铺满且不透明；最外层拦截点击，避免事件穿透到下方的聊天界面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -139,7 +139,7 @@ fun ContextConfigPage(
                 Text(
                     text = "←",
                     modifier = Modifier
-                        // 圆形按压：返回是孤立字形，方形波纹会露角
+                        // 圆形按压：返回按钮为孤立字形，方形波纹会露出直角
                         .saltRowClickable(RoundedCornerShape(50)) { onBack() }
                         .padding(horizontal = 12.dp, vertical = 14.dp),
                     fontSize = 20.sp,
@@ -153,7 +153,7 @@ fun ContextConfigPage(
                 )
             }
 
-            // 提示词是喂给模型的输入，压缩只决定历史怎么取舍，所以提示词排在上面
+            // 提示词是模型的输入，压缩仅决定历史的取舍方式，因此提示词置于上方
             PromptSection(
                 extraPrompt = extraPrompt,
                 overridePrompt = overridePrompt,
@@ -169,9 +169,9 @@ fun ContextConfigPage(
                 onChange = { onApply(policy.copy(enabled = it)) }
             )
 
-            // 触发比例：0.1 ~ 0.95，滑杆不再画刻度点（steps = 0 是连续滑），
-            // 0.05 的步进由 onChange 里的 snapRatio 吸附，0.40 这类位点照样精确落下；
-            // 显示的始终是策略里的当前值，不写死
+            // 触发比例：0.1 ~ 0.95，滑杆不绘制刻度点（steps = 0 为连续滑动），
+            // 0.05 的步进由 onChange 中的 snapRatio 吸附，0.40 等位点可精确落位；
+            // 显示值始终取自策略当前值，不做硬编码
             ContextSliderRow(
                 label = "触发比例",
                 valueText = String.format(Locale.US, "%.2f", policy.triggerRatio) + " × 窗口",
@@ -195,7 +195,7 @@ fun ContextConfigPage(
                 valueText = policy.triggerCount.toString() + " 条",
                 value = policy.triggerCount.toFloat().coerceIn(1f, 20f),
                 range = 1f..20f,
-                // 不按条数触发时这一项没有意义，一起置灰
+                // 不按条数触发时该项无实际作用，一并置灰
                 enabled = enabled && policy.triggerByCount,
                 onChange = {
                     onApply(policy.copy(triggerCount = it.roundToInt().coerceIn(1, 20)))
@@ -216,13 +216,13 @@ fun ContextConfigPage(
 
             // 逐字保留：轮数是下限（上面那行），token 预算是上限；比例按 (窗口 − 输出预留) 换算
             val windowTokens = snapshot.window
-            // 输入中的上限放在页级：比例行的灰/亮要跟着刚敲进去的数字立刻变，
-            // 不能等失焦提交才刷新，否则改完看着没反应，会以为设置没生效
+            // 输入中的上限放在页级：比例行的置灰与高亮需随已输入的数值即时变化，
+            // 不能等到失焦提交才刷新，否则修改后界面无反馈，易被误认为设置未生效
             var limitDraft by remember { mutableStateOf<String?>(null) }
             val typedLimit = limitDraft?.toIntOrNull()
                 ?: if (limitDraft == null) policy.retainTokens else 0
-            // 预算也按草稿算：两行右侧的「≈ 多少 token」要和正在输入的数字同步，
-            // 否则敲了 1000 却还显示旧的 209k
+            // 预算也按草稿计算：两行右侧的「≈ 多少 token」需与正在输入的数值同步，
+            // 否则输入 1000 后仍显示旧的 209k
             val typedBudget = ContextStore.retainBudgetTokens(
                 policy.copy(retainTokens = typedLimit),
                 windowTokens
@@ -230,7 +230,7 @@ fun ContextConfigPage(
             ContextSection("逐字保留（轮数为下限，token 预算为上限）")
             ContextSliderRow(
                 label = "保留比例",
-                // 填了绝对上限时比例不生效：这里别再重复显示同一个预算数字，直接说明被覆盖
+                // 填写绝对上限时比例不生效：此处不重复显示同一预算数字，直接说明已被覆盖
                 valueText = (policy.retainRatio * 100f).roundToInt().toString() + "% · " +
                     if (typedLimit > 0) "已被上限覆盖" else retainBudgetText(typedBudget),
                 value = policy.retainRatio.coerceIn(
@@ -238,7 +238,7 @@ fun ContextConfigPage(
                     ContextPolicy.MAX_RETAIN_RATIO
                 ),
                 range = ContextPolicy.MIN_RETAIN_RATIO..ContextPolicy.MAX_RETAIN_RATIO,
-                // 填了绝对 token 时比例不再生效，置灰说明它被覆盖了
+                // 填写绝对 token 时比例不生效，置灰并说明已被覆盖
                 enabled = enabled && typedLimit <= 0,
                 onChange = {
                     onApply(policy.copy(retainRatio = (it * 100f).roundToInt() / 100f))
@@ -252,18 +252,18 @@ fun ContextConfigPage(
                 enabled = enabled,
                 onDraftChange = { limitDraft = it },
                 onCommit = {
-                    // 直接读页面当前草稿：失焦事件可能带着旧闭包里捕获的值，
-                    // 用它算会出现「输入框已清空却把上一个数字又存回去」
+                    // 直接读取页面当前草稿：失焦事件可能携带旧闭包中捕获的值，
+                    // 据此计算会出现「输入框已清空却将上一个数字写回」
                     val parsed = (limitDraft?.trim()?.toIntOrNull() ?: policy.retainTokens)
                         .coerceAtLeast(0)
                     if (parsed != policy.retainTokens) {
                         onApply(policy.copy(retainTokens = parsed))
                     }
-                    // 提交后回到「显示落盘值」，输入框和比例行都以实际值为准
+                    // 提交后恢复显示落盘值，输入框与比例行均以实际值为准
                     limitDraft = null
                 }
             )
-            // 「已按阈值回落」也按草稿判定：填 1000 时不该还挂着上限超出阈值的提示
+            // 「已按阈值回落」同样按草稿判定：输入 1000 时不应仍显示上限超出阈值的提示
             if (enabled && ContextStore.retainClamped(policy.copy(retainTokens = typedLimit), windowTokens)) {
                 Text(
                     text = "已按阈值回落",
@@ -304,7 +304,7 @@ fun ContextConfigPage(
                     }
             }
             // 固定档收进「切换模型」里折叠：默认只显示一行当前选中项，
-            // 点开才列出全部可选模型，选完自动收起，免得一长串模型把「立即压缩」推到屏幕外
+            // 点开后才列出全部可选模型，选择后自动收起，避免一长串模型把「立即压缩」推出屏幕
             var modelsExpanded by remember { mutableStateOf(false) }
             // 折叠时右侧要能看出当前选的是哪个模型，所以先按落盘值反查一次
             val selectedOption = summaryOptions.firstOrNull {
@@ -328,7 +328,7 @@ fun ContextConfigPage(
                         enabled = enabled,
                         onClick = {
                             onApply(policy.copy(summaryModel = option.value))
-                            // 选完即收起：这一步的用户意图已经达成，列表留着只会挤占纵向空间
+                            // 选择后即收起：该操作意图已完成，保留列表只会占用纵向空间
                             modelsExpanded = false
                         }
                     )
@@ -367,7 +367,7 @@ fun ContextConfigPage(
                 }
             )
 
-            // 有摘要才亮：没有可清的，点了也是空动作
+            // 有摘要时才可点击：无内容可清除时点击不产生效果
             ContextActionRow(
                 label = "清除摘要",
                 valueText = "",
@@ -387,7 +387,7 @@ fun ContextConfigPage(
                 "上条摘要：" + if (snapshot.hasSummary) summaryTime(snapshot.lastSummaryAt) else "—"
             )
 
-            // 事件列表放最底部：它是「刚刚发生过什么」的旁证，不该挤在可调的开关中间
+            // 事件列表置于最底部：它作为近期操作的旁证，不宜插入可调项之间
             ContextEventsSection(events = events)
 
             Text(
@@ -474,16 +474,16 @@ private fun ContextSliderRow(
                 color = onSurface.copy(alpha = if (enabled) 0.45f else 0.25f)
             )
         }
-        // 两套值必须同时给：只给启用态的话，禁用态会落回 M3 默认的 38%/12%，
-        // 与我们自定义的启用态在灰底上看着差不多，分不出「能不能拖」。
+        // 两套值必须同时提供：仅设置启用态时，禁用态会回落到 M3 默认的 38%/12%，
+        // 与自定义的启用态在灰底上区分度不足，难以判断「能否拖动」。
         //
         // 深浅各一套，因为同一个 alpha 在两种底上不是同一种观感：
-        // 浅色下 50% 墨已经是一根深灰棒，压在近白卡上像铅笔；深色下 45% 白是「发亮的中灰」，正好。
+        // 浅色下 50% 墨色即显得过重；深色下 45% 白色对比适中。
         // 所以浅色整体下移（68% / 40% / 14%），深色保持（90% / 45% / 14%）。
         val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
         // steps = 0：不要 Material 那排刻度点，滑起来是连续的；
         // 离散落点仍由调用方的 snapRatio / roundToInt 在 onChange 里吸附。
-        // 只压整体高度，Slider 内部（轨道、滑块）交给 Material 自己画，不自绘。
+        // 只压缩整体高度，Slider 内部（轨道、滑块）由 Material 自行绘制，不自行实现。
         Slider(
             value = value,
             onValueChange = onChange,
@@ -631,7 +631,7 @@ private fun summaryTime(millis: Long): String =
 
 /**
  * 触发比例的说明行：窗口 × 比例 ≈ 多少 token 才触发摘要。
- * 数字全部按当前策略和当前窗口算（DeepSeek 是 1M 窗口，默认 0.40 → 约 419k），不写死。
+ * 数字全部按当前策略和当前窗口计算（DeepSeek 为 1M 窗口，默认 0.40 → 约 419k），不固定。
  */
 private fun triggerHint(ratio: Float, window: Int): String {
     val percent = String.format(Locale.US, "%.2f", ratio)
@@ -667,7 +667,7 @@ private const val EVENT_LIMIT = 8
 private fun ContextEventsSection(events: List<ContextEvent>) {
     ContextSection("摘要与压缩事件")
     val onSurface = MaterialTheme.colorScheme.onSurface
-    // 倒序：新的在上；同时兜住调用方传乱序的情况
+    // 倒序：新记录在上；同时兼容调用方传入乱序数据
     val recent = events.sortedByDescending { it.at }.take(EVENT_LIMIT)
     if (recent.isEmpty()) {
         Text(
@@ -685,7 +685,7 @@ private fun ContextEventsSection(events: List<ContextEvent>) {
 @Composable
 private fun ContextEventRow(event: ContextEvent) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    // 清除是用户主动动作，中性灰不用绿/红表态；其余按成败取色
+    // 清除是用户主动动作，使用中性灰而非绿/红表示成败；其余按结果取色
     val statusColor = when {
         event.kind == ContextEventKind.CLEAR -> onSurface.copy(alpha = 0.35f)
         event.ok -> onSurface.copy(alpha = 0.75f)
@@ -742,12 +742,12 @@ private fun retainBudgetText(budget: Int): String =
  * 绝对保留预算一行：行内窄输入框，空 / 0 = 回到按比例。
  *
  * 不弹窗：这一组只有「轮数 / 比例 / 上限」三个数，弹一个窗反而要来回对照；
- * 失焦与回车都提交，用户点别处不会丢掉刚输的数字。
+ * 失焦与回车都提交，用户点击其它位置不会丢失已输入的数值。
  */
 @Composable
 private fun ContextTokenRow(
     label: String,
-    // null = 没在编辑，直接显示落盘值；非 null = 正在输入的草稿，由页面持有以便联动别的行
+    // null = 未在编辑，直接显示落盘值；非 null = 正在输入的草稿，由页面持有以便联动其它行
     draft: String?,
     tokens: Int,
     budgetText: String,
@@ -774,7 +774,7 @@ private fun ContextTokenRow(
             onValueChange = { onDraftChange(it.filter { ch -> ch.isDigit() }) },
             enabled = enabled,
             onCommit = {
-                // 提交一律交给页面：改没改、要不要清草稿都由页面按当前草稿判断
+                // 提交一律交给页面：是否修改、是否清除草稿均由页面按当前草稿判断
                 onCommit()
             }
         )
@@ -788,7 +788,7 @@ private fun ContextTokenRow(
 }
 
 /**
- * 行内数字输入：只吃数字，回车或失焦提交。
+ * 行内数字输入：仅接受数字，回车或失焦提交。
  *
  * 用 BasicTextField 自绘（同提示词输入框）：这一页没有描边元素，套 OutlinedTextField 会带出 Material 的边框。
  */
@@ -810,7 +810,7 @@ private fun ContextTokenField(
             .width(78.dp)
             .height(32.dp)
             .onFocusChanged { state ->
-                // 失焦提交：数字已经输完却直接点走的情况比回车更常见
+                // 失焦提交：数字已输入完毕却直接点击其它位置的情况比回车更常见
                 if (!state.isFocused && focused) {
                     onCommit()
                     focusManager.clearFocus()

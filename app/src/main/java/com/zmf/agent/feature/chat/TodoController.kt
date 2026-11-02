@@ -13,9 +13,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 当前会话的待办清单：读回来、以及新一轮提问前清掉「全部完成」的旧清单。
+ * 当前会话的待办清单：读取，以及新一轮提问前清除「全部完成」的旧清单。
  *
- * 从 [ChatViewModel] 搬出，行为不变：状态字段名与原成员逐字一致，方法体原样照搬；
+ * 从 [ChatViewModel] 拆出，行为不变：状态字段名与原成员逐字一致，方法体原样保留；
  * 会话 id 与协程域由构造参数注入。
  */
 class TodoController(
@@ -24,15 +24,15 @@ class TodoController(
     private val currentSessionId: () -> String
 ) {
 
-    /** 当前会话的待办清单（模型用 todo_write 写、TodoStore 落盘）；换会话与每轮结束后都重读一次。 */
+    /** 当前会话的待办清单（模型通过 todo_write 写入、由 TodoStore 落盘）；切换会话与每轮结束后均重新读取。 */
     var todos by mutableStateOf<List<Todo>>(emptyList())
         private set
 
     /**
-     * 重读当前会话的待办清单：IO 里读、主线程赋值。
+     * 重新读取当前会话的待办清单：在 IO 中读取、主线程赋值。
      *
-     * 清单是模型用 todo_write 写的，App 侧只读不算，所以换会话与每轮结束后各对齐一次。
-     * 读盘期间又切走了会话就丢弃这次结果，别把上一个会话的清单显示到当前会话上。
+     * 清单由模型通过 todo_write 写入，App 侧只读不计算，因此切换会话与每轮结束后各同步一次。
+     * 读取期间若会话已切换，则丢弃本次结果，避免将上一会话的清单显示到当前会话。
      */
     fun reloadTodos() {
         val id = currentSessionId()
@@ -46,7 +46,7 @@ class TodoController(
         }
     }
 
-    /** 换会话 / 回滚时清空界面上的清单（写盘由会话控制器负责）。 */
+    /** 切换会话或回滚时清空界面上的清单（写盘由会话控制器负责）。 */
     fun clearTodos() {
         todos = emptyList()
     }
@@ -54,15 +54,15 @@ class TodoController(
     /**
      * 新一轮提问前清掉上一轮「全部完成」的清单；还有 pending / in_progress 就保留。
      *
-     * 清单是这一轮的执行计划：全部打勾说明这一轮已经收尾，留着只会挡住新一轮的进度；
-     * 没做完的还得继续挂着，否则用户会以为任务自己消失了。
+     * 清单是本轮的执行计划：全部完成说明本轮已收尾，保留只会干扰新一轮进度；
+     * 未完成项需继续显示，否则会被误认为任务自行消失。
      * 落盘必须在这一轮开跑之前同步做完：模型的 todo_write 紧接着就会写同一份文件，
-     * 放到 IO 线程里异步清，可能反过来把刚写好的新清单抹掉。
+     * 若放入 IO 线程异步清除，可能反向覆盖刚写入的新清单。
      */
     fun dropFinishedTodosBeforeNewRound() {
         val id = currentSessionId()
         if (id.isEmpty()) return
-        // 以盘上的清单为准：reloadTodos 是异步的，刚结束的那一轮可能还没读回来
+        // 以磁盘上的清单为准：reloadTodos 为异步操作，刚结束的一轮可能尚未读取完成
         val stored = TodoStore.load(appContext, id)
         if (stored.isEmpty() || stored.any { it.status != TodoStore.COMPLETED }) return
         TodoStore.save(appContext, id, emptyList())

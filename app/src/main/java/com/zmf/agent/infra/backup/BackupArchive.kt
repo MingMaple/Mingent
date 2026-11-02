@@ -67,7 +67,7 @@ data class ImportReport(
  *
  * 原则：
  * - 重活全在 [Dispatchers.IO] 上做，边做边回调进度（百分比 + 阶段文案）；
- * - 导入**每段独立成败**：一段坏了不影响别的段，结果逐条进 [ImportReport]；
+ * - 导入**每段独立成败**：某段损坏不影响其他段，结果逐条进入 [ImportReport]；
  * - 不抛给界面：只有整个包根本读不了才返回 Result.failure。
  */
 object BackupArchive {
@@ -93,7 +93,7 @@ object BackupArchive {
     private const val MEMORY_DATA_PATH = "mingmem/_Data"
     private const val TEMP_MEMORY_DATA = "mingmem/_Data.importing"
 
-    /** 应用自己的 JSON：都在 [AppPaths] 管的 appdata 目录里。mcp.json 是 1.1.0 新增（MCP 服务配置）。 */
+    /** 应用自身的 JSON：均位于 [AppPaths] 管理的 appdata 目录。mcp.json 为 MCP 服务配置。 */
     private val DATA_FILES =
         listOf(
             "sessions.json",
@@ -102,7 +102,7 @@ object BackupArchive {
             "mcp.json",
             "providers.json",
             "goals.json",
-            // 摘要/压缩事件：只读记录，换机排查「上下文是怎么被压掉的」全靠它
+            // 摘要/压缩事件：只读记录，用于换机后排查上下文被压缩的原因
             "context_events.json"
         )
 
@@ -112,14 +112,14 @@ object BackupArchive {
     /**
      * 终端环境在 zip 里的条目名：**一整段 tar**，不是逐文件。
      *
-     * 为什么改：zip 存不下软链接和权限位，Ubuntu 根文件系统靠这两样活着。上一版把 usr/ 里的
-     * 每一个文件单独塞进 zip，导入后 /bin → usr/bin 变成普通目录、所有可执行位丢失，
-     * 表现就是「终端一片黑、加进程闪一下就没、记忆内核报 shell 起不来」。
-     * tar 这两样都能存，代价只是多一层解包。
+     * 使用 tar 的原因：zip 无法保存软链接与权限位，而 Ubuntu 根文件系统依赖这两项。若将 usr/ 下
+     * 每个文件单独写入 zip，导入后 /bin → usr/bin 会变为普通目录、可执行位全部丢失，
+     * 表现为终端黑屏、进程短暂出现后消失、记忆内核报告 shell 无法启动。
+     * tar 可保存这两类信息，代价仅为多一层解包。
      */
     private const val TERMINAL_TAR_ENTRY = PREFIX_TERMINAL + "usr.tar"
 
-    /** 备份里可能写死的包名：正式版与共存版互为来源，导入时按当前包名改写。 */
+    /** 备份里可能固定的包名：正式版与共存版互为来源，导入时按当前包名改写。 */
     private const val BASE_PACKAGE_ID = "io.github.mingmaple.mingent"
 
     /** SharedPreferences 目录名。 */
@@ -141,7 +141,7 @@ object BackupArchive {
     private const val TEMP_WORKSPACES = ".import-workspaces"
     private const val TEMP_OLD_SUFFIX = ".import-old"
 
-    /** 导入数据文件的临时后缀（刻意跟 store 自己的 .tmp 区分开，免得互相踩）。 */
+    /** 导入数据文件的临时后缀（有意与 store 自身的 .tmp 区分，避免相互覆盖）。 */
     private const val IMPORT_TMP_SUFFIX = ".import.tmp"
 
     private const val COPY_BUFFER = 64 * 1024
@@ -154,8 +154,8 @@ object BackupArchive {
     /**
      * 一次导出的结果。
      *
-     * [bytes] 写进 zip 的总字节；[note] 需要额外告诉用户的一句话
-     * （比如「终端环境未导出：…」），没有就是 null。
+     * [bytes] 写入 zip 的总字节；[note] 需额外提示用户的信息
+     * （例如「终端环境未导出：…」），无则为 null。
      */
     data class ExportOutcome(val bytes: Long, val note: String?)
 
@@ -180,8 +180,8 @@ object BackupArchive {
     /**
      * 打包主体。
      *
-     * 先把要写的东西列成清单（顺手摸清体积用来算进度），再一口气写完：
-     * 清单必须是最先写进 zip 的条目，所以不能边写边决定 sections。
+     * 先将要写入的内容列成清单（同时统计体积用于计算进度），再统一写入：
+     * 清单必须为首个写入 zip 的条目，因此不能边写边确定 sections。
      */
     private suspend fun exportInternal(
         app: Context,
@@ -256,7 +256,7 @@ object BackupArchive {
             collectFiles(File(external, "workspaces"), PREFIX_WORKSPACES, true, false, workspacesItems)
             addSection("workspaces", workspacesItems)
         } else {
-            // 极少数机型拿不到外部目录：这两段直接不导
+            // 极少数机型无法获取外部目录：这两段不导出
             missing.add(PREFIX_WORKSPACE)
             missing.add(PREFIX_WORKSPACES)
         }
@@ -271,15 +271,15 @@ object BackupArchive {
         }
 
         // ---- terminal/：仅当用户勾了；usr/ 整段打成 tar（见 TERMINAL_TAR_ENTRY 的注释）----
-        // 先打到临时文件、成功之后才进 zip：根文件系统里有 PRoot 留下的挂载点目录读不了，
-        // 边打边塞进 zip 的话一旦中途失败，zip 里那一条就是截断的（曾经导出到 40% 时提示直接消失）。
+        // 先写入临时文件，成功后再写入 zip：根文件系统包含 PRoot 留下的不可读挂载点目录；
+        // 若直接写入 zip，中途失败会使该条目被截断（曾出现导出至 40% 时提示消失的情况）。
         var terminalTar: File? = null
         var terminalNote: String? = null
         if (options.includeTerminal) {
             val terminalItems = ArrayList<PlanItem>()
             val usr = File(app.filesDir, "usr")
             if (usr.isDirectory) {
-                // 打包可能要十几秒到一分钟：先给用户一句交代，否则进度条一直停在 0%
+                // 打包可能耗时十几秒至一分钟：需先提示用户，否则进度条将持续停留在 0%
                 onProgress(0, "打包终端环境…")
                 val packed = packTerminalTar(app, usr)
                 terminalTar = packed.first
@@ -304,7 +304,7 @@ object BackupArchive {
         // 进度状态放在函数作用域里，方便内层 local fun 直接累加
         var doneUnits = 0L
         var written = 0L
-        // 所有条目是否都写完了：收尾异常能不能算成功，全看它
+        // 所有条目是否均写入完成：收尾异常能否视为成功取决于该标志
         var wroteEverything = false
         var lastPct = -2
         var label = "准备导出"
@@ -318,7 +318,7 @@ object BackupArchive {
         }
 
         onProgress(0, "准备导出")
-        // "wt" 必须带：SAF 的默认 "w" 不截断，覆盖同名旧文件会留下尾巴
+        // 必须指定 "wt"：SAF 默认的 "w" 不截断文件，覆盖同名旧文件会残留尾部内容
         val output = app.contentResolver.openOutputStream(uri, "wt")
             ?: throw IllegalStateException("无法写入目标文件（打开失败）")
         try {
@@ -364,7 +364,7 @@ object BackupArchive {
                         written += data.size
                     }
                     zos.closeEntry()
-                    // 收尾把这一格补满：按体积折算的整数除法会差一点，不能让进度永远停在 99
+                    // 收尾时补满该进度单位：按体积折算的整数除法存在误差，需避免进度停留在 99
                     doneUnits = base + planned
                     emit()
                 }
@@ -380,9 +380,9 @@ object BackupArchive {
             }
         }
         } catch (e: Exception) {
-            // 收尾异常（provider 侧 close/flush）**且**所有条目都已写完：数据确实落盘了，按成功处理。
-            // 写到一半炸了就不行：那是一个没有目录区的半截 zip，按成功报等于骗人
-            // （曾经终端环境 tar 中途报错，界面说「已导出」，文件其实打不开）。
+            // 收尾异常（provider 侧 close/flush）**且**所有条目均已写完：数据确已落盘，按成功处理。
+            // 写入中断时不可按成功处理：此时 zip 缺少目录区，报告成功与事实不符
+            // （曾出现终端环境 tar 中途报错而界面提示「已导出」、文件实际无法打开的情况）。
             if (wroteEverything) {
                 val size = contentLength(app, uri)
                 if (size > 0L) {
@@ -391,7 +391,7 @@ object BackupArchive {
                     return ExportOutcome(size, terminalNote)
                 }
             }
-            // 半截文件：删掉，别在下载目录里留一个打不开的垃圾
+            // 不完整文件：删除，避免在下载目录中残留无法打开的文件
             runCatching { app.contentResolver.delete(uri, null, null) }
             FileLog.log(TAG, "导出中断，已删除半截文件：" + e)
             throw e
@@ -400,8 +400,8 @@ object BackupArchive {
             terminalTar?.let { runCatching { it.delete() } }
         }
 
-        // 报给用户看的必须是**磁盘上那个文件**的大小：written 是未压缩字节，
-        // 终端环境那种上 GB 的内容压完只剩三成，拿 written 显示会让人以为文件大得不对劲
+        // 向用户展示的必须是**磁盘上文件**的大小：written 为未压缩字节，
+        // 终端环境中数 GB 的内容压缩后仅剩约三成，使用 written 显示会造成文件过大的误解
         val onDisk = contentLength(app, uri).takeIf { it > 0L } ?: written
         FileLog.log(
             TAG,
@@ -450,7 +450,7 @@ object BackupArchive {
      * 解包主体。
      *
      * 每一段（data / prefs / workspace / workspaces / logs / terminal）各自处理、各自记结果：
-     * 某一段坏掉只记一条 failed，不影响别的段，也不往外抛。
+     * 某一段损坏时仅记录一条 failed，不影响其他段，也不向外抛出异常。
      */
     private suspend fun importInternal(
         app: Context,
@@ -473,7 +473,7 @@ object BackupArchive {
         val workspaceTemp = if (external != null) File(external, TEMP_WORKSPACE) else null
         val workspacesTemp = if (external != null) File(external, TEMP_WORKSPACES) else null
 
-        // 上次半途失败留下的临时目录先清掉，别把旧垃圾一起换上去
+        // 先清除上次中途失败残留的临时目录，避免将旧残留一并替换
         deleteTree(usrTemp)
         deleteTree(memoryTemp)
         if (workspaceTemp != null) deleteTree(workspaceTemp)
@@ -481,7 +481,7 @@ object BackupArchive {
 
         var terminalFiles = 0
         var terminalUsrFiles = 0
-        // 新格式：终端环境是整段 tar（软链接与权限位都在里面）
+        // 终端环境为整段 tar（软链接与权限位均包含其中）
         var terminalUsrFromTar = false
         var workspaceFiles = 0
         var workspacesFiles = 0
@@ -490,13 +490,13 @@ object BackupArchive {
         var memoryFiles = 0
 
         // 进度：优先按「已读字节 / 包总大小」（zip 的压缩字节几乎线性推进）；
-        // 拿不到总大小时退回按条目数估算（渐近到 95%，结束补 100），保证单调递增。
+        // 无法获取总大小时退回按条目数估算（渐近至 95%，结束时补至 100），保证单调递增。
         val totalBytes = contentLength(app, uri)
         var readBytes = 0L
         var entries = 0
         var lastPct = -2
         var label = "读取备份"
-        /** 按已读字节算百分比（拿不到总大小时按条目数渐近到 95%），只在变化时回调。 */
+        /** 按已读字节计算百分比（无法获取总大小时按条目数渐近至 95%），仅在变化时回调。 */
         fun emit() {
             val pct = if (totalBytes > 0L) {
                 ((readBytes * 100L) / totalBytes).toInt().coerceIn(0, 99)
@@ -530,7 +530,7 @@ object BackupArchive {
                                 label = "还原 " + name
                                 try {
                                     when {
-                                        // 清单已经读过，不再落盘
+                                        // 清单已读取，不重复落盘
                                         name == MANIFEST_NAME -> Unit
 
                                         name.startsWith(PREFIX_DATA) -> {
@@ -539,12 +539,12 @@ object BackupArchive {
                                                 throw IllegalStateException("数据条目名不合法")
                                             }
                                             // 先改写包名：正式版与共存版互为来源时，
-                                            // 文件里写死的工作区/附件绝对路径要跟着换到当前包
+                                            // 文件中固定的工作区与附件绝对路径需同步改为当前包
                                             val text = rewritePackageIds(
                                                 app,
                                                 zis.readBytes().toString(Charsets.UTF_8)
                                             )
-                                            // 必须先能解析成 JSON 才允许替换，坏包不能把好文件冲掉
+                                            // 必须先能解析为 JSON 才允许替换，损坏的备份不得覆盖有效文件
                                             try {
                                                 JSONObject(text)
                                             } catch (e: Exception) {
@@ -699,7 +699,7 @@ object BackupArchive {
         }
 
         if (terminalUsrFromTar) {
-            // 新格式：tar 解出来的结构是 usrTemp/usr，整体换到 filesDir/usr
+            // tar 解出的结构为 usrTemp/usr，整体替换至 filesDir/usr
             if (replaceDir(usrDir, File(usrTemp, "usr"))) {
                 restored.add("终端环境：软链接与权限位已保留，可直接使用")
             } else {
@@ -708,8 +708,8 @@ object BackupArchive {
             }
         } else if (terminalUsrFiles > 0) {
             if (replaceDir(usrDir, usrTemp)) {
-                // 旧格式（逐文件塞进 zip）还原出来的根文件系统一定缺软链接与可执行位：
-                // 与其让用户开终端撞黑屏，不如当场清掉，让启动脚本按内置镜像重建（约 1 分钟）
+                // 旧格式（逐文件写入 zip）还原的根文件系统必然缺少软链接与可执行位：
+                // 与其让用户打开终端时遭遇黑屏，不如立即清除并由启动脚本依据内置镜像重建（约 1 分钟）
                 TerminalEnv.reinstall(app)
                 restored.add(
                     "终端环境（旧格式，" + terminalFiles + " 个文件）：文件已还原，" +
@@ -761,7 +761,7 @@ object BackupArchive {
     private fun versionName(app: Context): String = try {
         app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: ""
     } catch (e: Exception) {
-        // 取不到就当空串，不影响备份本身
+        // 无法获取时返回空串，不影响备份本身
         ""
     }
 
@@ -778,7 +778,7 @@ object BackupArchive {
         } catch (e: IllegalStateException) {
             throw e
         } catch (e: Exception) {
-            // 不是 zip / 头部结构坏了
+            // 非 zip 文件或头部结构损坏
             throw IllegalStateException("这不是本应用的备份文件", e)
         }
         // zip 能打开但没有清单条目：不是本应用导出的包
@@ -790,7 +790,7 @@ object BackupArchive {
         var entry = zis.nextEntry
         while (entry != null) {
             if (!entry.isDirectory && entry.name == MANIFEST_NAME) {
-                // readBytes 只读到条目数据末尾（ZipInputStream 在条目边界返回 -1），不会吃掉后面的条目
+                // readBytes 仅读取至条目数据末尾（ZipInputStream 在条目边界返回 -1），不会读取后续条目
                 return zis.readBytes().toString(Charsets.UTF_8)
             }
             entry = zis.nextEntry
@@ -821,7 +821,7 @@ object BackupArchive {
         )
     }
 
-    /** 格式校验：比本程序新就直说；连 format 都没有就不是本应用的包。 */
+    /** 格式校验：高于本程序支持版本时直接提示；缺少 format 则不是本应用的备份文件。 */
     private fun validateManifest(manifest: BackupManifest) {
         if (manifest.format > FORMAT) {
             throw IllegalStateException("备份来自更新版本，请先升级 App")
@@ -833,7 +833,7 @@ object BackupArchive {
 
     // ================= 数据文件 =================
 
-    /** 先写 .tmp 再 rename：坏包不会把正在用的文件写成半截。 */
+    /** 先写 .tmp 再 rename：损坏的备份不会将正在使用的文件写成不完整状态。 */
     private fun writeDataFile(app: Context, fileName: String, bytes: ByteArray) {
         val target = AppPaths.dataFile(app, fileName)
         val parent = target.parentFile
@@ -841,7 +841,7 @@ object BackupArchive {
         val temp = File(parent, fileName + IMPORT_TMP_SUFFIX)
         temp.writeBytes(bytes)
         if (!temp.renameTo(target)) {
-            // 个别文件系统 rename 不覆盖已有文件：删掉再试一次，最后退化成直接覆盖
+            // 个别文件系统 rename 不覆盖已有文件：先删除后重试，最后退化为直接覆盖
             target.delete()
             if (!temp.renameTo(target)) {
                 target.writeBytes(bytes)
@@ -864,19 +864,19 @@ object BackupArchive {
     // ================= 偏好设置 =================
 
     /**
-     * 按 key 合并 SharedPreferences，**不整体覆盖文件**（别的键保持本机原值）。
+     * 按 key 合并 SharedPreferences，**不整体覆盖文件**（其他键保持本机原值）。
      *
-     * api_key 一律跳过：永远不用备份里的 Key 覆盖本机的 Key。
-     * 返回实际写进去的键数量。
+     * api_key 一律跳过：不使用备份中的 Key 覆盖本机 Key。
+     * 返回实际写入的键数量。
      */
     private fun mergePrefs(app: Context, prefsName: String, xml: String): Int {
         val editor = app.getSharedPreferences(prefsName, Context.MODE_PRIVATE).edit()
         var applied = 0
         val parser = Xml.newPullParser()
-        // 个别 XML 带 BOM，先切掉，免得解析器在第一个字符上就报错
+        // 个别 XML 带 BOM，先移除，避免解析器在首个字符处报错
         parser.setInput(StringReader(xml.removePrefix("\uFEFF")))
         if (!seekStartTag(parser, "map")) {
-            // 没有 map 根：当成空文件，什么都不写
+            // 缺少 map 根节点：视为空文件，不写入任何内容
             return 0
         }
         while (true) {
@@ -887,13 +887,13 @@ object BackupArchive {
             val type = parser.name
             val key = parser.getAttributeValue(null, "name")
             if (key.isNullOrEmpty() || key == SENSITIVE_KEY) {
-                // 没有 name 或者是要永远跳过的 Key：整段吃掉，不动本机
+                // 缺少 name 或属于始终跳过的 Key：整段跳过，不修改本机数据
                 skipElement(parser)
                 continue
             }
             when (type) {
                 "string" -> {
-                    // 工作区路径这类值里写死着包名，换包名（正式版 ↔ 共存版）导入时要跟着改
+                    // 工作区路径等值中包含固定的包名，在正式版与共存版之间导入时需同步改写
                     editor.putString(key, rewritePackageIds(app, readText(parser)))
                     applied++
                 }
@@ -920,11 +920,11 @@ object BackupArchive {
                     )
                     applied++
                 }
-                // 不认识的类型（以后 SharedPreferences 加了新类型）：跳过，不猜
+                // 无法识别的类型（SharedPreferences 后续新增类型）：跳过，不作推测
                 else -> skipElement(parser)
             }
         }
-        // 导入是一次性动作：用 commit() 保证返回前已经落盘
+        // 导入为一次性操作：使用 commit() 保证返回前已落盘
         editor.commit()
         return applied
     }
@@ -1014,17 +1014,17 @@ object BackupArchive {
     }
 
     /**
-     * 把终端环境（filesDir/usr）打成一份 tar，返回 (临时文件, 给用户看的一句话)。
+     * 将终端环境（filesDir/usr）打包为 tar，返回（临时文件，面向用户的提示信息）。
      *
-     * 为什么必须是 tar：zip 不存软链接、不存权限位，而 Ubuntu 根文件系统恰恰靠这两样活着
-     * （/bin → usr/bin 的链接、所有可执行位）。上一版逐文件塞进 zip，导入之后的终端必然黑屏。
+     * 必须使用 tar 的原因：zip 不保存软链接与权限位，而 Ubuntu 根文件系统依赖这两项
+     * （/bin → usr/bin 的链接与全部可执行位）。逐文件写入 zip 会导致导入后终端必然黑屏。
      *
-     * 为什么自己写 tar、不借 busybox：busybox 按 argv[0] 派发 applet，App 里能直接执行的那份
-     * 文件名是 libbusybox.so，跑起来只报 "applet not found"（实测两次都折在这一步）。
-     * 自己写还有个必需的好处：PRoot 留下的挂载点目录读不了，可以就地跳过，不会因为一个目录让整包失败。
+     * 自行实现 tar 而不使用 busybox 的原因：busybox 按 argv[0] 分发 applet，App 中可直接执行的
+     * 文件名为 libbusybox.so，运行时仅报告 "applet not found"（实测两次均在此失败）。
+     * 自行实现的另一必要优势：PRoot 留下的挂载点目录不可读，可在此处跳过，不会因单个目录导致整包失败。
      *
-     * 为什么先落临时文件再进 zip：边打边塞进 zip 的话，中途失败时 zip 里那一条就是截断的，
-     * 整个备份跟着作废（表现就是「导出到 40% 提示直接消失，文件打不开」）。
+     * 先写入临时文件再写入 zip 的原因：直接写入时若中途失败，zip 中该条目会被截断，
+     * 整个备份随之作废（表现为「导出至 40% 时提示消失，文件无法打开」）。
      */
     private fun packTerminalTar(app: Context, dir: File): Pair<File?, String?> {
         val tarFile = File(app.cacheDir, "terminal-usr.tar")
@@ -1063,7 +1063,7 @@ object BackupArchive {
     /**
      * 递归把一个目录写成 tar 条目，返回被跳过的项数。
      *
-     * 只做 ustar 里够用的三种：目录（5）、普通文件（0）、软链接（2）；
+     * 仅实现 ustar 中必要的三种：目录（5）、普通文件（0）、软链接（2）；
      * 名字或链接目标超过 100 字节时先写 GNU 的 L / K 扩展条目（busybox tar 解包认这两种）。
      */
     private fun tarTree(out: OutputStream, base: File, file: File, counter: IntArray): Int {
@@ -1083,7 +1083,7 @@ object BackupArchive {
             return 0
         }
         if (file.isDirectory) {
-            // 读不了目录（PRoot 挂载点常见）：跳过整棵子树，不让它中断打包
+            // 目录不可读（PRoot 挂载点常见）：跳过整棵子树，避免中断打包
             val children = if (file.canRead()) file.listFiles() else null
             if (children == null) {
                 FileLog.log(TAG, "打包跳过不可读目录：" + rel)
@@ -1232,7 +1232,7 @@ object BackupArchive {
         var total = 0L
         var seen = 0
         root.walkTopDown().forEach { file ->
-            // 上限兜一手：软链接指回祖辈的目录会让 walk 打转，估个进度不值得卡死
+            // 设置上限作为保底：软链接指回祖辈目录会使 walk 循环，为估算进度不值得承担卡死风险
             if (++seen > 200_000) return@forEach
             if (file.isFile) total += file.length()
         }
@@ -1244,7 +1244,7 @@ object BackupArchive {
     /**
      * 终端环境段导出的真实体积（字节）：filesDir/usr 递归 + 两个根脚本，和 [export] 进包的内容一致。
      *
-     * 界面上的体积注释按它显示，不再写死常量：用户 apt 装了多少，这里就报多少。
+     * 界面上的体积注释据此显示，不使用固定常量：用户通过 apt 安装的实际体积由此如实反映。
      */
     fun terminalSectionBytes(app: Context): Long {
         var total = fileTreeSize(File(app.filesDir, "usr"))
@@ -1256,16 +1256,16 @@ object BackupArchive {
     }
 
     /**
-     * 备份里写死的包名换成当前包名。
+     * 将备份中固定的包名替换为当前包名。
      *
-     * 正式版（io.github.mingmaple.mingent）与共存版（…​.dev）互为来源时，偏好里存的工作区绝对路径、
-     * 会话里记的附件路径都带着旧包名，原样导入会指向另一个 App 的目录（甚至根本不存在）。
-     * 只改这两个已知包名，别的字符串一个字节都不碰。
+     * 正式版（io.github.mingmaple.mingent）与共存版（…​.dev）互为来源时，偏好中保存的工作区绝对路径、
+     * 会话中记录的附件路径均带有旧包名，原样导入会指向另一个 App 的目录（甚至根本不存在）。
+     * 仅修改这两个已知包名，其他字符串保持不变。
      */
     private fun rewritePackageIds(app: Context, text: String): String {
         if (!text.contains(BASE_PACKAGE_ID)) return text
         val current = app.packageName
-        // 先换长的（带 .dev 的那个）：…mingent 是 …mingent.dev 的前缀，顺序反了会拼出 .dev.dev
+        // 先替换较长的名称（带 .dev 者）：…mingent 是 …mingent.dev 的前缀，顺序颠倒会生成 .dev.dev
         var out = text.replace(BASE_PACKAGE_ID + ".dev", current)
         out = out.replace(Regex(Regex.escape(BASE_PACKAGE_ID) + "(?!\\.dev)"), current)
         return out
@@ -1278,8 +1278,8 @@ object BackupArchive {
     /**
      * 把当前 zip 条目（tar 流）解开到 [usrTemp]。
      *
-     * 解出来的结构是 usrTemp/usr/…，收尾阶段再整体换到 filesDir/usr。
-     * 用 busybox tar 的 -p：软链接与权限位就是靠它保住；App 自己那套 zip 解压做不到。
+     * 解出的结构为 usrTemp/usr/…，收尾阶段再整体替换至 filesDir/usr。
+     * 使用 busybox tar 的 -p 选项：软链接与权限位依赖该选项保留；App 自身的 zip 解压无法实现。
      */
     private fun extractTar(app: Context, zis: ZipInputStream, usrTemp: File) {
         val busybox = busyboxBinary(app)
@@ -1306,7 +1306,7 @@ object BackupArchive {
         }
         try {
             // 管道可能在中途断掉（busybox 早退）：这不算「这条 zip 条目坏了」之外的另一种结果，
-            // 统一在下面按退出码 + stderr 报，别让 EPIPE 这种实现细节直接怼到用户脸上。
+            // 统一在下方按退出码与 stderr 报告，避免将 EPIPE 等实现细节直接暴露给用户。
             var writeError: Exception? = null
             try {
                 process.outputStream.use { out ->
@@ -1405,7 +1405,7 @@ object BackupArchive {
         return if (index <= 0) name else name.substring(0, index)
     }
 
-    /** 目标文件的总字节数；SAF 拿不到就返回 -1（导入进度退回按条目数估）。 */
+    /** 目标文件的总字节数；SAF 无法获取时返回 -1（导入进度退回按条目数估算）。 */
     private fun contentLength(app: Context, uri: Uri): Long = try {
         app.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
             val index = cursor.getColumnIndex(OpenableColumns.SIZE)
@@ -1425,7 +1425,7 @@ object BackupArchive {
         val zipName: String,
         val source: File? = null,
         val bytes: ByteArray? = null,
-        /** app_prefs.xml 专用：写之前删掉 name="api_key" 那行。 */
+        /** app_prefs.xml 专用：写入前删除 name="api_key" 所在行。 */
         val filterApiKey: Boolean = false
     ) {
         /** 进度权重：按体积折算（每 64KB 一格），小文件至少一格。 */

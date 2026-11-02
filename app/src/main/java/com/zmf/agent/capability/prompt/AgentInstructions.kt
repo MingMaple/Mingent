@@ -8,10 +8,10 @@ import java.io.File
  *
  * 为什么单开一个模块：它既不是系统提示词（PromptBuilder 里那套固定的身份 / 环境 / 权限段），
  * 也不是 Skill（按需取正文）：它是用户在目录里写的约定，必须每次请求前现读，
- * 用户改完文件下一轮就生效，不用重启会话。
+ * 用户修改文件后，下一轮请求即生效，无需重启会话。
  *
- * 只在工作区根找，不往上层目录找：手机上没有多级 checkout 的目录结构，
- * 往上找只会把用户 home 里不相关的文件卷进来。
+ * 只在工作区根查找，不向父目录查找：手机环境不存在多级 checkout 的目录结构，
+ * 向父目录查找只会引入用户 home 中无关的文件。
  */
 object AgentInstructions {
 
@@ -19,7 +19,7 @@ object AgentInstructions {
      * 一次读到的东西。
      *
      * [displayPath] 是给模型看的相对名字（多文件用逗号拼接），
-     * [hash] 只用来判断「和上次投的是不是同一份」，不展示给模型。
+     * [hash] 仅用于判断「与上次注入的是否为同一份」，不展示给模型。
      */
     data class Payload(val text: String, val displayPath: String, val hash: String)
 
@@ -31,10 +31,10 @@ object AgentInstructions {
     /** 合计预算 64KiB：再大就把真正的工作内容挤出上下文，而且每轮都重复计费。 */
     const val BUDGET_BYTES = 65536
 
-    /** 单文件最多读 1MiB：误放一个巨型文件也不能把读盘拖垮（反正后面还要截到 64KiB）。 */
+    /** 单文件最多读 1MiB：即使误放巨型文件也不会拖垮读盘（后续仍会截断至 64KiB）。 */
     private const val MAX_READ_BYTES = 1024 * 1024
 
-    /** 多份文件之间的分隔；两文件之间空一行，模型才不会把两段约定读串。 */
+    /** 多份文件之间的分隔；两文件之间空一行，避免模型将两段约定连读。 */
     private const val SEPARATOR = "\n\n"
 
     /** 候选文件 + 已经读进来的正文。 */
@@ -49,7 +49,7 @@ object AgentInstructions {
         val entries = readAll(workspaceRoot)
         if (entries.isEmpty()) return null
 
-        // 超预算先丢尾部文件：高优先级的 AGENTS.md 绝不给低优先级的本地覆盖文件让路
+        // 超预算时优先丢弃尾部文件：高优先级的 AGENTS.md 不得为低优先级的本地覆盖文件让出预算
         while (entries.size > 1 && joinedBytes(entries) > BUDGET_BYTES) {
             val dropped = entries.removeAt(entries.size - 1)
             FileLog.log(
@@ -58,7 +58,7 @@ object AgentInstructions {
                     "（" + dropped.text.toByteArray(Charsets.UTF_8).size + " 字节）"
             )
         }
-        // 走到这里还超，说明剩下的最后一份自己就超了：二分截断并留一行标记
+        // 执行至此仍超预算，说明剩余的最后一份文件自身即超限：二分截断并保留一行标记
         if (joinedBytes(entries) > BUDGET_BYTES) {
             val last = entries[0]
             entries[0] = Entry(last.name, last.file, truncate(last, BUDGET_BYTES))
@@ -69,7 +69,7 @@ object AgentInstructions {
         return Payload(text = text, displayPath = displayPath, hash = hashOf(entries))
     }
 
-    /** 按优先级读候选文件；不存在的跳过，读失败 / 内容全空白也跳过（投一条空提醒只是噪声）。 */
+    /** 按优先级读取候选文件；不存在的跳过，读取失败或内容全空白也跳过（注入空提醒只会形成噪声）。 */
     private fun readAll(workspaceRoot: File): ArrayList<Entry> {
         val out = ArrayList<Entry>(CANDIDATES.size)
         for (name in CANDIDATES) {
@@ -81,7 +81,7 @@ object AgentInstructions {
                 FileLog.log(TAG, "读 " + name + " 失败：" + (e.message ?: e.javaClass.simpleName))
                 continue
             }
-            // 统一成 \n：这些文件多半是在电脑上编辑完传到手机的，CRLF 会白占预算
+            // 统一为 \n：这些文件通常在电脑上编辑后传入手机，CRLF 会额外占用预算
             val text = raw.replace("\r\n", "\n")
             if (text.isBlank()) continue
             out.add(Entry(name, file, text))
@@ -89,7 +89,7 @@ object AgentInstructions {
         return out
     }
 
-    /** 读单文件，最多 MAX_READ_BYTES；超长时末尾可能切到半个 UTF-8 字符，换成替换符无伤大雅。 */
+    /** 读单文件，最多 MAX_READ_BYTES；超长时末尾可能截断在半个 UTF-8 字符处，替换为替换符不影响正确性。 */
     private fun readLimited(file: File): String = file.inputStream().use { input ->
         // 按实际长度开缓冲区：小文件不必为 1MiB 上限白分配内存
         val buffer = ByteArray(minOf(file.length(), MAX_READ_BYTES.toLong()).toInt().coerceAtLeast(1))
@@ -111,10 +111,10 @@ object AgentInstructions {
     }
 
     /**
-     * 把单份文件截到 [budget] 字节，并追加一行说明：模型看到标记就知道内容不全，
-     * 不会把「约定只写到一半」当成全文照着做。
+     * 把单份文件截到 [budget] 字节，并追加一行说明：模型看到标记即可判断内容不完整，
+     * 不会将「约定只写到一半」当作全文执行。
      *
-     * 用二分找最大的可保留前缀：标记里带的 to 值随截断长度变化，没法一次算出来。
+     * 用二分查找最大的可保留前缀：标记中的 to 值随截断长度变化，无法一次算出。
      */
     private fun truncate(entry: Entry, budget: Int): String {
         val text = entry.text
@@ -156,8 +156,8 @@ object AgentInstructions {
     /**
      * 变化判定用的指纹：各文件「名字 + mtime + size」拼起来取 hashCode。
      *
-     * 为什么不拿正文算：正文可能有几十 KB，每轮请求都算一遍纯属浪费；
-     * mtime+size 变了就足以认为「用户改过文件」，改完立刻重投一次即可。
+     * 为什么不使用正文计算：正文可能达数十 KB，每轮请求重复计算将造成浪费；
+     * mtime 与 size 发生变化即足以判定「用户修改过文件」，修改后立即重新注入即可。
      */
     private fun hashOf(entries: List<Entry>): String {
         val sb = StringBuilder()

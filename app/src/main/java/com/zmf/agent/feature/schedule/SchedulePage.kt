@@ -60,19 +60,19 @@ import com.zmf.agent.uikit.common.saltFieldColors
 /**
  * 「定时任务」页（设置下的二级页）：列表 / 新建 / 删除。
  *
- * 版式照 StatsPage：Surface 铺满 + Column + statusBarsPadding + blockTapsOnly，
- * 左上角「←」返回，标题一行小字。这里是唯一会写 schedules.json 的界面入口，
- * 数据读 [ScheduleStore]，排闹钟一律走 [ScheduleRunner]（页面不自己碰 AlarmManager）。
+ * 布局沿用 StatsPage：Surface 铺满、Column、statusBarsPadding 与 blockTapsOnly，
+ * 左上角「←」返回，标题为单行小字号文字。这里是唯一会写入 schedules.json 的界面入口，
+ * 数据读取 [ScheduleStore]，设置闹钟统一通过 [ScheduleRunner]（页面不直接操作 AlarmManager）。
  */
 @Composable
 fun SchedulePage(onBack: () -> Unit) {
     val context = LocalContext.current
     var tasks by remember { mutableStateOf(ScheduleStore.load(context)) }
     var creating by remember { mutableStateOf(false) }
-    // 哪一条正在展开编辑（null = 全部折叠）。同一时刻只展开一条：两条表单叠在一起只会改错。
+    // 当前展开编辑的任务（null 表示全部折叠）。同一时刻仅展开一条：两条表单同时显示容易导致误改。
     var editingId by remember { mutableStateOf<String?>(null) }
     var pendingDelete by remember { mutableStateOf<ScheduleTask?>(null) }
-    // 系统保障项只在有启用任务时才值得提示；用户从系统设置回来时重新查一次
+    // 系统保障项仅在存在启用任务时才需要提示；用户从系统设置返回时重新查询一次
     var permissions by remember { mutableStateOf(AndroidPermissions.status(context)) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -85,7 +85,7 @@ fun SchedulePage(onBack: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
 
     Surface(
-        // 页面铺满且不透明；最外层吞掉点击，避免穿透点到下面的聊天界面
+        // 页面铺满且不透明；最外层拦截点击，避免穿透到下层聊天界面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -129,11 +129,11 @@ fun SchedulePage(onBack: () -> Unit) {
                     task = task,
                     expanded = editingId == task.id,
                     onToggle = { on ->
-                        // 开关改的是「要不要排期」：arm 里打开会算下一次并排闹钟，关闭会把 nextAt 归零并撤闹钟
+                        // 开关控制是否排期：arm 启用时计算下一次并设置闹钟，停用时将 nextAt 归零并取消闹钟
                         ScheduleRunner.arm(context, task.copy(enabled = on))
                         tasks = ScheduleStore.load(context)
                     },
-                    // 点「编辑」展开成表单，再点一下收回（同一时刻只展开一条，两条表单叠着只会改错）
+                    // 点击「编辑」展开表单，再次点击收起（同一时刻仅展开一条，两条表单叠加容易导致误改）
                     onToggleExpand = {
                         editingId = if (editingId == task.id) null else task.id
                         creating = false
@@ -145,7 +145,7 @@ fun SchedulePage(onBack: () -> Unit) {
                         initial = task,
                         onCancel = { editingId = null },
                         onSave = { draft ->
-                            // arm 会按新规则重算 nextAt 并重排闹钟；id 相同即覆盖原任务
+                            // arm 会按新规则重新计算 nextAt 并重排闹钟；id 相同时覆盖原任务
                             ScheduleRunner.arm(context, draft)
                             tasks = ScheduleStore.load(context)
                             editingId = null
@@ -161,7 +161,7 @@ fun SchedulePage(onBack: () -> Unit) {
                     initial = null,
                     onCancel = { creating = false },
                     onSave = { draft ->
-                        // arm 里统一算 nextAt / 落盘 / 排闹钟，页面只负责把原始字段给全
+                        // arm 中统一计算 nextAt、持久化并设置闹钟，页面仅负责提供完整原始字段
                         ScheduleRunner.arm(context, draft)
                         tasks = ScheduleStore.load(context)
                         creating = false
@@ -181,7 +181,7 @@ fun SchedulePage(onBack: () -> Unit) {
                 )
             }
 
-            // 只在「有启用任务、且系统保障缺项」时出现：没有任务或都已授权就不打扰
+            // 仅在存在启用任务且系统保障项缺失时显示：无任务或均已授权时不提示
             val enabledCount = tasks.count { it.enabled }
             if (enabledCount > 0 && (!permissions.exactAlarm || !permissions.batteryIgnore)) {
                 ReliabilityHintCard(
@@ -192,19 +192,11 @@ fun SchedulePage(onBack: () -> Unit) {
                 )
             }
 
-            Text(
-                text = "定时任务由系统闹钟触发；开机与应用更新后会自动重排，应用被系统停止后首次打开也会补排一次。" +
-                    "若重启后仍不触发，请在系统设置里允许本应用自启动。部分系统（如 ColorOS）从最近任务清除本应用会强制停止并取消闹钟，" +
-                    "请允许其后台运行，且不要在最近任务里清除。任务完成后会发系统通知，点击通知可返回结果所在会话。",
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                fontSize = 11.sp,
-                color = onSurface.copy(alpha = 0.35f)
-            )
             Spacer(Modifier.height(24.dp))
         }
     }
 
-    // 删除确认：删数据和删闹钟要一起做，只删一边会留下「幽灵闹钟」或「幽灵任务」
+    // 删除确认：数据与闹钟必须同时删除，仅删除一侧会留下无效闹钟或无效任务
     pendingDelete?.let { task ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
@@ -240,7 +232,7 @@ private fun ScheduleRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
-            // 卡片自己裁到 16dp：行里的矩形波纹越界也不会露出方角
+            // 卡片自身裁剪为 16dp 圆角：行内矩形波纹越界时不会露出直角
             .clip(RoundedCornerShape(16.dp))
     ) {
         Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp)) {
@@ -260,7 +252,7 @@ private fun ScheduleRow(
                 }
                 SaltSwitch(checked = task.enabled, onCheckedChange = onToggle)
             }
-            // 编辑与删除单独占一行右对齐：跟开关挤在一起太容易误触
+            // 编辑与删除单独占一行并右对齐：与开关同排容易误触
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
@@ -287,10 +279,10 @@ private fun ScheduleRow(
 }
 
 /**
- * 新建表单：标题 + 类型胶囊 + 对应输入 + 指令 + 目标会话。
+ * 新建表单：标题、类型胶囊、对应输入项、指令与目标会话。
  *
- * 表单状态留在本地，只有点「保存」才把整条任务回调出去：
- * 输入到一半退出去，不会在 files 里留下半条任务。
+ * 表单状态保存在本地，仅点击「保存」时才回调整条任务：
+ * 输入中途退出不会在文件中留下不完整任务。
  */
 @Composable
 private fun TaskForm(
@@ -302,7 +294,7 @@ private fun TaskForm(
     val onSurface = MaterialTheme.colorScheme.onSurface
     val bodyStyle: TextStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp)
 
-    // initial 非空＝编辑既有任务：字段按它的现值铺开，保存时沿用 id（让 arm 覆盖原任务）
+    // initial 非空表示编辑既有任务：字段以其当前值初始化，保存时沿用 id（由 arm 覆盖原任务）
     var title by remember(initial) { mutableStateOf(initial?.title.orEmpty()) }
     var kind by remember(initial) { mutableStateOf(initial?.kind ?: ScheduleStore.KIND_EVERY) }
     var everyText by remember(initial) {
@@ -316,7 +308,7 @@ private fun TaskForm(
     var pickedSessionId by remember(initial) { mutableStateOf(initial?.targetSessionId) }
     var showPicker by remember { mutableStateOf(false) }
     var hint by remember { mutableStateOf("") }
-    // 弹窗和「当前选择」共用这一份：只在进表单时读一次，避免每次重组都读文件
+    // 弹窗与当前选择共用该数据：仅在进入表单时读取一次，避免每次重组都读取文件
     val sessions = remember { SessionStore.load(context).sortedByDescending { it.updatedAt } }
 
     fun submit() {
@@ -324,7 +316,7 @@ private fun TaskForm(
         val taskTitle = title.trim()
         val taskPrompt = prompt.trim()
         val minutes = everyText.trim().toIntOrNull()
-        // 时刻统一换算成「下一个到达时刻」：返回 0 就是 "HH:mm" 写坏了（daily 和 once 共用这套校验）
+        // 时刻统一换算为下一次到达时刻：返回 0 表示 "HH:mm" 格式错误（daily 与 once 共用此校验）
         val at = ScheduleStore.nextTimeOfDay(timeText.trim(), now)
         val problem = when {
             taskTitle.isEmpty() -> "标题不能为空"
@@ -341,17 +333,17 @@ private fun TaskForm(
         hint = ""
         onSave(
             ScheduleTask(
-                // 空 id＝新建（arm 里现发号）；有 id＝编辑，覆盖原任务
+                // 空 id 表示新建（由 arm 生成）；有 id 表示编辑，覆盖原任务
                 id = initial?.id.orEmpty(),
                 title = taskTitle,
                 kind = kind,
                 everyMinutes = minutes ?: ScheduleStore.DEFAULT_EVERY_MINUTES,
                 timeOfDay = timeText.trim().ifEmpty { ScheduleStore.DEFAULT_TIME_OF_DAY },
-                // once 存绝对毫秒：跨天 / 重启后仍然知道该在哪个时刻跑
+                // once 保存绝对毫秒：跨天或重启后仍能确定触发时刻
                 atMillis = if (kind == ScheduleStore.KIND_ONCE) at else 0L,
                 prompt = taskPrompt,
                 targetSessionId = if (targetNew) null else pickedSessionId,
-                // 开关与「上次跑了没」不属于表单：编辑时原样带过去，别因为改个标题把任务停了
+                // 开关与上次执行时间不属于表单：编辑时原样保留，避免仅修改标题导致任务停用
                 enabled = initial?.enabled ?: true,
                 lastRunAt = initial?.lastRunAt ?: 0L
             )
@@ -469,7 +461,7 @@ private fun TaskForm(
         }
     }
 
-    // 点外部 / 返回键关闭交给 onDismissRequest
+    // 点击外部或返回键关闭由 onDismissRequest 处理
     if (showPicker) {
         SessionPickerDialog(
             sessions = sessions,
@@ -483,7 +475,7 @@ private fun TaskForm(
     }
 }
 
-/** 「选择会话」弹窗：按 updatedAt 降序列出全部会话，点一行即定下目标会话。 */
+/** 「选择会话」弹窗：按 updatedAt 降序列出全部会话，点击任意一行即确定目标会话。 */
 @Composable
 private fun SessionPickerDialog(
     sessions: List<ChatSession>,
@@ -492,7 +484,7 @@ private fun SessionPickerDialog(
 ) {
     val context = LocalContext.current
     val onSurface = MaterialTheme.colorScheme.onSurface
-    // 工作区名查表：workspaceId 为 null 或查不到都归「未分类」
+    // 工作区名称查表：workspaceId 为 null 或未匹配时归入「未分类」
     val names = remember { WorkSpaceStore.load(context).associate { it.id to it.name } }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -524,7 +516,7 @@ private fun SessionPickerDialog(
     )
 }
 
-/** 胶囊选择：选中吃 Salt 绿半透明底，未选中是 6% 淡影（同 PackagePage / LogsPage 的 chip）。 */
+/** 胶囊选择：选中为墨色底反白，未选中为 6% 淡色底（与 PackagePage、LogsPage 的 chip 一致）。 */
 @Composable
 private fun ScheduleChip(
     text: String,
@@ -537,7 +529,7 @@ private fun ScheduleChip(
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = if (selected) {
-            // 选中墨底反白：与模型页、洞察页的分段同一套规则
+            // 选中为墨色底反白：与模型页、洞察页的分段规则一致
             onSurface.copy(alpha = alpha)
         } else {
             onSurface.copy(alpha = 0.06f * alpha)
@@ -559,9 +551,9 @@ private fun ScheduleChip(
 }
 
 /**
- * 后台可靠性提示卡：只在有启用任务、且系统保障缺项时出现。
+ * 后台可靠性提示卡：仅在存在启用任务且系统保障项缺失时显示。
  *
- * 每行只说明缺什么并送去对应系统页，不在 App 内替用户做授权决定。
+ * 每行只说明缺失项并跳转对应系统页，不在应用内代替用户做授权决定。
  */
 @Composable
 private fun ReliabilityHintCard(
@@ -595,7 +587,7 @@ private fun ReliabilityHintCard(
     }
 }
 
-/** 提示卡里的一行：左侧说明，右侧链接档蓝字「去设置」。 */
+/** 提示卡中的一行：左侧为说明，右侧为蓝色「去设置」链接文本。 */
 @Composable
 private fun ReliabilityHintRow(text: String, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -623,7 +615,7 @@ private fun kindText(task: ScheduleTask): String = when (task.kind) {
     else -> "一次性"
 }
 
-/** 下次触发：停用 / 没排期直接说人话，别显示 1970 年。 */
+/** 下次触发：停用或未排期时直接显示状态文字，不显示 1970 年的时间。 */
 private fun nextText(task: ScheduleTask): String = when {
     !task.enabled -> "已停用"
     task.nextAt <= 0L -> "未排期"

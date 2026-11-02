@@ -28,16 +28,16 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** 慢旋转一圈：30s（参考实现的节奏偏快，放慢一档才不扎眼）。 */
+/** 慢速旋转一圈：30 秒（参考实现节奏偏快，放慢节奏以降低视觉干扰）。 */
 private const val SPIN_MS = 30_000
 
-/** 呼吸一次：4.5s，半径只在 0.975~1.00 之间轻轻起伏。 */
+/** 呼吸周期：4.5 秒，半径仅在 0.975 至 1.00 之间轻微变化。 */
 private const val BREATH_MS = 4_500
 
-/** 单道涟漪的生命：700ms。 */
+/** 单道涟漪的持续时间：700ms。 */
 private const val RIPPLE_MS = 700
 
-/** 两道涟漪错开的间隔：0 / 1100ms（少一道、间隔更长，存在感更低）。 */
+/** 两道涟漪的错开间隔：0 / 1100ms（数量更少、间隔更长，存在感更低）。 */
 private const val RIPPLE_STEP_MS = 1_100
 
 /** 涟漪循环周期 = 2 道 × 1100ms + 700ms 余量。 */
@@ -48,10 +48,10 @@ private const val PRESS_SCALE = 0.85f
 private const val PRESS_MS = 200
 
 /**
- * 球体的四个色块：全部取自强调蓝这一族（主蓝 / 青 / 亮蓝 / 深蓝）。
+ * 球体的四个色块：均取自强调蓝同一色族（主蓝、青、亮蓝、深蓝）。
  *
- * 球体是唯一允许出现「同族多档」的装饰元素——它是品牌符号，不是界面控件。
- * 但这四支必须和 [Palette.Accent] 同族，否则球飞在页面上时会和按钮的蓝打架。
+ * 球体是唯一允许使用同色族多档颜色的装饰元素，作为品牌符号而非界面控件。
+ * 但四种颜色必须与 [Palette.Accent] 同族，否则球悬浮于页面上时会与按钮的蓝色产生冲突。
  */
 private val BallColors = listOf(
     Color(0xFF4176E6),
@@ -61,37 +61,36 @@ private val BallColors = listOf(
 )
 
 /**
- * 会话悬浮球（纯 Canvas 画的彩色玻璃球）。
+ * 会话悬浮球（纯 Canvas 绘制的彩色玻璃球）。
  *
- * 为什么不用 TextView + GradientDrawable：球体「透出背景」靠的是多层
- * radialGradient 用 BlendMode.Screen 叠出来的玻璃质感，静态 drawable 做不到。
+ * 不使用 TextView 与 GradientDrawable：球体的「透出背景」效果依赖多层 radialGradient
+ * 通过 BlendMode.Screen 叠加形成玻璃质感，静态 drawable 无法实现。
  *
- * 调用方给的窗口是 60dp 的精确像素，所以这里所有内容都画在 60dp 自己的画布内：
- * 光晕、涟漪全部靠画布里的渐变实现，**不靠放大 View**（外层窗口会直接裁掉）。
+ * 调用方提供 60dp 的精确像素窗口，因此所有内容均绘制在 60dp 画布内：光晕与涟漪全部
+ * 通过画布内渐变实现，不依赖放大 View（外层窗口会直接裁剪）。
  *
- * 什么时候动：球**看得见**就跑完整动效，看不见（息屏 / 折叠成小窗 / 窗口被系统藏起来）
- * 就一次帧都不请求。动效本身一个字没改：30s 自转、4.5s 呼吸、2 道 3.6s 涟漪，
- * 盯着球看时与改动前逐帧一致，变的只是「还要不要继续跑」。
+ * 可见时运行完整动效：30 秒自转、4.5 秒呼吸、2 道 3.6 秒涟漪；不可见时（息屏、折叠为小窗、
+ * 窗口被系统隐藏）不请求任何帧，动效参数保持不变。
  *
- * @param pressed 按压态（由服务在 ACTION_DOWN / MOVE / UP 里派发），按下时整体缩到 0.85
- * @param visible 球此刻是否真的看得见（服务给：屏幕亮着 + 窗口可见 + 处于球态）。
- *                false 时**连 InfiniteTransition 都不注册**，一帧都不算。
- * @param onClick 点一下球（服务那一层是触摸派发的主力，这个回调留给「直接点球」的路径）
+ * @param pressed 按压状态（由服务在 ACTION_DOWN、MOVE、UP 中派发），按下时整体缩放至 0.85
+ * @param visible 球此刻是否实际可见（服务提供：屏幕点亮、窗口可见且处于球态）。
+ *                false 时不注册 InfiniteTransition，不计算任何帧。
+ * @param onClick 点击球（服务层为触摸派发主体，该回调用于直接点击球的路径）
  */
 @Composable
 fun SiriBall(pressed: Boolean, visible: Boolean, onClick: () -> Unit) {
-    // 按压缩放只动内容层，窗口尺寸不动，所以缩到 0.85 不会超出 60dp 被裁
+    // 按压缩放仅作用于内容层，窗口尺寸不变，因此缩放至 0.85 不会超出 60dp 而被裁剪
     val scale by animateFloatAsState(
         targetValue = if (pressed) PRESS_SCALE else 1f,
         animationSpec = tween(durationMillis = PRESS_MS, easing = FastOutSlowInEasing),
         label = "siri-ball-press"
     )
 
-    // 动效：慢旋转 + 呼吸 + 涟漪，全部由同一个 InfiniteTransition 驱动。
-    // 只有 visible 时才注册它：它只要在，就会一直请求帧、一直重绘整块 Canvas。
-    // 看不见的时候（息屏 / 折叠成小窗 / 窗口被系统藏起来）这些帧没人看得见，纯功耗。
-    // 恢复可见时是新 remember 出来的 transition，时钟从 0 重新开始，所以第一帧就是正常
-    // 相位（0° / 满半径 / 涟漪空档），不会接在「上次停在哪」那一帧上。
+    // 动效：慢速旋转、呼吸与涟漪全部由同一个 InfiniteTransition 驱动。
+    // 仅在 visible 时注册：只要存在便会持续请求帧并重绘整块 Canvas。
+    // 不可见时（息屏、折叠为小窗、窗口被系统隐藏）这些帧无实际展示效果，只会增加耗电。
+    // 恢复可见时为重新 remember 的 transition，时钟从 0 开始，第一帧即为正常
+    // 相位（0°、完整半径、涟漪间隙），不会接续上次停止的位置。
     val clock = if (visible) rememberInfiniteTransition(label = "siri-ball") else null
     val spinState = clock?.animateFloat(
         initialValue = 0f,
@@ -124,10 +123,9 @@ fun SiriBall(pressed: Boolean, visible: Boolean, onClick: () -> Unit) {
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            // 三个动效值故意留到 draw 阶段才读：以前在组合期读 .value，球每帧都会重组一次、
-            // 连带重走一遍布局，而画面其实只需要重绘这张 52dp 画布。
-            // 挪进 draw 后每帧只失效 draw phase，像素结果完全一样（同样的值、同样的帧）。
-            // clock 为 null（不可见）时用动画起点的常量画一帧，反正没人看得见。
+            // 三个动效值有意延迟到 draw 阶段读取：若在组合阶段读取 .value，球每帧都会重组并重新布局，
+            // 而画面实际只需重绘这张 52dp 画布。移至 draw 后每帧仅失效 draw 阶段，像素结果完全一致。
+            // clock 为 null（不可见）时以动画起点常量绘制一帧。
             drawSiriBall(
                 spin = spinState?.value ?: 0f,
                 breath = breathState?.value ?: 1f,
@@ -137,14 +135,14 @@ fun SiriBall(pressed: Boolean, visible: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** 画一帧球体：玻璃底 → 4 个 Screen 混合的色块 → 2 道涟漪 → 边缘高光。 */
+/** 绘制一帧球体：玻璃底、4 个 Screen 混合色块、2 道涟漪、边缘高光。 */
 private fun DrawScope.drawSiriBall(spin: Float, breath: Float, rippleClock: Float) {
     val maxRadius = size.minDimension / 2f
     val center = Offset(size.width / 2f, size.height / 2f)
-    // 球体半径留 14% 余量给涟漪与自转的偏心色块，保证任何一帧都不出画布
+    // 球体半径保留 14% 余量供涟漪与偏心色块使用，保证任意一帧均不超出画布
     val ballRadius = maxRadius * 0.80f * breath
 
-    // 1) 玻璃底：极淡的白，纯黑/纯白壁纸上都能看出球的轮廓
+    // 1) 玻璃底：极淡白色，在纯黑或纯白壁纸上均能辨认球的轮廓
     drawCircle(
         brush = Brush.radialGradient(
             colors = listOf(Color(0x22FFFFFF), Color(0x0DFFFFFF), Color(0x00FFFFFF)),
@@ -155,12 +153,12 @@ private fun DrawScope.drawSiriBall(spin: Float, breath: Float, rippleClock: Floa
         center = center
     )
 
-    // 2) 四个径向渐变色块：各自在半径 26% 的轨道上绕中心慢转
-    //    BlendMode.Screen 让它们互相「加亮」而不是互相盖住：玻璃珠的层次全在这一步
+    // 2) 四个径向渐变色块：各自在半径 26% 的轨道上绕中心慢速旋转
+    //    BlendMode.Screen 使其相互叠加增亮而非相互覆盖，玻璃质感层次由此形成
     val blobRadius = ballRadius * 0.78f
     val orbit = ballRadius * 0.26f
     BallColors.forEachIndexed { index, color ->
-        // 每个色块错开 90°，跟着 spin 一起转
+        // 每个色块错开 90°，随 spin 一同旋转
         val angle = (spin + index * 90f) * (PI.toFloat() / 180f)
         val blobCenter = Offset(
             x = center.x + cos(angle) * orbit,
@@ -182,7 +180,7 @@ private fun DrawScope.drawSiriBall(spin: Float, breath: Float, rippleClock: Floa
         )
     }
 
-    // 3) 两道涟漪：错开 0 / 1100ms，每道 700ms，从球面扩散到画布边缘
+    // 3) 两道涟漪：错开 0 / 1100ms，每道持续 700ms，自球面扩散至画布边缘
     for (index in 0 until 2) {
         var elapsed = rippleClock - index * RIPPLE_STEP_MS
         if (elapsed < 0f) elapsed += RIPPLE_CYCLE_MS
@@ -198,7 +196,7 @@ private fun DrawScope.drawSiriBall(spin: Float, breath: Float, rippleClock: Floa
         )
     }
 
-    // 4) 左上方一点柔和高光（不画整圈白色描边：那圈白线在壁纸上太跳）
+    // 4) 左上方一处柔和高光（不绘制整圈白色描边：白色环线在壁纸上过于醒目）
     drawCircle(
         brush = Brush.radialGradient(
             colors = listOf(Color.White.copy(alpha = 0.14f), Color.Transparent),

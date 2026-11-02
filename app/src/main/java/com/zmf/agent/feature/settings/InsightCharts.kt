@@ -212,9 +212,9 @@ internal fun UsageLineChart(
         drawCircle(color = color, radius = 3.5.dp.toPx(), center = points.last())
 
         /*
-         * 轴标签：调用方已经抽稀过一次，但窄屏 + 点数变化仍可能让相邻两字碰在一起
-         * （真机「近 30 天」上 `10-26` 和 `10-29` 就叠上了）。这里按实际字宽做碰撞剔除：
-         * 先钉住首末两个，再从左往右能放才放，保证任何宽度下都不重叠。
+         * 轴标签：调用方已经抽稀过一次，但窄屏 + 点数变化仍可能让相邻两字重叠
+         * （例如近 30 天时 `10-26` 与 `10-29` 会重叠）。这里按实际字宽做碰撞剔除：
+         * 先固定首末两个标签，其余按从左到右依次判断是否放得下，保证任何宽度下都不重叠。
          */
         val textGap = 4.dp.toPx()
         class LabelBox(val left: Float, val text: androidx.compose.ui.text.TextLayoutResult)
@@ -344,42 +344,6 @@ internal fun LegendTwoLine(
             color = onSurface.copy(alpha = 0.40f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-/** 段落图例（只看百分比 / 时长，具体串由调用方拼好）。 */
-@Composable
-internal fun LegendPlain(
-    label: String,
-    value: String,
-    color: Color,
-    modifier: Modifier = Modifier
-) {
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    Row(
-        modifier = modifier.fillMaxWidth().height(34.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(9.dp)
-                .background(color, RoundedCornerShape(2.dp))
-        )
-        Text(
-            text = label,
-            modifier = Modifier.weight(1f).padding(start = 8.dp),
-            fontSize = 14.sp,
-            color = onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = value,
-            fontSize = 12.sp,
-            color = onSurface.copy(alpha = 0.45f),
-            maxLines = 1,
-            softWrap = false
         )
     }
 }

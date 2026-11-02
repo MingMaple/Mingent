@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -83,7 +82,7 @@ private object InsightPageMemory {
 /**
  * 上下文洞察页（单页）。
  *
- * 顶部是本会话模块（三张卡、左上角三个按钮切换），下面接全局统计，最下面是会话列表。
+ * 顶部为本会话模块（三张卡、左上角三个按钮切换），下方为全局统计，最下方为会话列表。
  * 点会话行会滚回顶部并把模块换成该会话；离开页面后状态复位。
  */
 @Composable
@@ -253,8 +252,8 @@ private fun SessionModule(
 private fun CurrentContextTab(view: InsightSessionView) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val partsSum = view.parts.sumOf { it.tokens }
-    // 窄屏或系统大字号下：左侧数字组吃掉剩余宽度，右侧百分比组按自身宽度贴右，
-    // 「上下文已用」绝不逐字换行；空间不足时只截断左侧的「/ N tokens」。
+    // 窄屏或系统大字号下：左侧数字组占用剩余宽度，右侧百分比组按自身宽度靠右，
+    // 「上下文已用」不得逐字换行；空间不足时只截断左侧的「/ N tokens」。
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
         Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.Bottom) {
             Text(
@@ -479,8 +478,8 @@ private fun GlobalSection(
                 fontWeight = FontWeight.SemiBold,
                 color = onSurface
             )
-            // 分桶粒度不写在标题行：只有这一张卡会合并邻近日期，贴个「每 N 天」
-            // 反而让标题行比其它卡多一截，视觉上像没对齐
+            // 分桶粒度不写在标题行：只有这一张卡会合并邻近日期，若标注「每 N 天」
+            // 会使标题行比其他卡多出一截，视觉上呈未对齐状态
             TabPill(text = "Token", selected = dayMode == 0) { dayMode = 0 }
             Spacer(Modifier.width(6.dp))
             TabPill(text = "请求", selected = dayMode == 1) { dayMode = 1 }
@@ -777,8 +776,7 @@ private fun SessionListCard(
                         }
                         .padding(vertical = 10.dp),
                     fontSize = 12.sp,
-                    // 与下面「收起」成对：这类展开/收起是次要操作，不染强调色。
-                    // 之前这里用了 Palette.Accent，一屏里只剩它在发蓝。
+                    // 与下方「收起」成对：展开/收起属次要操作，不使用强调色。
                     color = onSurface.copy(alpha = 0.55f),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
@@ -859,65 +857,74 @@ private fun timingSegments(
         seg("模型回复", timing.text, requests, InsightColors.OUTPUT),
         seg("工具参数", timing.toolArg, toolCalls, InsightColors.TOOLS),
         seg("工具执行", timing.toolExec, toolCalls, InsightColors.TOOL_RESULTS),
-        seg("其他开销", timing.other, null, 0xFF9A9AA5)
+        seg("其他开销", timing.other, null, InsightColors.OTHER)
     )
 }
 
 private fun timingSegments(timing: InsightTiming): List<TimingSeg> =
     timingSegments(timing, 0, 0)
 
-private fun compositionSegments(c: SessionComposition): List<Pair<Float, Color>> {
-    val total = c.total.coerceAtLeast(1)
-    return listOf(
-        part("系统提示词", c.system, total, InsightColors.SYSTEM),
-        part("工具定义", c.tools, total, InsightColors.TOOLS),
-        part("用户消息", c.user, total, InsightColors.USER),
-        part("注入内容", c.inject, total, InsightColors.INJECT),
-        part("技能注入", c.skills, total, InsightColors.SKILLS),
-        part("助手消息", c.assistant, total, InsightColors.ASSISTANT),
-        part("工具结果", c.toolResults, total, InsightColors.TOOL_RESULTS),
-        part("输出", c.output, total, InsightColors.OUTPUT)
-    )
-}
+private fun compositionSegments(c: SessionComposition): List<Pair<Float, Color>> =
+    compositionSegments(c.system, c.skills, c.tools, c.user, c.inject, c.assistant, c.toolResults, c.output)
 
-private fun ledgerSegments(c: LedgerComposition): List<Pair<Float, Color>> {
-    val total = c.total.coerceAtLeast(1)
+private fun ledgerSegments(c: LedgerComposition): List<Pair<Float, Color>> =
+    compositionSegments(c.system, c.skills, c.tools, c.user, c.inject, c.assistant, c.toolResults, c.output)
+
+private fun compositionSegments(
+    system: Int,
+    skills: Int,
+    tools: Int,
+    user: Int,
+    inject: Int,
+    assistant: Int,
+    toolResults: Int,
+    output: Int
+): List<Pair<Float, Color>> {
+    val total = (system + skills + tools + user + inject + assistant + toolResults + output).coerceAtLeast(1)
     return listOf(
-        part("系统提示词", c.system, total, InsightColors.SYSTEM),
-        part("工具定义", c.tools, total, InsightColors.TOOLS),
-        part("用户消息", c.user, total, InsightColors.USER),
-        part("注入内容", c.inject, total, InsightColors.INJECT),
-        part("技能注入", c.skills, total, InsightColors.SKILLS),
-        part("助手消息", c.assistant, total, InsightColors.ASSISTANT),
-        part("工具结果", c.toolResults, total, InsightColors.TOOL_RESULTS),
-        part("输出", c.output, total, InsightColors.OUTPUT)
+        part("系统提示词", system, total, InsightColors.SYSTEM),
+        part("工具定义", tools, total, InsightColors.TOOLS),
+        part("用户消息", user, total, InsightColors.USER),
+        part("注入内容", inject, total, InsightColors.INJECT),
+        part("技能注入", skills, total, InsightColors.SKILLS),
+        part("助手消息", assistant, total, InsightColors.ASSISTANT),
+        part("工具结果", toolResults, total, InsightColors.TOOL_RESULTS),
+        part("输出", output, total, InsightColors.OUTPUT)
     )
 }
 
 @Composable
-private fun CompositionLegend(c: SessionComposition) {
-    val total = c.total.coerceAtLeast(1)
-    LegendTwoLine("系统提示词", percentText(c.system.toFloat() / total), tokenOrDash(c.system), argb(InsightColors.SYSTEM))
-    LegendTwoLine("工具定义", percentText(c.tools.toFloat() / total), tokenOrDash(c.tools), argb(InsightColors.TOOLS))
-    LegendTwoLine("用户消息", percentText(c.user.toFloat() / total), tokenOrDash(c.user), argb(InsightColors.USER))
-    LegendTwoLine("注入内容", percentText(c.inject.toFloat() / total), tokenOrDash(c.inject), argb(InsightColors.INJECT))
-    LegendTwoLine("技能注入", percentText(c.skills.toFloat() / total), tokenOrDash(c.skills), argb(InsightColors.SKILLS))
-    LegendTwoLine("助手消息", percentText(c.assistant.toFloat() / total), tokenOrDash(c.assistant), argb(InsightColors.ASSISTANT))
-    LegendTwoLine("工具结果", percentText(c.toolResults.toFloat() / total), tokenOrDash(c.toolResults), argb(InsightColors.TOOL_RESULTS))
-    LegendTwoLine("输出", percentText(c.output.toFloat() / total), tokenOrDash(c.output), argb(InsightColors.OUTPUT))
-}
+private fun CompositionLegend(c: SessionComposition) =
+    CompositionLegend(c.system, c.skills, c.tools, c.user, c.inject, c.assistant, c.toolResults, c.output)
 
 @Composable
-private fun LedgerLegend(c: LedgerComposition) {
-    val total = c.total.coerceAtLeast(1)
-    LegendTwoLine("系统提示词", percentText(c.system.toFloat() / total), tokenOrDash(c.system), argb(InsightColors.SYSTEM))
-    LegendTwoLine("工具定义", percentText(c.tools.toFloat() / total), tokenOrDash(c.tools), argb(InsightColors.TOOLS))
-    LegendTwoLine("用户消息", percentText(c.user.toFloat() / total), tokenOrDash(c.user), argb(InsightColors.USER))
-    LegendTwoLine("注入内容", percentText(c.inject.toFloat() / total), tokenOrDash(c.inject), argb(InsightColors.INJECT))
-    LegendTwoLine("技能注入", percentText(c.skills.toFloat() / total), tokenOrDash(c.skills), argb(InsightColors.SKILLS))
-    LegendTwoLine("助手消息", percentText(c.assistant.toFloat() / total), tokenOrDash(c.assistant), argb(InsightColors.ASSISTANT))
-    LegendTwoLine("工具结果", percentText(c.toolResults.toFloat() / total), tokenOrDash(c.toolResults), argb(InsightColors.TOOL_RESULTS))
-    LegendTwoLine("输出", percentText(c.output.toFloat() / total), tokenOrDash(c.output), argb(InsightColors.OUTPUT))
+private fun LedgerLegend(c: LedgerComposition) =
+    CompositionLegend(c.system, c.skills, c.tools, c.user, c.inject, c.assistant, c.toolResults, c.output)
+
+@Composable
+private fun CompositionLegend(
+    system: Int,
+    skills: Int,
+    tools: Int,
+    user: Int,
+    inject: Int,
+    assistant: Int,
+    toolResults: Int,
+    output: Int
+) {
+    val total = (system + skills + tools + user + inject + assistant + toolResults + output).coerceAtLeast(1)
+    listOf(
+        Triple("系统提示词", system, InsightColors.SYSTEM),
+        Triple("工具定义", tools, InsightColors.TOOLS),
+        Triple("用户消息", user, InsightColors.USER),
+        Triple("注入内容", inject, InsightColors.INJECT),
+        Triple("技能注入", skills, InsightColors.SKILLS),
+        Triple("助手消息", assistant, InsightColors.ASSISTANT),
+        Triple("工具结果", toolResults, InsightColors.TOOL_RESULTS),
+        Triple("输出", output, InsightColors.OUTPUT)
+    ).forEach { (label, tokens, color) ->
+        LegendTwoLine(label, percentText(tokens.toFloat() / total), tokenOrDash(tokens), argb(color))
+    }
 }
 
 private fun tokenOrDash(tokens: Int): String = if (tokens > 0) "≈" + tokenText(tokens.toLong()) else "—"
@@ -991,8 +998,8 @@ private fun TabPill(text: String, selected: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(
-                // 与模型页分段同一口径：单选控件选中即墨底反白。
-                // 数据本身的八色不动——这里只管外壳。
+                // 与模型页分段同一规范：单选控件选中即为墨底反白。
+                // 数据本身使用的八种颜色保持不变，此处仅处理外壳。
                 if (selected) onSurface
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
             )
@@ -1014,7 +1021,7 @@ private fun RangePill(text: String, selected: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
             .background(
-                // 与同页上方三个分段、模型页分段同一套：单选即墨底反白
+                // 与同页上方三个分段、模型页分段一致：单选即墨底反白
                 if (selected) onSurface
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
             )

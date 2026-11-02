@@ -5,12 +5,12 @@ import android.content.Context
 import android.content.Intent
 
 /**
- * 闹钟到点的落点。
+ * 闹钟到点后的入口。
  *
- * 只做转发：广播的 onReceive 只有几秒预算，而一轮 Agent 可能跑几分钟，
- * 真正的工作交给 [ScheduleRunner]（它会先拉常驻前台服务钉住进程，再开应用级协程）。
+ * 仅负责转发：广播的 onReceive 执行预算只有数秒，而一轮 Agent 可能持续数分钟，
+ * 实际工作交给 [ScheduleRunner]（由它启动常驻前台服务保持进程存活，再开启应用级协程）。
  *
- * 在 Manifest 里 exported=false 注册，action 又是自定义串：别的 App 既发不进来、也不用担心系统广播撞上。
+ * 在 Manifest 中以 exported=false 注册，并使用自定义 action，其他应用无法发送该广播，也不会与系统广播冲突。
  */
 class ScheduleReceiver : BroadcastReceiver() {
 
@@ -22,10 +22,10 @@ class ScheduleReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        /** 自定义 action：和系统闹钟广播分开，只有本 App 的 PendingIntent 会带它。 */
+        /** 自定义 action：与系统闹钟广播区分，仅本应用的 PendingIntent 会携带。 */
         const val ACTION_FIRE = "com.zmf.agent.feature.schedule.FIRE"
 
-        /** 要跑的任务 id。 */
+        /** 待执行任务的 id。 */
         const val EXTRA_TASK_ID = "task_id"
     }
 }

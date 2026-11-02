@@ -181,7 +181,7 @@ class DeleteFileTool : Tool {
             val entry = runCatching {
                 TrashStore.copyInto(
                     context = ctx.context,
-                    probe = localTarget!!,
+                    probe = localTarget,
                     originalPath = display,
                     localPath = localTarget.absolutePath,
                     sessionId = ctx.sessionId,
@@ -212,9 +212,9 @@ class DeleteFileTool : Tool {
             }
         }
 
-        // SAF 工作区是用户亲手授权的目录：这是「显然安全」的删除。
-        // 复制进回收站超预算（条目/体积）时直接删，不再拿授权码打扰用户
-        // （授权码只留给危险操作）。代价如实写进回执。
+        // SAF 工作区为用户亲自授权的目录：该删除属于「显然安全」的情形。
+        // 复制进回收站超出预算（条目 / 体积）时直接删除，不再以授权码打扰用户
+        // （授权码仅用于危险操作）。相关代价如实写入回执。
         val ok = runCatching { io.delete(rel) }
             .getOrElse { return ToolResult.Error("删除失败：" + (it.message ?: it.javaClass.simpleName)) }
         if (!ok) return ToolResult.Error("删除失败：" + display + "（系统授权目录可能已失效，或目录非空）")
@@ -244,8 +244,8 @@ class DeleteFileTool : Tool {
     /**
      * 回执文案。
      *
-     * [done] 区分「真的删完了」和「删了一部分」：删不动时还能写成「已删除：<路径>」，
-     * 模型会把第一行当结论转述给用户，用户就以为已经删掉了（真机实测踩过）。
+     * [done] 区分「完整删除」与「部分删除」：删除未完成时仍可返回「已删除：<路径>」，
+     * 模型会将首行作为结论转述给用户，使用户误以为已删除（真机测试曾出现该问题）。
      */
     private fun describe(display: String, stats: SafCount, isDir: Boolean, done: Boolean = true): String {
         val head = if (done) "已删除：" else "删除未完成："
@@ -264,13 +264,13 @@ class DeleteFileTool : Tool {
     }
 
     private companion object {
-        /** 统计上限与递归深度上限：只为一个回执数字，不值得把整棵大树遍历两遍。 */
+        /** 统计上限与递归深度上限：仅为取得一个回执数字，不宜对完整目录树遍历两遍。 */
         const val MAX_COUNT = 20_000
         const val MAX_DEPTH = 64
 
         /**
-         * SAF 复制进回收站的预算：SAF 没有 rename，只能「复制再删」。
-         * 超预算不复制（升确认档），避免为一次删除在手机上搬几百 MB。
+         * SAF 复制进回收站的预算：SAF 不支持 rename，只能「复制后删除」。
+         * 超出预算时不再复制（提升为确认档），避免一次删除在手机上复制数百 MB。
          */
         const val TRASH_COPY_MAX_COUNT = 3_000
         const val TRASH_COPY_MAX_BYTES = 128L * 1024 * 1024

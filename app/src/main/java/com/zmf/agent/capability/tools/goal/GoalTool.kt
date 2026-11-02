@@ -15,12 +15,12 @@ import org.json.JSONObject
 /**
  * goal 工具：设置 / 更新本次会话的长期目标。
  *
- * 为什么需要它：普通回复是「一轮一问一答」，遇到要跨多轮推进的事（装环境、批量整理文件）
- * 模型很容易停在一半等人催。目标就是给这次会话挂一个「还在做的事」，
- * ACTIVE 时 AgentLoop 每轮结束会自动接着推进；模型要么推进、要么 pause/complete，
- * 不能挂着目标空转，空转会把自动续跑的轮次白白烧掉。
+ * 普通回复为一问一答，跨多轮的任务（安装环境、批量整理文件）容易在中途停止并等待用户催促。
+ * 目标用于标记本次会话仍在推进的事项：ACTIVE 时 AgentLoop 会在每轮结束后自动继续，
+ * 模型应当推进目标，或调用 pause / complete 结束；不得在目标未完成时空转，
+ * 否则会浪费自动续跑的轮次。
  *
- * 只写自己的 appdata/goals.json，不碰工作区，所以权限档是 READ_ONLY。
+ * 只写入 appdata/goals.json，不访问工作区，因此权限档为 READ_ONLY。
  */
 class GoalTool : Tool {
 
@@ -65,7 +65,7 @@ class GoalTool : Tool {
         }
         val objective = textArg(args, "objective")
         val note = textArg(args, "note")
-        // 落盘走 GoalStore，读盘/写盘失败它自己记日志兜住（不抛），这里不套 try
+        // 写入由 GoalStore 负责，其读写失败仅记录日志且不抛出异常，因此此处无需 try
         return withContext(Dispatchers.IO) { handleAction(action, objective, note, ctx) }
     }
 
@@ -76,7 +76,7 @@ class GoalTool : Tool {
                 if (objective.isEmpty()) {
                     return ToolResult.Error("create 需要 objective：用一句话写清要长期推进的目标")
                 }
-                // 已有目标也照样覆盖：换目标是用户的明确动作，但轮次从 0 重算（旧目标的进度不再有意义）
+                // 已有目标同样覆盖：换目标属于用户的明确动作，但轮次从 0 重算（原目标的进度不再保留）
                 val goal = Goal(objective = objective, phase = GoalPhase.ACTIVE, rounds = 0, note = note)
                 GoalStore.save(ctx.context, ctx.sessionId, goal)
                 report("目标已创建", goal)
@@ -118,7 +118,7 @@ class GoalTool : Tool {
 
             ACTION_COMPLETE -> {
                 val goal = current ?: return missing()
-                // complete 带 note 时当结论写进去，不带就保留原来的附注
+                // complete 带 note 时将其作为结论写入，不带 note 时保留原附注
                 val next = goal.copy(phase = GoalPhase.DONE, note = note.ifEmpty { goal.note })
                 GoalStore.save(ctx.context, ctx.sessionId, next)
                 report("目标已完成", next)
@@ -128,7 +128,7 @@ class GoalTool : Tool {
         }
     }
 
-    /** 没有目标时的统一提示：直接告诉模型下一步该调什么，省一轮试错。 */
+    /** 没有目标时的统一提示：直接说明下一步应调用的动作，减少一轮试探。 */
     private fun missing(): ToolResult =
         ToolResult.Error("当前会话还没有目标，先用 action=create 并带上 objective 新建一个")
 

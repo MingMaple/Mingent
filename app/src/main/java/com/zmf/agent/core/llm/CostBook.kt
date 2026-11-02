@@ -15,8 +15,8 @@ data class ModelPrice(
 )
 
 /**
- * 供应商价目插件：新增一家供应商只要实现一个它，并注册进 [CostBook]，
- * 计算逻辑与界面都不用改。
+ * 供应商价目插件：新增供应商只需实现该接口并注册到 [CostBook]，
+ * 计算逻辑与界面均无需改动。
  */
 interface ModelPriceProvider {
     /** 这条 usageModel（`provider/model`）是否归本供应商管。 */
@@ -50,14 +50,14 @@ object DeepSeekPriceProvider : ModelPriceProvider {
 }
 
 /**
- * 计费入口：只认已注册的供应商；没注册 / 没价目的模型一律返回 null。
+ * 计费入口：仅识别已注册的供应商；未注册或无价目的模型返回 null。
  *
- * 峰谷：DeepSeek 谷时（北京时间 00:30–08:30）五折，其余峰时原价。
- * 汇率是一个常量 [USD_CNY]，以后要做设置项只改这一处。
+ * 峰谷：DeepSeek 谷时（北京时间 00:30–08:30）五折，其余时段原价。
+ * 汇率由常量 [USD_CNY] 统一控制。
  */
 object CostBook {
 
-    /** 美元兑人民币常量：先写死，后续可做设置项。 */
+    /** 美元兑人民币汇率；如需支持配置，仅修改此处。 */
     const val USD_CNY = 7.0
 
     /** 已注册的供应商价目：新渠道往这里加一行即可。 */

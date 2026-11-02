@@ -15,11 +15,11 @@ import java.io.InputStream
 /**
  * 系统文件选择器给的 Uri → 当前工作区里的真实文件。
  *
- * 为什么要复制：模型只能靠 read_file 读工作区里的相对路径，content:// 这种 Uri
- * 它既拿不到也用不了。复制到 <工作区>/uploads/ 下，relPath 就能直接喂给 read_file。
+ * 复制原因：模型只能通过 read_file 读取工作区内的相对路径，无法获取也无法使用 content:// 形式的 Uri。
+ * 复制到 <工作区>/uploads/ 下后，relPath 可直接用于 read_file。
  *
- * 两个约束：单文件 50MB 上限（超了直接中止，不留半截文件）；
- * 落盘先写 `.part` 再 rename，中途失败/被杀都不会留下一个「看起来能用」的坏文件。
+ * 两项约束：单文件上限 50MB（超出即中止，不残留不完整文件）；
+ * 落盘先写 `.part` 再 rename，中途失败或进程终止均不会残留看似可用的损坏文件。
  */
 object UploadStore {
 
@@ -31,23 +31,23 @@ object UploadStore {
     /** 单文件上限 50MB。 */
     private const val MAX_BYTES = 50L * 1024L * 1024L
 
-    /** 图片最长边上限：1568px 是主流多模态接口的推荐上限，再大只是白烧 token 和流量。 */
+    /** 图片最长边上限：1568px 是主流多模态接口的推荐上限，更大只会额外消耗 token 与流量。 */
     private const val IMAGE_MAX_DIM = 1568
 
     /** 单张图片压缩后的目标上限 2MB：base64 还会再涨约 1/3，超过这个量请求体太大。 */
     private const val MAX_IMAGE_BYTES = 2 * 1024 * 1024
 
-    /** JPEG 质量档位，从高到低试，第一次压到 2MB 以内就收。 */
+    /** JPEG 质量档位，由高到低尝试，首次压缩至 2MB 以内即采用。 */
     private val IMAGE_QUALITIES = intArrayOf(85, 70, 50)
 
     private const val BUFFER_SIZE = 8 * 1024
 
-    /** 显示名最长 60 字符，超了取后 60 个（后缀更重要，一眼能看出是什么文件）。 */
+    /** 显示名最长 60 字符，超出时截取后 60 个字符（保留后缀更便于识别文件类型）。 */
     private const val MAX_NAME = 60
 
     private const val FALLBACK_NAME = "file"
 
-    /** 从正文里读 "uploads/xxx" 时的终止字符：空白之外还要在这些标点处断开。 */
+    /** 从正文中读取 "uploads/xxx" 时的终止字符：除空白外还需在这些标点处终止。 */
     private const val STOP_CHARS = "\"'()（）,，。；;：:"
 
     /** 一次导入的结果：界面显示用 [name]，喂给模型的相对路径用 [relPath]。 */
@@ -63,7 +63,7 @@ object UploadStore {
         return try {
             val dir = File(workspaceRoot, DIR)
             if (!dir.exists()) dir.mkdirs()
-            // 重名不覆盖：已有 myslides.pdf 就依次试 myslides-1.pdf、myslides-2.pdf……
+            // 重名不覆盖：若已存在 myslides.pdf，则依次尝试 myslides-1.pdf、myslides-2.pdf……
             val name = uniqueName(dir, sanitize(displayName(context, uri)))
             val target = File(dir, name)
             val temp = File(dir, name + ".part")
@@ -93,7 +93,7 @@ object UploadStore {
             FileLog.log(TAG, "已导入 " + relPath + "（" + size + " 字节，来源 " + uri + "）")
             Result.success(Imported(name = name, relPath = relPath, size = size))
         } catch (e: Exception) {
-            // 任何一步失败都只删自己写出来的 .part，绝不碰目录里已有的文件
+            // 任一步骤失败仅删除本次写入的 .part，不删除目录中已有文件
             part?.delete()
             FileLog.log(TAG, "导入失败（" + uri + "）：" + (e.message ?: e.javaClass.simpleName))
             Result.failure(e)
@@ -103,9 +103,9 @@ object UploadStore {
     /**
      * 把 [uri] 指向的图片（系统相册/文件选择器给的）压成 JPEG 存进 [workspaceRoot]/uploads/。
      *
-     * 为什么不像 [import] 那样原样复制：原图动辄 4000×3000、好几 MB，多模态接口既吃不准尺寸
-     * 又要按 token 收费；这里统一降采样到最长边 ≤1568 再压到 2MB 以内，落盘的就是能直接发的样子。
-     * 失败一律 Result.failure（不静默丢图），调用方负责在界面提示用户。
+     * 与原样复制（[import]）的区别：原图常见尺寸为 4000×3000、体积数 MB，多模态接口对尺寸有限制
+     * 且按 token 计费；此处统一降采样至最长边 ≤1568 并压缩至 2MB 以内，落盘内容可直接发送。
+     * 失败一律返回 Result.failure（不静默丢弃图片），调用方负责在界面提示用户。
      */
     fun importImage(context: Context, uri: Uri, workspaceRoot: File): Result<Imported> {
         var part: File? = null
@@ -126,7 +126,7 @@ object UploadStore {
             FileLog.log(TAG, "已导入图片 " + relPath + "（" + jpeg.size + " 字节，来源 " + uri + "）")
             Result.success(Imported(name = name, relPath = relPath, size = jpeg.size.toLong()))
         } catch (e: Exception) {
-            // 跟 [import] 一样：只删自己写出来的 .part，不碰目录里已有的文件
+            // 与 [import] 一致：仅删除本次写入的 .part，不删除目录中已有文件
             part?.delete()
             FileLog.log(TAG, "图片导入失败（" + uri + "）：" + (e.message ?: e.javaClass.simpleName))
             Result.failure(e)
@@ -138,8 +138,8 @@ object UploadStore {
     /**
      * 只统计、不删：当前工作区 uploads/ 里没有被 [sessions] 引用的文件数与占用字节。
      *
-     * [context] 暂时用不到，保留它是为了和 [import] / [importImage] 同一套调用口径：
-     * 将来要在日志里带上下文信息时，不用再把所有调用点改一遍。
+     * [context] 暂未使用，保留是为了与 [import] / [importImage] 保持一致调用方式：
+     * 后续若需在日志中携带上下文信息，无需修改全部调用点。
      */
     fun orphanReport(context: Context, sessions: List<ChatSession>, workspaceRoot: File): Pair<Int, Long> =
         survey(sessions, workspaceRoot, delete = false)
@@ -154,10 +154,10 @@ object UploadStore {
         survey(sessions, workspaceRoot, delete = true)
 
     /**
-     * 删除会话后清理它引用的图片：同一工作区里没有别的会话再引用，才真删。
+     * 删除会话后清理其引用的图片：同一工作区中没有其他会话引用时才执行删除。
      *
-     * 只认这条会话 images 里的路径（那一定是 [importImage] 写进 uploads/ 的图片）；
-     * 普通附件只出现在正文里、判定不可靠，宁可留着让「清理未引用附件」统一处理。
+     * 仅识别该会话 images 中的路径（该字段记录的是 [importImage] 写入 uploads/ 的图片）；
+     * 普通附件只出现在正文中，判定不可靠，统一交由「清理未引用附件」处理。
      */
     fun cleanSessionImages(
         removed: ChatSession,
@@ -171,7 +171,7 @@ object UploadStore {
         for (raw in removed.messages.flatMap { it.images }.distinct()) {
             val rel = normalize(raw)
             if (keep.contains(rel)) continue
-            // 只认 uploads/ 这一层的文件：路径不在这个目录里（老数据 / 跨工作区）一律不动手
+            // 仅识别 uploads/ 目录内的文件：路径不在该目录（旧数据或跨工作区）一律不处理
             val name = rel.substringAfterLast('/')
             if (name.isEmpty() || rel != DIR + "/" + name) continue
             val file = File(dir, name)
@@ -226,7 +226,7 @@ object UploadStore {
      *
      * images 是结构化字段，直接读；普通附件没有字段，只写在提问正文的「【附件·…】」段里，
      * 所以正文里出现过 "uploads/xxx" 也算引用，否则清理会把用户还在用的附件一起删掉。
-     * 工具调用的参数里也可能出现这些路径（模型自己往 uploads 里写过东西），一并算引用，宁少删不多删。
+     * 工具调用参数中也可能出现这些路径（模型曾向 uploads 写入内容），一并计为引用，宁可少删不可多删。
      */
     private fun referencedPaths(sessions: List<ChatSession>): Set<String> {
         val out = LinkedHashSet<String>()
@@ -242,7 +242,7 @@ object UploadStore {
         return out
     }
 
-    /** 从正文里抠出 "uploads/xxx"：读到空白或常见标点为止（正文里就是 prompt 原文）。 */
+    /** 从正文中提取 "uploads/xxx"：读取至空白或常见标点为止（正文即 prompt 原文）。 */
     private fun pathsInText(text: String): List<String> {
         val marker = DIR + "/"
         if (!text.contains(marker)) return emptyList()
@@ -257,14 +257,14 @@ object UploadStore {
         return out
     }
 
-    /** 路径统一成正斜杠：老数据里可能出现反斜杠。 */
+    /** 路径统一为正斜杠：旧数据中可能存在反斜杠。 */
     private fun normalize(rel: String): String = rel.replace('\\', '/').trim()
 
     /**
      * Uri → JPEG 字节：先只读尺寸算出采样率，再按采样率真解码。
      *
-     * 分两次解码是因为 inJustDecodeBounds 只读文件头，能避免把 8000×6000 的原图整张读进内存
-     * （低端机上直接 OOM）。降采样后再按 [IMAGE_QUALITIES] 从高到低压。
+     * 两次解码的原因：inJustDecodeBounds 仅读取文件头，可避免将 8000×6000 的原图整体读入内存
+     * （低端设备会直接 OOM）。降采样后再按 [IMAGE_QUALITIES] 由高到低压缩。
      */
     private fun encodeJpeg(context: Context, uri: Uri): ByteArray {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -286,11 +286,11 @@ object UploadStore {
                 last = out.toByteArray()
                 if (last.size <= MAX_IMAGE_BYTES) return last
             }
-            // 最低质量仍超 2MB：接受这一版（用户已经选了图，丢掉比发大一点点更糟），只记日志
+            // 最低质量仍超过 2MB 时采用该版本（用户已选择图片，舍弃的代价更大），仅记录日志
             FileLog.log(TAG, "图片压到最低质量仍有 " + last.size + " 字节，超过 2MB 上限")
             return last
         } finally {
-            // 原图采样后的位图可能还有几 MB，用完立刻还给系统
+            // 原图采样后的位图可能仍有数 MB，用完立即回收
             bitmap.recycle()
         }
     }
@@ -301,8 +301,8 @@ object UploadStore {
 
     /**
      * 采样率：BitmapFactory 的 inSampleSize 是 2 的幂，所以只能按 2 倍递减，
-     * 保证「缩小后最长边一定 ≤ [IMAGE_MAX_DIM]」。代价是 1569px 这种刚超一点的图会被砍半，
-     * 换来的是解码内存可预测（不会出现只缩了一点反而 OOM 的情况）。
+     * 保证「缩小后最长边一定 ≤ [IMAGE_MAX_DIM]」。代价是 1569px 这类略超限的图片会被缩小一半，
+     * 换来的是解码内存可预测（不会出现仅少量缩小反而导致 OOM 的情况）。
      */
     private fun sampleSize(width: Int, height: Int): Int {
         var sample = 1
@@ -312,8 +312,8 @@ object UploadStore {
     }
 
     /**
-     * 图片文件名 img-<ts>-<n>.jpg：时间戳保证一般不会撞上旧文件，n 从 1 起只在同名时递增。
-     * 主名照样过 [sanitize]：文件名清洗规则只留一处，将来改规则这里一起生效。
+     * 图片文件名 img-<ts>-<n>.jpg：时间戳通常可避免与已有文件同名，n 从 1 起仅在重名时递增。
+     * 主名同样经过 [sanitize]：文件名清洗规则仅保留一处，规则变更时此处同步生效。
      */
     private fun uniqueImageName(dir: File, stamp: Long): String {
         val base = sanitize("img-" + stamp)
@@ -339,7 +339,7 @@ object UploadStore {
         return FALLBACK_NAME
     }
 
-    /** 清洗：只把路径分隔符和控制字符换成下划线，中文/空格原样保留（模型按路径读，中文没问题）。 */
+    /** 清洗：仅将路径分隔符与控制字符替换为下划线，中文与空格原样保留（模型按路径读取，支持中文）。 */
     private fun sanitize(raw: String): String {
         val builder = StringBuilder(raw.length)
         for (ch in raw) {
@@ -350,7 +350,7 @@ object UploadStore {
         return name.ifEmpty { FALLBACK_NAME }
     }
 
-    /** 目录里撞名就加序号，扩展名保留：base-1.ext、base-2.ext…… */
+    /** 目录内重名时增加序号，保留扩展名：base-1.ext、base-2.ext…… */
     private fun uniqueName(dir: File, name: String): String {
         if (!File(dir, name).exists()) return name
         val dot = name.lastIndexOf('.')

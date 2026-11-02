@@ -7,11 +7,10 @@ import java.io.File
 /**
  * 应用私有目录约定。
  *
- * 以前 sessions.json / workspaces.json / stats.json 直接躺在 filesDir 根目录，
- * 跟终端模块要用的 usr/ bin/ tmp/ common.sh 混在一起；现在统一挪到 filesDir/appdata/ 下。
+ * 应用数据统一存放于 filesDir/appdata/ 下，与终端模块使用的 usr/、bin/、tmp/、common.sh 隔离。
  *
- * 迁移是一次性的、只复制不删除：老文件留在原处（用户可能还在用旧版本 App / 想手动备份），
- * 复制失败就把旧文件返回给调用方，绝不抛异常打断启动。
+ * 迁移仅执行一次且只复制不删除：filesDir 根目录下的既有文件保留在原处，便于历史版本读取或手动备份；
+ * 复制失败时返回该文件，不抛异常中断启动。
  */
 object AppPaths {
 
@@ -21,10 +20,10 @@ object AppPaths {
     /** 应用自己的数据子目录名。 */
     private const val DATA_DIR = "appdata"
 
-    /** 迁移时先写这个后缀的文件再改名，避免复制到一半被杀、留下半截文件被当成「已迁移」。 */
+    /** 迁移时先写入带此后缀的临时文件再重命名，避免复制中断后残留不完整文件被误判为已迁移。 */
     private const val MIGRATE_SUFFIX = ".migrating"
 
-    /** 应用自己的数据目录：filesDir/appdata（不存在就建）。 */
+    /** 应用自己的数据目录：filesDir/appdata（不存在时创建）。 */
     fun dataDir(context: Context): File {
         val dir = File(context.applicationContext.filesDir, DATA_DIR)
         if (!dir.exists()) dir.mkdirs()
@@ -34,11 +33,10 @@ object AppPaths {
     /**
      * filesDir/appdata/<name>。
      *
-     * - appdata/<name> 已存在 → 直接用新位置；
-     * - 不存在而旧的 filesDir/<name> 存在 → 先复制过去（一次性迁移，旧文件保留）；
-     * - 复制失败 → 返回旧文件（调用方照旧读写，行为不退化）。
+     * 新位置已存在时直接返回；否则若 filesDir/<name> 存在，则一次性复制过去并保留源文件；
+     * 复制失败时返回源文件，调用方读写行为不变。
      *
-     * 多个 store 会在首次读盘时并发调用，迁移整段加对象锁，避免同一次启动里复制两遍。
+     * 多个 store 会在首次读盘时并发调用，整段迁移加对象锁，避免同一次启动内重复复制。
      */
     @Synchronized
     fun dataFile(context: Context, name: String): File {
@@ -58,7 +56,7 @@ object AppPaths {
             if (temp.renameTo(target)) {
                 target
             } else if (target.exists()) {
-                // 极端情况下别的进程抢先写好了新文件：用它
+                // 其他进程已先写入新文件时，使用该文件
                 temp.delete()
                 target
             } else {
@@ -66,7 +64,7 @@ object AppPaths {
                 legacy
             }
         } catch (e: Exception) {
-            // 复制失败：清掉半截临时文件，继续用旧路径（旧文件本来就没删）
+            // 复制失败：删除临时文件并继续使用原路径（源文件未被删除）
             FileLog.log(TAG, "迁移 " + name + " 失败，继续用旧文件：" + e)
             temp.delete()
             legacy

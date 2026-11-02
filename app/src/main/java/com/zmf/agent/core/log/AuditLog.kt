@@ -11,14 +11,13 @@ import java.util.Locale
 /**
  * 安全审计日志：记录每一次拦截、放行、授权码签发/校验、权限档切换。
  *
- * 与 [FileLog]（开发者排障用、外部私有目录、可被日志页清空）**刻意分开**：
- * 审计日志是「系统做过什么判定」的证据，落 `filesDir/appdata/audit.log`，
- * 且该文件所在的 `appdata` 目录本身列入高危禁区：Agent 不能改写自己的审计记录。
+ * 与 [FileLog]（开发者排障、外部私有目录、可被日志页清空）分开：审计日志是系统判定的证据，
+ * 落在 `filesDir/appdata/audit.log`，且 `appdata` 目录本身属于高危禁区，Agent 不能改写自己的审计记录。
  *
  * 设计取舍：
- * - 一行一条、`|` 分隔 `key=value`：不引 JSON 依赖，文本工具也能直接看；
- * - 超过 [MAX_BYTES] 轮转为 `audit.log.1`（只留一份），不会无限增长；
- * - 任何写失败都吞掉：审计失败不能反过来把业务弄崩（与 FileLog 同一条原则）。
+ * - 一行一条、`|` 分隔 `key=value`：不引入 JSON 依赖，文本工具可直接查看；
+ * - 超过 [MAX_BYTES] 轮转为 `audit.log.1`（只保留一份），不会无限增长；
+ * - 写入失败一律忽略：审计失败不得反向导致业务崩溃（与 FileLog 同一原则）。
  */
 object AuditLog {
 
@@ -104,7 +103,7 @@ object AuditLog {
 
     private fun formatTime(): String = synchronized(timeFormat) { timeFormat.format(Date()) }
 
-    /** 值里不能出现换行与竖线：一行一条，别让一条记录把日志结构撑破。 */
+    /** 值中不能包含换行与竖线：一行一条，避免单条记录破坏日志结构。 */
     private fun clean(raw: String): String =
         raw.replace('\n', ' ').replace('\r', ' ').replace('|', '/').take(300)
 }

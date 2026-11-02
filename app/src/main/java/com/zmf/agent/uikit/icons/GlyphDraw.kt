@@ -17,10 +17,10 @@ import androidx.compose.ui.unit.Dp
 
 /**
  * 18×18 单位坐标系的小图标：调用方按 18 的坐标写路径，这里按实际 dp 等比缩放。
- * 图标尺寸换了几档线宽也不会跟着变粗，深色浅色共用同一份形状。
+ * 图标尺寸变化时线宽不会随之变粗，深色与浅色共用同一份形状。
  *
- * 这四个原语原本寄居在 `Composer.kt`：主页气泡、悬浮小窗、输入条、轨迹页、设置首页都在用同一套字形，
- * 把它们留在聊天实现文件里，会让「通用图标」和「输入框」互相绑死——改输入框就动到全 App 的图标。
+ * 这四个原语原位于 `Composer.kt`：主页气泡、悬浮小窗、输入条、轨迹页与设置首页均使用同一套字形；
+ * 若保留在聊天实现文件中，会使通用图标与输入框相互耦合，修改输入框将影响全局图标。
  */
 @Composable
 internal fun UnitGlyph(iconSize: Dp, draw: DrawScope.() -> Unit) {
@@ -32,14 +32,14 @@ internal fun UnitGlyph(iconSize: Dp, draw: DrawScope.() -> Unit) {
     }
 }
 
-/** 单位坐标系里的描边规格：端点与拐角都收圆，1.4 单位宽的线缩放后不显尖。 */
+/** 单位坐标系中的描边规格：端点与拐角均为圆角，1.4 单位线宽缩放后不会显得尖锐。 */
 internal fun unitStroke(width: Float): Stroke =
     Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round)
 
-/** 拼路径的小工具，专门给 [UnitGlyph] 里的 18×18 坐标用。 */
+/** 路径构建工具函数，专用于 [UnitGlyph] 中的 18×18 坐标。 */
 internal fun unitPath(build: Path.() -> Unit): Path = Path().apply(build)
 
-/** 上下文 / 模型共用的圆柱体：数据装在该装的地方，一眼看得懂。 */
+/** 上下文与模型共用的圆柱体：表示数据存储位置，含义直观。 */
 @Composable
 internal fun CylinderGlyph(tint: Color, iconSize: Dp) {
     UnitGlyph(iconSize = iconSize) {

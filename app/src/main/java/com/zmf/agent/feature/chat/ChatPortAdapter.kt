@@ -8,9 +8,9 @@ import kotlinx.coroutines.CoroutineScope
 /**
  * ChatViewModel 的窄口实现：小窗与定时投递只认这几个方法，不认整个 ViewModel。
  *
- * 单独成类而不是让 ChatViewModel 直接实现 [ChatPort]：门面要保持「只装配 + 转发」，
- * 也避免 `messages` 这个同名字段在接口里换类型。方法逐个转发，行为与原来
- * 桥直接攥住 ViewModel 时一致。
+ * 单独成类，而非让 ChatViewModel 直接实现 [ChatPort]：门面需保持「只装配 + 转发」，
+ * 同时避免 `messages` 同名字段在接口中改变类型。方法逐个转发，行为与原
+ * 桥直接持有 ViewModel 时一致。
  */
 class ChatPortAdapter(private val viewModel: ChatViewModel) : ChatPort {
 
@@ -25,8 +25,8 @@ class ChatPortAdapter(private val viewModel: ChatViewModel) : ChatPort {
     /**
      * 小窗会话切换列表：只列未归档，按最近更新排序。
      *
-     * 读完 `sessionList` 这个 Compose 状态，会话增减/改名会让小窗跟着重组；
-     * 归档的会话在小窗里没有恢复入口，干脆不列出来。
+     * 读取 `sessionList` 这一 Compose 状态，会话增减或改名会使小窗重组；
+     * 归档会话在小窗中没有恢复入口，故不列出。
      */
     override fun sessions(): List<ChatPortSession> {
         val current = viewModel.currentSessionId

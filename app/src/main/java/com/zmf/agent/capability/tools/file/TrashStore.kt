@@ -11,23 +11,23 @@ import java.security.SecureRandom
 /**
  * 回收站：删除先落进这里，「撤销」与「清空」都由用户自己发起。
  *
- * 为什么按「卷」建池：回收站的价值建立在 `rename` 的 O(1) 原子上；跨卷 rename 会退化成
- * 「复制 + 删除」，既慢又可能在中途断电，还占双倍空间。所以池必须和目标在同一个 `st_dev` 上，
- * 选中方式比较设备号，不比较路径前缀（前缀比较会被绑定/软链接骗）。
+ * 为什么按「卷」建池：回收站的价值建立在 `rename` 的 O(1) 原子上；跨卷 rename 会退化为
+ * 「复制 + 删除」，既慢又可能在中途断电，并占用双倍空间。因此池必须与目标位于同一 `st_dev`，
+ * 通过比较设备号选择，而非比较路径前缀（前缀比较会被绑定或软链接误导）。
  *
- * 池放在 `Android/data/<pkg>/files/.trash`：
- * - SAF 与 MediaStore 都不展示它，不进相册、不进文件选择器；
- * - 模型默认看不见（Agent 对回收站是黑区，见 [com.zmf.agent.capability.tools.HighRiskGate] 的禁区判定）。
+ * 池位于 `Android/data/<pkg>/files/.trash`：
+ * - SAF 与 MediaStore 均不展示该目录，不进入相册或文件选择器；
+ * - 模型默认不可见（回收站属于 Agent 的禁入区域，见 [com.zmf.agent.capability.tools.HighRiskGate] 的禁区判定）。
  *
  * 目录结构：
  * ```
  * .trash/.nomedia
- * .trash/<sessionId>/<时间戳>-<随机6位>/payload   原目标整棵 rename/复制进来
+ * .trash/<sessionId>/<时间戳>-<随机6位>/payload   原目标整体 rename/复制至此
  * .trash/<sessionId>/<时间戳>-<随机6位>/meta.json 原路径 / 统计 / 时间 / 来源
  * ```
  *
- * 淘汰：7 天或单池 512 MB，FIFO 先删最旧。跑在 App 启动与后台，不经工具层，因此不需要令牌：
- * 这件事的主体是 App 自己，不是 Agent。
+ * 淘汰：7 天或单池 512 MB，按 FIFO 删除最旧记录。运行于 App 启动与后台流程，不经过工具层，因此无需令牌：
+ * 该操作的主体为 App 自身，而非 Agent。
  */
 object TrashStore {
 
@@ -46,7 +46,7 @@ object TrashStore {
     /** 单池上限：512 MB。超限按时间 FIFO 淘汰。 */
     const val POOL_LIMIT_BYTES = 512L * 1024L * 1024L
 
-    /** 统计/搬运的条目上限：只为 meta 里的一个数字，不值得把整棵大树走三遍。 */
+    /** 统计/搬运的条目上限：仅为 meta 中的一个数字，不宜对完整目录树重复遍历三次。 */
     private const val MAX_SCAN_ENTRIES = 200_000
 
     private val random = SecureRandom()
@@ -146,7 +146,7 @@ object TrashStore {
     // 移入 / 复制
     // =========================================================================
 
-    /** 把 [target] 整棵 rename 进同卷池；没有同卷池或 rename 失败返回 null（原目标未被改动）。 */
+    /** 将 [target] 整体 rename 进同卷池；没有同卷池或 rename 失败时返回 null（原目标未被修改）。 */
     fun moveInto(context: Context, target: File, sessionId: String, tool: String): Entry? {
         val pool = poolFor(context, target) ?: return null
         return moveIntoPool(pool, target, sessionId, tool)
@@ -251,7 +251,7 @@ object TrashStore {
         tool = meta.optString("tool")
     )
 
-    /** 有界统计：不跟随软链接；触到上限就标 truncated，不为了精确数字跑满整棵树。 */
+    /** 有界统计：不跟随软链接；达到上限时标记 truncated，不为获取精确数字而遍历完整目录树。 */
     fun scan(target: File): Stats {
         var files = 0
         var dirs = 0

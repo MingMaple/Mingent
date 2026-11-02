@@ -70,7 +70,7 @@ private const val DEFAULT_EXPORT_PATH = "/sdcard/Download"
  * 「记忆」页（二级）：概览 / 检索 / 维护 / 导出四块。
  *
  * 为什么是无状态 Composable：所有数据都在 [MemoryState] 里，动作通过回调交给上层（上层再调 MemoryAdmin）。
- * 这样这一页不持有协程、不持有 Context，也不存在「页面拆掉了命令还在跑」的半死状态；
+ * 这样该页不持有协程与 Context，也不存在「页面已销毁但命令仍在执行」的残留状态；
  * 代价是每次动作都会整份替换 state，所以 MemoryAdmin 每次都会带上一份概览（见那边的注释）。
  *
  * 视觉口径照 Salt Player：16dp 圆角大卡、底色用 colorScheme.surface、不描边、强调色只用 Palette.Accent；
@@ -91,28 +91,28 @@ fun MemoryPage(
     onVectorToggle: (Boolean) -> Unit,
     onVectorPanelOpened: () -> Unit,
 ) {
-    // 进页面刷一次：概览 + 体检要跑两个 CLI 才有数，不能每帧重算（同统计页 / 数据页的做法）
+    // 进入页面刷新一次：概览与体检需执行两个 CLI 才能取得数据，不能每帧重算（同统计页 / 数据页的做法）
     LaunchedEffect(Unit) {
         onRefresh()
         // 临时状态只在本次停留期间有效，重进页面回到默认注释
         onVectorPanelOpened()
     }
 
-    // 输入框自己的草稿：回车才交给 onSearch。逐字上抛会让每个按键都变成一次内核调用，
-    // 而内核每次检索都会追加一条 access 事件（真跑一次写一次库，不能当输入法用）。
+    // 输入框自身的草稿：回车时才交给 onSearch。逐字上抛会让每次按键都触发一次内核调用，
+    // 而内核每次检索都会追加一条 access 事件（因此不能按输入法的频率触发）。
     var draft by remember { mutableStateOf(state.query) }
     // 全文弹窗的正文：命中行和 briefing 都只显示两行，展开走这里
     var detail by remember { mutableStateOf<String?>(null) }
     var doctorOpen by remember { mutableStateOf(false) }
-    // 「维护」「导出」默认折叠；展开「维护」会顺带跑一次扫描
+    // 「维护」「导出」默认折叠；展开「维护」会同时执行一次扫描
     var cycleOpen by remember { mutableStateOf(false) }
     var exportOpen by remember { mutableStateOf(false) }
-    // 导出目标目录：默认给系统下载目录的绝对路径，用户可改成手机里已有的任意目录
+    // 导出目标目录：默认使用系统下载目录的绝对路径，用户可修改为手机中已有的任意目录
     var exportPath by remember { mutableStateOf(DEFAULT_EXPORT_PATH) }
     val onSurface = MaterialTheme.colorScheme.onSurface
 
     Surface(
-        // 铺满且不透明；最外层吞掉点击，避免穿透点到下面那一页
+        // 铺满且不透明；最外层拦截点击，避免事件穿透到下方的页面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -129,7 +129,7 @@ fun MemoryPage(
                 Text(
                     text = "←",
                     modifier = Modifier
-                        // 圆形按压：返回是孤立字形，方形波纹会露角
+                        // 圆形按压：返回按钮为孤立字形，方形波纹会露出直角
                         .saltRowClickable(RoundedCornerShape(50)) { onBack() }
                         .padding(horizontal = 12.dp, vertical = 14.dp),
                     fontSize = 20.sp,
@@ -142,8 +142,8 @@ fun MemoryPage(
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 // 「处理中…」放在标题行最右：
-                // 独立成行时，出现/消失会把下面四张卡整体顶上去一下。
-                // 放进标题行后行高不变，界面完全不动；标题行 17sp，13sp 的提示塞得进去。
+                // 独立成行时，其出现与消失会使下方四张卡整体上移。
+                // 放入标题行后行高不变，界面完全不动；标题行 17sp，可容纳 13sp 的提示。
                 Spacer(Modifier.weight(1f))
                 if (state.busy) {
                     Text(
@@ -181,7 +181,7 @@ fun MemoryPage(
                     onSearch = onSearch,
                     onOpenDetail = { detail = it }
                 )
-                // 展开「维护」= 跑一次扫描；收起只折叠，不重复跑
+                // 展开「维护」即执行一次扫描；收起仅折叠，不重复执行
                 CycleCard(
                     state = state,
                     expanded = cycleOpen,
@@ -237,14 +237,14 @@ private fun OverviewCard(state: MemoryState, doctorOpen: Boolean, onToggleDoctor
         MemoryRow(label = "归档", value = status?.archived?.toString() ?: "—")
         HorizontalDivider(
             // 只在线上方留 4dp：线**下面**不留白，否则「体检」行上方会出现一条既不可点、
-            // 也没有涟漪的空白（波纹没盖住那半截，看着像断了）
+            // 也没有涟漪的空白（波纹未覆盖该区域，视觉上呈断裂状）
             modifier = Modifier.padding(top = 4.dp),
             color = onSurface.copy(alpha = 0.06f)
         )
         // 箭头与展开动效和「上下文配置 → 提示词 → 预览」那一行完全对齐：
         // 箭头弹簧翻转 180°、内容走 expandVertically + fadeIn/shrinkVertically + fadeOut，
         // 行内距也是 top 10 / bottom 10，折叠时行底直接贴卡片下缘，波纹被下圆弧裁成半圆。
-        // 只换「▾/▴」字形、直接显隐的话没有过渡，跟「预览」不是一个手感。
+        // 只换「▾/▴」字形、直接显隐则没有过渡，与「预览」行的效果不一致。
         val arrowTurn by animateFloatAsState(
             targetValue = if (doctorOpen) 180f else 0f,
             animationSpec = Motion.spring(),
@@ -326,7 +326,7 @@ private fun SearchCard(
             Spacer(Modifier.height(8.dp))
             if (state.briefing.isNotEmpty()) {
                 // 一条都没命中时，briefing 就是这次检索**唯一**的结果说明（查了什么、范围、为什么空），
-                // 再按两行截断等于把它掐在半句话上（界面上「命中 0 条…」那半句就是这么被省略的）。
+                // 再按两行截断会在半句处截断（界面上的「命中 0 条…」即由此省略）。
                 // 所以只有「下面还有命中条目」时才收成两行、点开看全文。
                 Text(
                     text = state.briefing,
@@ -362,11 +362,11 @@ private fun SearchCard(
 }
 
 /**
- * 「维护」：默认折叠，点标题行右侧的箭头才展开并**顺带跑一次扫描**：
- * 展开后内容向下扩充，再点一下折叠回去。
+ * 「维护」：默认折叠，点击标题行右侧箭头后展开并**同时执行一次扫描**：
+ * 展开后内容向下扩充，再次点击可折叠。
  *
- * 不用一行灰字「运行维护扫描」当按钮：深色模式下它跟旁边的数值颜色几乎一样，
- * 看不出那是能点的。
+ * 不使用一行灰字「运行维护扫描」作为按钮：深色模式下其颜色与相邻数值接近，
+ * 难以辨识其可点击性。
  */
 @Composable
 private fun CycleCard(state: MemoryState, expanded: Boolean, onToggle: () -> Unit) {
@@ -388,7 +388,7 @@ private fun CycleCard(state: MemoryState, expanded: Boolean, onToggle: () -> Uni
             if (cycle.batches.isEmpty()) {
                 MemoryRow(label = "待巩固批次", value = "0")
             } else {
-                // 每个批次一行：界面只报数，不做「合不合得成」的判断，那要读完整报告。
+                // 每个批次一行：界面只报告数量，不判断是否合并成功，该判断需要读取完整报告。
                 cycle.batches.forEach { batch ->
                     MemoryRow(label = "待巩固批次", value = batch.ns + " × " + batch.count)
                 }
@@ -414,10 +414,10 @@ private fun CycleCard(state: MemoryState, expanded: Boolean, onToggle: () -> Uni
 
 /**
  * 「导出」：同样默认折叠。展开后是「路径输入框 + 右下角开始」，导出结果追加在展开区底部
- * 默认目录必须落在用户拿得到的地方：导进 App 私有目录等于导完就没。
+ * 默认目录必须位于用户可访问的位置：导入 App 私有目录会导致导出结果无法取出。
  *
  * 为什么不在这里直接写文件：导出由内核 `export --out=<路径>` 执行，界面只负责把路径送下去。
- * 内核在 PRoot 里跑，`/sdcard` 在它的根文件系统里是可见的，所以默认值给 `/sdcard/Download`。
+ * 内核在 PRoot 中运行，`/sdcard` 在其根文件系统中可见，因此默认值取 `/sdcard/Download`。
  */
 @Composable
 private fun ExportCard(
@@ -498,8 +498,8 @@ private fun VectorCard(
     MemoryCard(title = "向量模型") {
         // 整行可点（Salt Player 的口径）：点行与点开关都能切换，
         // 两处反馈一致：行的涟漪通栏、由卡片 16dp 圆角裁，开关本体也有自己的涟漪。
-        // 开关放在行里只做展示与无障碍语义，点它同样会走到 onToggle（子节点先吃掉事件，
-        // 不会和行点击叠加成「点一次切两次」）。
+        // 开关放在行里只做展示与无障碍语义，点击同样会走到 onToggle（子节点先消费事件，
+        // 不会与行点击叠加为「一次点击触发两次」）。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -551,7 +551,7 @@ private fun MemoryCard(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Surface(
-        // 卡片自己裁一刀：内部行的波纹是矩形，不裁会在 16dp 圆角处露方角
+        // 卡片自身裁剪：内部行的波纹为矩形，不裁剪会在 16dp 圆角处露出方角
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp)),
@@ -561,10 +561,11 @@ private fun MemoryCard(
         // 卡片 Column **不带横向内距**：横向 16dp 由每一行自己带，
         // 可点行才能通栏、波纹被卡片 16dp 圆角裁出圆弧，与设置一级页同一套口径。
         // Column 带 horizontal=16dp 时，行只能用 saltRowClickable(12dp) 显式圆角，
-        // 于是波纹缩进 16dp、四角自成圆角，和一级页的「通栏 + 卡片裁剪」明显不是一回事。
+        // 于是波纹缩进 16dp、四角自成圆角，与一级页的「通栏 + 卡片裁剪」存在明显差异。
         //
-        // 收起时的底部留白**放进可点行里**（tailPad）：否则卡片下缘会留一块不可点、也没有涟漪的
-        // 圆弧空白，而那块正是「展开」的入口：点下去内容往下长，读起来就是「按了一块空的地方」
+        // 收起时的底部留白**放进可点击行内**（tailPad）：否则卡片下缘会保留一块不可点击、
+        // 也没有涟漪的圆弧空白，而该区域正是「展开」的入口：点击后内容向下扩展，
+        // 否则会形成点击空白的观感。
         // 收起时行底内距 14dp、离开卡片下缘只有 0，涟漪一路盖到底并被圆角裁圆。
         val tailPad = if (onToggle != null && expanded == false) 14.dp else 6.dp
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -580,8 +581,8 @@ private fun MemoryCard(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        // 标题行整行可点：箭头只有 11sp，单点箭头太难点中。
-                        // 波纹通栏、顶部圆弧由卡片裁，折叠卡片的第一行就是一级页的第一行。
+                        // 标题行整行可点：箭头仅 11sp，单独点击箭头命中范围过小。
+                        // 波纹通栏、顶部圆弧由卡片裁剪，折叠卡片的第一行与一级页第一行一致。
                         .saltCardRow { onToggle() }
                         .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = tailPad),
                     verticalAlignment = Alignment.CenterVertically
@@ -600,7 +601,7 @@ private fun MemoryCard(
                     )
                 }
             }
-            // 折叠时内容整块不组合：扫描/导出本来是「点一下才跑」的动作，留着空壳反而像没数据
+            // 折叠时内容整体不参与组合：扫描/导出本为「点击后才执行」的动作，保留空容器会造成无数据的观感
             if (expanded == null || expanded) {
                 content()
                 Spacer(Modifier.height(14.dp))
@@ -634,8 +635,8 @@ private fun MemoryRow(label: String, value: String) {
 }
 
 /**
- * 导出路径输入框：跟检索框同一套自绘（6% 淡影底、Salt 绿光标），只是字号收一号：
- * 这是一条完整的绝对路径，13sp 能在一行里多露出两三个目录段。
+ * 导出路径输入框：与检索框使用同一套自绘（6% 淡影底、Salt 绿光标），仅字号收小一档：
+ * 这是一条完整的绝对路径，13sp 可在一行内多显示两三个目录层级。
  */
 @Composable
 private fun ExportPathField(value: String, onValueChange: (String) -> Unit) {
@@ -777,7 +778,7 @@ private fun HitRow(hit: MemoryHit, onOpenDetail: (String) -> Unit) {
 /**
  * 极简弹窗：没有标题、没有解释小字，只有内容（同 ChatScreen / AppDrawer 里的 MinimalDialog）。
  *
- * 那两处都是 private，跨文件引用就得改别人的文件；这里照着观感重画一份，不动它们。
+ * 那两处均为 private，跨文件引用需要修改其它文件；此处按相同观感重新实现，不改动原实现。
  */
 @Composable
 private fun MemoryDialog(onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
@@ -817,7 +818,7 @@ private fun hitTime(ts: String): String {
         ?: return ts.take(10)
     val minutes = Duration.between(instant, Instant.now()).toMinutes()
     return when {
-        // 负数＝时钟回拨（内核与手机的时钟不同步时会出现），别显示「-3 分钟前」
+        // 负数表示时钟回拨（内核与手机时钟不同步时会出现），此时不显示「-3 分钟前」
         minutes < 1L -> "刚刚"
         minutes < 60L -> minutes.toString() + " 分钟前"
         minutes < 60L * 24L -> (minutes / 60L).toString() + " 小时前"

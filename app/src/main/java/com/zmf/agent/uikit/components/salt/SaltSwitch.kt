@@ -31,31 +31,31 @@ import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 
 /**
- * Salt 风开关：不用 Material3 的 Switch，自己拿 Box + offset 拼。
+ * Salt 风开关：不使用 Material3 的 Switch，自行以 Box + offset 实现。
  *
- * 几何全部照 Salt Player 的实拍取样（1440×3200 截图，360dp 屏，1 图像素 = 0.25dp）：
+ * 几何参数取自 Salt Player 的实测采样（1440×3200 截图，360dp 屏幕，1 图像素 = 0.25dp）：
  *
  * - 轨道 **46 × 26dp**，圆角 13（全圆）；
  * - 滑块高 15dp、垂直居中（上内距 5.5dp）；
- * - 关态滑块是 **15dp 圆**，中心距左端 12.75dp；
- * - 开态滑块被压成 **4dp 宽的竖条**，圆角 2，中心距右端 12.75dp；
- *   位移 20.5dp，两个中心都离轨道端 12.75dp，所以视觉上是「对称地走到对面」。
+ * - 关态滑块为 **15dp 圆**，中心距左端 12.75dp；
+ * - 开态滑块压缩为 **4dp 宽竖条**，圆角 2，中心距右端 12.75dp；
+ *   位移 20.5dp，两个中心距轨道端均为 12.75dp，视觉上为对称移动。
  *
- * 滑块形态随状态变，是 Salt 的识别特征：关是圆点、开是一道竖条。
- * 这样在低对比下也能靠**形状**分辨开关状态，不只靠颜色。
+ * 滑块形态随状态变化，是 Salt 的识别特征：关闭为圆点、开启为竖条。
+ * 因此在低对比度下也可通过**形状**区分开关状态，而非仅依赖颜色。
  *
- * 配色：轨道开态直接复用 [UiColors.accentFill]（浅 `#4176E6` / 深 `#7AAAFF`）。
- * Salt 也是「浅色取深的一档、深色取亮的一档」，与我们的强调色分工一致；
- * 它那支偏紫的 `#4D5C93` 不照搬，色相仍用我们的蓝。
- * 滑块两态都是纯白——这是 Salt 的做法，开启态白压淡蓝只有 2.3:1，
- * 但开关的可辨性主要来自「轨道 vs 背景」（深色下 7.1:1）与滑块位置，够用。
+ * 配色：轨道开启态直接复用 [UiColors.accentFill]（浅 `#4176E6` / 深 `#7AAAFF`）。
+ * Salt 同样为「浅色取较深一档、深色取较亮一档」，与本项目的强调色分工一致；
+ * 其偏紫的 `#4D5C93` 不采用，色相仍使用本项目的蓝。
+ * 滑块两态均为纯白，与 Salt 一致；开启态白色压在淡蓝上对比度仅 2.3:1，
+ * 但开关可辨性主要来自「轨道与背景」（深色下 7.1:1）与滑块位置，足以满足使用。
  *
- * 动画走 [Motion.spring]；开关本体也有涟漪（开与关两个方向都要有按压反馈）：
- * 形状由轨道自己的 13dp 圆角裁，颜色同 `saltCardRow`，不要 Material 默认那层带品牌色的 ripple。
+ * 动画使用 [Motion.spring]；开关本体同样带涟漪（开启与关闭两个方向均需按压反馈）：
+ * 形状由轨道自身的 13dp 圆角裁剪，颜色与 `saltCardRow` 一致，不使用 Material 默认带品牌色的 ripple。
  *
- * 无障碍：clickable 带 role = Role.Switch，再补 toggleableState，
- * 悬浮朗读是「开关，已关闭 / 已开启」。
- * 这里没用 Modifier.toggleable(...)：本工程当前 foundation 版本里四参数那个重载已被隐藏。
+ * 无障碍：clickable 设置 role = Role.Switch，并补充 toggleableState，
+ * 读屏朗读为「开关，已关闭 / 已开启」。
+ * 此处未使用 Modifier.toggleable(...)：当前工程 foundation 版本中四参数重载已被隐藏。
  */
 @Composable
 fun SaltSwitch(
@@ -78,12 +78,12 @@ fun SaltSwitch(
         label = "saltSwitchThumb"
     )
 
-    // 三个量都跟着同一个 progress 走，所以形状与位置同步变，不会出现「先变形再滑动」
+    // 三个量均随同一个 progress 变化，因此形状与位置同步更新，不会出现先变形再滑动
     val thumbWidth = 15f - 11f * progress      // 15dp → 4dp
     val thumbCenterX = 12.75f + 20.5f * progress
     val thumbLeft = thumbCenterX - thumbWidth / 2f
 
-    // 焦点环与波纹分开读：键盘/方向键把焦点移上来才出环，手指点只出波纹
+    // 焦点环与波纹分开读取：键盘或方向键将焦点移入时才显示焦点环，手指点击仅显示波纹
     val interaction = remember { MutableInteractionSource() }
     val focused = interaction.collectIsFocusedAsState().value
     val focusRing = RoundedCornerShape(13.dp)
@@ -93,13 +93,13 @@ fun SaltSwitch(
         modifier = modifier
             .size(width = 46.dp, height = 26.dp)
             .then(if (focused && enabled) Modifier.border(2.dp, ringColor, focusRing) else Modifier)
-            // 禁用态整体压暗；clickable 的 enabled 一并关掉，点了不响应
+            // 禁用态整体降低透明度；同时关闭 clickable 的 enabled，点击不响应
             .alpha(if (enabled) 1f else 0.35f)
             .clip(RoundedCornerShape(13.dp))
             .background(trackColor)
-            // 轨道和滑块都在这个盒子里，点哪都算点到开关；
-            // 涟漪用 ripple(bounded) 而不是默认 indication：形状被上面的 clip 裁，
-            // 颜色跟整行统一，开关开着关着都有反馈
+            // 轨道与滑块均位于该盒子内，点击任意位置均视为点击开关；
+            // 涟漪使用 ripple(bounded) 而非默认 indication：形状由上方 clip 裁剪，
+            // 颜色与整行统一，开启与关闭状态均有反馈
             .clickable(
                 interactionSource = interaction,
                 indication = ripple(
@@ -110,7 +110,7 @@ fun SaltSwitch(
                 role = Role.Switch,
                 onClick = { onCheckedChange(!checked) }
             )
-            // 不带这个的话朗读只知道「可点击」，不知道当前是开还是关
+            // 缺少该语义时读屏仅识别为「可点击」，无法获知当前开关状态
             .semantics { toggleableState = if (checked) ToggleableState.On else ToggleableState.Off }
     ) {
         Box(

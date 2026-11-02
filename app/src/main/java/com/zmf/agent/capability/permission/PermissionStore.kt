@@ -3,7 +3,7 @@ package com.zmf.agent.capability.permission
 import android.content.Context
 import com.zmf.agent.core.model.PermissionLevel
 
-/** 权限三档的持久化。默认「工作区」：能读写工作区，不碰系统别处。 */
+/** 权限三档的持久化。默认「工作区」：可读写工作区，不访问系统其他位置。 */
 object PermissionStore {
 
     private const val PREFS_NAME = "app_prefs"

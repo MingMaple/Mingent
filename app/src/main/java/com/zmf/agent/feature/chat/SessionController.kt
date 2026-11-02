@@ -30,9 +30,9 @@ private const val KEY_OPENED_SESSION = "last_opened_session"
 /**
  * 会话与工作区：会话表、当前会话、工作区表、当前工作区，以及它们的新建/切换/归档/删除与落盘。
  *
- * 从 [ChatViewModel] 搬出，行为不变：字段名与原成员逐字一致，方法体原样照搬；
- * 只把跨模块动作改成注入——消息容器、流式标记、待发附件清理与引用路径、工具成败清理、
- * 待办/统计/错误的回显入口、导入后暂缓落盘的开关——免得这个类反过来攥住整个 ViewModel。
+ * 从 [ChatViewModel] 拆出，行为不变：字段名与原成员逐字一致，方法体原样保留；
+ * 仅将跨模块动作改为注入——消息容器、流式标记、待发附件清理与引用路径、工具成败清理、
+ * 待办/统计/错误的回显入口、导入后暂缓落盘的开关——避免该类反向持有整个 ViewModel。
  */
 class SessionController(
     private val appContext: Context,
@@ -64,7 +64,7 @@ class SessionController(
     /**
      * 会话落盘队列。
      *
-     * 原来 persistAll 在主线程整表写盘：点一下会话得等写完才能重绘，涟漪和选中态全都迟到。
+     * 此前 persistAll 在主线程整表写盘：点击会话需等待写完才能重绘，涟漪与选中态均延迟。
      * 现在状态先改、界面先动，写盘挪到 IO；连点排进来的多拍只保留最新一拍（旧快照是它的子集）。
      */
     private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -73,12 +73,12 @@ class SessionController(
     /**
      * 启动时读回工作区表与会话表，决定当前会话并载入它的消息。
      *
-     * 顺序要跟原来一致：先工作区（决定当前工作区时要用它兜底），再会话。
+     * 顺序需与原先一致：先工作区（决定当前工作区时以其兜底），再会话。
      */
     fun loadInitial() {
         // 工作区表先读回来：默认工作区永远在，后面决定当前工作区时要用它兜底
         workspaces = WorkSpaceStore.load(appContext)
-        // 再把会话表读回来，决定当前会话：有历史就续上最近那条，没有就开一条空的
+        // 再重新读取会话表以确定当前会话：存在历史时接续最近一条，否则新建空会话
         // 顺便兜底：会话引用了已不存在的工作区（workspaces.json 丢了/坏了）就当未分类，
         // 否则这些会话在界面分组里会直接消失
         val loaded = SessionStore.load(appContext).sortedByDescending { it.updatedAt }
@@ -99,13 +99,11 @@ class SessionController(
             currentSessionId = fresh.id
         } else {
             this.sessions = sessions
-            // 恢复用户最后停留的那条，而不是 updatedAt 最新的一条：定时任务、后台唤醒、
-            // 程序代发的消息都会刷新 updatedAt，按它取会把用户带进一条被后台叫醒的会话
-            // （用户实测：杀后台重进，进的是最新被唤醒的会话而非离开前那条）。
+            // 恢复用户最后停留的会话，而非 updatedAt 最新的一条：定时任务与后台唤醒会刷新 updatedAt，按该值取会进入被后台唤醒的会话（用户实测如此）。
             val remembered = persistedSessionId()
             val latest = sessions.firstOrNull { it.id == remembered } ?: sessions.first()
             currentSessionId = latest.id
-            // 「上次的选择」就用最近那条会话的归属：它属于哪个工作区就进哪个工作区；
+            // 「上次的选择」采用最近会话的归属：该会话属于哪个工作区即进入哪个工作区；
             // 它没有归属（老数据 → 未分类）时退回列表第一个，保证当前工作区始终是合法 id
             currentWorkspaceId = latest.workspaceId ?: workspaces.firstOrNull()?.id
             messages.clear()
@@ -179,7 +177,7 @@ class SessionController(
         }
         currentSessionId = target.id
         persistOpenedSession(target.id)
-        // 会话可能属于别的工作区（UI 直接点某个分组里的会话）：选中态跟着它走，避免两边对不上
+        // 会话可能属于其他工作区（UI 直接点击某分组中的会话）：选中态随之切换，避免两处不一致
         currentWorkspaceId = target.workspaceId
         messages.clear()
         messages.addAll(target.messages)
@@ -234,18 +232,18 @@ class SessionController(
     fun deleteSession(id: String) {
         if (isStreaming()) return
         if (sessions.none { it.id == id }) return
-        // 先把当前会话的最新消息存回列表，免得删除操作把这次的改动丢了
+        // 先将当前会话的最新消息存回列表，避免删除操作丢失本次改动
         persistCurrent()
         // 先留一份：列表里删掉之后，就再也看不出这条会话引用过哪些图片了
         val removed = sessions.firstOrNull { it.id == id }
         sessions = sessions.filter { it.id != id }
-        // 盘上也要真删：只删内存的话，合并写盘会把这条会话当成「磁盘新增」又搬回来
+        // 磁盘上同样需实际删除：仅删除内存时，合并写盘会将该会话视为「磁盘新增」并重新写入
         SessionStore.removeSession(appContext, id)
         // 会话真删了：它名下的计划/目标/上下文事件也一起收掉，否则那几个 JSON 里永远留着孤儿
         clearSessionDocs(id)
         ContextEventStore.clear(appContext, id)
         if (id == currentSessionId) {
-            // 只在当前工作区里挑下一条：删完一个会话不该跳到别的工作区的对话
+            // 仅从当前工作区选择下一条：删除会话后不应跳转至其他工作区的对话
             val remaining = sessions.filter { !it.archived && it.workspaceId == currentWorkspaceId }
             if (remaining.isEmpty()) {
                 val fresh = SessionStore.newSession().copy(workspaceId = currentWorkspaceId)
@@ -266,16 +264,16 @@ class SessionController(
         }
         persistAll()
         reloadTodos()
-        // 会话没了，它带进来的图片可能再没人引用：在 IO 里顺手清一遍
+        // 会话删除后，其引入的图片可能已无引用：在 IO 中一并清理
         removed?.let { cleanupImagesOf(it) }
         FileLog.log("session", "删除会话 " + id + "，剩 " + sessions.size + " 个，当前=" + currentSessionId)
     }
 
     /**
-     * 删除会话后清理它引用的图片：同工作区里已经没有别的会话引用才真删。
+     * 删除会话后清理其引用的图片：同一工作区中已无其他会话引用时才实际删除。
      *
-     * 只按这条会话自己的归属工作区找目录：images 是工作区相对的，拿别的工作区的目录去删
-     * 既找不到也会删错。判定不准时最多是「少删」一个文件，绝不会误删别人的图。
+     * 仅按该会话自身的归属工作区查找目录：images 为工作区相对路径，使用其他工作区的目录删除
+     * 既找不到目标，也可能误删。判定不准确时最多「少删」一个文件，绝不会误删其他会话的图片。
      */
     private fun cleanupImagesOf(removed: ChatSession) {
         if (removed.messages.none { it.images.isNotEmpty() }) return
@@ -307,7 +305,7 @@ class SessionController(
      * 置顶 / 取消置顶。
      *
      * 只改这一条记录的 pinned 标记，**不动 updatedAt**：置顶是把旧会话留在上面，
-     * 顺手刷新时间会让它假装成「最近用过」，排序和「最近」的语义就乱了。
+     * 同时刷新时间会使其看似「最近使用」，排序与「最近」的语义将混乱。
      */
     fun pinSession(id: String, pinned: Boolean) {
         if (sessions.none { it.id == id }) return
@@ -357,7 +355,7 @@ class SessionController(
      */
     fun switchWorkspace(id: String?) {
         if (isStreaming()) return
-        // 目标工作区不存在（比如刚被删掉）就不切，免得停在空分组上
+        // 目标工作区不存在（例如刚被删除）则不切换，避免停留在空分组
         if (id != null && workspaces.none { it.id == id }) return
         persistCurrent()
         currentWorkspaceId = id
@@ -431,7 +429,7 @@ class SessionController(
         workspaces = workspaces.filter { it.id != id }
         WorkSpaceStore.save(appContext, workspaces)
         if (currentWorkspaceId == id) {
-            // 删的是当前工作区：切到未分类，载入未分类里最近的那条（刚解绑的会话就在里面）
+            // 删除的是当前工作区：切换至未分类，载入未分类中最近的一条（刚解绑的会话即在此）
             currentWorkspaceId = null
             openRecentIn(null)
         }
@@ -515,7 +513,7 @@ class SessionController(
      * 落盘检查点：把当前会话写进磁盘，但**剔掉在飞的那条 assistant 占位**。
      *
      * 由 [com.zmf.agent.capability.loop.AgentLoop] 在两个边界调用（发模型请求前、执行有副作用的工具前）。
-     * 为什么剔占位：loop 会先 append 一条空 assistant 再流式填字，这条在崩掉后没有任何内容，
+     * 为什么剔占位：loop 会先 append 一条空 assistant 再流式填字，该条在崩溃后没有任何内容，
      * 写进去只会让重载后的界面多一个空气泡（未完成的 assistant frame 保持瞬态）。
      * 有 tool_calls 的 assistant 不能剔：它正是「已派发」的证据。
      */
@@ -556,7 +554,7 @@ class SessionController(
     }
 
     internal fun persistAll() {
-        // 导入后没重启之前一律不落盘：内存里还是旧列表，写下去会把刚导入的会话盖掉
+        // 导入后未重启前一律不落盘：内存中仍为旧列表，写入会覆盖刚导入的会话
         if (persistenceBlocked()) return
         // 合并写：定时任务在后台往会话里追加过消息，整份覆盖会把它们抹掉，
         // 表现就是「迭代到四又从头开始」「记录里只剩第一条」
@@ -610,7 +608,7 @@ class SessionController(
             // 当前会话换成内存里的 messages/updatedAt，标题等其它字段仍跟磁盘走
             merged.add(
                 if (mine != null && session.id == id) {
-                    // 磁盘更长且内存那份是它的前缀 ⇒ 别人（定时任务）追加过，以磁盘为准；
+                    // 磁盘内容更长且内存内容为其前缀 ⇒ 其他来源（定时任务）追加过，以磁盘为准；
                     // 否则仍以内存为准（用户正在编辑的那份不能被旧快照顶掉）
                     if (session.messages.size > mine.messages.size &&
                         session.messages.take(mine.messages.size) == mine.messages
@@ -627,7 +625,7 @@ class SessionController(
         if (mine != null && disk.none { it.id == id }) merged.add(mine)
         sessions = merged.sortedByDescending { it.updatedAt }
         // 当前会话在盘上更长（后台追加过）时，界面这份 messages 也要一起换掉：
-        // 只换 sessions 的话，正在看的那条会话仍然停在旧快照上，通知点回来就是空白。
+        // 若仅替换 sessions，正在查看的会话仍停留在旧快照上，从通知返回时即为空白。
         val refreshed = merged.firstOrNull { it.id == id }
         val memoryCount = messages.size
         if (refreshed != null && refreshed.messages.size > memoryCount) {
@@ -653,10 +651,10 @@ class SessionController(
     }
 
     /**
-     * 会话不再属于当前对话时，把它名下的计划与目标一起收掉。
+     * 会话不属于当前对话时，将其名下的计划与目标一并清除。
      *
      * 不清会留下孤儿记录：plans.json / goals.json 按 sessionId 存，会话都删了，
-     * 那两行就永远没人读得到，还跟着备份一起搬来搬去。
+     * 该两行将始终无人读取，并随备份反复迁移。
      */
     private fun clearSessionDocs(sessionId: String) {
         if (sessionId.isBlank()) return
@@ -675,7 +673,7 @@ class SessionController(
      * 工作区根目录：优先用户在「自定义」里选的目录（`rootPath`）。
      *
      * 选了却读不到（授权失效、目录被删、路径不可写）就退回私有目录，但要记一条日志，
-     * 免得工具悄悄写到别处、用户还以为落在自己选的文件夹里。
+     * 避免工具静默写入其他位置，而用户误认为已写入所选文件夹。
      * （只有 SAF 授权、没有可读绝对路径的工作区目前仍走私有目录，URI 分支待接。）
      */
     fun rootOf(space: WorkSpace): File {

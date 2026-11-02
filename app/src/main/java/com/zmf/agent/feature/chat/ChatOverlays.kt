@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -21,7 +20,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.zmf.agent.capability.subagent.SubAgentRegistry
@@ -30,10 +28,10 @@ import kotlinx.coroutines.CoroutineScope
 import java.io.File
 
 /**
- * 子任务面板：透明遮罩铺满整屏先吃掉「点外部」的点击，卡片浮在它上面。
+ * 子任务面板：透明遮罩铺满全屏并优先消费「点击外部」的点击，卡片浮于其上。
  *
- * 只读 SubAgentRegistry 的快照，不碰 ViewModel 的任何状态；它是全屏页之下的一层浮层，
- * 所以单独一个组合、并且在页面层之前调用，层序与拆分前一致。
+ * 仅读取 SubAgentRegistry 的快照，不触碰 ViewModel 的任何状态；其为全屏页之下的浮层，
+ * 因此单独组合并在页面层之前调用，层序与拆分前一致。
  */
 @Composable
 internal fun BoxScope.ChatSubAgentPanel(
@@ -62,7 +60,7 @@ internal fun BoxScope.ChatSubAgentPanel(
                 subAgentDetailId = id
                 page = AppPage.SUBAGENT
             },
-            // 清完不用手动刷新：clearFinished 会 +1 版本号，上面的订阅自己把新快照取回来
+            // 清理后无需手动刷新：clearFinished 会将版本号 +1，上方订阅自行取回新快照
             onClearFinished = { SubAgentRegistry.clearFinished() },
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -74,8 +72,8 @@ internal fun BoxScope.ChatSubAgentPanel(
 /**
  * 压在聊天页与页面层之上的浮层：本轮用量、图片长按菜单、选择文本、图片查看器。
  *
- * 都是 BoxScope 的直接子节点，层序就是代码顺序（后写的在上），所以必须留在同一个 Box 里，
- * 这也是它们当初挤在主函数最下面的原因。搬出来后由调用方用 `ChatOverlays(...)` 放在原位。
+ * 均为 BoxScope 的直接子节点，层序即代码顺序（后写者在上），因此必须保留在同一 Box 内，
+ * 这也是它们此前集中在主函数末尾的原因。拆分后由调用方以 `ChatOverlays(...)` 放在原位置。
  */
 @Composable
 internal fun BoxScope.ChatOverlays(
@@ -96,13 +94,13 @@ internal fun BoxScope.ChatOverlays(
     var selectionTarget by ui.selectionTarget
     var viewer by ui.viewer
 
-    // 「本轮用量」伴随面板：贴着被点的用量按钮弹出，点面板以外任何地方关闭。
-    // 不用弹窗（Dialog）：那会把视线从「这条回复花了多少」拉到屏幕中央，也不跟按钮走。
+    // 「本轮用量」伴随面板：贴附被点击的用量按钮弹出，点击面板以外任何位置关闭。
+    // 不使用弹窗（Dialog）：弹窗会将视线从「这条回复消耗多少」引向屏幕中央，且不跟随按钮。
     turnUsage?.let { target ->
         SaltPopover(
             anchor = target.anchor,
             // 宽度取「屏宽减两侧留白」的量级：用量面板要装下「提供方 / 模型」这种长值，
-            // 太窄会贴着气泡右缘被看成一截
+            // 过窄会贴附气泡右缘而显示不全
             widthDp = 300.dp,
             onDismiss = { turnUsage = null }
         ) {
@@ -110,8 +108,8 @@ internal fun BoxScope.ChatOverlays(
         }
     }
 
-    // 长按已发送图片：只有「存这一张」和「回滚到这条提问」两项。
-    // 和上面那套文字菜单分开，是因为图片没有可复制的正文；锚点是按住的那一张的坐标。
+    // 长按已发送图片：仅提供「保存这一张」与「回滚到这条提问」两项。
+    // 与上述文字菜单分开，是因为图片没有可复制的正文；锚点为按住图片的坐标。
     AnimatedVisibility(
         visible = imageMenuVisible,
         enter = fadeIn(tween(140)),
@@ -141,7 +139,7 @@ internal fun BoxScope.ChatOverlays(
     AnimatedVisibility(
         visible = selectionVisible,
         enter = fadeIn(Motion.fadeIn()) + slideInVertically(Motion.spring()) { it / 4 },
-        // 退场由 TextSelectionOverlay 自己播完再回调，这里不能再叠一层淡出
+        // 退场由 TextSelectionOverlay 自行播放完毕后再回调，此处不可再叠加淡出
         exit = ExitTransition.None
     ) {
         selectionTarget?.let { target ->
@@ -153,7 +151,7 @@ internal fun BoxScope.ChatOverlays(
             )
         }
     }
-    // 图片查看器压在所有页面之上：整条消息的图片一起传进去，详情里才能按缩略图顺序左右切
+    // 图片查看器位于所有页面之上：整条消息的图片一并传入，详情中方可按缩略图顺序左右切换
     viewer?.let { target ->
         ImageViewer(
             paths = target.paths,

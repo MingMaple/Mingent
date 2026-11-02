@@ -32,13 +32,13 @@ import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.UiColors
 
 /**
- * 「计划」页：把模型交出来的**每一份**计划都摊在一条标签栏上，切着看、单独删，再决定继续改还是执行。
+ * 「计划」页：把模型交出的**每一份**计划排列在标签栏上，可切换查看、单独删除，再决定继续修改或执行。
  *
- * 为什么是无状态 Composable：plans 与 selectedId 都由父会话持有（读了 PlanStore 之后传进来）。
- * 这一页不碰磁盘、不持有协程；删除后选中项换成谁，也由父会话决定：
- * 页面自己改 selectedId 会出现「界面选 A、父会话以为选 B」的两套真值。
+ * 为什么是无状态 Composable：plans 与 selectedId 均由父会话持有（读取 PlanStore 后传入）。
+ * 本页不访问磁盘、不持有协程；删除后选中项由父会话决定：
+ * 页面自行修改 selectedId 会出现「界面选 A、父会话认为选 B」的两套状态。
  *
- * 为什么编号不写进正文：编号是排版，按下标生成；正文里的编号一旦和真实顺序错位，用户照着做就会漏一步。
+ * 为什么编号不写入正文：编号属于排版，按下标生成；正文编号一旦与实际顺序错位，用户按编号操作会遗漏步骤。
  */
 @Composable
 fun PlanPage(
@@ -51,12 +51,12 @@ fun PlanPage(
     onBack: () -> Unit,
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    // 选中项兜底取最后一份（最新）：selectedId 理论上由父会话维护好，
-    // 但列表刚被别处刷新、或选中的那份刚被删掉时，宁可显示最新一份，也不要白屏。
+    // 选中项兜底取最后一份（最新）：selectedId 理论上由父会话维护，
+    // 但列表刚被其他位置刷新或选中项刚被删除时，显示最新一份优于空白页。
     val current = plans.firstOrNull { it.id == selectedId } ?: plans.lastOrNull()
 
     Surface(
-        // 铺满且不透明；最外层吞掉点击，避免穿透点到下面的聊天界面
+        // 铺满且不透明；最外层消费点击，避免穿透到下方聊天界面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -78,7 +78,7 @@ fun PlanPage(
             }
 
             if (plans.isEmpty()) {
-                // 没有计划就没有动作可做：底部那两个按钮整块不出现，只留返回（父会话此时会自己回主页）
+                // 无计划时无动作可执行：底部两个按钮整块不显示，仅保留返回（父会话此时自行返回主页）
                 Text(
                     text = "还没有计划",
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
@@ -86,14 +86,14 @@ fun PlanPage(
                     color = UiColors.subText
                 )
             } else {
-                // 计划条：横滑 + 选中项自动入视野 + 滑到头的余量就地吃掉：
-                // 这一套与浏览页的网页条共用（TabStrip），两个页面的条目样式必须一模一样。
+                // 计划条：横滑、选中项自动进入视野、滑至尽头的余量就地消耗：
+                // 与浏览页网页条共用（TabStrip），两页条目样式必须一致。
                 TabStrip(
                     items = plans.map { plan ->
                         TabStripItem(
                             key = plan.id,
                             label = plan.title.ifBlank { "未命名计划" },
-                            // 已消费的计划条目也画淡：和详情页里变灰的按钮是同一件事
+                            // 已消费的计划条目同样淡化：与详情页中变灰的按钮含义相同
                             muted = !plan.actionable
                         )
                     },
@@ -153,7 +153,7 @@ fun PlanPage(
                         Spacer(Modifier.height(16.dp))
                     }
 
-                    // 按钮变灰时说明原因：只把按钮画灰，用户会以为是 App 坏了
+                    // 按钮变灰时说明原因：仅置灰而不说明，易被误认为故障
                     val hint = statusHint(current.status)
                     if (hint.isNotEmpty()) {
                         Text(
@@ -167,7 +167,7 @@ fun PlanPage(
                         )
                     }
 
-                    // 底部固定：步骤再长也不把按钮顶出屏幕；导航栏 padding 留在这里，滚动区不吃它
+                    // 底部固定：步骤再长也不会将按钮推出屏幕；导航栏 padding 保留在此，滚动区不占用
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -175,8 +175,8 @@ fun PlanPage(
                             .padding(horizontal = 16.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // 只有「刚交上来还没处理」的那份能点：执行过 / 点过继续修改 / 被继续对话废弃
-                        // 的计划一律灰掉（废弃的计划还能点，模型就直接开跑了）
+                        // 仅「刚提交且未处理」的计划可点击：已执行、已点继续修改或被后续对话废弃
+                        // 的计划一律置灰（已废弃计划仍可点则模型会直接开始执行）
                         PlanButton(
                             text = "继续修改",
                             primary = false,
@@ -199,7 +199,7 @@ fun PlanPage(
 }
 
 /**
- * 底部按钮：主按钮吃强调填充面 + 反色字，次按钮吃 6% 中性底。
+ * 底部按钮：主按钮使用强调填充面与反色文字，次按钮使用 6% 中性底色。
  *
  * 涟漪按 16dp 圆角裁剪，不会在四角露出方块。
  */
@@ -213,7 +213,7 @@ private fun PlanButton(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val shape = RoundedCornerShape(16.dp)
-    // 灰态：两种按钮都退成同一种淡底淡字，表示「这一页现在没有可执行的动作」
+    // 灰态：两种按钮均退为淡底淡字，表示「当前页面无可执行动作」
     val background = when {
         !enabled -> onSurface.copy(alpha = 0.05f)
         primary -> UiColors.accentFill
@@ -227,8 +227,8 @@ private fun PlanButton(
     Surface(
         modifier = modifier
             .height(44.dp)
-            // 不可点时连涟漪都不给：点了毫无反应的按钮才像「坏了」，
-            // 这里要的是「就是不能点」
+            // 不可点击时不提供涟漪：点击无反应的按钮更像故障，
+            // 此处语义为「确实不可点击」
             .saltRowClickable(shape, enabled = enabled, onClick = onClick),
         shape = shape,
         color = background
@@ -247,7 +247,7 @@ private fun PlanButton(
     }
 }
 
-/** 按钮为什么是灰的：按状态给一句话，别让用户以为界面卡住了。 */
+/** 按钮为何置灰：按状态给出说明，避免误认为界面卡死。 */
 private fun statusHint(status: String): String = when (status) {
     PlanStore.STATUS_APPROVED -> "该计划已执行完毕，不可重复执行。如需再次执行，请让模型重新提交一份计划。"
     PlanStore.STATUS_EDITED -> "该计划已转入修订流程。请在对话中说明修改要求，模型将重新提交计划。"

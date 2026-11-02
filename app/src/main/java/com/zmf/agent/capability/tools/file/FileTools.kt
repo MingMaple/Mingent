@@ -17,22 +17,22 @@ import java.io.BufferedReader
 import java.io.File
 
 /**
- * 这一组工具都通过 [WorkspaceIo] 读写：工作区的根是普通目录时就是 java.io.File 的老行为，
- * 根是 SAF 授权目录（用户用系统选择器选的文件夹）时走 DocumentsContract，
- * 所以「用户选来的目录根本写不进去」这个坑在工具层已经不存在了。
+ * 这一组工具均通过 [WorkspaceIo] 读写：工作区根为普通目录时沿用 java.io.File 的原有行为，
+ * 根为 SAF 授权目录（用户通过系统选择器选择的文件夹）时使用 DocumentsContract，
+ * 因此「用户选择的目录无法写入」这一问题在工具层已不存在。
  *
- * 权限口径没变：工作区里随便读写；工作区外的绝对路径仍然要「完全」权限（那条路只有 File 能走）。
+ * 权限规则未变：工作区内可读写；工作区外的绝对路径仍需「完全」权限（该路径仅 File 支持）。
  */
 
 /**
  * 读文本文件。
  *
- * 参数兼容两套名字：offset / limit 为准，startLine / maxLines 保留给旧会话。
- * 默认一次最多 400 行，上限 2000 行 / 64000 字符；超出就截断并告诉模型用 offset 继续，
- * 不然后面的长文件会把上下文撑爆。
+ * 参数兼容两套名称：以 offset / limit 为准，startLine / maxLines 保留给旧会话。
+ * 默认一次最多 400 行，上限 2000 行 / 64000 字符；超出时截断并提示模型使用 offset 继续读取，
+ * 避免长文件使上下文过度膨胀。
  *
- * 「共 N 行」里的 N 要真的数出来：文件 5MB 以内才数，再大就报 unknown，
- * 免得为了一个数字把大文件再读一遍。
+ * 「共 N 行」中的 N 需实际统计：文件不超过 5MB 时才统计，更大时返回 unknown，
+ * 以免仅为取得一个数字而重新读取大文件。
  */
 class ReadFileTool : Tool {
 
@@ -71,9 +71,9 @@ class ReadFileTool : Tool {
             .getOrElse { return ToolResult.Error("路径不合法：" + (it.message ?: "未知原因")) }
         val target = targetFor(io, file)
             ?: return ToolResult.Error("这个工作区是系统授权的目录（SAF），只能读写它自己的目录，请用相对路径（如 notes/a.txt）：" + rawPath)
-        // 回收站对 Agent 是全黑区，且**与档位无关**（完全档也一样）：判定必须放在档位检查之前，
-        // 否则「完全档能读工作区外」这条会顺手把回收站也放行。走 canonical，软链接绕不过去
-        // （只看字面路径会被软链接绕开，也不能被 `canRead` 短路在完全档之外）。
+        // 回收站对 Agent 为完全禁入区域，且**与档位无关**（完全档同样适用）：判定必须置于档位检查之前，
+        // 否则「完全档可读工作区外」规则会使回收站一并放行。此处使用 canonical 路径，软链接无法绕过
+        // （仅比较字面路径可被软链接绕过，也不能被 `canRead` 在完全档之外短路）。
         if (HighRiskGate.isTrashPathDeep(file, ctx.context.packageName)) {
             return ToolResult.Error(HighRiskGate.trashReadText())
         }
@@ -95,8 +95,8 @@ class ReadFileTool : Tool {
         val startLine = pickInt(args, "offset", "startLine", 1).coerceAtLeast(1)
         val maxLines = pickInt(args, "limit", "maxLines", DEFAULT_MAX_LINES).coerceIn(1, MAX_LINES)
 
-        // 文件不大才数总行数：大文件为了一个「共 N 行」多读一整遍不划算。
-        // 大小未知（SAF provider 不给）就当小文件：照样数行，输出另有字符上限兜着。
+        // 仅在文件较小时统计总行数：为大文件统计「共 N 行」需额外完整读取一遍，成本不划算。
+        // 大小未知（SAF provider 不提供）时按小文件处理：仍统计行数，输出另有字符上限约束。
         val sizeBytes = target.size()
         val countAll = sizeBytes < 0 || sizeBytes <= MAX_COUNT_BYTES
 
@@ -253,8 +253,8 @@ class WriteFileTool : Tool {
 
         val existed = target.exists()
         val oldSize = if (existed) target.size() else 0L
-        // 覆盖前先量一遍原来的行数：写成功后在回执里给出「原 N 行 → 新 M 行」，
-        // 模型多数情况下就不用再 read_file 确认一遍（提示词里本来就要求它别为确认重读）。
+        // 覆盖前先统计原有行数：写入成功后在回执中给出「原 N 行 → 新 M 行」，
+        // 多数情况下模型无需再调用 read_file 确认（提示词本身已要求不为确认而重读）。
         val oldLines = if (existed) {
             runCatching {
                 target.openReader().use { reader -> reader.readText() }
@@ -433,7 +433,7 @@ private class FsTarget(
         }
     }
 
-    /** 整段覆盖写：File 分支顺手建父目录，SAF 分支直接交给 provider 的写接口。 */
+    /** 整段覆盖写：File 分支同时创建父目录，SAF 分支直接交给 provider 的写接口。 */
     fun writeText(content: String) {
         val adapter = io
         val path = rel

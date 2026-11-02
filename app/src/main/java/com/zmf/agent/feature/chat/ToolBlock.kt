@@ -39,11 +39,9 @@ import com.zmf.agent.uikit.common.ChevronKind
 import com.zmf.agent.uikit.common.ChevronSize
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
-import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
-import com.zmf.agent.uikit.markdown.MarkdownText
 import com.zmf.agent.uikit.markdown.MarkdownCodeBlock
 import com.zmf.agent.uikit.markdown.copyCode
 import com.zmf.agent.uikit.components.CopyRevealHost
@@ -61,12 +59,12 @@ import com.zmf.agent.uikit.components.rememberCopyBlockKey
  *       toolName: String,           // 工具名（标题行，等宽字体）
  *       arguments: String,          // 参数原文（JSON 或纯文本）
  *       modifier: Modifier = Modifier,
- *       output: String? = null,     // 结果；null = 还在跑（标题行显示「执行中…」）
- *       ok: Boolean? = null,        // 结果成败；null = 不知道 / 还在跑
- *       code: String? = null,       // 可选的代码/命令区（给终端类工具用，没有就不占位）
+ *       output: String? = null,     // 结果；null = 仍在执行（标题行显示「执行中…」）
+ *       ok: Boolean? = null,        // 结果成败；null = 未知 / 仍在执行
+ *       code: String? = null,       // 可选的代码/命令区（供终端类工具使用，无内容时不占位）
  *       codeLang: String = "",      // 代码区的语言标签（空则显示「代码」）
  *       containerColor: Color = …,  // 卡片底色，默认用 onSurface 的低透明度
- *       outsideTapKey: Any? = null, // 父层「点了别处」的计数；值一变就收起复制按钮
+ *       outsideTapKey: Any? = null, // 父层「点击其他位置」的计数；值变化即收起复制按钮
  *       copyText: String? = null    // 自定义复制内容；null = 自动拼工具名/参数/代码/输出
  *   )
  *
@@ -124,9 +122,9 @@ private val ARG_SUMMARY_KEYS = listOf(
  *  - 块内**任意**手势（点击、长按、滑动，甚至只是按下）都会让它出现，并重置 4 秒计时；
  *  - 4 秒内没有新手势就自动收起；
  *  - 另外留了 [outsideTapKey] 钩子：父页面要是本来就有「点空白处」的事件，
- *    把它递增一下就能立刻收起（父层不接也完全可用）。
+ *    递增该值即可立即收起（父层不接也完全可用）。
  *  为什么不做「全局点击代理」：那要求父层把根节点的点击事件按块分发下来，
- *  聊天页的根节点已经被长按选文、抽屉横滑占用，硬塞进去容易互相吃掉事件，
+ *  聊天页根节点已被长按选文、抽屉横滑占用，强行挂载易造成事件冲突，
  *  而这个按钮本身就是「临时工具」，4 秒自动收起已经够用。
  */
 @Composable
@@ -147,15 +145,15 @@ fun ToolBlock(
     // 参数 / 代码 / 输出共用同一份「代码块底色」，比卡片本身再浅一档
     val bodyBackground = onSurface.copy(alpha = 0.06f)
 
-    // 卡片默认折叠成一行（工具名 + 状态）：参数 / 代码 / 输出要点开才看。
-    // 一轮里常常连着七八次工具调用，全摊开会把这一轮的回答挤到看不见。
+    // 卡片默认折叠为一行（工具名 + 状态）：参数 / 代码 / 输出需点击展开。
+    // 一轮中常连续七八次工具调用，全部展开会将本轮回答挤出可视区域。
     var open by rememberSaveable { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
-    // 「复制」的全局唯一身份：展开 + 摸过这块才显示，摸别的块就挪过去
+    // 「复制」的全局唯一标识：展开且操作过该块后才显示，操作其他块时迁移
     val copyKey = rememberCopyBlockKey()
     val copyVisible = open && CopyRevealHost.owner === copyKey
 
-    // 父层接了「点块外」的话，计数一变就立刻收回；不接也照样能用
+    // 父层若接收「点击块外」事件，计数变化即立即收回；未接收时仍可正常使用
     LaunchedEffect(outsideTapKey) {
         if (outsideTapKey != null) CopyRevealHost.release(copyKey)
     }
@@ -168,14 +166,14 @@ fun ToolBlock(
     }
 
     val running = output == null
-    // 状态只留一个词：拿到结果就写「完成」，没拿到就先空着。
-    // 不再区分成功 / 失败 / 成败未知：调用结束就是结束，具体的错在输出里能看到，
-    // 卡片上多一个红字反而更吵。
+    // 状态仅保留一个词：取得结果即写「完成」，未取得则暂空。
+    // 不区分成功 / 失败 / 成败未知：调用结束即结束，具体错误可在输出中查看，
+    // 卡片上额外的红字反而干扰阅读。
     val statusColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
     val statusText = if (running) "" else "完成"
-    // 一句话总结（「读取 test.txt」「运行命令 tail -c 20 …」）：标题行告诉用户这条工具干了什么
+    // 一句话总结（「读取 test.txt」「运行命令 tail -c 20 …」）：标题行向用户说明该工具执行了什么
     val headline = remember(toolName, arguments) { toolSummary(toolName, arguments) }
-    // 参数等于没有（空串 / 空对象）时整块不渲染：避免「参数 缩进」下面只剩一个空花括号
+    // 参数为空（空串 / 空对象）时整块不渲染：避免「参数 缩进」下仅剩一个空花括号
     val argsBlank = remember(arguments) { toolArgIsBlank(arguments) }
     val codeBody = code?.takeIf { it.isNotBlank() }
     val fullText = remember(copyText, toolName, arguments, code, output) {
@@ -187,11 +185,11 @@ fun ToolBlock(
         shape = RoundedCornerShape(14.dp),
         modifier = modifier
             .fillMaxWidth()
-            // 复制归属挂在内容区（见下面那个 Column），不挂在整卡上：
-            // 以前点标题行那一下也算「摸过」，于是「点一下展开没有按钮、再点一下收起反而出现」。
+            // 复制归属挂载于内容区（见下方 Column），不挂载于整卡：
+            // 若挂载于整卡，点击标题行也会被视为「操作过」，出现「点击展开无按钮、再次点击收起却出现」。
     ) {
-        // 内边距下放到每一块内容上：标题行要顶到卡片边缘，波纹才铺满整行
-        // （反馈不做成行内一个小矩形）。
+        // 内边距下放至各块内容：标题行需顶至卡片边缘，波纹方可铺满整行
+        // （反馈不设计为行内小矩形）。
         Column {
             /* -------------------------- 标题行 -------------------------- */
             Row(
@@ -211,9 +209,9 @@ fun ToolBlock(
                     modifier = Modifier.size(13.dp)
                 )
                 Spacer(Modifier.width(5.dp))
-                // 标题行只放「这条工具干了什么」：工具名那行字删掉、简介语句移到前面，
-                // 图标保留。工具名仍进复制文本（buildToolCopyText），信息不丢。
-                // 12sp：这句是标题，不是附属小字。
+                // 标题行仅显示「这条工具执行了什么」：工具名文字移除、简介语句前置，
+                // 图标保留。工具名仍进入复制文本（buildToolCopyText），信息不丢失。
+                // 12sp：该句为标题，非附属小字。
                 Text(
                     text = headline,
                     modifier = Modifier.weight(1f),
@@ -222,11 +220,11 @@ fun ToolBlock(
                     overflow = TextOverflow.Ellipsis,
                     color = onSurface.copy(alpha = 0.55f)
                 )
-                // 「复制」占一块固定宽度：出现 / 消失都不挪动任何别的元素，右侧
-                // 「完成 + 箭头」的位置永远是死的（复制浮现时整块不能突变）。
-                // 这块 46dp 就是**虚拟区域**（界面上看不见）：「复制 / 已复制」都在这块里居中，
-                // 涟漪铺满整块、和字同心（别管「已」多出来的宽度，只调这块区域）。
-                // 别把这里改成 indication = null：那样就没有涟漪了，必须走默认涟漪。
+                // 「复制」占用固定宽度：出现或消失均不移动其他元素，右侧
+                // 「完成 + 箭头」的位置固定（复制浮现时整块不可突变）。
+                // 此 46dp 为**虚拟区域**（界面上不可见）：「复制 / 已复制」均在其中居中，
+                // 涟漪铺满整块并与文字同心（无需考虑「已」多出的宽度，仅调整该区域）。
+                // 不可将此处改为 indication = null：否则涟漪消失，必须使用默认涟漪。
                 Box(
                     modifier = Modifier
                         .width(CopySlot)
@@ -257,7 +255,7 @@ fun ToolBlock(
                     Text(text = statusText, fontSize = 11.sp, color = statusColor)
                 }
                 Spacer(Modifier.width(6.dp))
-                // 折着的时候给个朝右的小箭头，用户才知道这行能点开
+                // 折叠时显示朝右的小箭头，用户方可得知该行可点击展开
                 Chevron(
                     expanded = open,
                     size = ChevronSize.SMALL,
@@ -270,13 +268,13 @@ fun ToolBlock(
             Column(
                 modifier = Modifier
                     .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
-                    // 展开后内容区任意位置按下 / 滑动都叫出复制（Initial 阶段，不消费事件）
+                    // 展开后内容区任意位置按下或滑动均触发复制（Initial 阶段，不消费事件）
                     .claimCopyOnGesture(copyKey),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
             /* -------------------------- 参数区 -------------------------- */
-            // 直接展示，不再有二级「展开 / 收起」：主页只要「参数 / 结果」两段
-            // （把杂乱内容砍掉，只展示参数 / 结果或代码 / 输出）。参数为空时整块不渲染。
+            // 直接展示，无二级「展开 / 收起」：主页仅需「参数 / 结果」两段
+            // （简化杂乱内容，仅展示参数 / 结果或代码 / 输出）。参数为空时整块不渲染。
             if (!argsBlank) {
                 BoundedScrollColumn(
                     maxHeight = BlockBodyMaxHeight,
@@ -296,9 +294,9 @@ fun ToolBlock(
             }
 
             /* -------------------------- 代码区（可选） -------------------------- */
-            // 终端类工具的命令、write_file 的片段走这里；没有就不占位。
-            // 高度同样由 MarkdownCodeBlock 自己限高（240dp 内滚，超出才吃滑动）：命令和 diff 片段
-            // 一样可能很长，读的时候不该把整条会话撑开一屏多。
+            // 终端类工具的命令、write_file 的片段由此渲染；无内容时不占位。
+            // 高度同样由 MarkdownCodeBlock 自行限高（240dp 内滚，超出才消费滑动）：命令与 diff 片段
+            // 同样可能较长，阅读时不应使整条会话扩展超过一屏。
             if (codeBody != null) {
                 MarkdownCodeBlock(
                     code = codeBody,
@@ -315,7 +313,7 @@ fun ToolBlock(
 
             /* -------------------------- 输出区 -------------------------- */
             if (output != null) {
-                // 只有上面还有参数/代码时才加「输出」小标题，否则整块就是输出，不必标注
+                // 仅当上方存在参数/代码时才添加「输出」小标题，否则整块即为输出，无需标注
                 if (!argsBlank || codeBody != null) {
                     Text(
                         text = "输出",
@@ -331,7 +329,7 @@ fun ToolBlock(
                 ) {
                     Text(
                         text = output.ifBlank { "（无输出）" },
-                        // 内边距给在正文上：让它跟着内容一起滚动，不占滚动区
+                        // 内边距设置于正文上：随内容一同滚动，不占滚动区
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,

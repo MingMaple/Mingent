@@ -59,7 +59,7 @@ fun SubAgentPage(
     val running = entry?.state == SubAgentRegistry.RUNNING
     val failed = entry?.state == SubAgentRegistry.FAILED
     var draft by remember(entry?.id) { mutableStateOf("") }
-    // 跑完一轮后清空草稿，免得用户以为没发出去
+    // 一轮结束后清空草稿，避免误认为未发送
     LaunchedEffect(entry?.state) { if (entry?.state == SubAgentRegistry.DONE) draft = "" }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {

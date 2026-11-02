@@ -11,11 +11,11 @@ import org.json.JSONObject
 /**
  * 用 Shizuku（Android shell / uid 2000）执行一条系统命令。
  *
- * 为什么必须单独做工具：terminal 里跑的是 App 自己 fork 出来的 PRoot Ubuntu，
- * SELinux 域钉死在 untrusted_app，看不到 /system/bin，也碰不到 Shizuku 的 binder。
- * 系统级命令（pm / am / settings / appops / dumpsys）只能由 App 的 Java 层通过 Shizuku 发出去。
+ * 为什么必须单独实现工具：terminal 中运行的是 App 自身 fork 的 PRoot Ubuntu，
+ * SELinux 域固定为 untrusted_app，无法访问 /system/bin，也无法访问 Shizuku 的 binder。
+ * 系统级命令（pm / am / settings / appops / dumpsys）只能由 App 的 Java 层通过 Shizuku 发送。
  *
- * 权限档给「完全」：这层能力等于 shell，不该在更低的档位被模型随手用。
+ * 权限档要求「完全」：该能力等同于 shell，不应在更低档位开放给模型。
  */
 class ShizukuTool : Tool {
 
@@ -53,8 +53,8 @@ class ShizukuTool : Tool {
             )
         }
         val timeout = args.optLong("timeout_ms", 20_000L).coerceIn(2_000L, 120_000L)
-        // 高危闸门：这条通道的 uid 是 shell，权限比 App 大；不拦的话它就是「绕过删除闸门」的后门。
-        // 路径按宿主视角判（/sdcard 是真的共享存储），并额外覆盖 pm clear / pm uninstall。
+        // 高危闸门：该通道以 shell uid 执行，权限高于 App；若不拦截，会成为绕过删除闸门的途径。
+        // 路径按宿主视角判定（/sdcard 为真实的共享存储），并额外覆盖 pm clear / pm uninstall。
         val risk = HighRiskGate.checkHostCommand(ctx, command)
         if (!risk.allowed) {
             return ToolResult.Error(risk.message ?: "这条系统命令被高危闸门拒绝")

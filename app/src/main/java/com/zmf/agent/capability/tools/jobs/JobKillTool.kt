@@ -11,9 +11,9 @@ import org.json.JSONObject
 /**
  * job_kill：取消一个后台任务。
  *
- * 语义对齐 DSH：先把注册表里的任务标记成「已请求取消」，再向**整个进程组**发终止信号
- * （`SIGTERM`，一秒后 `SIGKILL` 兜底）；进程真正停掉之后，才由生产方的 onExit 回调以
- * `killed` 结算。已结算的任务再 kill 就报「不在运行」。
+ * 语义对齐 DSH：先把注册表中的任务标记为「已请求取消」，再向**整个进程组**发送终止信号
+ * （`SIGTERM`，一秒后以 `SIGKILL` 兜底）；进程真正停止后，由生产方的 onExit 回调以
+ * `killed` 结算。已结算的任务再次取消将返回「不在运行」。
  *
  * 为什么权限档是 WORKSPACE：终止一个正在跑的终端进程是有副作用的动作（可能打断正在进行的写入），
  * 与「只读」不符，按能力声明为 WORKSPACE。
@@ -22,7 +22,7 @@ class JobKillTool : Tool {
 
     override val name = "job_kill"
 
-    /** 取消在跑的进程算副作用。 */
+    /** 取消正在运行的进程属于副作用。 */
     override val mutates = true
 
     override val description =
@@ -61,7 +61,7 @@ class JobKillTool : Tool {
             return ToolResult.Error("没能标记取消：" + id + "（可能已经结算；用 job_output 或 job_list 看当前状态）")
         }
 
-        // 标记之后立刻向进程组发信号：先 SIGTERM 让命令自己收尾，一秒后 SIGKILL 兜底
+        // 标记后立即向进程组发送信号：先以 SIGTERM 使命令自行收尾，一秒后以 SIGKILL 兜底
         val signalled = TerminalApi.killJob(ctx.context.applicationContext, id)
         return ToolResult.Ok(
             if (signalled) {

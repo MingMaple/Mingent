@@ -13,11 +13,11 @@ import androidx.core.content.ContextCompat
 import com.zmf.agent.core.log.FileLog
 
 /**
- * 结果通知：回合跑完 / 子代理收工 / 定时任务触发时弹一条系统通知，点回 App 继续看。
+ * 结果通知：回合结束、子代理完成、定时任务触发时发送系统通知，点击可回到 App 继续查看。
  *
- * 三类通知走同一个 [post]，差别只是通知 id 与文案：
- * 同类新结果会顶掉旧的（固定 id），不同类可以并存，避免长跑任务把通知栏刷成一片。
- * 是否该发（比如用户正在前台看这个会话）由调用方判断：这里只管「安静地发出去」。
+ * 三类通知共用 [post]，仅通知 id 与文案不同：同类新结果覆盖旧通知（固定 id），
+ * 不同类可并存，避免长任务占满通知栏。是否发送（如用户正在前台查看该会话）由调用方判断，
+ * 此处仅负责发送。
  */
 object Notifier {
 
@@ -28,10 +28,10 @@ object Notifier {
     private const val CHANNEL_DESC = "AI 回合结束、子代理完成、定时任务触发的提醒"
 
     /**
-     * 旧的 IMPORTANCE_DEFAULT 渠道。
+     * 历史 IMPORTANCE_DEFAULT 渠道。
      *
-     * 渠道的 importance 建成即固定，代码改不了系统里已有的那条：想从「进通知栏」
-     * 抬到「弹横幅」只能换一个新的渠道 id。老渠道顺手删掉，免得设置里留两条同名的。
+     * 渠道的 importance 创建后即固定，无法修改系统中已有的渠道：从「进入通知栏」提升到
+     * 「弹出横幅」必须使用新的渠道 id。该渠道已删除，避免设置中出现两条同名的「任务结果」。
      */
     private const val LEGACY_CHANNEL_ID = "agent_result"
 
@@ -39,11 +39,11 @@ object Notifier {
     const val EXTRA_SESSION_ID = "session_id"
 
     /**
-     * 回 App 的目标 Activity 类名。
+     * 回到 App 的目标 Activity 类名。
      *
-     * 为什么用字符串而不是 `MainActivity::class.java`：core 是底层数据与工具层，
-     * 不该反向依赖壳层的 Activity。代价是改类名/改包名时这里必须同步——
-     * 这是全工程唯一的字符串耦合点，改 MainActivity 名字的人必须搜到它。
+     * 使用字符串而非 `MainActivity::class.java`：core 为底层数据与工具层，
+     * 不应反向依赖壳层的 Activity。代价是类名或包名变更时必须同步此处；
+     * 该字符串为全工程唯一的耦合点。
      */
     private const val LAUNCH_ACTIVITY = com.zmf.agent.core.AppEntry.ACTIVITY
 
@@ -55,7 +55,7 @@ object Notifier {
     /** 折叠态正文最多这么多字（通知栏一行放不下更多），完整内容走 BigText。 */
     private const val PREVIEW_CHARS = 120
 
-    /** 渠道建过一次就够了；用户手动删掉渠道后建不回来，这是系统行为，不做补救。 */
+    /** 渠道仅需创建一次；用户手动删除渠道后无法重建，属于系统行为，不做补救。 */
     @Volatile
     private var channelReady = false
 
@@ -72,9 +72,8 @@ object Notifier {
     /**
      * 定时 / 计划任务触发。
      *
-     * 每次给一个新 id：固定 id 会让后一条通知把前一条顶掉，
-     * 用户还没来得及看的内容就再也翻不到了。这里在 3001–3199 之间轮转，
-     * 与前台服务（1001）、回复（2001）、子代理（2002）都不冲突。
+     * 每次分配新 id：固定 id 会使后一条通知覆盖前一条，用户尚未查看的内容将无法再看到。
+     * id 在 3001–3199 间轮转，与前台服务（1001）、回复（2001）、子代理（2002）均不冲突。
      */
     fun notifySchedule(context: Context, title: String, text: String, sessionId: String = "") {
         post(context, nextScheduleId(), title, text, sessionId)
@@ -94,8 +93,8 @@ object Notifier {
     /**
      * 三个入口的公共实现。
      *
-     * 整段 runCatching：通知失败（权限被撤回、厂商魔改）绝不能把 Agent 循环带崩，
-     * 通知只是顺带的提醒，丢了不影响回合结果。
+     * 整体使用 runCatching：通知失败（权限被撤回、厂商定制）不得导致 Agent 循环崩溃；
+     * 通知仅为附加提醒，丢失不影响回合结果。
      */
     private fun post(context: Context, id: Int, title: String, text: String, sessionId: String) {
         val app = context.applicationContext
@@ -123,9 +122,9 @@ object Notifier {
     }
 
     /**
-     * Android 13+ 没授 POST_NOTIFICATIONS 时系统会静默丢弃，这里先自己判断并跳过：
-     * 少建一个渠道、少打一条「发了但没人看见」的日志。
-     * 13 以下没有运行时权限，声明即生效。
+     * Android 13+ 未授予 POST_NOTIFICATIONS 时系统会静默丢弃，此处先行判断并跳过：
+     * 避免创建无用的渠道与记录「已发送但无接收方」的日志。
+     * 13 以下无运行时权限，声明即生效。
      */
     private fun canNotify(context: Context, title: String): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
@@ -140,13 +139,13 @@ object Notifier {
     /**
      * 渠道只建一次。
      *
-     * IMPORTANCE_HIGH 是「能弹横幅」的前提（DEFAULT 只会安静进通知栏，也不会响）；
-     * 声音与振动都留给新渠道，用户嫌吵可以在系统设置里单独改这一条，不影响别的功能。
+     * IMPORTANCE_HIGH 是「能够弹出横幅」的前提（DEFAULT 仅进入通知栏且无提示音）；
+     * 声音与振动由该渠道控制，用户可在系统设置中单独调整，不影响其他功能。
      */
     @Synchronized
     private fun ensureChannel(manager: NotificationManager) {
         if (channelReady) return
-        // minSdk 26：渠道 API 直接可用，不用判版本（同 AgentForegroundService）
+        // minSdk 26：渠道 API 直接可用，无需判断版本（同 AgentForegroundService）
         val channel = NotificationChannel(
             CHANNEL_ID,
             CHANNEL_NAME,
@@ -157,7 +156,7 @@ object Notifier {
             vibrationPattern = longArrayOf(0, 180)
         }
         manager.createNotificationChannel(channel)
-        // 老渠道没有意义了（代码不再往它发），删掉省得设置里出现两条同名的「任务结果」
+        // 该渠道已无用途，删除以避免设置中出现两条同名的「任务结果」
         runCatching { manager.deleteNotificationChannel(LEGACY_CHANNEL_ID) }
         channelReady = true
     }
@@ -165,9 +164,9 @@ object Notifier {
     /**
      * 点通知回 App。
      *
-     * NEW_TASK 复用已有任务（聊天记录不重建）；CLEAR_TOP + SINGLE_TOP 让已经在前台的
-     * MainActivity 走 onNewIntent，而不是在栈上再叠一个实例。
-     * requestCode 用通知 id：三种通知各自的 sessionId 才不会被 FLAG_UPDATE_CURRENT 互相覆盖。
+     * NEW_TASK 复用已有任务（不重建聊天记录）；CLEAR_TOP + SINGLE_TOP 使已在前台的
+     * MainActivity 执行 onNewIntent，避免在栈上重复创建实例。
+     * requestCode 使用通知 id：三种通知各自的 sessionId 才不会被 FLAG_UPDATE_CURRENT 互相覆盖。
      */
     private fun contentIntent(context: Context, id: Int, sessionId: String): PendingIntent {
         val intent = Intent().setClassName(context, LAUNCH_ACTIVITY)
@@ -187,7 +186,7 @@ object Notifier {
 
     /**
      * 折叠态正文：压成一行再截前 [PREVIEW_CHARS] 字。
-     * 多行文本在通知栏只会露出第一行，换行白占地方；超长截断加省略号，完整内容交给 BigText。
+     * 多行文本在通知栏仅显示第一行，换行会浪费空间；超长时截断并添加省略号，完整内容由 BigText 展示。
      */
     private fun oneLine(text: String): String {
         val flat = text.replace(Regex("\\s+"), " ").trim()

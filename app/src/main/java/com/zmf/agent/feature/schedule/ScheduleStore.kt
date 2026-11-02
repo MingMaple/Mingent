@@ -13,41 +13,41 @@ import java.util.Locale
  * 一条定时任务。
  *
  * 三类：[ScheduleStore.KIND_EVERY] 每 N 分钟、[ScheduleStore.KIND_DAILY] 每天 HH:mm、
- * [ScheduleStore.KIND_ONCE] 只在某个时刻跑一次（[atMillis] 是绝对毫秒，跑完自动停用）。
+ * [ScheduleStore.KIND_ONCE] 只在某个时刻执行一次（[atMillis] 是绝对毫秒，执行完成后自动停用）。
  *
- * 字段全给默认值：手工改坏 / 旧版本写下的文件缺哪个 key 就吃哪个默认值，
- * 一条坏记录不会把整张任务表读成空。
+ * 字段均提供默认值：手工修改损坏或旧版本文件缺少某个 key 时使用对应默认值，
+ * 单条异常记录不会导致整张任务表读取为空。
  */
 data class ScheduleTask(
-    /** 稳定 id，同时当闹钟 PendingIntent 的 requestCode 用；空串交给 [ScheduleStore.upsert] 现发一个。 */
+    /** 稳定 id，同时用作闹钟 PendingIntent 的 requestCode；空字符串由 [ScheduleStore.upsert] 生成。 */
     val id: String = "",
     val title: String = "",
     val kind: String = ScheduleStore.KIND_EVERY,
-    /** every 的间隔分钟数；别的类型不用。 */
+    /** every 类型的间隔分钟数；其他类型不使用。 */
     val everyMinutes: Int = ScheduleStore.DEFAULT_EVERY_MINUTES,
     /** daily / once 的触发时刻，"HH:mm"。 */
     val timeOfDay: String = ScheduleStore.DEFAULT_TIME_OF_DAY,
-    /** once 的绝对触发时刻（毫秒）；别的类型不用。 */
+    /** once 类型的绝对触发时刻（毫秒）；其他类型不使用。 */
     val atMillis: Long = 0L,
     /** 每次触发发给模型的指令。 */
     val prompt: String = "",
-    /** 结果追加到哪条会话；null = 每次新开一条（不会污染用户正在聊的那条）。 */
+    /** 结果追加到哪条会话；null 表示每次新建一条（不会写入用户正在使用的会话）。 */
     val targetSessionId: String? = null,
-    /** 停用后不排闹钟，已经错过的那次也不补跑。 */
+    /** 停用后不设置闹钟，已错过的触发也不补执行。 */
     val enabled: Boolean = true,
-    /** 上次触发时刻，0 = 还没跑过。 */
+    /** 上次触发时刻，0 表示尚未执行。 */
     val lastRunAt: Long = 0L,
-    /** 下一次触发时刻，0 = 不排期（已停用 / 一次性已跑完 / 时刻写坏）。 */
+    /** 下一次触发时刻，0 表示不排期（已停用、一次性任务已执行完或时刻格式错误）。 */
     val nextAt: Long = 0L
 )
 
 /**
- * 定时任务落盘：filesDir/appdata/schedules.json。
+ * 定时任务持久化：filesDir/appdata/schedules.json。
  *
- * 和会话 / 工作区一样只用一个 JSON 文件整体覆盖写（任务是用户手工点出来的，几条到几十条量级，
- * 不值得引入数据库），写失败只记日志不抛；先写 .tmp 再 rename，避免写到一半被杀留下半截文件。
+ * 与会话、工作区相同，仅使用一个 JSON 文件整体覆盖写入（任务由用户手工创建，数量在几条到几十条量级，
+ * 无需引入数据库），写入失败只记录日志不抛出；先写 .tmp 再 rename，避免写入过程中被终止而留下不完整文件。
  *
- * 闹钟本体不在这里：本对象只管「数据 + 下次是哪一刻」，排闹钟在 [ScheduleRunner]。
+ * 闹钟本身不在此处管理：本对象只负责数据与下次触发时刻，设置闹钟由 [ScheduleRunner] 完成。
  */
 object ScheduleStore {
 
@@ -57,7 +57,7 @@ object ScheduleStore {
     /** 每天固定时刻。 */
     const val KIND_DAILY = "daily"
 
-    /** 只跑一次。 */
+    /** 仅执行一次。 */
     const val KIND_ONCE = "once"
 
     const val DEFAULT_EVERY_MINUTES = 60
@@ -88,16 +88,16 @@ object ScheduleStore {
     private const val KEY_LAST_RUN_AT = "lastRunAt"
     private const val KEY_NEXT_AT = "nextAt"
 
-    /** 上一次发出的 id，保证同一毫秒内连点两次「保存」也不会撞 id。 */
+    /** 上一次生成的 id，保证同一毫秒内连续两次保存不会产生重复 id。 */
     @Volatile
     private var lastIssuedId: Long = 0L
 
-    /** 落盘位置：filesDir/appdata/schedules.json（首次读时由 [AppPaths] 从旧位置迁过来）。 */
+    /** 持久化位置：filesDir/appdata/schedules.json（首次读取时由 [AppPaths] 从旧位置迁移）。 */
     private fun storeFile(context: Context): File = AppPaths.dataFile(context, FILE_NAME)
 
     // ---- 对外 ----
 
-    /** 读全部任务；文件不存在、空、JSON 坏掉，一律返回空表，绝不抛（定时任务是附加功能，坏了不能带崩入口）。 */
+    /** 读取全部任务；文件不存在、为空或 JSON 解析失败时均返回空表，不抛出异常（定时任务属于附加功能，异常不应影响入口）。 */
     fun load(context: Context): List<ScheduleTask> {
         val file = storeFile(context)
         if (!file.exists() || file.length() == 0L) return emptyList()
@@ -110,7 +110,7 @@ object ScheduleStore {
         }
     }
 
-    /** 整体覆盖写；失败只记日志。 */
+    /** 整体覆盖写入；失败仅记录日志。 */
     fun save(context: Context, tasks: List<ScheduleTask>) {
         try {
             val array = JSONArray()
@@ -124,7 +124,7 @@ object ScheduleStore {
             val temp = File(file.parentFile, FILE_NAME + ".tmp")
             temp.writeText(json, Charsets.UTF_8)
             if (!temp.renameTo(file)) {
-                // rename 失败（个别文件系统）时退化成直接覆盖，保证内容落地
+                // rename 失败（个别文件系统）时改为直接覆盖，保证内容写入
                 file.writeText(json, Charsets.UTF_8)
                 temp.delete()
             }
@@ -134,10 +134,10 @@ object ScheduleStore {
     }
 
     /**
-     * 写一条（id 空就先发号），返回真正落盘的副本。
+     * 写入一条记录（id 为空时先生成），返回实际持久化的副本。
      *
-     * 返回值就是调用方该拿去排闹钟的那份：id / nextAt 都补全了，不用再猜。
-     * 现读现写：整份覆盖写的文件和界面共用，读得越新丢更新越少。
+     * 返回值即调用方用于设置闹钟的版本：id 与 nextAt 均已补全。
+     * 现读现写：整份覆盖写的文件与界面共用，读取越新则丢失的更新越少。
      */
     @Synchronized
     fun upsert(context: Context, task: ScheduleTask): ScheduleTask {
@@ -153,7 +153,7 @@ object ScheduleStore {
         return stored
     }
 
-    /** 删一条并返回剩下的表（界面直接拿去刷新）。 */
+    /** 删除一条并返回剩余列表（界面可直接用于刷新）。 */
     @Synchronized
     fun remove(context: Context, id: String): List<ScheduleTask> {
         val list = load(context).filterNot { it.id == id }
@@ -162,49 +162,44 @@ object ScheduleStore {
     }
 
     /**
-     * 按任务自身规则算「[now] 之后」的下一次触发时刻；算不出来返回 0。
+     * 按任务自身规则计算 [now] 之后的下一次触发时刻；无法计算时返回 0。
      *
-     * 这里刻意不看 [ScheduleTask.nextAt] 之外的东西：调用方要么在新建 / 重排，要么刚跑完，
-     * 都需要「从现在起下一次」，而不是「上次排的那一次」。
+     * 此处刻意不参考 [ScheduleTask.nextAt] 以外的内容：调用方无论是新建、重排还是刚执行完，
+     * 都需要从当前时刻起的下一次，而非上次安排的时刻。
      */
     fun nextAfter(task: ScheduleTask, now: Long = System.currentTimeMillis()): Long =
         when (task.kind) {
             KIND_DAILY -> nextTimeOfDay(task.timeOfDay, now)
-            // 一次性任务：到点之后就没有下一次了，返回 0 让调用方去停用
+            // 一次性任务：到达触发时刻后不存在下一次，返回 0 由调用方停用
             KIND_ONCE -> if (task.atMillis > now) task.atMillis else 0L
-            // 未知 kind 一律按 every 处理（读坏数据时至少还能跑）
+            // 未知 kind 统一按 every 处理（数据损坏时仍可执行）
             else -> nextEvery(task, now)
         }
 
     /**
-     * 周期任务：**以「计划时刻」为锚**算下一次，而不是以「实际触发时刻」。
+     * 周期任务：以计划时刻而非实际触发时刻为锚计算下一次。
      *
-     * 真机实测（`dumpsys alarm`）：`targetSdk 28` 在本机 ROM 上拿不到真正的精确闹钟，
-     * `setExactAndAllowWhileIdle` 被系统降成 45 秒窗口的模糊闹钟
-     * （`window=+44s999ms`、`exactAllowReason=compat`），实际稳定晚约 45 秒才响。
-     *
-     * 之前用「实际触发时刻 + 间隔」算下一次，每轮都把这段迟到累进去：
-     * 日志里「每 1 分钟」实测成 1 分 45 秒。锚定计划时刻后迟到不再累加，
-     * 周期恒等于配置值（单次触发仍可能晚 ≤45 秒，那是系统的窗口，改不了）。
-     *
-     * 设备长时间休眠会跨过很多个格子：只跳到 [now] 之后最近的那个，不补跑。
+     * 真机实测（`dumpsys alarm`）：`setExactAndAllowWhileIdle` 在本机 ROM 上被降级为 45 秒窗口的
+     * 模糊闹钟（`exactAllowReason=compat`），实际稳定延迟约 45 秒；若以实际触发时刻加间隔计算，
+     * 延迟会逐轮累加（「每 1 分钟」实测为 1 分 45 秒）。锚定计划时刻后周期恒等于配置值，
+     * 单次延迟仍受系统窗口限制。设备长时间休眠会跨过多个周期：仅跳到 [now] 之后最近的时刻，不补执行。
      */
     private fun nextEvery(task: ScheduleTask, now: Long): Long {
         val step = task.everyMinutes.coerceIn(MIN_EVERY_MINUTES, MAX_EVERY_MINUTES) * MINUTE
-        // nextAt 为 0 = 新任务 / 重新启用，没有计划时刻可锚，就从现在起算一格
+        // nextAt 为 0 表示新任务或重新启用，没有可锚定的计划时刻，以当前时刻起算一次
         val anchor = if (task.nextAt > 0L) task.nextAt else now
         var next = anchor + step
         if (next <= now) {
-            // 差了不止一格（休眠 / 强停）：跳到现在之后最近的一格，别一口气补跑好几遍
+            // 相差超过一个周期（休眠或强制停止）：跳到当前时刻之后最近的周期，不连续补执行多次
             next += ((now - next) / step + 1) * step
         }
         return next
     }
 
     /**
-     * "HH:mm" 的下一个到达时刻（今天的这一刻已经过了就顺延到明天）；格式非法返回 0。
+     * "HH:mm" 的下一个到达时刻（当天的时刻已过则顺延到次日）；格式非法时返回 0。
      *
-     * daily 与 once 共用：once 落盘时也是靠它把 "HH:mm" 换算成绝对毫秒 atMillis。
+     * daily 与 once 共用：once 持久化时同样通过它把 "HH:mm" 换算为绝对毫秒 atMillis。
      */
     fun nextTimeOfDay(raw: String, now: Long = System.currentTimeMillis()): Long {
         val parsed = parseTimeOfDay(raw) ?: return 0L
@@ -214,7 +209,7 @@ object ScheduleStore {
         cal.set(Calendar.MINUTE, parsed.second)
         cal.set(Calendar.SECOND, 0)
         cal.set(Calendar.MILLISECOND, 0)
-        // 用 Calendar 加一天而不是 +86400000：跨夏令时地区也不会偏一小时
+        // 使用 Calendar 增加一天而非 +86400000：跨夏令时地区不会产生一小时偏差
         if (cal.timeInMillis <= now) cal.add(Calendar.DAY_OF_YEAR, 1)
         return cal.timeInMillis
     }
@@ -230,7 +225,7 @@ object ScheduleStore {
         obj.put(KEY_TIME_OF_DAY, task.timeOfDay)
         obj.put(KEY_AT_MILLIS, task.atMillis)
         obj.put(KEY_PROMPT, task.prompt)
-        // null 不写这个 key：读回来 has() 为 false 就是 null，文件也更小（同 SessionStore.workspaceId）
+        // null 时不写入该 key：读取时 has() 为 false 即为 null，文件也更小（与 SessionStore.workspaceId 相同）
         task.targetSessionId?.takeIf { it.isNotEmpty() }?.let { obj.put(KEY_TARGET_SESSION_ID, it) }
         obj.put(KEY_ENABLED, task.enabled)
         obj.put(KEY_LAST_RUN_AT, task.lastRunAt)
@@ -244,7 +239,7 @@ object ScheduleStore {
         for (i in 0 until array.length()) {
             val obj = array.optJSONObject(i) ?: continue
             val id = obj.optString(KEY_ID, "")
-            // id 空就没法排闹钟、也没法删，这条留着只会变成幽灵任务
+            // id 为空时无法设置闹钟，也无法删除，保留该记录只会形成不可管理的任务
             if (id.isEmpty()) continue
             list.add(
                 ScheduleTask(
@@ -265,15 +260,15 @@ object ScheduleStore {
         return list
     }
 
-    /** 不认识的 kind 当 every：比整条丢掉好，用户至少能在列表里看到并改。 */
+    /** 无法识别的 kind 按 every 处理：优于整条丢弃，用户至少能在列表中看到并修改。 */
     private fun knownKind(raw: String): String =
         if (raw == KIND_EVERY || raw == KIND_DAILY || raw == KIND_ONCE) raw else KIND_EVERY
 
-    /** 0 / 负数 / 超界的间隔统一收进合法范围。 */
+    /** 0、负数或越界的间隔统一修正到合法范围。 */
     private fun normalizeMinutes(value: Int): Int =
         if (value <= 0) DEFAULT_EVERY_MINUTES else value.coerceIn(MIN_EVERY_MINUTES, MAX_EVERY_MINUTES)
 
-    /** 时刻读回来就规整成 "HH:mm"（补零 / 去空格）；写坏了退回默认值，界面上不会出现 "9" 这种半截输入。 */
+    /** 读取的时刻统一规整为 "HH:mm"（补零并去除空格）；格式错误时退回默认值，界面不会出现 "9" 这类不完整输入。 */
     private fun normalizeTimeOfDay(raw: String): String {
         val parsed = parseTimeOfDay(raw) ?: return DEFAULT_TIME_OF_DAY
         return String.format(Locale.US, "%02d:%02d", parsed.first, parsed.second)
@@ -288,14 +283,14 @@ object ScheduleStore {
         return hour to minute
     }
 
-    /** 读可空字符串：key 不存在 / 是 JSON null / 空串，都当 null（顺便防住 org.json 的 "null" 字符串）。 */
+    /** 读取可空字符串：key 不存在、JSON null 或空字符串均视为 null（同时兼容 org.json 的 "null" 字符串）。 */
     private fun JSONObject.stringOrNull(key: String): String? {
         if (!has(key) || isNull(key)) return null
         val value = optString(key, "")
         return if (value.isEmpty() || value == "null") null else value
     }
 
-    /** 时间戳 id；同一毫秒内再发一次就 +1。 */
+    /** 时间戳 id；同一毫秒内再次生成时递增 1。 */
     private fun nextId(): String {
         val now = System.currentTimeMillis()
         val value = if (now > lastIssuedId) now else lastIssuedId + 1

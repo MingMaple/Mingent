@@ -10,16 +10,16 @@ import java.io.File
 /**
  * 计划模式的持久化：全局开关，不分会话。
  *
- * 开启后模型只做调研（读文件、列目录、抓网页），不下发写工具、不许执行终端命令，
- * 最后交一份计划等用户确认。落盘位置和权限档同一个 app_prefs，启动即恢复。
+ * 开启后模型仅做调研（读文件、列目录、抓取网页），不调用写工具，也不执行终端命令，
+ * 最终提交一份计划等待用户确认。开关与权限档共用 app_prefs，启动时即恢复。
  *
- * 计划正文为什么和同一个 object 里的布尔开关放在一起：
- * 两者都是「计划模式」的数据，拆成两个 store 反而容易在清会话时漏掉一边。
- * 但存储介质故意分开：开关是全局 app_prefs（跨会话语义），正文是 appdata/plans.json（按会话，key = sessionId），
- * 混在一起就只能二选一，要么开关被按会话存，要么清一个会话的计划把别的会话也带走。
+ * 计划正文与同一对象内的布尔开关放在一起，因为两者均属于计划模式数据；
+ * 拆成两个 store 容易在清理会话时遗漏其一。
+ * 但存储介质有意区分：开关为全局 app_prefs（跨会话语义），正文为 appdata/plans.json（按会话，key = sessionId）；
+ * 合并存储会使二者语义相互牵制：开关被按会话保存，或清理单个会话时波及其他会话。
  *
- * 为什么一个会话存「多份」而不是只留最新一份：用户要能来回切着看、比较不同版本的方案，
- * 再单独删掉不要的那份。只留一份就只剩最后一次输出，前一次的方案连对比的机会都没有。
+ * 一个会话保存多份计划而非仅保留最新一份：用户需要对比不同版本并单独删除，
+ * 仅保留一份则会失去此前方案。
  */
 object PlanStore {
 
@@ -39,13 +39,13 @@ object PlanStore {
 
     /**
      * 计划的四种状态：
-     * - PENDING：刚交上来，两个按钮可点；
-     * - APPROVED：用户点了「同意执行」，已经授权过，按钮变灰（不能执行第二次）；
-     * - EDITED：用户点了「继续修改」，这份已经被消费，按钮变灰；
-     * - ABANDONED：用户既没同意也没修改、直接回主页继续对话：视为废弃，按钮变灰。
+     * - PENDING：刚提交，两个按钮可用；
+     * - APPROVED：用户已选择「同意执行」，授权完成，按钮禁用；
+     * - EDITED：用户已选择「继续修改」，该份已被消费，按钮禁用；
+     * - ABANDONED：用户未同意也未修改，直接返回主页继续对话，视为废弃，按钮禁用。
      *
-     * 为什么要落盘：废弃是「这一轮对话开始」时的判定，进程被杀、切会话再来还得算数；
-     * 只放内存的话重启一次旧计划又变成可执行的了。
+     * 废弃状态需持久化：该判定发生在每轮对话开始时，进程终止或切换会话后须仍然有效；
+     * 仅存于内存时，重启后旧计划会重新变为可执行。
      */
     const val STATUS_PENDING = "pending"
     const val STATUS_APPROVED = "approved"
@@ -53,10 +53,10 @@ object PlanStore {
     const val STATUS_ABANDONED = "abandoned"
 
     /**
-     * 上一次发出的计划 id，保证「同一毫秒内连续交两份计划」也不会撞号。
+     * 上一次发出的计划 id，确保同一毫秒内连续提交两份计划也不会重复。
      *
-     * 为什么 id 用毫秒时间戳而不是随机串：删除靠 id 定位，日志里也一眼能对上是哪一次写入；
-     * 撞号用自增兜住，代价只是相邻两条差 1ms，比 UUID 好排查。
+     * id 采用毫秒时间戳而非随机串：删除依赖 id 定位，日志中也能直接对应写入批次；
+     * 重复时以自增兜底，代价仅为相邻两条相差 1ms，比 UUID 更便于排查。
      */
     @Volatile
     private var lastIssuedPlanId = 0L
@@ -71,7 +71,7 @@ object PlanStore {
 
     // ---- 计划正文（按会话，可存多份）----
 
-    /** 读某会话的全部计划，顺序＝创建顺序（新的在最后）。没有、空文件、坏 JSON 一律空列表，绝不抛。做文件 IO，调用方放到 IO 线程。 */
+    /** 读取某会话的全部计划，顺序为创建顺序（新增的在末位）。无记录、空文件或损坏 JSON 均返回空列表，不抛出异常。涉及文件 IO，调用方应置于 IO 线程。 */
     @Synchronized
     fun loadPlans(context: Context, sessionId: String): List<PlanDoc> {
         if (sessionId.isBlank()) return emptyList()
@@ -83,7 +83,7 @@ object PlanStore {
                 readPlans(JSONObject(file.readText(Charsets.UTF_8)), sessionId)
             }
         } catch (e: Exception) {
-            // 计划只是给人看的说明文字，坏掉就当「还没有计划」，不值得为它弹错或让页面崩
+            // 计划仅为展示用说明文字，读取失败按无计划处理，不为此弹出错误或导致页面崩溃
             FileLog.log(PLAN_TAG, "读取计划失败，按「没有计划」处理：" + e)
             emptyList()
         }
@@ -92,9 +92,9 @@ object PlanStore {
     /**
      * 追加一份计划，返回追加后的完整列表。
      *
-     * 为什么是追加：模型每次交的是一份「方案」，多个方案常常都值得留着让用户比较；
-     * 覆盖写会把上一版直接抹掉，用户连「刚才那版写的是啥」都看不到。
-     * 返回列表给调用方直接用（工具要报「第几份」、页面要重绘，都不必再读一次盘）。
+     * 采用追加而非覆盖：模型每次提交一份方案，多份方案通常都需保留以供用户比较；
+     * 覆盖写会删除上一版，用户无法查看之前的方案。
+     * 返回完整列表供调用方直接使用（工具需报告序号、页面需重绘，均无需再次读盘）。
      */
     @Synchronized
     fun appendPlan(
@@ -132,8 +132,8 @@ object PlanStore {
     /**
      * 删掉某会话里指定 id 的计划，返回剩余列表。
      *
-     * 找不到这个 id 不算错：页面上的列表可能比磁盘旧一拍（另一个入口刚删过），
-     * 按「已经是想要的状态」把当前列表返回，比抛错或静默丢弃更接近事实。
+     * 找不到该 id 不视为错误：页面列表可能落后于磁盘（另一入口刚完成删除），
+     * 按目标状态返回当前列表，比抛出异常或静默丢弃更合适。
      */
     @Synchronized
     fun deletePlan(context: Context, sessionId: String, planId: String): List<PlanDoc> {
@@ -144,18 +144,18 @@ object PlanStore {
             before = readPlans(root, sessionId)
             val rest = before.filterNot { it.id == planId }
             if (rest.size == before.size) return before
-            // 删空就把 key 摘掉（同 clearPlans）：留个空数组在文件里，下次有人读会以为是「有会话但没计划」的脏数据
+            // 删空时移除 key（同 clearPlans）：文件中保留空数组会被后续读取视为脏数据
             if (rest.isEmpty()) root.remove(sessionId) else root.put(sessionId, plansToJson(rest))
             if (root.length() == 0) planFile(context).delete() else writeRoot(context, root)
             return rest
         } catch (e: Exception) {
             FileLog.log(PLAN_TAG, "删除计划失败：" + e)
-            // 没写成功就等于没删：把删之前的列表还给调用方，别让界面显示一份磁盘上还在的计划
+            // 写入失败视为未删除：返回删除前的列表，避免界面显示磁盘上仍然存在的计划
             return before
         }
     }
 
-    /** 清掉某会话的全部计划；整个文件空了就连文件一起删，别留个常年躺着的 {}。 */
+    /** 清除某会话的全部计划；文件为空时一并删除文件，避免保留长期为空的 {}。 */
     @Synchronized
     fun clearPlans(context: Context, sessionId: String) {
         if (sessionId.isBlank()) return
@@ -175,15 +175,12 @@ object PlanStore {
         }
     }
 
-    // 老的单条接口（loadPlan / savePlan / clearPlan）已删：ChatViewModel 现在直接调 loadPlans / deletePlan / clearPlans，
-    // 留着它们只会让「整体替换成一份」这种语义重新混进来，误调一次就把用户攒的其它计划清掉了。
-
     /**
      * 改一份计划的状态，返回改完的列表。
      *
-     * [abandonOtherPending] 用于「用户同意了某一份」：同一时刻只该有一份计划悬着等确认，
-     * 其余还在等他处理的那些跟着变成废弃：留着可点的按钮，等于给了第二次执行的机会。
-     * 找不到 id 不算错（磁盘可能已把这份删了），原样返回当前列表。
+     * [abandonOtherPending] 用于用户同意某一份计划时：同一时刻仅应有一份计划等待确认，
+     * 其余待处理计划一并作废；保留可点击按钮会提供第二次执行机会。
+     * 找不到 id 不视为错误（磁盘可能已删除该份），原样返回当前列表。
      */
     @Synchronized
     fun markPlan(
@@ -217,9 +214,9 @@ object PlanStore {
     /**
      * 新一轮对话开始：所有还没处理过的计划一律废弃。
      *
-     * 判据只在这一处：用户没点「同意执行」也没点「继续修改」，而是直接回去继续对话，
-     * 那份计划就作废了，页面上的两个按钮必须跟着变灰，否则又能被点一次并让模型直接开跑。
-     * 已经在跑的流式回合不受影响：调用方只在「用户新发一条消息」时进这里。
+     * 判定仅在此处：用户未选择「同意执行」也未选择「继续修改」，而是直接继续对话，
+     * 该计划即作废，页面按钮必须同步禁用，否则可再次点击并直接触发模型执行。
+     * 正在进行的流式回合不受影响：调用方仅在用户新发消息时进入此处。
      */
     @Synchronized
     fun abandonPending(context: Context, sessionId: String): List<PlanDoc> {
@@ -245,16 +242,16 @@ object PlanStore {
     /**
      * 状态字符串收敛到四个已知值。
      *
-     * 缺失（升级前写下的旧计划）与怪值一律当**废弃**：那些计划都来自已经被继续对话过去的回合，
-     * 界面上还留着可点的「同意执行」会直接出事：点了废弃计划，模型直接开跑。
-     * 要执行旧计划，让模型重新交一份新的：这条代价比「误执行一份过期计划」小得多。
+     * 缺失（升级前写入的旧计划）与异常取值一律按**废弃**处理：这些计划均来自已被继续对话越过的回合，
+     * 界面保留可点击的「同意执行」存在风险：点击已废弃计划会直接触发模型执行。
+     * 执行旧计划需由模型重新提交，其代价低于误执行过期计划。
      */
     private fun normalizeStatus(raw: String): String = when (raw) {
         STATUS_PENDING, STATUS_APPROVED, STATUS_EDITED, STATUS_ABANDONED -> raw
         else -> STATUS_ABANDONED
     }
 
-    /** 把某个会话的计划整体写回（空列表就把 key 摘掉，同 deletePlan / clearPlans 的口径）。 */
+    /** 将某个会话的计划整体写回（空列表时移除 key，与 deletePlan / clearPlans 一致）。 */
     private fun writePlans(context: Context, root: JSONObject, sessionId: String, plans: List<PlanDoc>) {
         if (plans.isEmpty()) root.remove(sessionId) else root.put(sessionId, plansToJson(plans))
         if (root.length() == 0) planFile(context).delete() else writeRoot(context, root)
@@ -271,8 +268,8 @@ object PlanStore {
     /**
      * 整个文件读成 JSONObject；读不出来就给一个空对象。
      *
-     * 为什么可以「坏文件当空」：plans.json 里全是可再生成的说明文字（真丢了让模型重写一份就行），
-     * 为它做备份/迁移/修复不值得；而每次写入都是整体覆盖写，坏文件会被下一次写入自然修好。
+     * 损坏文件按空对象处理：plans.json 内容均为可再生成的说明文字（丢失后由模型重写），
+     * 无需备份或修复；每次写入均为整体覆盖写，损坏文件会在下次写入时自然恢复。
      */
     private fun readRoot(context: Context): JSONObject {
         val file = planFile(context)
@@ -293,16 +290,16 @@ object PlanStore {
         val temp = File(file.parentFile, PLAN_FILE + ".tmp")
         temp.writeText(json, Charsets.UTF_8)
         if (!temp.renameTo(file)) {
-            // rename 失败（个别文件系统）时退化成直接覆盖，保证内容落地
+            // rename 失败（个别文件系统）时退化为直接覆盖，确保内容写入
             file.writeText(json, Charsets.UTF_8)
             temp.delete()
         }
     }
 
     /**
-     * 从一个会话的值里读出计划列表，兼容两种历史格式：
+     * 从会话值中读取计划列表，兼容两种历史格式：
      * - 数组（当前格式）：逐条解析；
-     * - 对象（第一版只有一份计划）：当成只有一条的列表，**不丢用户已有的计划**。
+     * - 对象（早期版本仅存一份计划）：视为只含一条的列表，**不丢失用户已有计划**。
      */
     private fun readPlans(root: JSONObject, sessionId: String): List<PlanDoc> {
         return when (val value = root.opt(sessionId)) {
@@ -328,8 +325,8 @@ object PlanStore {
             }
         }
         val createdAt = obj.optLong(KEY_CREATED_AT, 0L)
-        // 旧格式没有 id：按「createdAt + 下标」补一个确定性的，重新加载后同一条计划 id 不变，删除才删得中，
-        // 随机补 id 会在每次读盘后换号，用户点删除就永远删不到。
+        // 旧格式无 id：按 createdAt + 下标补齐确定值，重新加载后 id 不变，删除操作方可命中；
+        // 随机补齐会使每次读盘更换 id，导致无法删除。
         val stored = obj.optString(KEY_ID, "").trim()
         val id = if (stored.isEmpty() || stored == "null") "legacy-" + createdAt + "-" + index else stored
         val doc = PlanDoc(
@@ -338,14 +335,14 @@ object PlanStore {
             steps = steps,
             note = obj.optString(KEY_NOTE, ""),
             createdAt = createdAt,
-            // 旧数据没有这个字段：见 normalizeStatus 的注释（当作已废弃，按钮灰掉）
+            // 旧数据无此字段：见 normalizeStatus 的说明（按已废弃处理，按钮禁用）
             status = normalizeStatus(obj.optString(KEY_STATUS, ""))
         )
-        // 标题和步骤都空，说明这条记录没有实际内容（例如被半截写入），当作没有计划
+        // 标题与步骤均为空，说明该记录无实际内容（例如写入不完整），按无计划处理
         return if (doc.title.isBlank() && doc.steps.isEmpty()) null else doc
     }
 
-    /** 步骤用 JSON 数组存，不拼成一个字符串：步骤里允许出现逗号、换行、序号，拼起来就再也拆不回来。 */
+    /** 步骤以 JSON 数组存储，不拼接为字符串：步骤中可能包含逗号、换行与序号，拼接后无法可靠拆分。 */
     private fun plansToJson(plans: List<PlanDoc>): JSONArray {
         val array = JSONArray()
         for (plan in plans) array.put(planToJson(plan))
@@ -372,10 +369,10 @@ object PlanStore {
 /**
  * 一份计划：一句话标题 + 一串可执行的步骤 + 可选补充。
  *
- * id 由 [PlanStore] 生成（时间戳，同毫秒自增），是「切换 / 删除某一份」的唯一句柄：
- * 不用列表下标，是因为删掉中间那份之后，下标会让「用户刚才选的那份」静悄悄变成别人。
+ * id 由 [PlanStore] 生成（时间戳，同毫秒自增），是切换与删除某一份计划的唯一句柄：
+ * 不使用列表下标，因为删除中间项后，下标会指向其他计划且无提示。
  *
- * 为什么步骤连编号都不存：编号是排版，界面按下标生成；存进文本里，模型下次改动就要小心「第 3 条其实已经删了」这种错位。
+ * 步骤不存储编号：编号属于排版，由界面按下标生成；写入文本会使模型后续修改时需处理编号错位。
  * createdAt 只作记录与排序依据，不参与任何判断。
  */
 data class PlanDoc(
@@ -384,9 +381,9 @@ data class PlanDoc(
     val steps: List<String>,
     val note: String = "",
     val createdAt: Long = 0L,
-    /** 见 [PlanStore.STATUS_PENDING] 等常量。只有 PENDING 的计划两个按钮可点。 */
+    /** 见 [PlanStore.STATUS_PENDING] 等常量。仅 PENDING 状态的计划两个按钮可用。 */
     val status: String = PlanStore.STATUS_PENDING
 ) {
-    /** 还能不能「同意执行」或「继续修改」：只有刚交上来那份可以。 */
+    /** 是否仍可「同意执行」或「继续修改」：仅 PENDING 状态可用。 */
     val actionable: Boolean get() = status == PlanStore.STATUS_PENDING
 }

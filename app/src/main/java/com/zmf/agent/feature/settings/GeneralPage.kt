@@ -41,19 +41,16 @@ import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
-import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
-import com.zmf.agent.uikit.theme.Palette
-import com.zmf.agent.uikit.theme.UiColors
-import com.zmf.agent.uikit.theme.UiScaleStore
+import com.zmf.agent.core.prefs.UiScaleStore
 import kotlin.math.abs
 import com.zmf.agent.core.prefs.GeneralPrefs
 
 /**
  * 「通用设置」页：权限、字号、工作代码视图、繁忙时发送行为、定时任务。
  *
- * 字号和繁忙行为用「展开一行再选」而不是再跳一层：两三个选项的页面跳来跳去更累，
- * 展开区用弹簧动画（和抽屉同一套），展开/收起不会让人觉得界面在闪。
+ * 字号与繁忙行为采用「展开一行再选」的方式，不跳转页面：选项仅两三个，页面跳转的交互成本更高，
+ * 展开区使用弹簧动画（与抽屉一致），展开与收起不产生闪烁。
  */
 @Composable
 fun GeneralSettingsPage(
@@ -66,7 +63,7 @@ fun GeneralSettingsPage(
     onBusyModeChange: (BusySendMode) -> Unit,
     onSchedule: () -> Unit
 ) {
-    // 两个展开区互斥：同一屏只摊开一个，否则页面被撑得太长，滚动位置也难找回
+    // 两个展开区互斥：同一屏只展开一个，否则页面过长，滚动位置也难以恢复
     var scaleOpen by remember { mutableStateOf(false) }
     var busyOpen by remember { mutableStateOf(false) }
 
@@ -74,8 +71,8 @@ fun GeneralSettingsPage(
         GeneralCard {
             GeneralNavRow(
                 title = "权限",
-                // 这里进的是系统授权状态页，不是三档权限，所以不再显示当前档位：
-                // 那一行跟着三档变，会让人以为点进去能改档，实际上改档只在主页浮层里
+                // 此处进入的是系统授权状态页，而非三档权限，因此不显示当前档位：
+                // 该行随三档变化，易被误认为可在此处修改档位，而档位只在主页浮层中修改
                 value = "管理",
                 onClick = onPermission
             )
@@ -140,7 +137,7 @@ private fun GeneralScaffold(
     content: @Composable () -> Unit
 ) {
     Surface(
-        // 铺满且不透明；最外层吞掉点击，避免穿透到下面的设置首页
+        // 铺满且不透明；最外层拦截点击，避免事件穿透到下方的设置首页
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -248,8 +245,8 @@ private fun GeneralNavRow(
 }
 
 /**
- * 展开行：右侧是当前值 + 会翻转的「▾」。给「▾」而不是「›」，
- * 是因为它不开新页，只在原地摊开选项。
+ * 展开行：右侧是当前值 + 可翻转的「▾」。使用「▾」而非「›」，
+ * 是因为该行不打开新页面，只在原地展开选项。
  */
 @Composable
 private fun GeneralExpanderRow(
@@ -293,35 +290,6 @@ private fun GeneralExpanderRow(
             fontSize = 16.sp,
             color = onSurface.copy(alpha = 0.35f)
         )
-    }
-}
-
-/**
- * 开关行：标题占满剩余宽度，开关贴右边。
- *
- * 整行可点（Salt Player 的口径）：点行等于点开关，两个方向都有涟漪；
- * 行本身只做开关这一件事，所以放心整行绑定；有点开详情等其它动作的行不要套这个。
- */
-@Composable
-private fun GeneralSwitchRow(
-    title: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .saltCardRow { onCheckedChange(!checked) }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = title,
-            modifier = Modifier.weight(1f),
-            fontSize = 15.sp,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        SaltSwitch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

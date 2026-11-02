@@ -42,31 +42,23 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
-import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.zmf.agent.uikit.common.saltFieldColors
 
-/** 列表最多展示这么多行（与 FileLog.readLines 的默认上限一致，读盘时就已经截好了）。 */
+/** 列表最多展示的行数，与 FileLog.readLines 的默认上限一致。 */
 private const val MAX_LINES = 2000
 
 /**
- * 顶部分类 chip：只按方括号里的 tag 做包含匹配（日志行形如「08-14 12:00:00.123 [session] …」）。
- *
- * tag 由 FileLog.log(tag, ...) 的第一参数决定，想被某个 chip 筛出来的模块就把 tag 写成这个名字。
- * 现状：session / mcp 直接对得上；chat、api、net、loop 这些只能靠「全部」+ 搜索框看，
- * tool / ui / prompt / crash 要等对应模块改用这些 tag 才会有内容。
+ * 顶部分类 chip：仅按方括号内的 tag 做包含匹配，日志行形如「08-14 12:00:00.123 [session] …」。
+ * tag 取自 FileLog.log(tag, ...) 的第一个参数，模块需使用同名 tag 才能被筛出。
  */
 private val LOG_FILTERS = listOf("全部", "tool", "ui", "session", "mcp", "prompt", "crash")
 
 /**
- * 「日志」页：真机没有 logcat 时唯一能自查的窗口。
- *
- * 数据源就是 agent.log + agent.log.1（FileLog.readLines），进来读一次：
- * 日志在 App 跑着的过程中一直在写，做成实时订阅要用 FileObserver 之类的额外机制，
- * 而查问题通常是「出事了再进来看一眼」，读一次 + 手动返回重进足够。
- *
- * 展示是倒序（最新的在第一屏），复制则按时间正序拼：粘到文件里从头读到尾更顺。
+ * 「日志」页：无 logcat 时的自查入口，数据源为 agent.log 与 agent.log.1，进入时读取一次。
+ * 日志持续写入，实时订阅需引入 FileObserver 等机制；排查多为事后查看，读取一次已足够。
+ * 列表最新在上，复制时按时间正序拼接。
  */
 @Composable
 fun LogsPage(onBack: () -> Unit) {
@@ -75,14 +67,14 @@ fun LogsPage(onBack: () -> Unit) {
     var query by remember { mutableStateOf("") }
     var raw by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    // 最多两文件、1MB，不能放主线程读；context 只用来定位目录
+    // 读取最多两个文件、1MB，不能在主线程执行；context 仅用于定位目录
     LaunchedEffect(Unit) {
-        // 日志改成异步写盘了：读之前先刷一次队列，否则刚发生的几行在这一页里永远看不到
+        // 日志异步写盘，读取前先刷新队列，否则最新几行不会出现在本页
         FileLog.flush()
         raw = withContext(Dispatchers.IO) { FileLog.readLines(context, MAX_LINES) }
     }
 
-    // 筛选是纯内存过滤（≤2000 行），输入每个字重算一次没有性能问题
+    // 筛选为纯内存过滤（≤2000 行），逐字符重算没有性能开销
     val shown = remember(raw, filter, query) {
         val keyword = query.trim()
         raw.filter { line ->
@@ -92,7 +84,7 @@ fun LogsPage(onBack: () -> Unit) {
     }
 
     Surface(
-        // 同其它二级页：铺满不透明、吞点击，避免穿透到下面的聊天界面
+        // 同其它二级页：铺满不透明、拦截点击，避免穿透到下层聊天界面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -121,7 +113,7 @@ fun LogsPage(onBack: () -> Unit) {
                 )
             }
 
-            // 7 个 chip 一行放不下窄屏，横向滚动比换行更稳（换行会把搜索框挤下去）
+            // 窄屏放不下一行 chip，横向滚动可避免换行将搜索框挤下移
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -161,7 +153,7 @@ fun LogsPage(onBack: () -> Unit) {
                         )
                     }
                 }
-                // 不用 key：日志行会整体刷新（清空 / 重读），给了 key 反而可能撞重复行
+                // 不设 key：日志整体刷新（清空或重读），设 key 可能因重复行冲突
                 items(shown.size) { index ->
                     Text(
                         text = shown[index],
@@ -181,7 +173,7 @@ fun LogsPage(onBack: () -> Unit) {
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 「复制全部」复制的是当前筛选结果，否则筛完再全拷回去对不上看到的
+                // 「复制全部」复制当前筛选结果，与屏幕显示保持一致
                 ActionText(text = "复制全部", color = Palette.Neutral) {
                     copyAll(context, shown)
                 }
@@ -208,8 +200,7 @@ fun LogsPage(onBack: () -> Unit) {
 /**
  * 单行日志是否命中所选 chip。
  *
- * 只认方括号里的 tag，不看正文：正文里恰好出现 "tool"、"session" 这类英文词的概率不低，
- * 按整行匹配会把不相干的行一起捞进来。
+ * 仅匹配方括号内的 tag：正文中可能恰好出现这些英文词，按整行匹配会误匹配无关行。
  */
 private fun matchesFilter(line: String, filter: String): Boolean {
     if (filter == "全部") return true
@@ -220,8 +211,8 @@ private fun matchesFilter(line: String, filter: String): Boolean {
 /**
  * 复制到剪贴板。
  *
- * 按时间正序拼（展示是倒序）：粘进文件里从头读才顺。
- * Android 13 起系统自己弹「已复制」，不再叠加 Toast（同 ChatScreen 的处理）。
+ * 按时间正序拼接（列表为倒序），便于粘贴后顺序阅读。
+ * Android 13 及以上系统自带复制提示，无需叠加 Toast。
  */
 private fun copyAll(context: Context, lines: List<String>) {
     if (lines.isEmpty()) {
@@ -235,12 +226,11 @@ private fun copyAll(context: Context, lines: List<String>) {
     }
 }
 
-/** 名字带 logs 前缀：同包 PackagePage.kt 里也有一个同签名的私有 toast，重名不报错但读起来歧义。 */
+/** 加 logs 前缀，避免与 PackagePage 中同签名的 toast 混淆。 */
 private fun logsToast(context: Context, text: String) {
     Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
 }
 
-/** 胶囊：选中墨底反白（同 DSH 的 chipActive），未选中是 6% 淡影。 */
 @Composable
 private fun LogChip(text: String, selected: Boolean, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -259,7 +249,6 @@ private fun LogChip(text: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** 底部文字按钮：只有文字，没有边框和填充，跟提示词页的「恢复默认」一致。 */
 @Composable
 private fun ActionText(text: String, color: Color, onClick: () -> Unit) {
     Text(

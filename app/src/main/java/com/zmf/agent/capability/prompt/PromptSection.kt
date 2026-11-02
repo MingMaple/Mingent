@@ -3,8 +3,8 @@ package com.zmf.agent.capability.prompt
 /**
  * 系统提示词的一段。
  *
- * [order] 决定拼接顺序（小的在前）：system 是请求里最稳定的前缀，顺序固定才吃得到 provider 的
- * prompt cache；新加的段尽量排到后面，别插队到已有段前面把缓存整个冲掉。
+ * [order] 决定拼接顺序（小的在前）：system 是请求里最稳定的前缀，顺序固定才能命中 provider 的
+ * prompt cache；新增的段应尽量排在后面，避免插入已有段之前导致缓存整体失效。
  * [name] 只给日志和排查用（哪段太长、哪段这次没出），不会进提示词正文。
  */
 data class PromptSection(val order: Int, val name: String, val text: String)
@@ -12,7 +12,7 @@ data class PromptSection(val order: Int, val name: String, val text: String)
 /**
  * 各段的固定次序（稳定在前、易变在后）。
  *
- * 取值留了间隔（10 / 100 / 9000 …），以后想在两段之间插新段不用改已有常量。
+ * 取值预留间隔（10 / 100 / 9000 …），后续需要在两段之间插入新段时无需修改已有常量。
  *
  * **进 system 的（稳定层）**：契约是同一会话内一字不变，否则前缀缓存失效。
  * - 身份 → 设备事实 → 边界 → 工具总则 → 沟通 → 记忆 → 计划确认 → Skill → 附加指令。
@@ -20,7 +20,7 @@ data class PromptSection(val order: Int, val name: String, val text: String)
  *   硬约束必须靠前）。
  *
  * **只进尾部快照的（易变层，编号统一放到 9000+）**：权限档、工作区路径、计划模式、当前时间、摘要。
- * 它们以前挤在 system 的第 2、3 段，导致「隔一分钟发一句话」就整份缓存作废。
+ * 若放入 system 段，任何时间变化都会导致整份缓存失效。
  */
 object PromptOrders {
     // ---- 稳定层（进 system）----
@@ -35,7 +35,7 @@ object PromptOrders {
     const val COMMUNICATION = 300
     const val MEMORY = 400
     const val PLAN_RULES = 500
-    // 计划模式说明：**常驻**段。以前只在开启时出现，进出模式就改前缀、缓存全废
+    // 计划模式说明：**常驻**段。若仅在开启时出现，进出模式会改变请求前缀并导致缓存失效
     const val PLAN_POLICY = 510
     const val SKILLS = 3100
     const val USER_EXTRA = 3200

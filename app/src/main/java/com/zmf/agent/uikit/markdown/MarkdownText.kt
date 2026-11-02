@@ -58,7 +58,6 @@ import com.zmf.agent.uikit.components.CopyRevealHost
 import com.zmf.agent.uikit.components.claimCopyOnGesture
 import com.zmf.agent.uikit.components.rememberCopyBlockKey
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
-import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 
@@ -92,16 +91,16 @@ fun MarkdownText(
     /**
      * 是否把空行渲染成一段留白。
      *
-     * 默认 false（AI 气泡、工具卡）：空行只作块间分隔，连续空行一律收起；
-     * 用户气泡传 true：用户在输入框里按下的换行是他自己排版的一部分，
-     * 吞掉就会变成「只剩几个标点」。发送时已把 3 个以上连续换行压成一个空行，
-     * 所以这里最多只会多出一段留白，不会出现整屏空白。
+     * 默认 false（AI 气泡、工具卡）：空行仅作块间分隔，连续空行一律收起；
+     * 用户气泡传 true：用户在输入框中输入的换行属于其排版的一部分，
+     * 忽略后会仅剩标点。发送时已将 3 个以上连续换行压缩为一个空行，
+     * 因此这里最多只会多出一段留白，不会出现整屏空白。
      */
     keepBlankLines: Boolean = false,
     /**
      * 折叠阈值：正文完整高度超过它才折叠。默认 [Dp.Unspecified] = 不折叠（AI 气泡、工具卡走这条）。
      *
-     * 折叠按**整块**算：只显示完整放得下的块（段落 / 列表项 / 代码块），绝不在一行中间截断，
+     * 折叠按**整块**计算：仅显示完整放得下的块（段落 / 列表项 / 代码块），不在行中间截断，
      * 所以折叠态的结尾一定是某一段的末尾。放不下一块时至少保留第一块。
      */
     foldAt: Dp = Dp.Unspecified,
@@ -116,9 +115,9 @@ fun MarkdownText(
     /**
      * 折叠按钮的落点基准 = **调用方气泡自己的内边距**（右 / 下）。
      *
-     * 按钮要压在气泡右下角、离气泡边 6dp，所以它得落在正文外框之外那层内边距里。
-     * 主页气泡是 16/12dp；悬浮小窗更窄更矮，内边距是 10/7dp，得跟着换，
-     * 否则按钮会被推到气泡外面去。
+     * 按钮需置于气泡右下角、距气泡边缘 6dp，因此必须位于正文外框之外的内边距层。
+     * 主页气泡为 16/12dp；悬浮小窗更窄更矮，内边距为 10/7dp，需随之调整，
+     * 否则按钮会被推出气泡外。
      */
     foldToggleInsetX: Dp = 16.dp,
     foldToggleInsetY: Dp = 12.dp
@@ -229,11 +228,11 @@ private fun MarkdownBlock(
             // 气泡里的代码块不设限高、不开块内竖滚：整段随消息一起铺开，
             // 快速滑动经过它时手势仍然归外层列表，不会被块内滚动截走
             boundedBody = false,
-            // 行内滑到头之后那点余量就地吃掉：继续推不该把抽屉拉出来，也不该进轨迹页
-            // （滑到尽头后就该毫无响应，不能改由父层接力）
+            // 行内滑动到边界后的余量就地消费：继续推动不应拉出抽屉，也不应进入轨迹页
+            // （滑到尽头后应无响应，不得由父层接力）
             blockHorizontalAtEdge = true
         )
-        // 空行：只在用户气泡里出现（见 keepBlankLines），一段留白＝一口换行
+        // 空行：仅在用户气泡中出现（见 keepBlankLines），一段留白对应一个换行
         MdBlock.Blank -> Spacer(Modifier.height(8.dp))
         MdBlock.Divider -> Box(
             modifier = Modifier
@@ -331,19 +330,19 @@ private fun MarkdownListItem(
 /**
  * 围栏代码块：顶部一条工具条（语言 /「缩进」/「复制」），下面是行号列 + 代码体。
  *
- * 默认**单行横滑**（不折行，长行靠横滑读），点「缩进」改成完整换行；
+ * 默认**单行横滑**（不折行，长行通过横向滑动阅读），点击「缩进」后改为完整换行；
  * 行号等宽右对齐、半透明灰，宽度按总行数取 2–3 位。
  *
- * 「复制」跟「缩进」并列在工具条右端，但只有**摸过这一块**才出现（全局唯一，摸别的块会挪走）。
+ * 「复制」与「缩进」并列于工具条右端，但仅在**触摸过该区块**后出现（全局唯一，触摸其他区块会转移）。
  * 单行横滑的正文保持原样，横向不受限高影响。
  *
  * 正文是否限高由 [boundedBody] 决定：
- *  - true（工具卡）：限高 240dp（[BoundedScrollColumn]），装得下随整页滚，真超了才在块内竖滚；
+ *  - true（工具卡）：限高 240dp（[BoundedScrollColumn]），内容可容纳时随整页滚动，超出时在区块内纵向滚动；
  *  - false（聊天气泡）：不设上限、不开块内竖滚，整段随消息铺开，快速滑动不被截走。
  * 调用方明确给出 [maxBodyHeight] 时按它的值。
  *
  * 「横滑到边界不传给外层」用同包的 [blockHorizontalAtEdge]：气泡里的代码块同样要拦住，
- * 否则滑到行末继续推会去拉抽屉或进轨迹页。
+ * 否则滑至行末后继续推动会拉出抽屉或进入轨迹页。
  *
  * ToolBlock 会复用本函数：参数区 / 命令区不要行号、不要复制按钮。
  */
@@ -366,24 +365,24 @@ internal fun MarkdownCodeBlock(
     val codeLineHeight = codeFontSize * 1.5f
     val context = LocalContext.current
     // 每块独立：默认关（单行横滑），开启「缩进」后完整换行。
-    // 不带 key：流式输出一段段变长时不要把用户选的状态弹回去。
+    // 不设置 key：流式输出逐段增长时不得重置用户选择的状态。
     var wrapMode by remember { mutableStateOf(false) }
     var copied by remember(code) { mutableStateOf(false) }
     val copyKey = rememberCopyBlockKey()
     val hScroll = rememberScrollState()
     val langLabel = if (lang.isBlank()) "代码" else lang
     // 行号列：宽度按总行数取 2–3 位。等宽字宽约 0.6 em，再乘 fontScale，
-    // 否则系统把字体放大后行号会被右对齐裁掉。
+    // 否则系统放大字体后行号会被右对齐裁切。
     val lines = remember(code) { code.split('\n') }
     val gutter = remember(lines) { lines.indices.joinToString("\n") { (it + 1).toString() } }
     val gutterDigits = lines.size.toString().length.coerceIn(2, 3)
     val fontScale = LocalDensity.current.fontScale
     val gutterWidth = (gutterDigits * 0.62f * codeFontSize.value * fontScale).dp + 2.dp
     val lineNumberColor = color.copy(alpha = 0.32f)
-    // 正文限高：装得下就随整页滚，真超了才在块内竖滚（横滑不受影响）。
-    // 调用方给了明确高度就用它，没给按 240dp。
+    // 正文限高：内容可容纳时随整页滚动，超出时在区块内纵向滚动（不影响横向滑动）。
+    // 调用方提供明确高度时使用该值，否则按 240dp。
     val bodyMaxHeight = if (maxBodyHeight != Dp.Unspecified) maxBodyHeight else 240.dp
-    // 点「复制」后短暂显示「已复制」，1.2 秒复位
+    // 点击「复制」后短暂显示「已复制」，1.2 秒后复位
     LaunchedEffect(copied) {
         if (copied) {
             delay(1200)
@@ -394,9 +393,9 @@ internal fun MarkdownCodeBlock(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            // 只有自己带复制按钮时才参与「谁显示复制」的竞争：
-            // 参数块 / 命令区是 showCopy = false，以前它们也登记成持有者，
-            // 结果摸到这些位置时整张卡的复制按钮反而不会出现（表现为「有些位置摸不出来」）。
+            // 仅在自身带有复制按钮时参与「显示复制」的竞争：
+            // 参数块与命令区为 showCopy = false，若仍登记为持有者，
+            // 触摸这些位置时整张卡的复制按钮反而不会出现。
             .then(if (showCopy) Modifier.claimCopyOnGesture(copyKey) else Modifier)
             .background(codeBackground, RoundedCornerShape(12.dp))
             .padding(vertical = 8.dp)
@@ -414,8 +413,8 @@ internal fun MarkdownCodeBlock(
             ) {
                 // 左：语言标识（或「代码」「参数」这类标签）。
                 // 用 weight(1f) 占满剩余宽度，把「缩进」和「复制」一起推到右端：
-                // 标签是「下面这段是什么」的名称，缩进是「换个看法」的操作，
-                // 两者紧挨着会被读成同一类东西；左右分开之后，标签在左、操作在右。
+                // 标签表示「下方内容的类型」，缩进为「切换显示方式」的操作，
+                // 两者紧邻会被识别为同一类；左右分开后，标签在左、操作在右。
                 Text(
                     text = langLabel,
                     modifier = Modifier.weight(1f),
@@ -426,10 +425,10 @@ internal fun MarkdownCodeBlock(
                 )
                 Spacer(Modifier.width(8.dp))
                 // 「复制」「缩进」各占一块**同宽的固定槽**：两块紧邻、中间不留 Spacer，
-                // 字在槽内居中，于是两枚的涟漪尺寸完全相同，按压时不会「一宽一窄」。
-                // 槽宽收到 38dp 时两字的视觉间距约 15dp（56dp 槽 + 4dp Spacer 时约 25dp，太散）。
-                // 槽宽下限 38dp（容得下「已复制」三个字）；系统字体放大时按字号同比放宽，
-                // 免得「已复制」被裁掉。
+                // 文字在槽内居中，使两枚按钮的涟漪尺寸完全一致，按压时不会出现宽窄不一。
+                // 槽宽收至 38dp 时两字的视觉间距约 15dp（56dp 槽加 4dp Spacer 时约 25dp，过于分散）。
+                // 槽宽下限为 38dp（可容纳「已复制」三个字）；系统字体放大时按字号同比放宽，
+                // 避免「已复制」被裁切。
                 val actionSlot = if (compact) {
                     CodeActionSlotCompact
                 } else {
@@ -546,7 +545,7 @@ internal fun MarkdownCodeBlock(
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            // 拦截器排在 horizontalScroll 之前（= 外层），才看得见行内还剩没剩位移
+                            // 拦截器置于 horizontalScroll 之前（即外层），才能获知行内剩余位移
                             .then(
                                 if (blockHorizontalAtEdge) {
                                     Modifier.blockHorizontalAtEdge(hScroll)
@@ -579,7 +578,7 @@ internal fun MarkdownCodeBlock(
 
 /**
  * 代码块的行号：等宽、右对齐、半透明灰，宽度按总行数固定成 2–3 位。
- * 和代码正文用同一个 fontSize / lineHeight，逐行才对得上。
+ * 与代码正文使用同一个 fontSize / lineHeight，逐行方能对齐。
  */
 @Composable
 private fun CodeLineNumber(
@@ -597,22 +596,22 @@ private fun CodeLineNumber(
         lineHeight = lineHeight,
         color = color,
         textAlign = TextAlign.End,
-        // 行号自己绝不折行：一折就会把后面的代码行整体推歪
+        // 行号本身不得折行：折行会使后续代码行整体偏移
         softWrap = false,
         maxLines = Int.MAX_VALUE
     )
 }
 
-/** 代码块工具条上「复制」「缩进」共用的固定槽宽下限：两枚涟漪同尺寸，按压不突兀。 */
+/** 代码块工具条上「复制」「缩进」共用的固定槽宽下限：两枚按钮涟漪尺寸一致，按压反馈不突兀。 */
 private val CodeActionSlot = 38.dp
 
-/** 窄版（小窗被拖窄）时只留「缩进」，槽宽收到这个值，免得把行撑出块外。 */
+/** 窄版（小窗被拖窄）时仅保留「缩进」，槽宽收至该值，避免将行撑出区块。 */
 private val CodeActionSlotCompact = 32.dp
 
 /**
  * 工具条进入「窄版」的宽度阈值：小窗可以被拖到很窄（服务端最小 48dp），
- * 此时标签 + 复制槽 + 缩进会撑出块外。窄于这个宽度就先丢掉「复制」，
- * 保住「缩进」还贴右端、点得到（复制在极窄窗口里本来也读不清）。
+ * 此时标签、复制槽与缩进会撑出区块。窄于该宽度时先移除「复制」，
+ * 保留「缩进」并保持贴右端可点击（极窄窗口中复制内容本就难以辨认）。
  */
 private val ToolbarCompactWidth = 180.dp
 
@@ -644,7 +643,7 @@ private const val MAX_INLINE_DEPTH = 4
 /** 一段正文里最多认这么多个链接：病态输入（整屏 URL）不至于建几万个节点。 */
 private const val MAX_LINKS = 64
 
-/** 链接色用全 App 的强调蓝；下划线是「这行字能点」的唯一直白提示。 */
+/** 链接色使用全局强调蓝；下划线是「该文字可点击」的唯一直接提示。 */
 private fun linkStyles(linkColor: Color): TextLinkStyles = TextLinkStyles(
     style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)
 )
@@ -652,8 +651,8 @@ private fun linkStyles(linkColor: Color): TextLinkStyles = TextLinkStyles(
 /**
  * 点链接之后去哪儿：交给 [LinkRouter]（聊天界面在场时注册成「进内置浏览页」）。
  *
- * 做成单例而不是每次 new 一个：AnnotatedString 是按原文缓存的，listener 每次都换新的话
- * LinkAnnotation 的 equals 永远不成立，进程级 LRU 等于白建。
+ * 使用单例而非每次新建：AnnotatedString 按原文缓存，若 listener 每次更换，
+ * LinkAnnotation 的 equals 将始终不成立，进程级 LRU 缓存失去意义。
  */
 private object LinkOpenListener : LinkInteractionListener {
     override fun onClick(link: LinkAnnotation) {
@@ -685,7 +684,7 @@ private fun inlineAnnotated(
         links = links,
         codeRanges = codeRanges
     )
-    // markdown 链接之外，模型最常干的事是把 URL 直接写进正文：这里补上裸链接识别
+    // Markdown 链接之外，模型常将 URL 直接写入正文：此处补充裸链接识别
     autoLink(sb.toString(), links, codeRanges)
     return buildAnnotatedString {
         append(sb.toString())
@@ -699,8 +698,8 @@ private fun inlineAnnotated(
 }
 
 /**
- * 正文里的裸链接。字符白名单只放 URL 里真会出现的符号：
- * 这样「见 https://a.com/x。这是正文」会在中文句号处自然断开，不会把后面整句吞成链接。
+ * 正文中的裸链接。字符白名单仅包含 URL 中实际出现的符号：
+ * 因此「见 https://a.com/x。这是正文」会在中文句号处自然断开，不会将后续整句并入链接。
  */
 private val BARE_URL_REGEX = Regex(
     "https?://[A-Za-z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%]+",
@@ -716,7 +715,7 @@ private fun trimUrlTail(raw: String): String {
             end--
             continue
         }
-        // 右括号只有「比左括号多」时才剥：维基百科那种 Foo_(bar) 是地址本身的一部分
+        // 仅当右括号数量多于左括号时才移除：维基百科式 Foo_(bar) 属于地址本身的一部分
         if (c == ')' || c == ']') {
             val open = if (c == ')') '(' else '['
             val slice = raw.substring(0, end)
@@ -737,7 +736,7 @@ private fun autoLink(text: String, links: MutableList<PendingLink>, codeRanges: 
         if (trimmed.length <= "https://".length || trimmed.endsWith("//")) continue
         val start = match.range.first
         val end = start + trimmed.length
-        // 行内代码里的不连线；已经被 [文字](地址) 占住的不重复挂
+        // 行内代码中的不建立链接；已被 [文字](地址) 占用的不重复挂载
         if (codeRanges.any { start < it[1] && it[0] < end }) continue
         if (links.any { start < it.end && it.start < end }) continue
         links.add(PendingLink(trimmed, start, end))
@@ -770,7 +769,7 @@ private fun normalizeLinkUrl(raw: String): String? {
 }
 
 /**
- * 逐字符扫描，把纯文本和样式区间分别收集出来。
+ * 逐字符扫描，将纯文本与样式区间分别收集。
  * 任何找不到配对分隔符的标记都原样 append，保证不丢字、不抛异常。
  */
 private fun collectInline(
@@ -805,7 +804,7 @@ private fun collectInline(
                     background = codeBackground
                 )
                 spans.add(PendingSpan(base.merge(codeStyle), start, sb.length))
-                // 记下这段是行内代码：里面的网址是「给人抄的」，后面不连线
+                // 记录该段为行内代码：其中的网址供用户手动复制，后续不建立链接
                 codeRanges.add(intArrayOf(start, sb.length))
                 i = close + 1
             } else {
@@ -815,12 +814,12 @@ private fun collectInline(
             continue
         }
 
-        // markdown 链接 [文字](地址)：方括号与地址都不显示，只留文字并挂上「点了进内置浏览页」
+        // Markdown 链接 [文字](地址)：方括号与地址均不显示，仅保留文字并附加「点击进入内置浏览页」
         if (ch == '[') {
             val mdLink = matchMarkdownLink(s, i)
             if (mdLink != null) {
                 val start = sb.length
-                // 文字部分照样走一遍行内解析：**粗体链接** 这种写法不能在链接里失效
+                // 文字部分同样经过一次行内解析：**粗体链接** 等写法在链接中不得失效
                 collectInline(
                     s = mdLink.label,
                     base = base,
@@ -832,7 +831,7 @@ private fun collectInline(
                     links = links,
                     codeRanges = codeRanges
                 )
-                // 链接文字为空（[](url)）时什么都不挂，免得出现一个看不见的点击区
+                // 链接文字为空（[](url)）时不挂载链接，避免产生不可见的点击区域
                 if (sb.length > start) links.add(PendingLink(mdLink.url, start, sb.length))
                 i = mdLink.end
                 continue
@@ -889,9 +888,9 @@ private fun findEmphasisClose(s: String, from: Int, ch: Char, delimLen: Int): In
         val hit = if (delimLen == 2) s[j] == ch && s[j + 1] == ch else s[j] == ch
         if (hit) {
             val after = j + delimLen
-            // 包起来的正文非空，且首尾不能是空白
+            // 包裹的正文非空，且首尾不得为空白
             val innerOk = j > from && !s[from].isWhitespace() && !s[j - 1].isWhitespace()
-            // 闭合符后不能紧跟同类字符，避免 *** 这类串味
+            // 闭合符后不得紧跟同类字符，避免 `***` 这类混合序列误判
             val tailOk = after >= n || s[after] != ch
             if (innerOk && tailOk) {
                 // 单个下划线还要求词尾边界
@@ -912,7 +911,7 @@ private sealed interface MdBlock {
     data class Heading(val level: Int, val content: String) : MdBlock
     data class ListItem(val marker: String, val content: String, val indent: Int) : MdBlock
     data class Code(val code: String, val lang: String) : MdBlock
-    /** 空行留白：只有 [MarkdownText] 的 keepBlankLines 打开时才会产生。 */
+    /** 空行留白：仅在 [MarkdownText] 的 keepBlankLines 开启时产生。 */
     data object Blank : MdBlock
     data object Divider : MdBlock
 }
@@ -923,16 +922,16 @@ private val HEADING_REGEX = Regex("^(#{1,3})\\s+(.*)$")
 private val DIVIDER_REGEX = Regex("^([-*_])\\1{2,}$")
 
 /**
- * 进程级缓存：列表滚出屏幕后 Composable 会被回收，靠 remember 保不住解析结果。
+ * 进程级缓存：列表滚出屏幕后 Composable 会被回收，remember 无法保留解析结果。
  *
- * 容量按条目数给（长对话一屏十几段，64 条够覆盖来回滚动），key 用原文/样式参数，
- * 命中就直接复用，滑回来不再重新切分与建 AnnotatedString。
+ * 容量按条目数设置（长对话单屏十余段，64 条足以覆盖来回滚动），key 使用原文与样式参数，
+ * 命中即复用，滑回时不再重新切分与构建 AnnotatedString。
  */
 private val mdBlocksCache = android.util.LruCache<String, List<MdBlock>>(64)
 private val inlineCache = android.util.LruCache<String, AnnotatedString>(128)
 
 private fun parseMarkdownCached(source: String, keepBlankLines: Boolean): List<MdBlock> {
-    // 同一段原文在两种口径下解析结果不同，缓存 key 必须带上模式，否则一个模式会把另一个的结果读走
+    // 同一段原文在两种模式下解析结果不同，缓存 key 必须包含模式，否则一种模式会读取另一种模式的结果
     val key = (if (keepBlankLines) "B:" else "N:") + source
     mdBlocksCache.get(key)?.let { return it }
     val parsed = parseMarkdown(source, keepBlankLines)
@@ -987,7 +986,7 @@ private fun parseMarkdown(source: String, keepBlankLines: Boolean = false): List
                     break
                 }
                 if (body.isNotEmpty()) body.append('\n')
-                // 只吃行尾空白：行首前导空格必须原样保留，否则缩进直接消失
+                // 仅移除行尾空白：行首前导空格必须原样保留，否则缩进会消失
                 body.append(lines[j].replace("\t", "    ").trimEnd())
                 j++
             }
@@ -1066,7 +1065,7 @@ private fun indentLevelOf(leading: String): Int {
 
 /**
  * 代码块只去掉首尾的空行，每行前导空格（缩进）原样保留。
- * 解析时逐行只 trimEnd，所以这里是唯一会动空白的地方。
+ * 解析时逐行仅执行 trimEnd，因此此处是唯一修改空白的位置。
  */
 private fun trimBlankEdges(code: String): String {
     if (code.isEmpty()) return code

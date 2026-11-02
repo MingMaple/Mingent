@@ -48,14 +48,14 @@ import kotlinx.coroutines.launch
  * 选择文本的全屏页。
  *
  * 手势约定：
- * - 顶部「把手 + 标题」是固定栏目，也是唯一的拖拽把手：只有从这一条往下拉才会关闭整页；
- * - 正文区域随便上下滑，只滚动/选字，页面不会回退。
+ * - 顶部「把手 + 标题」为固定栏，也是唯一的拖拽把手：仅从该栏下拉才关闭整页；
+ * - 正文区域可任意上下滑动，仅滚动或选字，页面不会回退。
  *
  * 两个关键约定：
- * - 整页**只用一个** SelectionContainer：正文和思考过程共用一个选区，点任意文字都能取消复制栏；
- * - 退场**全程不透明**：只做位移，不做整体淡出，否则窗口半透明时文字会和主页文字叠在一起。
+ * - 整页**仅使用一个** SelectionContainer：正文与思考过程共用一个选区，点击任意文字均可取消复制栏；
+ * - 退场**全程不透明**：仅做位移，不做整体淡出，否则窗口半透明时文字会与主页文字重叠。
  *
- * 复制栏用系统 ActionMode：正文顶部留出 top = 48.dp，否则浮条会被挤到窗口外看不见。
+ * 复制栏使用系统 ActionMode：正文顶部留出 top = 48.dp，否则浮条会被挤出窗口而不可见。
  */
 @Composable
 fun TextSelectionOverlay(
@@ -67,7 +67,7 @@ fun TextSelectionOverlay(
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
-    // 关闭目标位移：整块完全移出屏幕（1.05 屏高，留 5% 余量保证最后一帧彻底出去）
+    // 关闭目标位移：整块完全移出屏幕（1.05 屏高，保留 5% 余量以保证最后一帧完全移出）
     val closeDistancePx = screenHeightPx * 1.05f
     val maxDragPx = screenHeightPx * 0.4f
     val thresholdPx = with(density) { 96.dp.toPx() }
@@ -80,7 +80,7 @@ fun TextSelectionOverlay(
         if (closing) return
         closing = true
         scope.launch {
-            // 关闭用阻尼 1.0 的弹簧：速度连续、无顿挫，比固定时长 tween 更顺更跟手
+            // 关闭使用阻尼 1.0 的弹簧：速度连续、无顿挫，较固定时长 tween 更顺畅、更贴合手势
             animate(
                 offset,
                 closeDistancePx,
@@ -90,7 +90,7 @@ fun TextSelectionOverlay(
         }
     }
 
-    /** 没过阈值：弹回原位，页面留在原地（offset 归零）。 */
+    /** 未超过阈值：弹回原位，页面保持（offset 归零）。 */
     fun springBack() {
         scope.launch {
             animate(offset, 0f, animationSpec = Motion.spring()) { value, _ -> offset = value }
@@ -116,7 +116,7 @@ fun TextSelectionOverlay(
                             orientation = Orientation.Vertical,
                             enabled = !closing,
                             state = rememberDraggableState { delta ->
-                                // 跟手系数 1.0：手指移动多少页面就移动多少
+                                // 跟手系数 1.0：手指移动多少，页面移动多少
                                 offset = (offset + delta).coerceIn(0f, maxDragPx)
                             },
                             onDragStopped = { velocity ->

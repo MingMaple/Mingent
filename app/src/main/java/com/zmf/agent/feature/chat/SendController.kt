@@ -54,9 +54,9 @@ internal const val MAX_CONSECUTIVE_WAKES = 3
 /**
  * 发送与流式回合：发消息、排队/插话、续跑、重新生成、回滚、删改与停止。
  *
- * 从 [ChatViewModel] 搬出，行为不变：状态字段名与原成员逐字一致，方法体原样照搬；
- * 跨模块依赖一律改成构造注入（当前上下文、会话、输入区、Agent 循环、界面回调入口），
- * 免得这个类反过来攥住整个 ViewModel。
+ * 从 [ChatViewModel] 拆出，行为不变：状态字段名与原成员逐字一致，方法体原样保留；
+ * 跨模块依赖一律改为构造注入（当前上下文、会话、输入区、Agent 循环、界面回调入口），
+ * 避免该类反向持有整个 ViewModel。
  */
 class SendController(
     private val appContext: Context,
@@ -102,7 +102,7 @@ class SendController(
     /**
      * 有没被回答的插话。
      *
-     * 插话是「往历史里塞一条 user 消息」，模型可能在本轮后续的请求里就把它答了，
+     * 插话是「向历史中插入一条 user 消息」，模型可能在本轮后续请求中即予回答，
      * 也可能这一轮已经结束（见 streamJob 的 finally）：后者要再跑一个不追加用户消息的回合接上。
      */
     private var steerPending = false
@@ -112,7 +112,7 @@ class SendController(
      *
      * 唤醒是「有后台任务结算了，替用户追问一轮」。被唤醒的那一轮如果又起了新任务、又结算，
      * 就会一直自己唤醒自己——用户不在场时烧 token。所以连续唤醒封顶 [MAX_CONSECUTIVE_WAKES]，
-     * 用户下一次发消息时清零。达到上限后不再唤醒，已结算通知留在队列里，等下一轮用户输入再注入。
+     * 用户下一次发消息时清零。达到上限后停止唤醒，已结算通知保留在队列中，待下一轮用户输入再注入。
      */
     private var consecutiveWakes = 0
 
@@ -133,7 +133,7 @@ class SendController(
     /**
      * 发送按钮回调（旧入口，留给还没把「发送」与「停止」拆成两个键的界面）。
      *
-     * 语义已改成「发一条消息」：空闲直接发，正在生成回复时按 [busyMode] 排队或插话。
+     * 语义已改为「发送一条消息」：空闲时直接发送，正在生成回复时按 [busyMode] 排队或插话。
      * 停止有独立的 [stop]：把发送键当停止键用，会让「排队/插话」这两个设置形同虚设。
      */
     fun onSendOrStop(text: String, scope: CoroutineScope) {
@@ -187,7 +187,7 @@ class SendController(
         FileLog.log("chat", "繁忙时发送行为：" + GeneralPrefs.busyModeLabel(mode))
     }
 
-    /** 改排队消息的正文；改成空串等于把它移出队列（留着只会在轮到时被 send 静默丢掉）。 */
+    /** 修改排队消息的正文；改为空串即将其移出队列（保留时仅在轮到时被 send 静默丢弃）。 */
     fun editQueued(id: Long, text: String) {
         val index = pendingQueue.indexOfFirst { it.id == id }
         if (index < 0) return
@@ -267,7 +267,7 @@ class SendController(
      *   授权码只认最近一条 programmatic=false 的 user 消息（见 [com.zmf.agent.capability.tools.HighRiskGate]）。
      */
     fun send(text: String, scope: CoroutineScope, programmatic: Boolean = false) {
-        // 命令闸门放在最前：任何入口（输入框、队列补发、脚本式调用）都先把 /xxx 吃掉
+        // 命令闸门置于最前：任何入口（输入框、队列补发、脚本式调用）均先处理 /xxx
         if (slashCommand(text)) return
         if (isStreaming) return
         if (restartBlocked()) {
@@ -382,7 +382,7 @@ class SendController(
             // 用户点「停止」也会走到 finally：那种情况既不算完成也不算失败，不发通知
             var stopped = false
             try {
-                // 发送前置检查：命中闸门就先摘要（阻塞，失败静默退兜底），摘要完再发主请求
+                // 发送前置检查：命中闸门时先摘要（阻塞，失败时静默回退兜底），摘要完成后再发送主请求
                 if (context.shouldSummarize()) {
                     setActivity("正在压缩上下文…")
                     FileLog.log("context", "命中摘要闸门：" + context.contextPolicy.summary)
@@ -402,9 +402,9 @@ class SendController(
                 }
                 val rounds = loop().run(
                     messages = messages,
-                    // null = 插话续跑：历史里已经有那条用户消息了，不能再追加一遍
+                    // null = 插话续跑：历史中已包含该用户消息，不可再次追加
                     userText = userText,
-                    // 代发标记跟着消息一起进历史：授权码判定要能区分「用户亲手打」与「App 替他说」
+                    // 代发标记随消息一并写入历史：授权码判定需区分「用户亲自输入」与「App 代为发送」
                     userTextProgrammatic = programmatic,
                     thinking = thinking,
                     thinkingEffort = effort,
@@ -413,7 +413,7 @@ class SendController(
                         permission = permission,
                         workspaceRoot = root,
                         sessionId = session.currentSessionId,
-                        // 计划模式不再裁工具表，改由执行期逐调用拒绝；这里把状态带过去
+                        // 计划模式不裁剪工具表，改由执行期逐调用拒绝；此处传递该状态
                         planMode = planModeOn(),
                         // 惰性读最近一条真实 user 消息：ToolContext 在 loop.run 追加新消息**之前**构造，
                         // 现在快照会漏掉本轮这句话；闸门要的是「此刻会话里最后一条用户亲口说的话」
@@ -422,14 +422,14 @@ class SendController(
                         }
                     ),
                     ui = agentUi(),
-                    // 计划模式不再当参数传：AgentLoop 每轮从 promptInput().planMode 现取
+                    // 计划模式不作为参数传递：AgentLoop 每轮从 promptInput().planMode 实时读取
                     images = imagePaths,
                     imageDataUrls = imageDataUrls,
                     // 上下文溢出时压一次再重发（true = 压成了）。只从聊天页接：子智能体/定时任务
                     // 没有摘要能力，行为不该被这条路径改变
                     onOverflow = { context.onOverflowCompaction() },
                     // 两道落盘屏障：发请求前、执行有副作用的工具前。
-                    // 之前只有回合结束才落盘，进程被杀就把整轮丢掉（实测 19 条 → 14 条）。
+                    // 此前仅在回合结束时落盘，进程被终止会丢失整轮（实测 19 条 → 14 条）。
                     onCheckpoint = { reason -> session.persistCheckpoint(reason) }
                 )
                 FileLog.log("loop", "结束，共 " + rounds + " 轮")
@@ -444,7 +444,7 @@ class SendController(
                 isStreaming = false
                 streamJob = null
                 setActivity(null)
-                // 本轮用量落到气泡里：必须排在下面的 persistCurrent 之前，否则这次数字要等
+                // 本轮用量写入气泡：必须位于下方 persistCurrent 之前，否则该数字需等待
                 // 下一次保存才进盘；被用户停止时也已经收到的 usage 一样写进去，不丢。
                 context.writeTurnUsage()
                 // 本次回复的步数只在这里加一次：本会话累计 + 全局总账（放 onRound 里会重复计）
@@ -455,7 +455,7 @@ class SendController(
                 session.persistCurrent()
                 session.persistAll()
                 // 新消息改变了请求视图：水位、轮数、步数一起重算（refreshStats 内部就带 refreshContext，
-                // 下次 send 的闸门判断用的也是它）。只刷 refreshContext 不够：状态行与上下文圆环以前
+                // 下一次 send 的闸门判断同样使用该值）。仅刷新 refreshContext 不足：状态行与上下文圆环此前
                 // 读的是 stats 里那几项，而 stats 只在进统计页时才刷，用户得切会话再切回来才看到数字变。
                 context.refreshStats()
                 // 这轮跑过 todo_write 的话清单已经变了：重读一次，界面上的进度条跟上
@@ -497,21 +497,21 @@ class SendController(
      * ② 否则队列里有消息 → 取第一条按正常发送流程发出去。
      *
      * 两者互斥：同时起两个回合会让两条流抢着写同一份 messages。
-     * 用户点了「停止」时整段不执行（停止就是停止，不能自己又跑起来）。
+     * 用户点了「停止」时整段不执行（停止后不得自行恢复）。
      */
     private fun continueAfterTurn(scope: CoroutineScope) {
-        // 先按「不再续跑」记，下面哪个分支真要接一回合，再把它置真；
+        // 初始按「不续跑」记录，下方分支确需接续回合时再置为 true；
         // 置位与清零都在同一个主线程帧里完成，界面不会看到中间态。
         chainPending = false
         if (steerPending) {
-            // 插话那条已经在后续请求里被回答了（末尾不再是 user）→ 收掉标记，别让下一轮误续跑
+            // 插话消息已在后续请求中被回答（末尾已不是 user）→ 清除标记，避免下一轮误续跑
             val unanswered = messages.lastOrNull()?.role == "user"
             steerPending = false
             if (unanswered) {
                 FileLog.log("steer", "本轮已结束但插话还没被回答，续跑一回合")
                 scope.launch {
                     // launch 到真正开跑之间，用户可能又发了一条（那一轮会自己接管收尾）：
-                    // 这时直接让路，别并起两条流去写同一份 messages
+                    // 此时直接让路，避免并发两条流写入同一份 messages
                     if (isStreaming) return@launch
                     startTurn(
                         userText = null,
@@ -529,7 +529,7 @@ class SendController(
             scope.launch {
                 // 同理让路；队列不动，下一次回合结束时会再取到它
                 if (isStreaming) return@launch
-                // 只在它还在队列里时才发：别的路径先发走或删掉了，就不再重复发/发空
+                // 仅在仍位于队列中时发送：其他路径已发送或删除时，不会重复发送或发送空内容
                 if (pendingQueue.none { it.id == next.id }) return@launch
                 pendingQueue.removeAll { it.id == next.id }
                 FileLog.log("queue", "本轮已结束，自动发送队列第一条：" + next.text.take(80))
@@ -626,7 +626,7 @@ class SendController(
         cutFrom(userIndex)
         FileLog.log("chat", "重新生成：" + userText.take(80))
         send(userText, scope, programmatic = programmatic)
-        // send 内部流结束时也会落盘；这里再写一次，兜住「send 提前返回」的情况
+        // send 内部流结束时也会落盘；这里再写一次，覆盖「send 提前返回」的情况
         session.persistCurrent()
         session.persistAll()
     }
@@ -682,7 +682,7 @@ class SendController(
             .filter { it.isNotEmpty() }
     }
 
-    /** 把消息里的文件放回待发队列：工作区里找不到的跳过，队列满了也不再硬塞。 */
+    /** 将消息中的文件放回待发队列：工作区中找不到的跳过，队列已满时不会强行加入。 */
     private fun restorePending(
         root: File,
         relPaths: List<String>,
@@ -748,7 +748,7 @@ class SendController(
             while (end < messages.size) {
                 val next = messages[end]
                 val callId = next.toolCallId
-                // 只吃这条消息自己发起的工具结果：别的调用链可能紧挨着
+                // 仅消费该消息自身发起的工具结果：其他调用链可能紧邻
                 if (next.role != "tool" || callId == null || callId !in callIds) break
                 end++
             }
@@ -758,7 +758,7 @@ class SendController(
         reportError(null)
         context.clearUsageText()
         setActivity(null)
-        // 轮数与上下文水位都要按剩下的消息重算，否则统计页还显示删之前的条数
+        // 轮数与上下文水位均需按剩余消息重新计算，否则统计页仍显示删除前的条数
         context.refreshStats()
         session.persistCurrent()
         session.persistAll()
@@ -785,9 +785,9 @@ class SendController(
         composer.inputText = TextFieldValue(edited, selection = TextRange(edited.length))
         FileLog.log("chat", "编辑重发第 " + index + " 条：" + edited.take(80))
         send(edited, scope)
-        // send 真的跑起来就清掉输入框：这句话已经变成一条消息，再留一份只会重复
+        // send 实际启动后清空输入框：该文本已成为一条消息，保留副本会造成重复
         if (isStreaming) composer.inputText = TextFieldValue("")
-        // send 内部流结束时也会落盘；这里再写一次，兜住「send 提前返回」的情况
+        // send 内部流结束时也会落盘；这里再写一次，覆盖「send 提前返回」的情况
         session.persistCurrent()
         session.persistAll()
     }
@@ -795,7 +795,7 @@ class SendController(
     /** 用户点「停止」：取消当前流式任务并清掉进行中提示；不在流式中时是空操作。 */
     fun stop() {
         if (!isStreaming) return
-        // 停止就不再续跑：留着这个标记，下一次回合收尾时可能凭空多跑一个空回合
+        // 停止后不续跑：保留该标记时，下一次回合收尾可能额外执行一个空回合
         steerPending = false
         // 停止即终止整条链：交接标记一并清掉，界面立刻按「这一轮结束」折叠
         chainPending = false

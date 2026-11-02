@@ -1,7 +1,6 @@
 package com.zmf.agent.capability.context
 import com.zmf.agent.core.llm.ApiDefaults
 
-import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.infra.llm.ChatRequest
 import com.zmf.agent.infra.llm.LlmEvent
 import com.zmf.agent.infra.llm.LlmProvider
@@ -21,18 +20,18 @@ import kotlinx.coroutines.withTimeout
  * 只把「请总结」作为**最后一条 user 消息**追加。
  *
  * 为什么：摘要请求因此是上一次主请求的**真前缀**，provider 的前缀缓存能一路命中，
- * 只有尾部指令与摘要输出是未缓存的新 token；反过来（独立 system + 重新编号的原文投喂）
- * 每次摘要都要付一整份输入的钱，而且会在缓存里多出一个互不相干的域。
+ * 只有尾部指令与摘要输出是未缓存的新 token；若采用独立 system 并重新编号投喂原文，
+ * 每次摘要都需支付完整输入的开销，且会在缓存中形成互不相关的域。
  *
  * 两个由此而来的约束：
  * - 原文**逐字节**重放，不重新编号、不截断单条（截断会破坏前缀一致性）；
- * - 上一次的检查点不能塞进 system（那会改前缀），只能拼进最后那条指令里。
+ * - 上一次的检查点不能放入 system（那会改变前缀），只能拼进最后一条指令。
  */
 object ContextSummarizer {
 
     private const val TAG = "context"
 
-    /** 摘要请求超时：长对话要读几万字，60 秒还没回来就当作失败（走兜底，不拖住用户）。 */
+    /** 摘要请求超时：长对话需读取数万字，60 秒未返回即视为失败（转入兜底，避免阻塞用户）。 */
     private const val TIMEOUT_MS = 60_000L
 
     /** 摘要输出上限的参考值（65,536，含推理 token）：一份检查点允许写多长的宽松上界。 */
@@ -41,12 +40,12 @@ object ContextSummarizer {
     /**
      * 摘要不超过窗口的这个比例。
      *
-     * DSH 的 65,536 是按它自己的窗口定的；本项目 1M 窗口下直接照搬会宽到毫无约束，
-     * 取窗口 2%（1M ≈ 20k）既够写完整检查点，也守住「摘要必须比被折叠的原文短」这个前提。
+     * DSH 的 65,536 按其自身窗口设定；本项目 1M 窗口下直接采用将失去约束作用，
+     * 取窗口的 2%（1M ≈ 20k）既可写完整检查点，也满足「摘要必须比被折叠的原文短」这一前提。
      */
     private const val SUMMARY_WINDOW_RATIO = 0.02f
 
-    /** 超长摘要截断时插在中间的标记：让读的人知道这里少了一截，别把省略号当成内容。 */
+    /** 超长摘要截断时插入中间的标记：提示读者此处内容被省略，避免将省略号当作正文。 */
     private const val TRUNCATE_MARK = "\n……（摘要超长，已截断中段）……\n"
 
     /**
@@ -65,10 +64,10 @@ object ContextSummarizer {
      * @param provider 请求通道（当前 provider）
      * @param model 摘要模型；调用方已把空串换成当前对话模型
      * @param previous 上一条检查点，空串表示第一次压缩
-     * @param prefix 主请求的前缀：system → 工作区指令 → 已有检查点 → 待压区间原文（逐字节，别加工）
-     * @param tools 与主请求相同的工具表（工具定义也属于前缀，少给一份就少命中一段）
-     * @param maxTokens 检查点输出上限；默认按当前窗口算（见 [maxOutputTokens]）
-     * @return 检查点正文；失败 / 超时 / 空结果一律返回 null（调用方据此退兜底）
+     * @param prefix 主请求的前缀：system → 工作区指令 → 已有检查点 → 待压区间原文（须逐字节原样，不得加工）
+     * @param tools 与主请求相同的工具表（工具定义也属于前缀，缺失一份即少命中一段）
+     * @param maxTokens 检查点输出上限；默认按当前窗口计算（见 [maxOutputTokens]）
+     * @return 检查点正文；失败 / 超时 / 空结果一律返回 null（调用方据此转入兜底）
      */
     suspend fun summarize(
         provider: LlmProvider,
@@ -101,9 +100,9 @@ object ContextSummarizer {
         val request = ChatRequest(
             model = model,
             messages = messages,
-            // 工具表与主请求一致：它是前缀的一部分，少给或换顺序都会让缓存断在这一段
+            // 工具表与主请求一致：它属于前缀的一部分，缺失或顺序变化都会使缓存在此中断
             tools = tools,
-            // 摘要只要结果，不要思考：省 token，也避免 reasoning 把输出拖长
+            // 摘要仅需结果，不启用思考：节省 token，也避免 reasoning 延长输出
             thinking = false,
             maxTokens = maxTokens
         )
@@ -114,7 +113,7 @@ object ContextSummarizer {
         try {
             withTimeout(TIMEOUT_MS) {
                 provider.stream(request)
-                    // 收到 Failed 就立刻停止收集，别把半截输出当摘要
+                    // 收到 Failed 后立即停止收集，避免将不完整的输出作为摘要
                     .takeWhile { failure == null }
                     .collect { event ->
                         when (event) {
@@ -143,7 +142,7 @@ object ContextSummarizer {
             FileLog.log(TAG, "摘要超时（" + (TIMEOUT_MS / 1000) + " 秒），已放弃：" + prefix.size + " 条前缀")
             return null
         } catch (e: CancellationException) {
-            // 用户停止 / 退出：正常取消要往外传，不能吞掉
+            // 用户停止 / 退出：正常取消必须向外传递，不得吞没
             throw e
         } catch (e: Exception) {
             FileLog.log(TAG, "摘要请求异常：" + e)
@@ -171,12 +170,12 @@ object ContextSummarizer {
     }
 
     /**
-     * 超长摘要截断：头 60% + 尾 40%，砍掉中间。
+     * 超长摘要截断：保留头 60% 与尾 40%，删除中间部分。
      *
-     * 为什么不是「只留尾部」：固定格式里【核心任务状态】在开头（续接任务第一眼要看它），
-     * 【未完成事项】在结尾（下一步都在这儿），真正可以牺牲的是中间的【对话历程】。
-     * 为什么用字符数兜底：中文 1 字 ≈ 1 token、英文 1 token ≈ 4 字符，按字符截对混排只会更保守
-     * （截得更短），不会超出 token 上限。
+     * 为什么不只保留尾部：固定格式中【核心任务状态】位于开头（续接任务时首先需要查看），
+     * 【未完成事项】位于结尾（下一步均在此处），可舍弃的是中间的【对话历程】。
+     * 为什么以字符数兜底：中文 1 字 ≈ 1 token、英文 1 token ≈ 4 字符，按字符截断对混排更保守
+     * （截断更短），不会超出 token 上限。
      */
     private fun truncateSummary(text: String, maxTokens: Int): String {
         if (maxTokens <= 0 || text.length <= maxTokens) return text
@@ -187,9 +186,9 @@ object ContextSummarizer {
     }
 
     /**
-     * 指令正文：只讲「产出成什么」，不讲「原文在哪」：原文就是上面那段重放的对话。
+     * 指令正文：只说明「产出什么」，不说明「原文在哪」：原文即上方重放的对话。
      *
-     * 四段式固定格式沿用我们的中文版本，比八节英文模板更短，且贴合 App 的中文语境。
+     * 四段式固定格式采用本项目的版本，比八节英文模板更短，且符合 App 的中文语境。
      */
     private val INSTRUCTION = """
         你是压缩器。把**上面这段对话**压缩成一份检查点：让另一个模型读到它就能无缝接着干，

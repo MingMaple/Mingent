@@ -54,17 +54,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
- * 「自定义目录」展开区的内容：绝对路径输入 → 校验 → 列子文件夹 → 点进去，外加系统目录选择器。
+ * 「自定义目录」展开区的内容：绝对路径输入 → 校验 → 列出子文件夹 → 进入子目录，另有系统目录选择器。
  *
- * 设计口径（这几条是刻意收窄的，别自作主张加东西）：
- * - **不弹新窗口**：进入子文件夹只是就地刷新列表 + 把子目录名追加到输入框路径末尾；
- * - **没有「返回上一级」**：回退靠用户自己改输入框里的路径；
- * - **没有「新建文件夹」、没有「显示隐藏文件」**：多余按钮一律不加（隐藏目录不列出来）；
- * - 右侧那个 📁 是**纯图标按钮**（文字字形，不是矢量资源）：打开系统目录选择器，
- *   选完把该目录的路径回填进输入框，其余逻辑跟上一条完全一样（当作一个根目录）。
+ * 设计约束（以下几条刻意收窄，不额外增加功能）：
+ * - **不弹新窗口**：进入子文件夹仅就地刷新列表，并将子目录名追加到输入框路径末尾；
+ * - **没有「返回上一级」**：回退由用户修改输入框中的路径完成；
+ * - **没有「新建文件夹」、没有「显示隐藏文件」**：不增加多余按钮（隐藏目录不列出）；
+ * - 右侧的 📁 是**纯图标按钮**（文字字形，非矢量资源）：打开系统目录选择器，
+ *   选择后将目录路径回填到输入框，其余逻辑与上一条相同（视为一个根目录）。
  *
- * 状态归调用方（[path] / [treeUri] 受控）：手输或点进子目录走 [onPathEdited]，
- * 系统选择器选完走 [onTreePicked]。宿主据此决定「路径改了就清掉 treeUri」这类口径。
+ * 状态由调用方持有（[path] / [treeUri] 受控）：手动输入或进入子目录时回调 [onPathEdited]，
+ * 系统选择器选择后回调 [onTreePicked]。宿主据此决定「路径变更后清除 treeUri」等规则。
  */
 @Composable
 fun WorkspaceDirPicker(
@@ -78,27 +78,27 @@ fun WorkspaceDirPicker(
     val onSurface = MaterialTheme.colorScheme.onSurface
     var probe by remember { mutableStateOf<DirProbe>(DirProbe.Blank) }
 
-    // 路径一改就重查：250ms 防抖，手输时不会每敲一个字符就去 list 一次目录
+    // 路径变更后重新查询：250ms 防抖，避免每次按键都列举一次目录
     LaunchedEffect(path) {
         delay(250)
         val snapshot = path
         probe = withContext(Dispatchers.IO) { probeDir(snapshot) }
     }
 
-    // 系统目录选择器：ACTION_OPEN_DOCUMENT_TREE 是唯一能「拿持久目录授权」的入口
+    // 系统目录选择器：ACTION_OPEN_DOCUMENT_TREE 是获取持久目录授权的唯一入口
     val treePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val uri = if (result.resultCode == Activity.RESULT_OK) result.data?.data else null
         if (uri != null) {
-            // 持久授权只在这一个时机能拿：错过它，App 重启后这个目录就读不到了
+            // 持久授权仅能在此回调时机取得：错过后，App 重启将无法读取该目录
             val read = Intent.FLAG_GRANT_READ_URI_PERMISSION
             val write = Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             val both = runCatching {
                 context.contentResolver.takePersistableUriPermission(uri, read or write)
             }.isSuccess
             if (!both) {
-                // 有的 provider 只给读权限：退一步再单独要读授权
+                // 部分 provider 仅授予读权限：此时再单独申请读权限
                 runCatching {
                     context.contentResolver.takePersistableUriPermission(uri, read)
                 }
@@ -161,8 +161,8 @@ fun WorkspaceDirPicker(
                         }
                     }
                 )
-                // 纯图标按钮：打开系统目录选择器。图标复用抽屉里「工作区」那枚线稿文件夹，
-                // 不用 emoji：emoji 自带颜色，tint 对它无效，全局唯一一处彩色图标就是它
+                // 纯图标按钮：打开系统目录选择器。图标复用抽屉中「工作区」的线稿文件夹，
+                // 不使用 emoji：emoji 自带颜色，tint 对其无效
                 Box(
                     modifier = Modifier
                         .size(36.dp)
@@ -179,7 +179,7 @@ fun WorkspaceDirPicker(
             }
         }
 
-        // ---- 第二行：校验结果一句话（路径不对就在这儿说清，不弹新窗口）----
+        // ---- 第二行：校验结果说明（路径无效时在此说明，不弹新窗口）----
         Spacer(Modifier.height(8.dp))
         val hint = when (val current = probe) {
             DirProbe.Blank -> "留空将使用应用私有目录（默认）"
@@ -195,7 +195,7 @@ fun WorkspaceDirPicker(
         }
         Text(text = hint, fontSize = 11.sp, color = hintColor)
 
-        // ---- 第三行：当前根（点确定就在这个根目录下建工作区）----
+        // ---- 第三行：当前根目录（确定后在该根目录下创建工作区）----
         Spacer(Modifier.height(4.dp))
         Text(
             text = "当前根目录：" + rootLabel(normalized, treeUri),
@@ -205,7 +205,7 @@ fun WorkspaceDirPicker(
             overflow = TextOverflow.Ellipsis
         )
 
-        // ---- 第四行：子文件夹列表（点一下就进去，同一区域内刷新）----
+        // ---- 第四行：子文件夹列表（点击即进入，在同一区域内刷新）----
         if (ready != null && ready.subDirs.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Surface(
@@ -226,7 +226,7 @@ fun WorkspaceDirPicker(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                // 行在卡片内是矩形，形状交给外层卡片裁剪（跟设置页其它列表同一个口径）
+                                // 行在卡片内为矩形，形状由外层卡片裁剪（与设置页其它列表一致）
                                 .saltCardRow() {
                                     onPathEdited(joinPath(normalized, child.name))
                                 }
@@ -272,8 +272,8 @@ fun WorkspaceDirPicker(
 /**
  * 一次路径校验的结果。
  *
- * 子类型全嵌在里面（而不是散在文件里）：这个类型只在本文件用，
- * 嵌套声明天然跟着 file-private 走，不会往公开 API 上漏。
+ * 子类型均嵌套于此（不在文件中分散定义）：该类型仅本文件使用，
+ * 嵌套声明随 file-private 可见性，不会暴露到公开 API。
  */
 private sealed interface DirProbe {
     /** 还没输入 / 留空。 */
@@ -285,14 +285,14 @@ private sealed interface DirProbe {
     /** 路径存在，但是个文件。 */
     object NotDirectory : DirProbe
 
-    /** 是目录，但读不了（多半是没给存储权限）。 */
+    /** 是目录，但无法读取（通常为未授予存储权限）。 */
     object Denied : DirProbe
 
     /** 可以用的目录：[subDirs] 是它下面能看见的子文件夹（不含隐藏目录）。 */
     class Ready(val dir: File, val subDirs: List<File>) : DirProbe
 }
 
-/** 一个目录最多列出多少个子文件夹：再多就让用户直接改路径，别把弹窗撑成一本电话簿。 */
+/** 单个目录最多列出的子文件夹数量：超出时引导用户直接修改路径，避免弹窗过长。 */
 private const val MAX_LISTED_DIRS = 200
 
 /** 校验 + 列出子文件夹。放在 IO 线程跑，调用方用 withContext 包住。 */
@@ -309,7 +309,7 @@ private fun probeDir(rawPath: String): DirProbe {
             ?.sortedBy { it.name.lowercase() }
             .orEmpty()
     } catch (e: Exception) {
-        // SecurityException 之类：列不动就当空列表，别让弹窗崩在这儿
+        // SecurityException 等情况：列举失败时按空列表处理，避免弹窗崩溃
         emptyList()
     }
     return DirProbe.Ready(dir, subDirs)
@@ -323,9 +323,9 @@ private fun rootLabel(normalizedPath: String, treeUri: String?): String {
 }
 
 /**
- * 把用户输入收敛成标准绝对路径：去掉 file:// 前缀、反斜杠转正斜杠、合并重复斜杠、去末尾斜杠。
+ * 将用户输入规范化为标准绝对路径：去除 file:// 前缀、反斜杠转为正斜杠、合并重复斜杠、去除末尾斜杠。
  *
- * 用户从别处粘贴路径时这几种形态都会出现，收一遍再比对，少一次「明明存在却说不存在」。
+ * 从别处粘贴的路径常出现这几种形态，统一规范化后再比对，避免出现「路径存在却判定为不存在」。
  */
 internal fun normalizePath(raw: String): String {
     var text = raw.trim()
@@ -336,7 +336,7 @@ internal fun normalizePath(raw: String): String {
     return text
 }
 
-/** 拼子目录：两侧斜杠都吃掉，绝不出现双斜杠。 */
+/** 拼接子目录：去除两侧斜杠，避免出现双斜杠。 */
 internal fun joinPath(parent: String, child: String): String {
     val base = normalizePath(parent)
     val name = child.trim().trim('/')
@@ -349,14 +349,14 @@ internal fun joinPath(parent: String, child: String): String {
 }
 
 /**
- * SAF 的 tree URI → 本地绝对路径；推不出来就返回 null（**不猜**）。
+ * SAF 的 tree URI → 本地绝对路径；无法推导时返回 null（**不做猜测**）。
  *
  * 系统 provider 的 documentId 形如 "primary:Documents/项目"：
  * - "primary:" 是内置存储根（/storage/emulated/0）；
  * - "home:" 是「文档」集合，AOSP 上就是 /storage/emulated/0/Documents；
- * - 其它卷（SD 卡是 UUID 形态）一律不猜：猜错会把工作区指到一个不存在、或别人家的目录上。
+ * - 其它卷（SD 卡为 UUID 形态）一律不猜测：推断错误会把工作区指向不存在或他人的目录。
  *
- * 反推出来的路径还要**真的存在**才算数；否则返回 null，界面据此只认 treeUri（走 URI 分支）。
+ * 反推得到的路径还需**实际存在**才有效；否则返回 null，界面据此只使用 treeUri（走 URI 分支）。
  */
 @Suppress("DEPRECATION")
 internal fun treeUriToPath(uri: Uri): String? {

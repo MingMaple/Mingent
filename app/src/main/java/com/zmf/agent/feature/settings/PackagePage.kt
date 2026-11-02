@@ -84,30 +84,30 @@ import com.zmf.agent.uikit.common.saltFieldColors
  * 版式照 Salt：整页铺满、顶部一个返回箭头 + 标题、tab 不用 Material 的 TabRow 而是自己排一行，
  * 选中项下面一条 24×3dp 的绿条跟着手势走；内容区是 HorizontalPager，两页各自滚动。
  *
- * 约定（上层要用）：凡是改了 MCP 配置或 Skill 目录，都会回调一次 [onChanged]，
- * 上层拿它去刷新提示词里的 Skill 目录 / 工具声明；本页不直接碰提示词。
+ * 约定（供上层使用）：凡修改 MCP 配置或 Skill 目录，都会回调一次 [onChanged]，
+ * 上层据此刷新提示词中的 Skill 目录 / 工具声明；本页不直接修改提示词。
  */
 @Composable
 fun PackagePage(
     registry: ToolRegistry,
     onBack: () -> Unit,
     onChanged: () -> Unit = {},
-    // 把「当前是不是第 1 页」报给上层：上层据此决定抽屉要不要在 pager 之前抢向右的位移
+    // 将「当前是否位于第 1 页」上报给上层：上层据此决定抽屉是否在 pager 之前拦截向右滑动
     onFirstPage: (Boolean) -> Unit = {}
 ) {
-    // pageCount 用 lambda：HorizontalPager 在 foundation 1.12 里的写法
+    // pageCount 使用 lambda：HorizontalPager（foundation 1.12）要求的形式
     val pagerState = rememberPagerState(pageCount = { 2 })
     val scope = rememberCoroutineScope()
 
     // 收进 rememberUpdatedState：上层每次重组都给新 lambda，不能让 effect 跟着重建
     val currentOnFirstPage by rememberUpdatedState(onFirstPage)
-    // 停在第 2 页时抽屉不该抢横滑，否则翻页翻不动；初值也要报，所以挂在 LaunchedEffect 上
+    // 停在第 2 页时抽屉不应拦截横向滑动，否则无法翻页；初值也需上报，因此挂在 LaunchedEffect 上
     LaunchedEffect(pagerState.currentPage) {
         currentOnFirstPage(pagerState.currentPage == 0)
     }
 
     Surface(
-        // 铺满且不透明；最外层吞掉点击，避免穿透点到下面的设置页
+        // 铺满且不透明；最外层拦截点击，避免事件穿透到下方的设置页
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -158,14 +158,14 @@ fun PackagePage(
 /**
  * 两个 tab + 会滑动的指示条。
  *
- * 不用 Material3 的 TabRow：它的默认指示条是等分的下划线，跟 Salt 的手感不一致。
+ * 不使用 Material3 的 TabRow：其默认指示条为等分下划线，与 Salt 的交互效果不一致。
  * 这里自己排 Row（两个 tab 等分宽度），指示条用 animateFloatAsState 追
  * 「currentPage + currentPageOffsetFraction」：手拖的时候跟着手指实时动，
  * 点 tab 时由 animateScrollToPage 驱动像素滚动，指示条同时被弹簧带过去。
  */
 @Composable
 private fun PackageTabBar(pagerState: PagerState, scope: CoroutineScope) {
-    // 0f = 停在第 1 页，1f = 停在第 2 页，中间的零头就是拖拽进度
+    // 0f = 停在第 1 页，1f = 停在第 2 页，中间值表示拖动进度
     val progress = pagerState.currentPage + pagerState.currentPageOffsetFraction
     val animated by animateFloatAsState(
         targetValue = progress,
@@ -242,7 +242,7 @@ private fun PackageTab(
  *
  * 行 = 名称 + 状态（就绪 · N 个工具 / 未启用 / 连接中 / 失败：原因）+ 启停开关；
  * 点行编辑，长按或右侧「删除」走二次确认；启停、保存、删除之后都重新 reload，
- * 因为工具要在注册表里增删，不是只改一个开关。
+ * 因为工具需要在注册表中增删，而非仅切换一个开关。
  */
 @Composable
 private fun McpTab(registry: ToolRegistry, onChanged: () -> Unit) {
@@ -364,7 +364,7 @@ private fun McpTab(registry: ToolRegistry, onChanged: () -> Unit) {
                 editorOpen = false
                 scope.launch {
                     servers = withContext(Dispatchers.IO) {
-                        // 改了名字等于换主键：先把旧条目摘掉，不然会多出一条孤儿配置
+                        // 改名即更换主键：先移除旧条目，否则会残留一条孤立配置
                         if (oldName != null && oldName != updated.name) {
                             McpServerStore.remove(context, oldName)
                         }
@@ -424,13 +424,13 @@ private fun McpRow(
         McpManager.ServerState.FAILED -> MaterialTheme.colorScheme.error
         else -> onSurface.copy(alpha = 0.25f)
     }
-    // 五种显示：没有状态（还没接过）也单独说一句，不假装成「连接中」
+    // 五种显示：无状态（尚未连接）也单独说明，不显示为「连接中」
     val detail = when (state) {
         null -> "未连接"
         McpManager.ServerState.DISABLED -> "未启用"
         McpManager.ServerState.CONNECTING -> "连接中"
-        McpManager.ServerState.READY -> "就绪 · " + (status?.toolCount ?: 0) + " 个工具"
-        McpManager.ServerState.FAILED -> "失败：" + status?.message.orEmpty()
+        McpManager.ServerState.READY -> "就绪 · " + status.toolCount + " 个工具"
+        McpManager.ServerState.FAILED -> "失败：" + status.message.orEmpty()
     }
 
     Row(
@@ -492,11 +492,11 @@ private fun McpRow(
 /**
  * 新增 / 编辑服务。
  *
- * [original] 为 null 就是新建；headers 用「Key: Value」一行一条的文本编辑，
- * 比一排动态输入框更省事，也跟 mcp.json 里存的是一回事。
+ * [original] 为 null 即表示新建；headers 使用「Key: Value」一行一条的文本编辑，
+ * 相比一排动态输入框更简洁，且与 mcp.json 的存储形式一致。
  *
  * 三种 transport 的字段不共用：http/sse 填地址和请求头；stdio 填命令/参数/环境变量/工作目录，
- * 此时地址和请求头都不显示（填了也没用），保存前只校验当前那种传输真正需要的字段。
+ * 此时地址和请求头都不显示（填写无意义），保存前只校验当前传输类型真正需要的字段。
  */
 @Composable
 private fun McpEditorDialog(
@@ -510,7 +510,7 @@ private fun McpEditorDialog(
     }
     var url by remember(original) { mutableStateOf(original?.url.orEmpty()) }
     var headers by remember(original) { mutableStateOf(headersToText(original?.headers)) }
-    // stdio 四件套：命令必填，其余留空就按默认（args 无、env 无、cwd=/root）
+    // stdio 四项：命令必填，其余留空时取默认值（args 无、env 无、cwd=/root）
     var command by remember(original) { mutableStateOf(original?.command.orEmpty()) }
     var args by remember(original) { mutableStateOf(original?.args?.joinToString(" ").orEmpty()) }
     var env by remember(original) { mutableStateOf(envToText(original?.env)) }
@@ -571,7 +571,7 @@ private fun McpEditorDialog(
         }
 
         if (stdio) {
-            // 命令行在 App 内的 Ubuntu 里执行：npx / python3 这种直接写名字就行
+            // 命令行在 App 内的 Ubuntu 中执行：npx / python3 等直接写命令名即可
             OutlinedTextField(
                 colors = saltFieldColors(),
                 value = command,
@@ -676,12 +676,12 @@ private fun SkillTab(onChanged: () -> Unit) {
 
     LaunchedEffect(Unit) { skills = readSkills(context) }
 
-    // OpenDocument：只挑 zip；拿不到 uri 说明用户取消了
+    // OpenDocument：仅选择 zip；未取得 uri 表示用户已取消
     val zipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             scope.launch {
                 val result = withContext(Dispatchers.IO) { SkillStore.importZip(context, uri) }
-                // onSuccess / onFailure 的 lambda 不是挂起上下文，读盘要在这里分开做
+                // onSuccess / onFailure 的 lambda 不在挂起上下文中，文件读取需在此处分别处理
                 val count = result.getOrNull()
                 if (count == null) {
                     toast(context, "导入失败：" + describeError(result.exceptionOrNull()))
@@ -892,7 +892,7 @@ private fun NewSkillDialog(
 /**
  * 弹窗壳子：跟首页的 MinimalDialog 同一套观感（0.9 宽的圆角卡），但多了标题与取消/确认。
  *
- * 内容区用 weight(1f, fill = false) + 滚动：字段多的时候自己滚，不会把按钮顶出屏幕。
+ * 内容区使用 weight(1f, fill = false) + 滚动：字段较多时可自行滚动，不会将按钮挤出屏幕。
  */
 @Composable
 private fun PackageDialog(
@@ -967,7 +967,7 @@ private suspend fun readSkills(context: Context): List<SkillEntry> =
 
 /**
  * 把 headers 文本解析成 Map：「Key: Value」一行一条。
- * 空行、没有冒号的行、key 为空的行直接跳过：宁可少一个请求头，也不要存进去一个坏键。
+ * 空行、没有冒号的行、key 为空的行直接跳过：宁可缺少一个请求头，也不写入无效键。
  */
 private fun parseHeaders(text: String): Map<String, String> {
     val map = LinkedHashMap<String, String>()
@@ -984,7 +984,7 @@ private fun parseHeaders(text: String): Map<String, String> {
 
 /**
  * 把参数文本按空格拆成数组：UI 上是「空格分隔」的一行，存的是数组，
- * 所以单个参数里真要带空格得从别的途径写 mcp.json（这里不猜引号，避免自以为聪明地吃掉字符）。
+ * 因此单个参数中确实需要包含空格时，只能通过其它方式编辑 mcp.json（此处不解析引号，避免错误吞并字符）。
  */
 private fun parseArgs(text: String): List<String> =
     text.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }

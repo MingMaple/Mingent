@@ -27,9 +27,9 @@ import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 
 /**
- * 当前可用的全部工具：文件三件 + App 内 Ubuntu 里的 terminal + 抓网页的 web_fetch + 加载 Skill 的 skill
- * + 联网检索的 web_search + 任务清单的 todo_write + 派子智能体的 subagent + 续聊子智能体的
- * send_message + 记忆内核的 mem + 交计划的 write_plan + 长期目标的 goal。
+ * 当前可用的全部工具：文件工具、App 内 Ubuntu 的 terminal、网页抓取 web_fetch、Skill 加载 skill、
+ * 联网检索 web_search、任务清单 todo_write、子智能体 subagent、子智能体续聊 send_message、
+ * 记忆内核 mem、计划提交 write_plan、长期目标 goal。
  *
  * subagent 依赖 [com.zmf.agent.capability.subagent.SubAgentDeps] 里注入的 provider 与工具表：
  * 没接线时它只会明确报「子智能体未初始化」，不会假装跑成功。
@@ -65,10 +65,10 @@ fun defaultTools(): List<Tool> =
 /**
  * 工具注册表：支持运行期按「来源」动态增删工具，读路径不加锁。
  *
- * - 写（[register] / [unregister]）拿 [lock]，改完整体重建一份不可变快照 [snapshot]；
+ * - 写（[register] / [unregister]）获取 [lock]，修改完成后整体重建一份不可变快照 [snapshot]；
  * - 读（[specs] / [find] / [execute]）只读 [snapshot] 这个引用，不在循环里反复 synchronized，
  *   并且一次调用内看到的是同一份列表（不会出现「声明里有、执行时没了」）。
- * - 同名工具以先注册者为准：后来者记一条日志后丢弃，不抛异常：插件之间撞名不该把 Agent 弄崩。
+ * - 同名工具以先注册者为准：后注册者记录一条日志后丢弃，不抛异常，避免插件同名导致 Agent 崩溃。
  *
  * @param initial 内置工具列表，统一记在 builtin 来源下。
  */
@@ -99,7 +99,7 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
      *
      * 计划模式「只加一个提示词段，从不改请求里的工具目录」，
      * 沙箱策略是**逐调用**携带的，由执行期拒绝，不是让工具从目录里消失。
-     * 裁工具有两个实测代价：①工具表变了，整个请求前缀跟着作废，缓存从第一处差异起全废；
+     * 裁工具有两个实测代价：①工具表变化后，整个请求前缀随之失效，缓存从第一处差异起全部失效；
      * ②模型会把「工具被藏起来」误报成「我没有这个能力」。
      */
     fun specs(): List<ToolSpec> = snapshot
@@ -121,7 +121,7 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
         val skipped = ArrayList<String>()
         synchronized(lock) {
             val bucket = sources.getOrPut(source) { ArrayList() }
-            // 当前已经占用的名字（含本来源以前登记的），先注册者优先
+            // 当前已占用的名称（含本来源此前登记的），先注册者优先
             val taken = HashSet<String>()
             for (list in sources.values) for (tool in list) taken.add(tool.name)
             for (tool in tools) {
@@ -147,7 +147,7 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
         FileLog.log(TAG, detail)
     }
 
-    /** 摘掉某个来源登记过的全部工具（来源不存在就当没这回事，不抛异常）。 */
+    /** 摘掉某个来源登记过的全部工具（来源不存在则忽略，不抛异常）。 */
     fun unregister(source: String) {
         var removed: List<Tool>? = null
         synchronized(lock) {
@@ -223,7 +223,7 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: IllegalArgumentException) {
-            // 参数问题不要伪装成「执行异常」：告诉它缺什么、改完重试
+            // 参数问题不应伪装成「执行异常」：明确指出缺失项，供模型补齐后重试
             ToolResult.Error("参数不对：" + (e.message ?: "缺少必填项") + "（请对照参数说明补齐后重试）")
         } catch (e: Exception) {
             ToolResult.Error(
@@ -234,11 +234,11 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
     }
 
     /**
-     * 这次调用会不会产生副作用（写文件 / 跑命令 / 改 App 内部状态）。
+     * 这次调用会不会产生副作用（写文件、执行命令、修改 App 内部状态）。
      *
      * 给 [com.zmf.agent.capability.loop.AgentLoop] 的落盘检查点用：执行有副作用的工具前先写一份会话，
-     * 崩在工具里也能留下「已派发」的证据。参数解析失败时按**有副作用**算：宁可多写一次盘，
-     * 也不要漏记一次不可逆操作。
+     * 即使在工具内崩溃，也能留下「已派发」的证据。参数解析失败时按**有副作用**处理：宁可多写一次磁盘，
+     * 也不遗漏一次不可逆操作。
      */
     fun mutates(call: ToolCall): Boolean {
         val tool = find(call.name) ?: return false
@@ -267,7 +267,7 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
         /** 构造时就有的那批工具记在这个来源名下。 */
         const val BUILTIN_SOURCE = "builtin"
 
-        // 计划模式与只读档的拒绝名单**已删除**：改由 Tool.mutates / mutatesWith 的能力声明驱动，
-        // 新增写工具只要声明一次就不会被漏掉（见 ToolRegistry.execute 的两道闸）。
+        // 计划模式与只读档不维护工具拒绝名单：改由 Tool.mutates / mutatesWith 的能力声明驱动，
+        // 新增写工具只需声明一次即可被识别（见 ToolRegistry.execute 的两道闸）。
     }
 }

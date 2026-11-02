@@ -28,11 +28,11 @@ data class McpToolInfo(
  * 两种传输都支持：
  * - http（新版 Streamable HTTP）：所有请求都 POST 到 url，响应可能是 application/json，
  *   也可能是 text/event-stream（一行行 data:），统一交给 [parseBody] 处理；
- * - sse（旧版 HTTP+SSE）：先 GET url 读事件流，把 event: endpoint 的 data 当后续 POST 地址。
+ * - sse（旧版 HTTP+SSE）：先 GET url 读取事件流，将 event: endpoint 的 data 作为后续 POST 地址。
  *   握手失败（离线、服务端不支持、超时）只记一条日志并退化为直接 POST url，不抛异常中断流程。
  *
- * 所有异常都在 [initialize] / [listTools] / [callTool] 边界折成 Result.failure，
- * message 一定是可读中文，直接能显示在包管理页/回给模型。
+ * 所有异常均在 [initialize] / [listTools] / [callTool] 边界转换为 Result.failure，
+ * message 均为可读中文，可直接显示在包管理页或返回给模型。
  */
 class McpClient(private val server: McpServer) : McpTransport {
 
@@ -48,7 +48,7 @@ class McpClient(private val server: McpServer) : McpTransport {
     @Volatile
     private var sessionId: String? = null
 
-    /** 旧版 SSE 握手拿到的 POST 端点；null 表示还没握手成功。 */
+    /** 旧版 SSE 握手获取的 POST 端点；null 表示尚未握手成功。 */
     @Volatile
     private var sseEndpoint: String? = null
 
@@ -62,7 +62,7 @@ class McpClient(private val server: McpServer) : McpTransport {
      * 成功后这个 client 才能 listTools / callTool。
      */
     override suspend fun initialize(): Result<Unit> = guarded("初始化") {
-        // 旧版 SSE：先把 POST 端点问出来（失败会退化成直接 POST url）
+        // 旧版 SSE：先获取 POST 端点（失败时退化为直接 POST url）
         if (server.isSse) ensureSseEndpoint()
 
         val params = JSONObject()
@@ -82,7 +82,7 @@ class McpClient(private val server: McpServer) : McpTransport {
                 (if (protocol.isNotEmpty()) "，协议 " + protocol else "") +
                 "，transport=" + server.transport
         )
-        // 通知没有 id、也不该等响应；失败只记日志，不能把初始化判死
+        // 通知没有 id，也不等待响应；失败仅记日志，不得据此判定初始化失败
         notify(METHOD_INITIALIZED)
     }
 
@@ -113,7 +113,7 @@ class McpClient(private val server: McpServer) : McpTransport {
 
     /**
      * tools/call：把 arguments 原样发给服务端，把 result.content 里 type=="text" 的 text 拼起来返回。
-     * isError==true 时返回 Result.failure，但把服务端给的文本也带上（模型据此能自己改参数）。
+     * isError==true 时返回 Result.failure，同时附带服务端返回的文本（模型可据此自行调整参数）。
      */
     override suspend fun callTool(name: String, argumentsJson: String): Result<String> = guarded("调用工具 " + name) {
         val arguments = runCatching { JSONObject(argumentsJson.ifBlank { "{}" }) }.getOrElse {
@@ -211,7 +211,7 @@ class McpClient(private val server: McpServer) : McpTransport {
             null
         }
         if (plain != null) return plain
-        // 再按 SSE 事件流拆（content-type 不可信，按正文形态判断更稳）
+        // 再按 SSE 事件流解析（content-type 不可信，依据正文形态判断更可靠）
         parseSse(body)?.let { return it }
         throw IllegalStateException(
             "响应既不是 JSON 也不是 SSE：" + body.take(MAX_ERROR_CHARS).replace("\n", " ")
@@ -237,7 +237,7 @@ class McpClient(private val server: McpServer) : McpTransport {
             val data = line.removePrefix("data:").trim()
             if (data.isEmpty() || data == SSE_DONE || eventName == "endpoint") continue
             val obj = runCatching { JSONObject(data) }.getOrNull() ?: continue
-            // 有的服务端会先推一堆通知，真正的响应带 result/error
+            // 部分服务端会先推送若干通知，真正的响应带有 result/error
             if (obj.has("result") || obj.has("error")) return obj
             if (fallback == null) fallback = obj
         }
@@ -264,13 +264,13 @@ class McpClient(private val server: McpServer) : McpTransport {
     /**
      * GET url 读事件流，取 event: endpoint 的 data 作为 POST 地址。
      *
-     * 只读有限行（[MAX_SSE_HANDSHAKE_LINES]）就收手；握手阶段用更短的读超时，
-     * 免得服务端一直不推 endpoint 时把整个 reload 卡 60 秒。
-     * 任何失败都只记日志：退化成直接 POST 配置里的 url（很多「sse」配置其实也能吃 POST）。
+     * 只读取有限行（[MAX_SSE_HANDSHAKE_LINES]）即停止；握手阶段使用更短的读超时，
+     * 避免服务端始终不推送 endpoint 时使整个 reload 阻塞 60 秒。
+     * 任何失败均只记日志：退化为直接 POST 配置中的 url（部分「sse」配置实际上也支持 POST）。
      */
     private fun ensureSseEndpoint() {
         if (sseEndpoint != null) return
-        // 握手读了多少行要跨 use 块记日志，所以放在 try 外面
+        // 跨 use 块记录握手读取的行数，因此置于 try 之外
         var lines = 0
         try {
             val builder = Request.Builder()
@@ -307,7 +307,7 @@ class McpClient(private val server: McpServer) : McpTransport {
                         if (!line.startsWith("data:")) continue
                         val data = line.removePrefix("data:").trim()
                         if (data.isEmpty()) continue
-                        // 规范里 endpoint 事件的 data 就是 POST 地址；有的服务端干脆只推一个 /xxx 路径
+                        // 规范中 endpoint 事件的 data 即 POST 地址；部分服务端仅推送一个 /xxx 路径
                         if (eventName == "endpoint" || data.startsWith("/") ||
                             data.startsWith("http://", true) || data.startsWith("https://", true)
                         ) {
@@ -351,7 +351,7 @@ class McpClient(private val server: McpServer) : McpTransport {
 
     // ---- 错误包装 ----
 
-    /** 统一把异常折成 Result.failure，message 是可读中文；取消原样抛出。 */
+    /** 统一将异常转换为 Result.failure，message 为可读中文；取消原样抛出。 */
     private suspend fun <T> guarded(action: String, block: suspend () -> T): Result<T> = try {
         Result.success(withContext(Dispatchers.IO) { block() })
     } catch (e: CancellationException) {

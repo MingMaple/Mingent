@@ -1,6 +1,5 @@
 package com.zmf.agent.infra.api
 
-import android.content.Context
 import com.zmf.agent.core.log.FileLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -23,8 +22,8 @@ data class BalanceInfo(
 /**
  * 一次余额查询的结果。
  *
- * 失败不抛异常：网络/鉴权/解析出问题时 [ok] 为 false、[error] 里是一句能直接显示给人看的话，
- * 设置页拿它画一行红字就行，不必再套 try：「查不到余额」不该让设置页崩掉。
+ * 失败不抛异常：网络、鉴权或解析出错时 [ok] 为 false，[error] 为可直接展示的说明；
+ * 设置页直接显示该文本即可，无需额外 try 包裹，查询失败不应导致设置页崩溃。
  */
 data class BalanceResult(
     val ok: Boolean,
@@ -37,23 +36,23 @@ data class BalanceResult(
 /**
  * DeepSeek 余额查询客户端：GET {baseUrl}/user/balance，Bearer 鉴权。
  *
- * 为什么不走 [com.zmf.agent.infra.llm.DeepSeekProvider]：那条路是流式对话，
- * 这里只要一次普通 GET + 一个小 JSON，单独一个客户端更简单，也不会和对话的
- * 「读超时 0（流式）」配置互相污染。
+ * 未复用 [com.zmf.agent.infra.llm.DeepSeekProvider]：该实现用于流式对话；
+ * 此处仅需一次普通 GET 与一份小型 JSON，独立客户端更简单，也不会与对话的
+ * 「读超时 0（流式）」配置相互影响。
  */
 object BalanceClient {
 
     private const val TAG = "balance"
 
-    /** 余额接口的超时：它只是个查询，15 秒还不回来就是网络有问题，没必要让人一直等。 */
+    /** 余额接口超时：该接口仅为查询，超过 15 秒未返回即视为网络异常，无需持续等待。 */
     private const val TIMEOUT_SECONDS = 15L
 
-    /** 错误正文最多留多少字符，防止把整个 HTML 错误页塞进界面。 */
+    /** 错误正文最大字符数，避免将整个 HTML 错误页写入界面。 */
     private const val MAX_ERROR_CHARS = 200
 
     private const val PATH_BALANCE = "/user/balance"
 
-    // 懒加载：只有真去查余额时才建线程池，App 启动不付这个成本
+    // 懒加载：仅在查询余额时创建线程池，App 启动不承担该开销
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -65,8 +64,8 @@ object BalanceClient {
     /**
      * 查一次余额。
      *
-     * [apiKey] / [baseUrl] 由调用方给全，这里不读配置：读配置属于上层的事（它知道当前 provider 是哪个），
-     * infra 只负责发请求。早先这里会回落到 [ApiConfig]，结果 infra 反向依赖了业务配置层。
+     * [apiKey] / [baseUrl] 由调用方完整传入，此处不读取配置：配置读取属于上层职责（上层知晓当前 provider），
+     * infra 仅负责发送请求；此处不回落至 [ApiConfig]，以避免 infra 反向依赖业务配置层。
      */
     suspend fun fetchBalance(apiKey: String, baseUrl: String): BalanceResult {
         val key = apiKey.trim()
@@ -79,7 +78,7 @@ object BalanceClient {
         return try {
             withContext(Dispatchers.IO) { request(endpoint, key) }
         } catch (e: CancellationException) {
-            // 用户离开页面/取消协程：原样抛出，否则取消渗不下去
+            // 用户离开页面或取消协程：原样抛出，否则取消无法向上传播
             throw e
         } catch (e: Exception) {
             val reason = e.message?.take(MAX_ERROR_CHARS) ?: e.javaClass.simpleName
@@ -131,7 +130,7 @@ object BalanceClient {
             }
         }
         if (infos.isEmpty()) {
-            // 200 但没有 balance_infos：多半是 Key 对应的是没有余额字段的账号，仍算成功但界面要能看出是 0 条
+            // 返回 200 但无 balance_infos：通常表示该密钥对应账号无余额字段；仍视为成功，但界面应能体现为 0 条
             FileLog.log(TAG, "余额接口没有 balance_infos")
         }
         return BalanceResult(
@@ -144,7 +143,7 @@ object BalanceClient {
     /**
      * 读字符串字段：缺字段 / 显式 null / 字符串 "null" 一律当空串。
      *
-     * org.json 的 optString 遇到 JSON null 会返回字符串 "null"，直接显示到界面上就是一个 "null"。
+     * org.json 的 optString 遇到 JSON null 会返回字符串 "null"，会直接显示为 "null"。
      * 金额是数字时 optString 会给出它的文本形式（"110.00" 原样保留），所以统一按字符串取。
      */
     private fun field(obj: JSONObject, key: String): String {
@@ -159,7 +158,7 @@ object BalanceClient {
             val detail = runCatching {
                 val obj = JSONObject(body)
                 val error = obj.optJSONObject("error")
-                // OpenAI 兼容错误是 {"error":{"message":...}}，DeepSeek 也是同款
+                // OpenAI 兼容错误格式为 {"error":{"message":...}}，DeepSeek 采用相同格式
                 error?.optString("message", "")?.takeIf { it.isNotBlank() }
                     ?: obj.optString("message", "").takeIf { it.isNotBlank() }
             }.getOrNull()

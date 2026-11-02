@@ -2,7 +2,6 @@ package com.zmf.agent.capability.context
 import com.zmf.agent.core.llm.ApiDefaults
 
 import android.content.Context
-import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import kotlin.math.round
@@ -11,7 +10,7 @@ import kotlin.math.round
  * 上下文压缩策略（摘要式滚动压缩）。
  *
  * 语义：命中闸门时，把「最早的若干轮」交给模型生成摘要，并与上一条摘要融合成新摘要（滚动），
- * 旧消息**不删**（界面照旧全在），只是不再进请求；最近 [fallbackKeepRounds] 轮永远发原文。
+ * 旧消息**不删除**（界面仍完整显示），仅不再进入请求；最近 [fallbackKeepRounds] 轮始终发送原文。
  * 只影响「发给模型的请求视图」，界面渲染 / 回滚 / 重新生成用的仍是全量消息。
  */
 data class ContextPolicy(
@@ -40,8 +39,8 @@ data class ContextPolicy(
     /**
      * 逐字保留的绝对 token 预算；> 0 时优先于 [retainRatio]。
      *
-     * 为什么两种都留：比例跟着窗口走，换小模型不用改设置；绝对值和阈值一样直观，
-     * 用户想「就留 20k」时不用拿计算器算比例。
+     * 为什么保留两种配置：比例随窗口变化，更换小模型时无需修改设置；绝对 token 值与阈值同样直观，
+     * 用户需要固定保留 20k tokens 时无需换算比例。
      */
     val retainTokens: Int = 0,
     /**
@@ -56,8 +55,8 @@ data class ContextPolicy(
     /**
      * 设置页 / 侧边栏显示的一行说明，例如「0.4 窗口 · 16 条 · 留 8 轮 / 16%」。
      *
-     * 设置页能改的每一项（触发比例 / 条数 / 保留轮数 / 保留预算）都要在这行里看得见，
-     * 用户改完立刻能确认自己改的是哪一档。
+     * 设置页能修改的每一项（触发比例 / 条数 / 保留轮数 / 保留预算）都需在该行体现，
+     * 用户修改后即可确认所调整的档位。
      */
     val summary: String
         get() {
@@ -98,7 +97,7 @@ data class ContextPolicy(
 /**
  * 上下文快照：界面上「现在塞给模型多少」的唯一口径。
  *
- * 全是粗估（复用 [ContextCompactor.estimate]），不是服务端真实 usage；只用来显示水位与判断闸门。
+ * 全部为粗略估算（复用 [ContextCompactor.estimate]），并非服务端真实 usage；仅用于显示水位与判断闸门。
  */
 data class ContextSnapshot(
     val estimatedTokens: Int = 0,
@@ -115,9 +114,9 @@ data class ContextSnapshot(
 /**
  * 策略落盘（和权限档、思考档同一个 prefs 文件）。
  *
- * 旧的 mode / keep_rounds / token_budget 三个键语义已废，这里既不读也不写；
- * enabled 复用同名键（含义从「裁轮」变成「摘要」，默认值仍为 true），其余换成新键名，
- * 老用户升级后直接吃到新默认值，不会被旧值带偏。
+ * 旧版的 mode / keep_rounds / token_budget 三个键语义已废弃，此处既不读也不写；
+ * enabled 复用同名键（含义由「裁轮」调整为「摘要」，默认值仍为 true），其余改用新键名，
+ * 旧用户升级后直接采用新默认值，不受旧值影响。
  */
 object ContextStore {
 
@@ -130,7 +129,7 @@ object ContextStore {
     private const val KEY_BY_COUNT = "context_trigger_by_count"
     private const val KEY_SUMMARY_MODEL = "context_summary_model"
 
-    // 逐字保留预算：比例与绝对 token 各一个键。旧版本没有它们，读到默认值（16% / 0），向后兼容。
+    // 逐字保留预算：比例与绝对 token 各一个键。旧版本无这两个键，读取时使用默认值（16% / 0），向后兼容。
     private const val KEY_RETAIN_RATIO = "context_retain_ratio"
     private const val KEY_RETAIN_TOKENS = "context_retain_tokens"
 
@@ -144,7 +143,7 @@ object ContextStore {
                 triggerByCount = p.getBoolean(KEY_BY_COUNT, true),
                 triggerCount = p.getInt(KEY_COUNT, ContextPolicy.DEFAULT_TRIGGER_COUNT),
                 fallbackKeepRounds = p.getInt(KEY_KEEP_ROUNDS, ContextPolicy.DEFAULT_KEEP_ROUNDS),
-                // 旧版本的 prefs 没有这两个键：getFloat/getInt 的默认值直接兜住
+                // 旧版本 prefs 无这两个键：getFloat/getInt 的默认值即为兜底
                 retainRatio = p.getFloat(KEY_RETAIN_RATIO, ContextPolicy.DEFAULT_RETAIN_RATIO),
                 retainTokens = p.getInt(KEY_RETAIN_TOKENS, 0),
                 summaryModel = p.getString(KEY_SUMMARY_MODEL, null).orEmpty()
@@ -170,7 +169,7 @@ object ContextStore {
         warnIfRetainClamped(p)
     }
 
-    /** 把越界值夹回合法范围：手滑传 0 或 200 也别把闸门弄成「永不触发」/「每句都触发」。 */
+    /** 将越界值限制在合法范围：即使传入 0 或 200，也不会使闸门变为「永不触发」或「每句都触发」。 */
     fun normalize(policy: ContextPolicy): ContextPolicy = policy.copy(
         triggerRatio = policy.triggerRatio.coerceIn(ContextPolicy.MIN_RATIO, ContextPolicy.MAX_RATIO),
         triggerCount = policy.triggerCount.coerceIn(
@@ -185,7 +184,7 @@ object ContextStore {
             ContextPolicy.MIN_RETAIN_RATIO,
             ContextPolicy.MAX_RETAIN_RATIO
         ),
-        // 负数 token 预算没有意义：当 0（= 用比例）
+        // 负数 token 预算无意义：按 0 处理（表示改用比例）
         retainTokens = policy.retainTokens.coerceAtLeast(0)
     )
 
@@ -199,7 +198,7 @@ object ContextStore {
      * 逐字保留预算（token），已按触发阈值校正。
      *
      * 规则是「保留预算必须小于触发阈值」，否则永远压不动。
-     * 这里选择回落 + 告警，不让 App 因此起不来：越界时按阈值的 80% 算。
+     * 这里选择回落并告警，避免 App 因此无法启动：越界时按阈值的 80% 计算。
      *
      * @param outputReserveTokens 请求输出预留；对话请求不设 max_tokens，所以默认 0。
      */
@@ -230,8 +229,8 @@ object ContextStore {
     /**
      * 保留预算越界时记一条告警。
      *
-     * 只在读盘 / 存盘时判一次：这两个时点各自代表「App 启动」与「用户改了设置」，
-     * 放到每次请求里判就是刷屏。
+     * 只在读盘 / 存盘时判断一次：这两个时点分别代表「App 启动」与「用户修改设置」，
+     * 若在每次请求中判断，将产生大量重复日志。
      */
     private fun warnIfRetainClamped(policy: ContextPolicy) {
         if (!retainClamped(policy)) return
@@ -263,7 +262,7 @@ fun contextSummarySystemText(summary: String): String =
  * 正常路径的请求视图是「摘要 + summaryUpTo 之后的原文」（见 AgentLoop）；
  * 摘要失败 / 超时 / 被关掉时才用这里的裁轮兜底：只发最近 [ContextPolicy.fallbackKeepRounds] 轮原文。
  * 删除粒度是「整轮」：一条 user 加它之后到下一个 user 之前的全部内容，
- * 所以 assistant(tool_calls) 和它的 tool 结果永远一起存亡，不会断成孤儿消息触发 400。
+ * 所以 assistant(tool_calls) 与其 tool 结果始终一并保留，不会产生孤立的 tool 消息并触发 400。
  */
 object ContextCompactor {
 
@@ -309,8 +308,8 @@ object ContextCompactor {
     /**
      * 按 token 预算算保留区的起点（0 = 一条都不裁）。
      *
-     * 从最后一条往前累加估算 token，超预算就停；再往回对齐到整轮开头，
-     * 免得把一轮切成两半（tool 结果会变成孤儿消息，接口直接报错）。
+     * 从最后一条向前累加估算 token，超出预算即停止；再向前对齐到整轮开头，
+     * 避免将一轮拆成两半（tool 结果会成为孤立消息，接口直接报错）。
      * 起点永远落在 user 边界上，和 [tailStartIndex] 同一套边界规则。
      */
     fun tailStartByBudget(history: List<ChatMessage>, budgetTokens: Int): Int {
@@ -320,7 +319,7 @@ object ContextCompactor {
         var start = history.size
         for (i in history.indices.reversed()) {
             val cost = estimate(history[i])
-            // 至少保住最后一条：预算再小也不能把「刚问的那句」裁掉
+            // 至少保留最后一条：预算再小也不得裁掉「刚发出的提问」
             if (start < history.size && used + cost > budgetTokens) break
             used += cost
             start = i
@@ -333,7 +332,7 @@ object ContextCompactor {
      * 摘要分界 = 「逐字保留」的起点：token 预算与轮数下限取更靠前的那个。
      *
      * 为什么两个条件都要：预算才是成本闸门，
-     * 轮数是老用户看得懂的下限（留 N 轮）；取更靠前的起点，等于「按预算留，但不低于 N 轮」。
+     * 轮数是用户可理解的下限（保留 N 轮）；取更靠前的起点，等于「按预算保留，但不低于 N 轮」。
      */
     fun retainStart(
         history: List<ChatMessage>,
@@ -355,7 +354,7 @@ object ContextCompactor {
         return if (count == 0) 1 else count
     }
 
-    /** 整段历史的估算 tokens：逐条累加，用于水位判断，不追求精确。 */
+    /** 整段历史的估算 tokens：逐条累加，用于水位判断，不要求精确。 */
     fun estimate(messages: List<ChatMessage>): Int = messages.sumOf { estimate(it) }
 
     /** 单条消息的估算 tokens：固定开销 + 正文 + 推理 + 工具名与参数。 */

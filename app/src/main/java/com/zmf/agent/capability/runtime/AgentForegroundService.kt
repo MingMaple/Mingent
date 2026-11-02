@@ -11,11 +11,11 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
 /**
- * 常驻前台服务：挂一条低调的常驻通知，把进程钉在「前台服务」状态，
- * 这样 App 退到后台也不容易被系统回收，Agent 正在跑的回合能继续跑完。
+ * 常驻前台服务：显示一条低优先级的常驻通知，使进程处于「前台服务」状态，
+ * 从而在 App 退至后台时不易被系统回收，Agent 正在执行的回合得以继续完成。
  *
- * 只有用户在设置里打开「后台运行」才会起来；onDestroy 不主动 stopSelf
- * （START_STICKY，被系统杀掉时由系统按需重建）。用完只在用户关开关时 stop。
+ * 仅在用户于设置中开启「后台运行」时启动；onDestroy 不主动调用 stopSelf
+ * （START_STICKY，被系统回收时由系统按需重建）。仅在用户关闭开关时调用 stop。
  */
 class AgentForegroundService : Service() {
 
@@ -24,23 +24,23 @@ class AgentForegroundService : Service() {
         private const val CHANNEL_NAME = "后台运行"
         private const val NOTIFICATION_ID = 1001
 
-        /** 服务是否在跑（设置页「后台运行」那一行读这个）。 */
+        /** 服务是否正在运行（设置页「后台运行」一行读取该值）。 */
         @Volatile
         var isRunning: Boolean = false
             private set
 
-        /** 拉起前台服务；系统拒绝前台启动时退回普通 startService，不向上抛。 */
+        /** 启动前台服务；系统拒绝前台启动时退回普通 startService，不向上抛出异常。 */
         fun start(context: Context) {
             val intent = Intent(context, AgentForegroundService::class.java)
             try {
                 ContextCompat.startForegroundService(context, intent)
             } catch (t: Throwable) {
-                // 少数机型/系统策略下前台上限会拒；退回普通 startService 至少别崩
+                // 少数机型或系统策略会拒绝前台启动；退回普通 startService 以避免崩溃
                 runCatching { context.startService(intent) }
             }
         }
 
-        /** 停止前台服务（用户关掉「后台运行」时调用）；失败静默。 */
+        /** 停止前台服务（用户关闭「后台运行」时调用）；失败时静默处理。 */
         fun stop(context: Context) {
             runCatching { context.stopService(Intent(context, AgentForegroundService::class.java)) }
         }
@@ -51,7 +51,7 @@ class AgentForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
-        // minSdk 26，通知渠道 API 直接可用，不用判版本
+        // minSdk 26，通知渠道 API 可直接使用，无需判断版本
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -75,7 +75,7 @@ class AgentForegroundService : Service() {
 
     override fun onDestroy() {
         isRunning = false
-        // 这里不 stopSelf：用户关开关走的是 stopService，系统回收走 START_STICKY 重建
+        // 此处不调用 stopSelf：用户关闭开关时由 stopService 停止，系统回收时由 START_STICKY 重建
         super.onDestroy()
     }
 
@@ -91,7 +91,7 @@ class AgentForegroundService : Service() {
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .build()
 
-    /** 点通知回 App：NEW_TASK 复用已有任务，不会重建 MainActivity（聊天记录还在）。 */
+    /** 点击通知返回 App：NEW_TASK 复用已有任务，不会重建 MainActivity（聊天记录得以保留）。 */
     private fun contentIntent(): PendingIntent {
         val intent = Intent().setClassName(this, com.zmf.agent.core.AppEntry.ACTIVITY)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

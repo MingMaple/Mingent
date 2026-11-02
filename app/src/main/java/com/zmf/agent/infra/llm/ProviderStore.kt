@@ -11,12 +11,12 @@ import java.io.File
 /**
  * 一个可用的模型服务商。
  *
- * 请求侧只实现 OpenAI 兼容的 /chat/completions（见 [DeepSeekProvider]），所以 Anthropic 原生协议
- * 不在这里建模：多一列协议类型只会让「什么情况下能用」变复杂，而 ollama / vllm / 各家云厂商的
- * 兼容端点都能用同一套字段填。
+ * 请求侧仅实现 OpenAI 兼容的 /chat/completions（见 [DeepSeekProvider]），因此此处不对 Anthropic
+ * 原生协议建模：增加协议类型会使「何种情况下可用」的判断复杂化，而 ollama、vllm 及各云厂商的
+ * 兼容端点均可使用同一套字段配置。
  *
  * @param id 稳定标识（"deepseek" / "openai" / "kimi" / "custom-<毫秒时间戳>"），会话与偏好都按它引用
- * @param models 可用模型 id；空列表表示「交给用户自己填」，ApiConfig.loadModel 会记住上次用的那个
+ * @param models 可用模型 id；空列表表示由用户自行填写，ApiConfig.loadModel 会记住上次使用的模型
  * @param builtIn 来自内置目录的模板（界面上据此显示「内置」并禁止改 id / 删除 id 语义）
  */
 data class ProviderConfig(
@@ -31,11 +31,11 @@ data class ProviderConfig(
 /**
  * 多提供商落盘：filesDir/appdata/providers.json + app_prefs 里的选中态。
  *
- * 为什么不是一个数据库：提供商是用户在设置页手填出来的，几条到十几条量级，
- * 和 sessions.json / workspaces.json 一样「整份覆盖写」最省事，也避免引入新依赖。
+ * 不使用数据库的原因：提供商由用户在设置页手动填写，量级为几条至十几条，
+ * 与 sessions.json / workspaces.json 一致采用整份覆盖写，实现简单，也避免引入新依赖。
  *
- * 一个进程只读一次盘（[cache]）：ApiConfig 每次拼提示词 / 发请求都要问当前 provider，
- * 每次都读盘纯属浪费；所有写入都走 [save]，缓存和文件不会走偏。
+ * 每个进程仅读盘一次（[cache]）：ApiConfig 每次拼接提示词或发送请求均需查询当前 provider，
+ * 每次读盘并无必要；所有写入均经由 [save]，缓存与文件不会不一致。
  */
 object ProviderStore {
 
@@ -61,14 +61,14 @@ object ProviderStore {
     /**
      * 迁移时读的旧键名，语义与 ApiConfig 里的同名键一一对应。
      *
-     * 这里直接读 prefs 而不是调 ApiConfig.loadXxx：ApiConfig 现在反过来要问 ProviderStore
-     * 「当前 provider」，绕回去就是 load → 迁移 → load 的无限递归。
+     * 此处直接读取 prefs 而不调用 ApiConfig.loadXxx：ApiConfig 会反向查询 ProviderStore
+     * 的「当前 provider」，回绕将形成 load → 迁移 → load 的无限递归。
      */
     private const val LEGACY_KEY_API_KEY = "api_key"
     private const val LEGACY_KEY_BASE_URL = "api_base_url"
     private const val LEGACY_KEY_MODEL = "model"
 
-    /** 内置 DeepSeek 的固定 id：只有它允许回落到源码里的兜底 Key / 官方端点。 */
+    /** 内置 DeepSeek 的固定 id：仅它允许回落至源码中的默认 Key 与官方端点。 */
     const val DEEPSEEK_ID = "deepseek"
 
     const val OPENAI_ID = "openai"
@@ -91,9 +91,9 @@ object ProviderStore {
     /**
      * 读全部 provider；结果保证非空。
      *
-     * 首次运行（文件不存在）时用旧的单 provider 配置迁一条 id="deepseek" 出来，
-     * 老用户填过的 Key / 端点 / 模型一个不丢；文件坏掉则回落到同一份默认值并顺手修好文件
-     * （坏文件里本来也读不出东西，留着只会每次启动都失败一次）。
+     * 首次运行（文件不存在）时由旧的单 provider 配置迁移出一条 id="deepseek"，
+     * 保留用户已填写的 Key、端点与模型；文件损坏时回落至同一份默认值并同时修复文件
+     * （损坏文件无法读出内容，保留只会导致每次启动均失败一次）。
      */
     fun load(context: Context): List<ProviderConfig> {
         cache?.let { return it }
@@ -117,9 +117,9 @@ object ProviderStore {
         return parsed
     }
 
-    /** 整体覆盖写（.tmp + rename）；失败只记日志，界面上最多是这次改动没生效，不会崩。 */
+    /** 整体覆盖写（.tmp + rename）；失败只记日志，界面表现为本次改动未生效，不会崩溃。 */
     fun save(context: Context, list: List<ProviderConfig>) {
-        // 空列表等于「App 一个模型都用不了」，直接拒掉：宁可保留磁盘上的旧配置
+        // 空列表意味着 App 无任何可用模型，直接拒绝：宁可保留磁盘上的旧配置
         if (list.isEmpty()) {
             FileLog.log(TAG, "拒绝保存空的提供商列表")
             return
@@ -134,19 +134,19 @@ object ProviderStore {
             val temp = File(file.parentFile, FILE_NAME + ".tmp")
             temp.writeText(json, Charsets.UTF_8)
             if (!temp.renameTo(file)) {
-                // rename 失败（个别文件系统）时退化成直接覆盖，保证内容落地
+                // rename 失败（个别文件系统）时退化为直接覆盖，确保内容写入
                 file.writeText(json, Charsets.UTF_8)
                 temp.delete()
             }
             cache = list
         } catch (e: Exception) {
-            // 写到盘上的可能只是半截：缓存立刻作废，下次 load 以文件为准
+            // 磁盘上可能仅写入部分内容：缓存立即作废，下次 load 以文件为准
             cache = null
             FileLog.log(TAG, "保存提供商失败：" + e)
         }
     }
 
-    /** 当前选中的 provider id；存的是已删除的 id 时回落到第一个，并把 pref 顺手改对。 */
+    /** 当前选中的 provider id；存储的 id 已被删除时回落至第一个，并同步修正 pref。 */
     fun currentId(context: Context): String {
         val list = load(context)
         val saved = prefs(context).getString(KEY_CURRENT, null)?.trim().orEmpty()
@@ -163,7 +163,7 @@ object ProviderStore {
         return list.firstOrNull { it.id == id } ?: list.first()
     }
 
-    /** 切换当前 provider；id 不存在就不动（界面上最多是这次点击没反应，不会把状态弄成空的）。 */
+    /** 切换当前 provider；id 不存在时不作改动（表现为本次点击无响应，状态不会被置空）。 */
     fun select(context: Context, id: String) {
         if (load(context).none { it.id == id }) {
             FileLog.log(TAG, "切换失败：没有这个提供商 " + id)
@@ -176,8 +176,8 @@ object ProviderStore {
     /**
      * 内置模板：DeepSeek / OpenAI / Kimi / 自定义（空地址）。
      *
-     * 只有模板带 API Key 之外的全部字段，Key 一律留空：模板是给用户照着填的样例，
-     * 预置任何 Key 都会让「我以为用的是自己的 Key」变成一次事故。
+     * 模板仅包含除 API Key 之外的全部字段，Key 一律留空：模板是供用户参照填写的样例，
+     * 预置任何 Key 都会导致用户误以为使用的是自己的 Key。
      */
     fun catalog(): List<ProviderConfig> = listOf(
         ProviderConfig(
@@ -209,14 +209,14 @@ object ProviderStore {
             name = "自定义",
             baseUrl = "",
             apiKey = "",
-            // 自定义的模型名只有用户知道：留空列表，等于「用用户自己填的那个」（见 ApiConfig.loadModel）
+            // 自定义模型名仅用户知晓：留空列表即使用用户自行填写的模型（见 ApiConfig.loadModel）
             models = emptyList(),
-            // 空白模板不标内置：用它建出来的 provider 就该和用户自建的一视同仁
+            // 空白模板不标记为内置：由其创建的 provider 应与用户自建的 provider 同等对待
             builtIn = false
         )
     )
 
-    /** 新增或整条替换（按 id 认人）；id 为空直接拒绝：没有 id 就没法被引用。 */
+    /** 新增或整条替换（按 id 匹配）；id 为空时直接拒绝：无 id 则无法被引用。 */
     fun upsert(context: Context, cfg: ProviderConfig) {
         if (cfg.id.isBlank()) {
             FileLog.log(TAG, "拒绝保存没有 id 的提供商")
@@ -234,10 +234,10 @@ object ProviderStore {
     }
 
     /**
-     * 删除；最后一个不允许删（删完 App 就没有可用 provider 了）。
+     * 删除；最后一个不允许删除（删除后 App 将无可用 provider）。
      *
-     * 删的是当前选中的那个时，[currentId] 会把选中态挪到第一个并落盘，
-     * 调用方紧接着读 [currentId] 就能拿到删完之后该用哪个。
+     * 删除当前选中项时，[currentId] 会将选中状态移至第一项并落盘，
+     * 调用方随后读取 [currentId] 即可获得删除后应使用的 provider。
      */
     fun remove(context: Context, id: String): Boolean {
         val list = load(context)
@@ -248,23 +248,23 @@ object ProviderStore {
         }
         val next = list.filter { it.id != id }
         save(context, next)
-        // 先落盘再问「现在是谁」：currentId 会顺手把停在被删 id 上的 pref 改到第一个
+        // 先落盘再查询当前项：currentId 会将仍指向已删除 id 的 pref 修正为第一个
         val current = currentId(context)
         FileLog.log(TAG, "删除提供商 " + id + "，剩 " + next.size + " 个，当前=" + current)
         return true
     }
 
-    /** 这个 provider 上次用的模型（空串 = 没记过）。 */
+    /** 该 provider 上次使用的模型（空串表示未记录）。 */
     fun modelOf(context: Context, providerId: String): String =
         prefs(context).getString(KEY_MODEL_PREFIX + providerId, null)?.trim().orEmpty()
 
-    /** 记住这个 provider 上次用的模型：每个 provider 一个键，切来切去不会互相覆盖。 */
+    /** 记录该 provider 上次使用的模型：每个 provider 一个键，切换时不会相互覆盖。 */
     fun saveModel(context: Context, providerId: String, model: String) {
         if (providerId.isBlank()) return
         prefs(context).edit().putString(KEY_MODEL_PREFIX + providerId, model.trim()).apply()
     }
 
-    /** 新建自定义提供商时用的 id：时间戳保证同一毫秒内连点两次也不撞号。 */
+    /** 新建自定义提供商时使用的 id：时间戳确保同一毫秒内连续两次创建也不会重复。 */
     fun newCustomId(): String = CUSTOM_PREFIX + "-" + System.currentTimeMillis()
 
     // ---- 内部 ----
@@ -281,7 +281,7 @@ object ProviderStore {
         return list
     }
 
-    /** 文件坏掉：回落到旧配置推出的默认值并重写，下次启动就不用再走这条路。 */
+    /** 文件损坏：回落至由旧配置生成的默认值并重写，后续启动无需再进入该分支。 */
     private fun repair(context: Context): List<ProviderConfig> {
         val list = defaultsFromLegacy(context)
         FileLog.log(TAG, "providers.json 不可用，用默认配置重建")
@@ -292,8 +292,8 @@ object ProviderStore {
     /**
      * 由旧版本的三个 pref 键拼出唯一一条 DeepSeek provider。
      *
-     * 老模型的取值也要搬到 model_deepseek：不然升级后 ApiConfig.loadModel 只会拿到第一个模型，
-     * 用户明明选过 deepseek-v4-pro，升级后却悄悄换成了 flash。
+     * 旧模型取值也需迁移至 model_deepseek：否则升级后 ApiConfig.loadModel 只会取得第一个模型，
+     * 用户此前选择的 deepseek-v4-pro 会被静默替换为 flash。
      */
     private fun defaultsFromLegacy(context: Context): List<ProviderConfig> {
         val p = prefs(context)
@@ -306,7 +306,7 @@ object ProviderStore {
         val modelKey = KEY_MODEL_PREFIX + DEEPSEEK_ID
         if (!p.contains(modelKey)) p.edit().putString(modelKey, model).apply()
 
-        // 老模型也要在可用列表里（自定义端点上的模型可能根本不在 MODELS 里）
+        // 旧模型同样需保留在可用列表中（自定义端点上的模型可能不在 MODELS 中）
         val models = (ApiDefaults.MODELS.map { it.first } + model).distinct()
         return listOf(
             ProviderConfig(
@@ -320,7 +320,7 @@ object ProviderStore {
         )
     }
 
-    /** 统一清洗：名字回落到 id、地址去尾部斜杠、Key 去空白、模型去空去重。 */
+    /** 统一清洗：名称回落至 id、地址去除尾部斜杠、Key 去除空白、模型去除空白并去重。 */
     private fun normalize(cfg: ProviderConfig): ProviderConfig {
         val id = cfg.id.trim()
         val models = cfg.models.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
@@ -352,9 +352,9 @@ object ProviderStore {
         val seen = HashSet<String>()
         for (i in 0 until array.length()) {
             val obj = array.optJSONObject(i) ?: continue
-            // optString 遇到 JSON null 会给出 "null"，所以统一走 stringOr
+            // optString 遇到 JSON null 会返回 "null"，因此统一使用 stringOr
             val id = obj.stringOr(KEY_ID).trim()
-            // id 是唯一标识：缺了没法被引用，重了切换会指到不确定的那条，都丢掉
+            // id 为唯一标识：缺失则无法引用，重复会使切换指向不确定项，均丢弃
             if (id.isEmpty() || !seen.add(id)) continue
             val models = ArrayList<String>()
             obj.optJSONArray(KEY_MODELS)?.let { arr ->
@@ -377,7 +377,7 @@ object ProviderStore {
         return list
     }
 
-    /** 读字符串：key 不存在 / 是 JSON null / 空串都当空串（org.json 会把 JSON null 读成 "null"，一并防住）。 */
+    /** 读取字符串：键不存在、为 JSON null 或空串时均返回空串（org.json 会将 JSON null 读取为 "null"，同时处理）。 */
     private fun JSONObject.stringOr(key: String): String {
         if (!has(key) || isNull(key)) return ""
         val value = optString(key, "")

@@ -14,10 +14,10 @@ fun PermissionLevel.displayName(): String = when (this) {
 }
 
 /**
- * 权限档的高低比较：显式给 rank，不再依赖枚举声明顺序。
+ * 权限档的高低比较：显式定义 rank，不依赖枚举声明顺序。
  *
- * 用 ordinal 曾经很方便，但以后往枚举里插一档（比如「只读但可执行」）就会静默错位，
- * 而这类错误只会表现为「某个操作突然被允许/被拒绝」，极难查。
+ * 若使用 ordinal，往枚举中插入新档位（如「只读但可执行」）会导致序号静默错位，
+ * 错误只表现为权限判断异常，难以排查。
  */
 fun PermissionLevel.rank(): Int = when (this) {
     PermissionLevel.READ_ONLY -> 0
@@ -31,8 +31,8 @@ fun PermissionLevel.atLeast(other: PermissionLevel): Boolean = rank() >= other.r
 /**
  * 工具执行上下文：工作区根、当前权限档、应用 Context。
  *
- * workspaceRoot 由调用方（ChatViewModel）按当前工作区传入，
- * 不再是「永远等于默认工作区目录」，这样文件工具的相对路径才会跟着工作区走。
+ * workspaceRoot 由调用方（ChatViewModel）按当前工作区传入，而非固定等于默认工作区目录，
+ * 这样文件工具的相对路径才会跟随工作区变化。
  */
 data class ToolContext(
     val context: Context,
@@ -61,24 +61,24 @@ data class ToolContext(
 ) {
     init {
         // 没有 context 的 ToolPolicy.checkPath 需要「当前工作区根」当越界比较基准；
-        // ToolContext 是唯一保证这个根准确的入口（每次工具调用新建一个），所以在这里顺手刷新快照。
+        // ToolContext 是唯一保证这个根准确的入口（每次工具调用新建一个），因此在此刷新快照。
         ToolPolicy.bindWorkspaceRoot(workspaceRoot)
         // 高危闸门要判「App 核心数据目录 / 存储根 / PRoot 根」，这些路径只能从 Context 推出来。
         // 同样每次工具调用刷新一次，避免会话切换工作区后仍用旧快照。
         HighRiskGate.bind(context)
     }
 
-    /** [workspaceRoot] 的别名，留给按旧名字调用的代码。 */
+    /** [workspaceRoot] 的别名，保留用于按旧名称调用的代码。 */
     val workspace: File get() = workspaceRoot
 }
 
 /**
  * 工具执行结果。
- * 失败不是异常：错误文本会作为 tool 消息回给模型，让它自己改参数重试，
- * 这样「连续 5 轮工具调用」才不会因为一次越界直接断掉。
+ * 失败不是异常：错误文本会作为 tool 消息回给模型，由模型自行调整参数后重试，
+ * 避免「连续 5 轮工具调用」因一次越界而中断。
  */
 sealed interface ToolResult {
-    /** 成功与否，等价于「是不是 [Ok]」。 */
+    /** 成功与否，等价于是否为 [Ok]。 */
     val ok: Boolean
     /** 回给模型的文本：成功是结果正文，失败是失败原因。 */
     val text: String
@@ -100,7 +100,7 @@ interface Tool {
     /** 给模型看的用途说明，随工具声明一起发出去。 */
     val description: String
 
-    /** JSON Schema 字符串，直接塞进 tools[].function.parameters。 */
+    /** JSON Schema 字符串，直接写入 tools[].function.parameters。 */
     val parametersJson: String
 
     /** 使用本工具要求的最低权限档。 */
@@ -109,9 +109,8 @@ interface Tool {
     /**
      * 这个工具**是否可能**产生持久副作用：写文件、执行命令、改 App 自己的状态。
      *
-     * 用途：只读档与计划模式都按**能力**拒绝，而不是按工具名维护一份名单：
-     * 名单漏一个，新增的写工具就会在只读档/计划模式下被静默放行。只读就是只读，
-     * 不分 App 内部还是外部。
+     * 用途：只读档与计划模式均按**能力**拒绝，不按工具名维护名单：
+     * 名单一旦遗漏，新增的写工具就会在只读档或计划模式下被静默放行。只读档不区分 App 内部与外部。
      */
     val mutates: Boolean get() = false
 
@@ -133,4 +132,3 @@ interface Tool {
     /** 执行一次。失败一律折算成 [ToolResult.Error]，只有协程取消可以向外抛。 */
     suspend fun invoke(args: JSONObject, ctx: ToolContext): ToolResult
 }
-

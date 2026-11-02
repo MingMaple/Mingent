@@ -12,9 +12,9 @@ import org.json.JSONObject
  * job_output：读一个后台任务的输出，只给上次以来的增量。
  *
  * 语义对齐 DSH：
- * - `wait: true` 时最多等 [MAX_WAIT_MS]，期间任务一旦结算就立刻带结果返回，不再干等；
+ * - `wait: true` 时最多等待 [MAX_WAIT_MS]，期间任务一旦结算即立刻返回结果，不会持续空等；
  * - 流式任务只给上次以来的增量，结算后的第一次读恰好把结果带回一次（[JobRegistry.read] 推进 delivered）；
- * - 结尾固定 `[status: ...]`，让模型知道这个任务此刻是什么状态。
+ * - 结尾固定 `[status: ...]`，使模型能判断任务的当前状态。
  *
  * 只读内存注册表，不产生副作用，权限档是 READ_ONLY。
  */
@@ -54,7 +54,7 @@ class JobOutputTool : Tool {
         if (wait && entry.status == JobRegistry.Status.RUNNING) {
             val timeout = args.optLong("timeout_ms", MAX_WAIT_MS).coerceIn(1L, MAX_WAIT_MS)
             val deadline = System.currentTimeMillis() + timeout
-            // 每 200ms 看一次状态；结算了就退出等待
+            // 每 200ms 检查一次状态；任务结算后即退出等待
             while (System.currentTimeMillis() < deadline) {
                 val now = JobRegistry.find(id)
                 if (now == null || now.status != JobRegistry.Status.RUNNING) break
@@ -71,7 +71,7 @@ class JobOutputTool : Tool {
         return ToolResult.Ok(body + "\n[status: " + statusText + "]")
     }
 
-    /** 状态行：DSH 用 `[status: completed]` 这种固定尾巴，模型能据此决定要不要再读。 */
+    /** 状态行：采用 DSH 的 `[status: completed]` 固定结尾，模型可据此决定是否再次读取。 */
     private fun statusLine(status: JobRegistry.Status, note: String): String {
         val base = status.name.lowercase()
         return if (note.isBlank()) base else base + " — " + note

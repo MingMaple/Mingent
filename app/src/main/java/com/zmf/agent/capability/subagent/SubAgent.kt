@@ -25,8 +25,8 @@ import java.io.File
 /**
  * 子智能体需要的两个外部依赖：provider 与 registry。
  *
- * 工具接口（invoke(args, ctx)）里拿不到这两个东西，所以采用「注册期注入」：
- * 父会话在启动时把 lambda 填进来，TaskTool 调用前检查空不空。
+ * 工具接口（invoke(args, ctx)）内无法获取这两个依赖，因此采用「注册期注入」：
+ * 父会话在启动时填入 lambda，TaskTool 在调用前检查是否为空。
  */
 object SubAgentDeps {
     @Volatile
@@ -39,29 +39,29 @@ object SubAgentDeps {
 /**
  * 子智能体一次执行（或续跑）的结果。
  *
- * [id] 是面板里的记录 id，父会话拿它续聊；并发闸拒绝时还没有记录，[id] 为空串。
+ * [id] 是面板中的记录 id，父会话据此续聊；并发限制拒绝时尚未创建记录，[id] 为空串。
  */
 data class SubAgentOutcome(val id: String, val answer: String, val ok: Boolean)
 
 /**
- * 子智能体：用一份全新的 messages 跑一个独立的小循环，只把最终结论交回父会话。
+ * 子智能体：使用一份全新的 messages 运行独立的小循环，仅将最终结论返回父会话。
  *
- * 和父会话完全隔离：不上界面、不共享历史、不弹权限确认；工具仍按父会话的权限档过滤。
- * 并发闸是 [MAX_ACTIVE] 个：拿不到就立刻失败，让模型等已有子任务结束再来。
- * 运行进度与对话记录同时写进 [SubAgentRegistry]（面板读它，[resume] 拿它续聊）。
+ * 与父会话完全隔离：不渲染界面、不共享历史、不弹出权限确认；工具仍按父会话的权限档过滤。
+ * 并发限制为 [MAX_ACTIVE]：无法获取时立即失败，由模型等待已有子任务结束后重试。
+ * 运行进度与对话记录同时写入 [SubAgentRegistry]（面板读取它，[resume] 据此续聊）。
  */
 object SubAgentRunner {
 
-    /** 子智能体最多跑多少轮工具调用。 */
+    /** 子智能体最多执行的工具调用轮数。 */
     const val MAX_ROUNDS = 24
 
     /** 单个子智能体的总超时（10 分钟）。 */
     const val TIMEOUT_MS = 10 * 60 * 1000
 
-    /** 同时最多几个子智能体在跑。 */
+    /** 同时运行的子智能体最大数量。 */
     const val MAX_ACTIVE = 2
 
-    /** 交回父会话的结论最长多少字符，超出截断。 */
+    /** 交回父会话的结论最大字符数，超出时截断。 */
     const val MAX_RESULT_CHARS = 8000
 
     /** 失败结论的统一前缀：TaskTool 也按它把结果折成 Error。 */
@@ -73,7 +73,7 @@ object SubAgentRunner {
     private val LIMIT_TEXT =
         "subagent limit reached (active child limit: " + MAX_ACTIVE + "); wait for an existing child to finish"
 
-    /** 并发闸：用 tryAcquire，拿不到不排队，直接失败。 */
+    /** 并发限制：使用 tryAcquire，无法获取时不排队，直接失败。 */
     private val semaphore = Semaphore(MAX_ACTIVE)
 
     /** 子智能体的系统提示词：它是独立执行者，不是聊天对象。 */
@@ -88,8 +88,8 @@ object SubAgentRunner {
      * [thinking] / [thinkingEffort] / [model] 传 null 表示继承父会话当前设置（现读，不缓存）；
      * 传了就覆盖这一次子任务，不落盘、不影响父会话与后续子任务。
      *
-     * 失败一律折成「子智能体失败：<原因>」并带 ok=false，不让异常穿透到工具层；
-     * 只有协程取消（用户点停止）原样抛，否则停止会失效。
+     * 失败一律转换为「子智能体失败：<原因>」并带 ok=false，避免异常穿透至工具层；
+     * 仅协程取消（用户点击停止）原样抛出，否则停止功能将失效。
      */
     suspend fun run(
         context: Context,
@@ -109,7 +109,7 @@ object SubAgentRunner {
             FileLog.log(TAG, "并发闸已满（上限 " + MAX_ACTIVE + "），拒绝：「" + description.take(60) + "」")
             return SubAgentOutcome("", LIMIT_TEXT, false)
         }
-        // 拿到名额才登记：被闸拒掉的那次不占面板版面
+        // 获取名额后才登记：被并发限制拒绝的请求不占用面板条目
         val id = SubAgentRegistry.begin(description, multiTurn)
         try {
             FileLog.log(TAG, "启动子智能体「" + description.take(80) + "」，会话 " + sessionId.ifBlank { "default" })
@@ -146,7 +146,7 @@ object SubAgentRunner {
             notifyResult(context, false, reason, sessionId)
             return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
         } catch (e: CancellationException) {
-            // 用户点了停止：取消必须透传，不能当成「子智能体失败」吞掉
+            // 用户点击停止：取消必须透传，不得作为「子智能体失败」吞没
             SubAgentRegistry.fail(id, "已取消")
             throw e
         } catch (e: Exception) {
@@ -185,14 +185,14 @@ object SubAgentRunner {
             registry = tools,
             model = useModel,
             maxRounds = MAX_ROUNDS,
-            // systemOverride 让 PromptBuilder 只出这一份中文提示词，不再拼父会话的身份/环境段
+            // systemOverride 使 PromptBuilder 仅输出这一份中文提示词，不拼接父会话的身份 / 环境段
             promptProvider = { PromptInput(model = useModel, systemOverride = CHILD_SYSTEM) }
         )
         loop.run(
             messages = messages,
             userText = prompt,
             thinking = useThinking,
-            // 思考关着时 AgentLoop 本来就不会发这个字段，这里照传即可
+            // 思考关闭时 AgentLoop 本就不会发送该字段，此处照常传递即可
             thinkingEffort = useEffort,
             toolContext = ToolContext(
                 context = context,
@@ -217,7 +217,7 @@ object SubAgentRunner {
     }
 
     /**
-     * 给已存在的子智能体追加一条消息，接着它原来的上下文再跑一次。
+     * 向已存在的子智能体追加一条消息，沿用其原有上下文再次执行。
      *
      * 依赖（provider / tools / 权限 / 工作区）与 [run] 一样由调用方传：工具层从 [SubAgentDeps] 取。
      * 记录不存在（App 重启后登记表是空的）或它还在跑，都直接返回 ok=false，不排队。
@@ -247,7 +247,7 @@ object SubAgentRunner {
         try {
             SubAgentRegistry.markRunning(id)
             FileLog.log(TAG, "续聊子智能体 " + id + "，会话 " + sessionId.ifBlank { "default" })
-            // 沿用登记时的模型：中途换模型会让它前后判若两人
+            // 沿用登记时的模型：中途更换模型会使其前后行为明显不一致
             val useModel = entry.model.takeIf { it.isNotBlank() } ?: ApiConfig.loadModel(context)
             val useThinking = ApiConfig.loadThinkingEnabled(context)
             val useEffort = ApiConfig.loadThinkingEffort(context)
@@ -337,7 +337,7 @@ object SubAgentRunner {
         return turns
     }
 
-    /** 用户不在前台才发通知：正看着屏幕的人不需要系统再提醒一次。 */
+    /** 仅当用户不在前台时发送通知：用户正在查看屏幕，无需系统再次提醒。 */
     private fun notifyResult(context: Context, ok: Boolean, text: String, sessionId: String) {
         if (AppForeground.isForeground) return
         Notifier.notifySubagent(
@@ -348,7 +348,7 @@ object SubAgentRunner {
         )
     }
 
-    /** 超长结论截断，明确写出「已截断」，父会话不会误以为拿到全文。 */
+    /** 超长结论截断，明确注明「已截断」，避免父会话误认为取得全文。 */
     private fun truncate(text: String): String {
         if (text.length <= MAX_RESULT_CHARS) return text
         return text.take(MAX_RESULT_CHARS) +
@@ -356,9 +356,9 @@ object SubAgentRunner {
     }
 
     /**
-     * 空界面实现：子智能体不上屏，只把轮次写进面板记录，内部提示进日志。
+     * 空界面实现：子智能体不显示在界面，仅将轮次写入面板记录，内部提示写入日志。
      *
-     * 每跑一轮更新一次 [SubAgentRegistry]，面板才能看到「running · 第 N 轮」实时变化。
+     * 每执行一轮即更新 [SubAgentRegistry]，面板才能实时显示「running · 第 N 轮」。
      */
     private class RegistryUi(private val id: String) : AgentUi {
         override fun onRound(round: Int) {

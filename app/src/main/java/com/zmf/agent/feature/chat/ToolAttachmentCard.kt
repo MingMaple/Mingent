@@ -30,21 +30,21 @@ import androidx.compose.ui.unit.sp
 import java.io.File
 
 /*
- * 工具输出里的图片附件卡：缩略图 + 文件名 + 「image/webp · 58KB · 1307 × 1616」。
+ * 工具输出中的图片附件卡：缩略图、文件名及「image/webp · 58KB · 1307 × 1616」。
  *
- * 点击交给页面的查看器（复用主页那一个，不另开一套）。
- * 只画数据、不做解析：解析在 ToolSummary.toolAttachments 里，纯函数、可单测。
+ * 点击交由页面的查看器处理（复用主页的查看器，不另建一套）。
+ * 仅负责绘制，不做解析：解析位于 ToolSummary.toolAttachments 中，为纯函数，可单元测试。
  */
 
-/** 缩略图边长：一眼能认出是哪张图，又不把结果区撑高。 */
+/** 缩略图边长：足以辨认图片，且不使结果区过高。 */
 private val ThumbSide = 40.dp
 
 /**
- * 工具输出里的图片附件列表：缩略图 + 文件名 + 一行「mime · 大小 · 尺寸」，纵向逐条排列。
+ * 工具输出中的图片附件列表：缩略图、文件名及一行「mime · 大小 · 尺寸」，纵向逐条排列。
  *
- * 只负责画，数据由 [toolAttachments] 解析好传进来；[attachments] 为空时整块不渲染。
+ * 仅负责绘制，数据由 [toolAttachments] 解析后传入；[attachments] 为空时整块不渲染。
  *
- * @param root 工作区根目录，用于把相对路径解成可读文件；null 时只按相对路径本身找
+ * @param root 工作区根目录，用于将相对路径解析为可读文件；null 时仅按相对路径本身查找
  * @param onOpen 点某张图时回调（参数为整组路径与起点下标）；null 表示不可点
  */
 @Composable
@@ -97,7 +97,7 @@ internal fun ToolAttachmentRow(
     }
 }
 
-/** 缩略图：解码失败就留一块底色，不崩也不留空洞。 */
+/** 缩略图：解码失败时保留一块底色，不崩溃，也不留空洞。 */
 @Composable
 private fun AttachmentThumb(relPath: String, root: File?) {
     val onSurface = MaterialTheme.colorScheme.onSurface

@@ -11,12 +11,12 @@ import java.util.Locale
 /**
  * 超大工具输出的「落盘 + 摘要」。
  *
- * 有些工具一次能吐几十万字符（读大文件、终端 cat、web_fetch 抓长页面），直接塞回模型
- * 会把上下文瞬间吃光。这里定一条内联上限：超了就把全文写到
+ * 部分工具一次可输出数十万字符（读取大文件、终端 cat、web_fetch 抓取长页面），直接返回模型
+ * 会使上下文迅速耗尽。此处设定一条内联上限：超出时将全文写入
  * filesDir/appdata/spill/<sessionId>/<时间戳>-<工具名>.txt，
- * 只把「头 + 尾 + 一行通告」交还给模型，真要看细节再让模型用 read_file 的 offset/limit 分段读。
+ * 仅向模型返回「头 + 尾 + 一行说明」，需要细节时再由模型使用 read_file 的 offset/limit 分段读取。
  *
- * 全部 IO 都兜住：落盘失败就退回原文（宁可撑上下文，也不丢工具输出），只记一条日志。
+ * 所有 IO 均做兜底：落盘失败时退回原文（宁可增加上下文占用，也不丢失工具输出），仅记录一条日志。
  */
 object SpillStore {
 
@@ -42,7 +42,7 @@ object SpillStore {
 
     /**
      * 粗估 token 数：汉字按 1 个 token，其他字符约 4 个字符算 1 个 token。
-     * 只是用来卡内联阈值的，不追求和真实分词器一致；宁可高估，别低估撑爆上下文。
+     * 仅用于判断内联阈值，不要求与真实分词器一致；宁可高估，也不得低估而导致上下文超出限制。
      */
     fun estimateTokens(text: String): Int {
         if (text.isEmpty()) return 0
@@ -76,7 +76,7 @@ object SpillStore {
             }
             val file = nextFile(dir, toolName)
             file.writeText(text, Charsets.UTF_8)
-            // 顺手刷新目录时间，cleanup 按目录 mtime 判断「最近有没有人在用」
+            // 同时刷新目录时间，cleanup 依据目录 mtime 判断「最近是否仍在使用」
             dir.setLastModified(System.currentTimeMillis())
             FileLog.log(
                 TAG,

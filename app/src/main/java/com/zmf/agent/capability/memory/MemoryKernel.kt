@@ -15,25 +15,25 @@ import java.io.IOException
 /**
  * 【入门文档】「记忆内核」（mingmem）的接入层。
  *
- * 它只做三件事：把内核整棵铺到 App 内部存储、把路径翻译成 proot 路径、在 App 内 Ubuntu 里跑
+ * 它只做三件事：将内核完整铺设至 App 内部存储、将路径转换为 proot 路径、在 App 内 Ubuntu 中执行
  * `python3 -X utf8 -m mingmem <子命令>`。
  *
- * 为什么不在 Kotlin 里自己算分数 / 自己存记忆：
- * 内核的硬规则是「事件流 _Data/events 下的 jsonl 只增不删，是唯一真相源；检索与衰减只认内核 CLI 的输出，
- * 不得另建第二套计算」。所以强度、排序、巩固判定全部留在内核里，这里只当传话筒：
- * 一旦在这里写第二套检索或衰减，两边算出来的「记得多牢」会慢慢对不上，且没法再从事件流重建。
+ * 为什么不在 Kotlin 中自行计算分数或存储记忆：
+ * 内核的硬规则是「事件流 _Data/events 下的 jsonl 只增不删，是唯一真相源；检索与衰减只以内核 CLI 的输出为准，
+ * 不得另建第二套计算」。因此强度、排序、巩固判定全部保留在内核中，此处仅负责转发：
+ * 一旦在此实现第二套检索或衰减，两处计算的「记忆强度」将逐渐不一致，且无法再从事件流重建。
  *
- * 为什么每条命令都要重新 executeHiddenCommand 而不是常驻进程：
- * 隐藏执行内部是一把 shell 互斥锁，常驻反而挡住 terminal 工具；而内核是「进程起、事件流落盘、退出」的
- * 一次性 CLI，短进程更不容易把库留在半写状态。
+ * 为什么每条命令都要重新 executeHiddenCommand 而不使用常驻进程：
+ * 隐藏执行内部使用一把 shell 互斥锁，常驻进程反而会阻塞 terminal 工具；而内核是「进程启动、事件流落盘、退出」的
+ * 一次性 CLI，短进程更不易使库处于半写状态。
  *
- * 内核是独立项目（仓根即 `mingmem`，纯标准库、可独立升级）：本接入层只负责
- * 「把 assets/mingmem 的整棵树铺到 App 内部存储的 mingmem/、然后用 `-m mingmem` 调它」，
- * **不硬编码内核的任何文件路径**（文件清单由 assets 目录结构自己决定，内核加模块这里不用改）。
+ * 内核是独立项目（仓库根即 `mingmem`，仅使用标准库、可独立升级）：本接入层仅负责
+ * 「将 assets/mingmem 的完整目录树铺设至 App 内部存储的 mingmem/，再以 `-m mingmem` 调用」，
+ * **不硬编码内核的任何文件路径**（文件清单由 assets 目录结构决定，内核新增模块时此处无需修改）。
  */
 object MemoryKernel {
 
-    /** 库根目录名（App 内部存储下的固定子目录）。独立内核的仓根就叫这个，App 不再用「记忆内核库」。 */
+    /** 库根目录名（App 内部存储下的固定子目录）。独立内核的仓库根使用该名称，App 侧统一采用。 */
     const val LIB_DIR_NAME = "mingmem"
 
     private const val TAG = "mingmem"
@@ -53,12 +53,12 @@ object MemoryKernel {
     /**
      * 隐藏执行 shell 的 key。
      *
-     * 故意和 terminal 工具的 "agent" 分开：隐藏执行按 key 分 shell、各有一把互斥锁，
-     * 公用一个 key 时终端里跑长命令会把「回忆一下」卡在锁后面排队。
+     * 故意与 terminal 工具的 "agent" 分开：隐藏执行按 key 划分 shell，各自持有一把互斥锁，
+     * 共用同一 key 时，终端中执行长命令会使「记忆检索」在锁后排队等待。
      */
     private const val EXECUTOR_KEY = "mem"
 
-    /** 回给模型的输出上限：超过就保留头尾并标注省略了多少字符，别把上下文一次撑爆。 */
+    /** 回给模型的输出上限：超出时保留头尾并标注省略的字符数，避免一次性使上下文过度膨胀。 */
     private const val MAX_OUTPUT_CHARS = 16_000
     private const val HEAD_CHARS = 6_000
 
@@ -70,23 +70,23 @@ object MemoryKernel {
     /**
      * 确保 App 内部存储里有可用的记忆内核，返回库根（`<filesDir>/mingmem/`）。
      *
-     * 为什么不放工作区：内核是「程序」不是用户数据，放工作区会被
-     * 用户／外壳的文件操作误删，删了记忆功能就坏。`context.filesDir`（=/data/user/0/<pkg>/files）
-     * 是 App 内部存储：文件管理器 / MTP 都进不来，且 proot 里按同路径 bind
-     * （`PRootMountMapping` 的 appDataDir 绑定），内核直接能在 Ubuntu 里读到。
+     * 为什么不放在工作区：内核属于「程序」而非用户数据，置于工作区可能被用户或外壳的文件操作误删，
+     * 删除后记忆功能即失效。`context.filesDir`（=/data/user/0/<pkg>/files）
+     * 为 App 内部存储：文件管理器 / MTP 均无法访问，且 proot 中按同路径 bind
+     * （`PRootMountMapping` 的 appDataDir 绑定），内核可直接在 Ubuntu 中读取。
      *
-     * 把 assets/mingmem 下的整棵树按目录结构原样铺进库根，三条写入约定：
-     * 1. 按**内容**比对（不是版本号）：字节不同就是版本不同，覆盖成 assets 里的新版；
-     *    内核没有稳定的 version 字段，靠比对内容反而更可靠。
-     * 2. _Data/ 只 mkdirs，**绝不覆盖**：里面是 append-only 事件流，任何「同步」都是数据事故。
-     * 3. 库是工具自己的运行时资产（等同 TodoStore 写 appdata），所以 READ_ONLY 档也允许铺。
+     * 将 assets/mingmem 下的完整目录树按原结构铺设至库根，三条写入约定：
+     * 1. 按**内容**比对（而非版本号）：字节不同即视为版本不同，覆盖为 assets 中的新版本；
+     *    内核没有稳定的 version 字段，比对内容更为可靠。
+     * 2. _Data/ 仅执行 mkdirs，**绝不覆盖**：其中为 append-only 事件流，任何「同步」都可能造成数据事故。
+     * 3. 库属于工具自身的运行时资产（等同 TodoStore 写入 appdata），因此 READ_ONLY 档也允许铺设。
      *
      * 会在调用线程上做文件 IO，调用方负责放到 IO 线程。
      */
     fun ensureLibrary(context: Context): File {
         val libRoot = File(context.filesDir, LIB_DIR_NAME)
         copyAssetTree(context, ASSET_DIR, libRoot)
-        // 内核升级时模块可能删改；把上次留下的字节码清掉，避免陈旧 .pyc 盖过新 .py
+        // 内核升级时可能删除或修改模块；清除上次遗留的字节码，避免陈旧 .pyc 覆盖新 .py
         removePycache(libRoot)
         val dataDir = File(libRoot, DATA_DIR)
         if (!dataDir.exists()) {
@@ -97,15 +97,15 @@ object MemoryKernel {
     }
 
     /**
-     * 递归把 assets 下 [srcPath] 目录铺进 [destDir]，文件按内容比对、只在变化时写。
+     * 递归将 assets 下 [srcPath] 目录铺设至 [destDir]，文件按内容比对，仅在变化时写入。
      *
-     * 为什么不用 `assets.list(child)` 判目录：**AssetManager.list 对文件也返回空数组**（不是 null），
-     * 按它分叉会把每个文件都建成空目录（模拟器实测踩过：内核 40 个文件全变成空目录，
-     * `__main__.py` 不是文件 → 第 2 步报「定位内核失败」）。所以这里用「能否 open」判定：open 成功是文件，
-     * 抛 FileNotFoundException 是目录（list 对不存在的路径返回空数组，递归天然收敛）。
+     * 为什么不用 `assets.list(child)` 判断目录：**AssetManager.list 对文件也返回空数组**（而非 null），
+     * 依此分支会将每个文件创建为空目录（模拟器实测曾出现：内核 40 个文件全部变为空目录，
+     * `__main__.py` 不再是文件 → 第 2 步报「定位内核失败」）。因此此处以「能否 open」判定：open 成功即为文件，
+     * 抛出 FileNotFoundException 即为目录（list 对不存在路径返回空数组，递归自然收敛）。
      *
-     * 顺带自愈：上次误铺留下的「同名空目录」在写文件前先删掉，反之亦然，
-     * 这样内核升级增删文件、或用户手动清了部分文件，都能被下一轮铺库修正回来。
+     * 同时具备自愈能力：上次误铺留下的「同名空目录」会在写入文件前删除，反之亦然，
+     * 因此内核升级增删文件、或用户手动清理部分文件，均可由下一轮铺库修正。
      */
     private fun copyAssetTree(context: Context, srcPath: String, destDir: File) {
         val assets = context.applicationContext.assets
@@ -150,11 +150,11 @@ object MemoryKernel {
     }
 
     /**
-     * 把 App 侧的绝对路径换成 proot 里能用的路径：/storage/emulated/0/... → /sdcard/...
+     * 将 App 侧的绝对路径转换为 proot 中可用的路径：/storage/emulated/0/... → /sdcard/...
      *
-     * 为什么必须换：proot 启动时把外部存储根 bind 到 /sdcard（见 PRootMountMapping），
-     * /storage/emulated/0 这条路径在 rootfs 里不保证存在，直接把 App 侧路径塞给 Ubuntu 会「No such file」。
-     * 不在这两个根下的路径原样返回：那是调用方的事，这里不猜。
+     * 为什么必须转换：proot 启动时将外部存储根 bind 到 /sdcard（见 PRootMountMapping），
+     * /storage/emulated/0 在 rootfs 中不保证存在，直接将 App 侧路径交给 Ubuntu 会报「No such file」。
+     * 不在这两个根下的路径原样返回：转换责任由调用方承担，此处不作猜测。
      */
     fun toProotPath(workspaceAbsolutePath: String): String {
         val path = workspaceAbsolutePath.trim()
@@ -167,10 +167,10 @@ object MemoryKernel {
     // ---------------------------------------------------------------- 执行
 
     /**
-     * 在 App 内 Ubuntu 里跑一条 `python3 -m mingmem <子命令>` 命令，返回 --json 输出。
+     * 在 App 内 Ubuntu 中执行一条 `python3 -m mingmem <子命令>` 命令，返回 --json 输出。
      *
-     * 失败一律写明「卡在第几步」并带上原文（内核缺失或报错必须显式上报，不得静默跳过）。
-     * 这里的 failure 不是异常流，而是给模型看的中文原因：它读到之后应该如实转告用户、退回「无记忆」模式。
+     * 失败一律注明「失败于第几步」并附带原文（内核缺失或报错必须显式上报，不得静默跳过）。
+     * 此处返回的 failure 属于面向模型的中文原因，而非异常流：模型读到后应如实转告用户，并退回「无记忆」模式。
      *
      * @param args 子命令与参数，**不含** --json（本方法统一追加）、--ns、--data-root（本方法统一补）。
      * @param timeoutMs 隐藏执行的超时；大库的 cycle / rebuild 会更慢。
@@ -187,8 +187,8 @@ object MemoryKernel {
             )
         }
 
-        // 开了 SSH 后 executeHiddenCommand 会发到远端：那边没有我们铺好的库，报错也会指向不存在的路径，
-        // 直接把「记忆内核只在 App 内 Ubuntu 里跑」说清楚，比让用户对着一堆 No such file 猜要好。
+        // 开启 SSH 后 executeHiddenCommand 会发送至远端：远端没有本应用铺设的库，报错也会指向不存在的路径，
+        // 因此直接说明「记忆内核仅在 App 内 Ubuntu 中运行」，优于让用户从大量 No such file 中推测原因。
         if (isSshEnabled(context)) {
             return@withContext Result.failure(
                 IllegalStateException(
@@ -212,7 +212,7 @@ object MemoryKernel {
             )
         }
 
-        // 第 2 步：确认包在位（铺库成功但被删/权限不对时，先在这里报，别让 python 报 ImportError 让人猜）
+        // 第 2 步：确认包存在（铺设成功但被删除或权限异常时，在此报告，避免 python 抛出 ImportError 使原因难以判断）
         val entry = File(libRoot, PACKAGE_DIR + File.separator + "__main__.py")
         if (!entry.isFile) {
             return@withContext Result.failure(
@@ -225,7 +225,7 @@ object MemoryKernel {
         val prootLibRoot = toProotPath(libRoot.absolutePath)
         val prootDataRoot = toProotPath(File(libRoot, DATA_DIR).absolutePath)
 
-        // 第 3 步：在 App 内 Ubuntu 里跑
+        // 第 3 步：在 App 内 Ubuntu 中执行
         val command = buildCommand(workspaceRoot.name, prootLibRoot, prootDataRoot, args, isVectorEnabled(context))
         FileLog.log(TAG, "执行：" + command)
         val result = try {
@@ -248,7 +248,7 @@ object MemoryKernel {
         val text = clean(result.output)
         when (result.exitCode) {
             0 -> Result.success(successText(text))
-            // 退出码 2 是内核明确定义的「参数或数据错误，信息在 stderr」，stderr 已并入 output，必须原样带出去。
+            // 退出码 2 为内核明确定义的「参数或数据错误，信息写入 stderr」，stderr 已并入 output，必须原样返回。
             2 -> Result.failure(
                 IllegalStateException(
                     "第 4 步（mingmem）失败：退出码 2 = 参数或数据错误（内核把它写在 stderr，已并入下面的原文；" +
@@ -276,19 +276,19 @@ object MemoryKernel {
      * 拼 `PYTHONUTF8=1 PYTHONIOENCODING=utf-8 PYTHONPATH=<库根> MINGMEM_NS=project:<名> \
      *    MINGMEM_DATA=<proot 数据根> python3 -X utf8 -m mingmem <参数…> --json`。
      *
-     * 每个片段单独 shellQuote：正文里有空格、引号、换行时，隐藏执行会把命令原样写进 heredoc 再交给 bash，
-     * 不转义就会出现「半条命令被执行」这种最难查的错。
+     * 每个片段单独 shellQuote：正文包含空格、引号或换行时，隐藏执行会将命令原样写入 heredoc 再交给 bash，
+     * 未转义将导致「命令仅执行一半」这类难以排查的错误。
      *
-     * 数据根 / 命名空间走**环境变量**而不是 --data-root / --ns：
-     * - 内核里不是每个子命令都有 `--ns`（status / doctor 就没有），硬塞会让 argparse 直接退出码 2；
-     *   而 `MINGMEM_NS` 是内核 `default_ns()` 的正式读取项，对所有子命令都无害。
-     * - `MINGMEM_NS=project:<名>` 是默认；mem 工具再传 `--ns=global` 时，CLI 优先级高于环境变量，仍能覆盖。
-     * - `MINGMEM_DATA` 同理，免去每个命令都拼一遍数据根。
+     * 数据根 / 命名空间使用**环境变量**而非 --data-root / --ns：
+     * - 内核并非每个子命令均支持 `--ns`（status / doctor 不支持），强行传入会使 argparse 直接以退出码 2 结束；
+     *   而 `MINGMEM_NS` 是内核 `default_ns()` 的正式读取项，对所有子命令均无副作用。
+     * - `MINGMEM_NS=project:<名>` 为默认值；mem 工具再传 `--ns=global` 时，CLI 优先级高于环境变量，仍可覆盖。
+     * - `MINGMEM_DATA` 同理，避免为每个命令重复拼接数据根。
      *
-     * 为什么要显式给 PYTHONUTF8 / PYTHONIOENCODING / -X utf8：
-     * proot 里 LANG 是 en_US.UTF-8，但 rootfs 未必真的生成过这个 locale；locale 一失效，
-     * Python 的 stdout 可能退回 ascii，打印中文 JSON 时直接 UnicodeEncodeError（退出码 1），
-     * 看起来就像「记忆内核坏了」。钉死 UTF-8 比事后去 Ubuntu 里 apt 一个 locale 便宜得多。
+     * 为什么显式设置 PYTHONUTF8 / PYTHONIOENCODING / -X utf8：
+     * proot 中 LANG 为 en_US.UTF-8，但 rootfs 未必真正生成过该 locale；locale 一旦失效，
+     * Python 的 stdout 可能退回 ascii，打印中文 JSON 时直接抛出 UnicodeEncodeError（退出码 1），
+     * 表现为「记忆内核故障」。固定 UTF-8 的成本远低于事后在 Ubuntu 中安装 locale。
      */
     private fun buildCommand(
         workspaceDirName: String,
@@ -411,7 +411,7 @@ object MemoryKernel {
     private fun projectNamespace(workspaceDirName: String): String =
         "project:" + workspaceDirName.trim().ifEmpty { "workspace" }
 
-    /** 单引号包裹 + 内部单引号转义成 '\''，这样任何字符都能原样落地。 */
+    /** 用单引号包裹，并将内部单引号转义为 '\''，使任意字符均可原样传递。 */
     private fun shellQuote(raw: String): String {
         if (raw.isEmpty()) return "''"
         if (SAFE_ARG.matches(raw)) return raw
@@ -424,16 +424,16 @@ object MemoryKernel {
         .getSharedPreferences("ssh_config", Context.MODE_PRIVATE)
         .getBoolean("ssh_enabled", false)
 
-    /** 去 ANSI、去首尾空白；proot 的登录提示偶尔会混进来，留着只会干扰 JSON 解析。 */
+    /** 去除 ANSI 与首尾空白；proot 的登录提示可能混入输出，保留会干扰 JSON 解析。 */
     private fun clean(raw: String): String =
         runCatching { TerminalApi.stripAnsi(raw) }.getOrElse { raw }.trim()
 
     private fun orPlaceholder(text: String): String = text.ifEmpty { "（没有输出）" }
 
     /**
-     * 退出码 0 的结果：能整体解析 JSON 就原样返回；
-     * 解析不了说明拿到的不是 JSON（如内核往 stderr 打了提示），**标注出来**再原样返回，
-     * 既不假装成功，也不把有用信息吃掉。
+     * 退出码 0 的结果：能整体解析 JSON 则原样返回；
+     * 无法解析说明内容并非 JSON（例如内核向 stderr 输出提示），此时**显式标注**后原样返回，
+     * 既不伪装成功，也不丢弃有效信息。
      */
     private fun successText(text: String): String {
         if (text.isEmpty()) return "（mingmem 没有输出内容，退出码 0）"

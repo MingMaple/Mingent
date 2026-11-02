@@ -1,13 +1,13 @@
 package com.zmf.agent.core
 
 /**
- * App 是否在前台（Activity 级别的粗粒度信号）。
+ * App 是否在前台（Activity 级信号）。
  *
- * 为什么在 Activity 里自己数，而不是查进程重要性：通知的用途是「用户没在看的时候提醒他」，
- * 只有真正露在屏幕上的 Activity 才算「在看」；小窗/前台服务跑着但界面不在前台时，通知照发。
+ * 以 Activity 计数而非查询进程重要性：通知用于在用户未查看界面时提醒，
+ * 只有实际显示在前台的 Activity 才视为用户正在查看；小窗或前台服务运行时界面不在前台，通知仍发送。
  *
- * [active] 由 MainActivity 的 onResume/onPause 加减，用 @Volatile 让通知侧（可能在别的线程
- * 的 finally 里）立刻看到新值：计数短暂不准最多多发/少发一条通知，不影响主流程。
+ * [active] 由 MainActivity 的 onResume/onPause 增减，使用 @Volatile 使通知侧（可能位于其他线程
+ * 的 finally 块）立即读到新值：计数短暂不准最多多发或少发一条通知，不影响主流程。
  */
 object AppForeground {
 

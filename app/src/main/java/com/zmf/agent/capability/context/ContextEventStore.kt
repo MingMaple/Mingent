@@ -13,8 +13,8 @@ enum class ContextEventKind { COMPRESS, CLEAR, FALLBACK }
 /**
  * 一条上下文事件（只读记录，给人看）。
  *
- * 为什么这些数都要留下来：用户看到水位下降时最想知道的不是「降了多少」，而是「折叠了多少条、从第几条起发原文、
- * 兜底留了几轮」：没有这几个数，「上下文被压掉了」就只是一句猜测。
+ * 为什么这些数值都要保留：用户看到水位下降时，最关心的是「折叠了多少条、从第几条起发送原文、
+ * 兜底保留了几轮」，而非「下降了多少」：缺少这些数值，「上下文被压缩」就只是推测。
  *
  * @param at 事件发生时刻（毫秒）
  * @param ok 本次操作是否成功（只有 COMPRESS 会用到 false）
@@ -38,11 +38,11 @@ data class ContextEvent(
 /**
  * 上下文事件落盘：filesDir/appdata/context_events.json，结构 {"<sessionId>": [事件...]}。
  *
- * 为什么只给每会话留 50 条：这是给人看的排查记录，不是审计日志。留太多既没人翻，
- * 还会把整份 JSON 撑大、备份也跟着变大；旧的自动丢，最新的永远在。
+ * 为什么每会话仅保留 50 条：这是供人工查看的排查记录，并非审计日志。保留过多既无人查阅，
+ * 也会增大整份 JSON 与备份体积；旧记录自动丢弃，最新记录始终保留。
  *
- * 为什么坏文件当空：内容是可再生成的观察数据，丢了不影响对话本身；
- * 下一次 append 会整体重写，坏文件自然被修好。
+ * 为什么损坏文件按空处理：内容属于可再生的观察数据，丢失不影响对话本身；
+ * 下一次 append 会整体重写，损坏文件随之修复。
  */
 object ContextEventStore {
 
@@ -71,7 +71,7 @@ object ContextEventStore {
         return if (trimmed.isEmpty()) DEFAULT_SESSION else trimmed
     }
 
-    /** 读某会话的全部事件，按时间正序（给页面直接从上往下画）。文件不存在 / 空 / 坏掉一律空列表，绝不抛。 */
+    /** 读某会话的全部事件，按时间正序（供页面自上而下绘制）。文件不存在 / 为空 / 损坏时均返回空列表，不抛异常。 */
     @Synchronized
     fun load(context: Context, sessionId: String): List<ContextEvent> {
         val file = storeFile(context)
@@ -86,7 +86,7 @@ object ContextEventStore {
                 val event = parse(item) ?: continue
                 list.add(event)
             }
-            // 写进去时就是正序；排序只是兜住手改 / 旧文件 / 备份合并这类情况
+            // 写入时即为正序；排序仅用于兼容手动修改 / 旧文件 / 备份合并等情况
             list.sortedBy { it.at }
         } catch (e: Exception) {
             FileLog.log(TAG, "读取上下文事件失败，按空列表处理：" + (e.message ?: e.javaClass.simpleName))
@@ -94,7 +94,7 @@ object ContextEventStore {
         }
     }
 
-    /** 追加一条；超过 [MAX_PER_SESSION] 条时丢最旧的。写失败只记日志：观察数据不值得让对话崩。 */
+    /** 追加一条；超过 [MAX_PER_SESSION] 条时丢弃最旧记录。写失败仅记日志：观察数据不应导致对话中断。 */
     @Synchronized
     fun append(context: Context, sessionId: String, event: ContextEvent) {
         val key = sessionKey(sessionId)
@@ -116,7 +116,7 @@ object ContextEventStore {
         }
     }
 
-    /** 清掉某会话的事件；一条都不剩时把文件也删了，别留个常年躺着的 {}。 */
+    /** 清掉某会话的事件；一条都不剩时删除文件，避免遗留空对象。 */
     @Synchronized
     fun clear(context: Context, sessionId: String) {
         try {
@@ -137,9 +137,9 @@ object ContextEventStore {
     }
 
     /**
-     * 读整个文件当 root；文件坏掉就当空对象。
+     * 读整个文件作为 root；文件损坏时按空对象处理。
      *
-     * 有意「丢别的会话」：坏文件本来就没有可信内容，从空表重写比让本次写入也失败要好。
+     * 有意丢弃其他会话：损坏文件本来就没有可信内容，从空表重写优于使本次写入一并失败。
      */
     private fun readRoot(file: File): JSONObject {
         if (!file.exists() || !file.isFile || file.length() == 0L) return JSONObject()
@@ -169,7 +169,7 @@ object ContextEventStore {
             ContextEventKind.COMPRESS.name -> ContextEventKind.COMPRESS
             ContextEventKind.CLEAR.name -> ContextEventKind.CLEAR
             ContextEventKind.FALLBACK.name -> ContextEventKind.FALLBACK
-            // 不认识的类型（旧版本 / 手改）直接丢：页面画不出来，留着也没有意义
+            // 无法识别的类型（旧版本 / 手动修改）直接丢弃：页面无法渲染，保留亦无意义
             else -> return null
         }
         return ContextEvent(
@@ -193,7 +193,7 @@ object ContextEventStore {
         obj.put(KEY_FOLDED, event.foldedMessages)
         obj.put(KEY_BOUNDARY, event.boundary)
         obj.put(KEY_KEPT, event.keptRounds)
-        // 空备注不落 key：绝大多数事件没有说明，写一堆 "" 只是把文件撑大
+        // 空备注不写入 key：绝大多数事件没有说明，写入大量空串只会增大文件体积
         if (event.note.isNotEmpty()) obj.put(KEY_NOTE, event.note)
         return obj
     }

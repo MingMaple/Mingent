@@ -80,7 +80,6 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -137,10 +136,10 @@ internal fun ChatTopBar(
     /** 其中正在运行的数量，只用来决定指示灯颜色。 */
     subAgentRunning: Int,
     onSubAgentClick: () -> Unit,
-    /** 当前会话已产出的计划：一份都没有时右上角那枚按钮连位置都不留。 */
+    /** 当前会话已产出的计划：无任何计划时右上角按钮不保留位置。 */
     plans: List<PlanDoc>,
     onPlanClick: () -> Unit,
-    /** 内置浏览器里有没有活着的页面：有才露出那枚网页图标。 */
+    /** 内置浏览器中是否存在活动页面：存在时才显示网页图标。 */
     browserOpen: Boolean,
     onBrowserClick: () -> Unit
 ) {
@@ -163,7 +162,7 @@ internal fun ChatTopBar(
             fontSize = 20.sp,
             color = MaterialTheme.colorScheme.onBackground
         )
-        // 中间不再放「Agent」标题：两侧 Spacer 撑着，☰ 在左、状态点在右
+        // 中间不放置「Agent」标题：两侧 Spacer 支撑，☰ 在左、状态点在右
         Spacer(Modifier.weight(1f))
         Spacer(Modifier.weight(1f))
         // 子智能体胶囊：只要还有记录就留着，点了展开卡片（状态点保持最右）
@@ -222,11 +221,14 @@ internal fun ChatTopBar(
  *
  * 为什么用 Canvas 而不是 emoji/文字：这一排只有状态点和一个胶囊，混进一个字符图标会显得字号不齐；
  * 手画的和抽屉里那几个图形是同一套语言。
+ *
+ * 取 [Palette.Neutral]，与 [BrowserGlyph] 同色：这一排是「入口」不是「状态」，
+ * 绿只留给最右边的状态点；入口图标跟着自己的深/浅中性走，不单独染色。
  */
 @Composable
 internal fun PlanGlyph(onClick: () -> Unit) {
-    // 只在这一份计划真的存在时画，所以永远是「有内容」的绿，不再有淡色的空态
-    val color = UiColors.success
+    // 仅在该计划确实存在时绘制，因此不存在淡色空态
+    val color = Palette.Neutral
     val strokeWidth = with(LocalDensity.current) { 1.5.dp.toPx() }
     Box(
         modifier = Modifier
@@ -305,7 +307,7 @@ internal fun BrowserGlyph(onClick: () -> Unit) {
                 end = Offset(w - half, barY),
                 strokeWidth = strokeWidth
             )
-            // 工具栏左侧那颗小圆点（标签页的示意），别画多了：这么小的地方只放得下一颗
+            // 工具栏左侧的小圆点（标签页示意），不可多绘：该尺寸仅能容纳一颗
             drawCircle(color = color, radius = 1.dp.toPx(), center = Offset(w * 0.2f, barY * 0.52f))
         }
     }
@@ -489,7 +491,7 @@ internal fun NameInputDialog(
 
 /**
  * 体积文案：按量级给 KB / MB / GB，MB 以上取整：这里只是让人判断「这包大不大」，
- * 精确到小数点反而读不出差别（同 SentFileCard 的口径，但那一处是单个附件，保留一位小数）。
+ * 精确到小数反而无法体现差别（与 SentFileCard 的规则相同，但该处为单个附件，保留一位小数）。
  */
 internal fun exportSizeText(bytes: Long): String = when {
     bytes >= 1024L * 1024L * 1024L ->
@@ -534,7 +536,7 @@ internal val PendingThumbSide = 64.dp
 internal data class PendingEntry(
     val pending: PendingFile,
     val isImage: Boolean,
-    /** 在它自己那条队列里的下标：删除走 detachFile / detachImage，按这个口径定位。 */
+    /** 在其所属队列中的索引：删除经由 detachFile / detachImage，按此规则定位。 */
     val index: Int,
     /** 文件落进工作区的时刻，用来还原「文件与图片谁先加的」。 */
     val stamp: Long
@@ -560,16 +562,16 @@ internal fun mergePending(
     return out
 }
 
-/** 取不到（文件已被清掉）就当成最早，至少不会把这一项吞掉。 */
+/** 取不到（文件已被清除）时视为最早，至少不会遗漏该项。 */
 internal fun stampOf(root: File, pending: PendingFile): Long =
     runCatching { File(root, pending.relPath).lastModified() }.getOrDefault(0L)
 
 /**
  * 待发送图片的缩略图：固定 64dp 见方、圆角 12dp。
  *
- * 尺寸写死而不是按原图比例：这一行里还混着文件 chip，比例尺寸会让整行高矮不齐；
- * 也不再铺任何白色/半透明白底：之前那层底把手边的文件 chip 盖住，看着像两个层次。
- * 解码只在 bitmaps 为空（文件没了 / 不是图片）时才画一块占位灰，仍能 ✕ 删掉。
+ * 尺寸固定而不是按原图比例：该行还包含文件 chip，比例尺寸会使整行高度不一致；
+ * 同时不绘制任何白色或半透明白色底：此前该底色会覆盖相邻的文件 chip，形成两个层次。
+ * 解码只在 bitmaps 为空（文件不存在或不是图片）时才画一块占位灰，仍可点击 ✕ 删除。
  */
 @Composable
 internal fun PendingImageThumb(
@@ -664,7 +666,7 @@ internal fun WorkSpacePage(
     var pendingDelete by remember { mutableStateOf<WorkSpace?>(null) }
 
     Surface(
-        // 工作区页：铺满不透明，最外层吞点击，避免穿透到下面的聊天界面
+        // 工作区页：铺满且不透明，最外层消费点击，避免穿透到下方聊天界面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -876,7 +878,7 @@ internal val SentFileCardWidth = 168.dp
  * 一条用户消息 = 竖排两块：上面是附件卡行（文件卡 + 图片缩略图，超出横滑），下面是文字气泡。
  *
  * 卡片在前、文字在后，是照 DeepSeek 手机端的顺序：图片和文件是「随这条消息递过去的东西」，
- * 不是气泡里的内容。没有字就整块不画气泡：纯图片消息不再留一个空白气泡。
+ * 不属于气泡中的内容。无文字时整块不绘制气泡：纯图片消息不保留空白气泡。
  */
 @Composable
 internal fun UserRow(
@@ -893,7 +895,7 @@ internal fun UserRow(
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val bubbleColor = if (isDark) Palette.BubbleUserDark else Palette.BubbleUserLight
     val text = userBubbleText(message)
-    // 折叠口径：近三轮完全铺开，刚发出去的消息正是用户在读的那条，不该被收起来；
+    // 折叠约定：最近三轮完全展开，刚发送的消息正是用户阅读的对象，不应收起；
     // 更早的历史按屏幕 45% 折。折叠点落在整段末尾（由 MarkdownText 按块取整），
     // 不会出现「最后一行只剩半个字」。展开态只活在这一屏，列表滚走再回来回到折叠态。
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
@@ -917,7 +919,7 @@ internal fun UserRow(
             horizontalAlignment = Alignment.End
         ) {
             if (files.isNotEmpty() || images.isNotEmpty()) {
-                // 同待发那一行：拦截器和横向行共用一份 state，到边之后的余量就地吃掉
+                // 与待发附件行相同：拦截器与横向行共用一份 state，到达边界后的余量就地消耗
                 val rowScroll = rememberScrollState()
                 Row(
                     modifier = Modifier
@@ -942,7 +944,7 @@ internal fun UserRow(
             }
             if (text.isNotEmpty()) {
                 if (files.isNotEmpty() || images.isNotEmpty()) Spacer(Modifier.height(8.dp))
-                // 动作按钮摆在气泡尾巴上，不再靠长按弹窗：
+                // 动作按钮置于气泡尾部，不依赖长按弹窗：
                 // 用户看到那一行图标就知道能做什么，不用先猜「可以长按」
                 // 不用 Surface：它的 shape 会挂一层裁剪图层（graphicsLayer + clip），
                 // 气泡展开到十几屏高时这层图层的尺寸也涨到几万像素，那之后的子节点
@@ -964,7 +966,7 @@ internal fun UserRow(
                         fontSize = 15.sp,
                         color = MaterialTheme.colorScheme.onSurface,
                         codeBackground = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                        // 用户自己按的换行算他的排版：空行要看得见（发送时已压成一个）
+                        // 用户输入的换行视为其排版：空行需可见（发送时已压缩为一个）
                         keepBlankLines = true,
                         foldAt = foldAt,
                         foldedHeight = foldedHeight,
@@ -976,7 +978,7 @@ internal fun UserRow(
                     )
                 }
             }
-            // 尾部动作行：右对齐贴着自己那条气泡，时间在最右
+            // 尾部动作行：右对齐并贴附自身气泡，时间位于最右
             MessageTailRow(
                 at = clockText(message.createdAt),
                 alignEnd = true,
@@ -996,11 +998,8 @@ internal fun UserRow(
 }
 
 /**
- * user 气泡里要显示的文字：把「附件 / 图片已上传」那两段说明（标记 + 路径行 + 尾巴提示）裁掉。
- *
- * 这两段只写给模型看（模型靠这些相对路径 read_file 读文件），界面用卡片与缩略图表达。
- * 用户自己写的正文永远在两段说明之前，所以只能按标记各切一刀：
- * 从第一个标记一把切到末尾，会把夹在中间的正文一起吞掉：agent 收到了那句话，界面上却一个字没有。
+ * user 气泡文字：移除「附件 / 图片已上传」两段说明（标记 + 路径行 + 尾巴提示）。这两段仅供模型通过 read_file 读取，界面以卡片与缩略图表达。
+ * 用户正文位于两段说明之前，因此需按标记分别切分：从第一个标记一次性切至末尾会连同中间正文一并移除，导致 agent 已收到该句而界面无文字。
  */
 internal fun userBubbleText(message: ChatMessage): String {
     var text = message.content
@@ -1104,7 +1103,7 @@ internal fun FileGlyph(tint: Color) {
 /**
  * 已发送的图片缩略图：边长恒定（[SentThumbSide]）、crop 填充，点开详情、长按弹菜单。
  *
- * 尺寸恒定是关键：按原图比例铺开时，一条消息里竖图和横图能差出半屏高，看着像两种东西。
+ * 尺寸恒定是关键：按原图比例铺开时，一条消息中竖图与横图的高度可相差半屏，外观差异明显。
  * 手势走同一个 pointerInput（见 [pressOrTap]）：拆成 clickable + 长按两个修饰符时，
  * 长按弹出菜单后手指一松，clickable 还会照常点一次，直接跳进详情页。
  */
@@ -1154,7 +1153,7 @@ internal fun SentImageThumb(
 /**
  * 一个节点的「点击 / 长按」手势，两者只在同一个 pointerInput 里判。
  *
- * 长按成立后把这次手势剩下的部分吃掉（直到抬手），所以松手不会再算一次点击；
+ * 长按成立后消费本次手势的剩余部分（直至抬手），因此松手不会再次触发点击；
  * 手指滑出阈值则两边都不触发，把滚动让给列表和横向卡片行。
  */
 internal suspend fun PointerInputScope.pressOrTap(
@@ -1184,7 +1183,7 @@ internal suspend fun PointerInputScope.pressOrTap(
             false
         }
         when {
-            // 超时那一刻还没抬手 = 长按：吃掉后续事件，抬手不再触发点击
+            // 超时且未抬手 = 长按：消费后续事件，抬手不会再次触发点击
             expired == null -> {
                 onLongPress(start)
                 while (true) {
@@ -1218,11 +1217,11 @@ internal fun AssistantRow(
     onSelectText: (String, String) -> Unit,
     /** 以这一轮为终点开一个新会话（分支）。 */
     onFork: (Int) -> Unit,
-    /** 打开「本轮用量」伴随面板，第二个参数是那枚按钮在窗口里的位置。 */
+    /** 打开「本轮用量」伴随面板，第二个参数为该按钮在窗口中的位置。 */
     onUsage: (TurnUsageInfo, Offset) -> Unit
 ) {
     // 一轮按「到达顺序」摊平：每条消息里的思考 → 正文 → 它的工具调用，接着下一条。
-    // 旧实现把所有思考拼成一整段提到最上面、把工具卡全塞进同一个气泡，界面顺序跟真实
+    // 旧实现将所有思考拼接为一整段置于顶部、将工具卡全部放入同一气泡，界面顺序与真实
     // 发生顺序对不上；摊平之后界面顺序＝发生顺序：思考 → 工具 → 思考 → 工具 → 正文。
     val segments = buildTurnSegments(all, indices)
     // 长按菜单要的是「这一轮用户能挑走的文字」，所以正文与思考仍各自整轮拼接
@@ -1235,10 +1234,10 @@ internal fun AssistantRow(
     val thinkColor = if (isDark) Palette.BubbleThinkDark else Palette.BubbleThinkLight
     val cardColor = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh
     val menuIndex = indices.firstOrNull() ?: 0
-    // 本轮用量：只有最后一条 assistant 带数字（ChatViewModel.writeTurnUsage 只写那一条），
-    // 所以扫一遍取那个非零的；流式途中还没写，这里就是 null，用量按钮不会闪出来。
+    // 本轮用量：仅最后一条 assistant 携带数字（ChatViewModel.writeTurnUsage 只写该条），
+    // 因此遍历取非零值；流式输出期间尚未写入，此处为 null，用量按钮不会短暂显示。
     var turnUsage: TurnUsageInfo? = null
-    // 时间默认取本轮最后一条消息的时间。以前从 0 起算：定时任务产出的答复没有用量数字，
+    // 时间默认取本轮最后一条消息的时间。此前从 0 起算：定时任务产出的答复没有用量数字，
     // 0 经「HH:mm」格式化正好是东八区的 08:00（纪元零点），看起来像时间停在早上八点。
     var tokensAt = all.getOrNull(indices.lastOrNull() ?: -1)?.createdAt ?: 0L
     for (index in indices) {
@@ -1270,7 +1269,7 @@ internal fun AssistantRow(
             TurnSegment.Body(answerIndex, it)
         }
     }
-    // 过程 = 除「最终回答那段正文」以外的全部片段；最终回答那条消息的**思考**留在过程里
+    // 过程 = 除「最终回答正文」以外的全部片段；最终回答消息的**思考**保留在过程内
     // （折叠收起时藏、展开时看得到），这样展开后仍能看到收口时想了什么。
     val processSegments = if (answerIndex == null) {
         segments
@@ -1296,7 +1295,7 @@ internal fun AssistantRow(
     // 展开态：过程装进底板，最终回复留在底板外面
     val showPanel = expanded && hasProcess && !streaming
 
-    // 动作按钮在气泡尾巴上（见下方），这一整轮不再挂长按手势：
+    // 动作按钮位于气泡尾部（见下方），本轮不挂载长按手势：
     // 长按不消费事件，工具卡照常点击这一点本来就只是为了给弹窗让路
     Column(modifier = Modifier.fillMaxWidth()) {
         if (hasProcess && !streaming) {
@@ -1367,7 +1366,7 @@ internal fun AssistantRow(
                         TailIcon.COPY -> onCopy(wholeText)
                         TailIcon.SELECT_TEXT -> onSelectText(wholeText, reasoning)
                         // 分支保留**这一轮整轮**及其以上：边界取本轮最后一条消息的下标 +1。
-                        // 以前传的是本轮第一条的下标 +1，正好把这一轮的其余消息（工具调用那几条）
+                        // 此前传入本轮第一条的索引 +1，恰好将本轮其余消息（工具调用等）
                         // 切掉，看起来就是「分支之后内容不全」（用户 10:06 报的回归）
                         TailIcon.FORK -> onFork((lastIndex ?: menuIndex) + 1)
                         else -> Unit
@@ -1419,14 +1418,13 @@ internal fun saveImageToDownload(context: Context, root: File, relPath: String):
     val source = File(root, relPath)
     if (!source.isFile) return false
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        // 29+ 首选 MediaStore（不用存储权限）；本机 targetSdk 还是 28，个别机型在旧存储模式下
-        // 会把它拦掉，那就退回直接写公共 Download 目录，别白丢一次保存
+        // 29+ 首选 MediaStore（无需存储权限）；本机 targetSdk 仍为 28，部分机型在旧存储模式下会拦截，此时退回直接写入公共 Download 目录。
         if (saveImageViaMediaStore(context, source)) return true
     }
     return saveImageToPublicDownload(source)
 }
 
-/** 29+：先插一条 Downloads 记录再往里写；IS_PENDING 保证别的 App 不会读到写了一半的文件。 */
+/** 29+：先插入一条 Downloads 记录再写入；IS_PENDING 保证其他 App 不会读取写入一半的文件。 */
 internal fun saveImageViaMediaStore(context: Context, source: File): Boolean {
     val values = ContentValues().apply {
         put(MediaStore.MediaColumns.DISPLAY_NAME, source.name)
@@ -1438,7 +1436,7 @@ internal fun saveImageViaMediaStore(context: Context, source: File): Boolean {
     val uri = runCatching { resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) }
         .getOrNull() ?: return false
     return try {
-        // 打不开输出流就别留一条空记录在 Download 里
+        // 无法打开输出流时不保留空记录于 Download 中
         val out = resolver.openOutputStream(uri) ?: run {
             runCatching { resolver.delete(uri, null, null) }
             return false
@@ -1494,7 +1492,7 @@ internal fun imageMimeOf(name: String): String =
         else -> "image/jpeg"
     }
 
-/** 复制到剪贴板。Android 13 起系统自己会弹「已复制」，不再叠加 Toast。 */
+/** 复制到剪贴板。Android 13 起系统会自行提示「已复制」，不叠加 Toast。 */
 internal fun copyToClipboard(context: Context, text: String) {
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     manager?.setPrimaryClip(ClipData.newPlainText("消息", text))
@@ -1503,7 +1501,7 @@ internal fun copyToClipboard(context: Context, text: String) {
     }
 }
 
-/** 文件选择器「上次目录」的有效期：超过就不再用它，免得一次选择把以后每次打开都困在同一层。 */
+/** 文件选择器「上次目录」的有效期：超过后即停止使用，避免一次选择使后续每次打开都停留在同一层。 */
 private const val PICKER_DIR_TTL_MS = 30L * 60 * 1000L
 
 /** 路径记忆存在 app_prefs 里（跟其它 Store 同一个文件），不单开一份 prefs。 */
@@ -1519,7 +1517,7 @@ internal fun pickerDirPrefs(context: Context) =
  * 这次文稿页该从哪一层打开；null = 不指定，系统自己回到顶层。
  *
  * 三条都要成立才回上次的目录：同一个会话、记过目录、距上次选择不到 30 分钟。
- * 少任何一条都从顶层开始，否则「十天前在别的会话里点进过的深层目录」会一直粘着。
+ * 缺少任一条件均从顶层开始，否则「十天前在其他会话中进入的深层目录」会持续保留。
  */
 internal fun pickerInitialDir(context: Context, sessionId: String): Uri? {
     val prefs = pickerDirPrefs(context)
@@ -1592,7 +1590,7 @@ internal suspend fun followBottom(state: LazyListState, lastIndex: Int) {
  * 键盘把视口顶矮之后，把最后一条消息的底部对齐视口底部（跟 [followBottom] 同一口径，只是走动画）。
  *
  * 全程只有一段动画：先量出「底部还差多少」，再一次性滚过去。
- * 原来的 animateScrollToItem(顶部对齐) + animateScrollBy(补差) 是两段，
+ * 此前的 animateScrollToItem(顶部对齐) + animateScrollBy(补差) 为两段，
  * 中间那一帧会停在最近一轮回复气泡的头部（「思考了 N 秒」那一行），
  * 用户看到的就是「先翻到思考、再翻回底部」。
  */
@@ -1600,8 +1598,8 @@ internal suspend fun settleToBottom(state: LazyListState, lastIndex: Int) {
     if (lastIndex < 0) return
     val info = state.layoutInfo.visibleItemsInfo.lastOrNull { it.index == lastIndex }
     if (info == null) {
-        // 最后一条整个掉出视口（视口一下矮了半屏以上）：只能先把它带进来，
-        // 这种情形本来也没有「气泡头部闪一下」可看
+        // 最后一条完全移出视口，视口高度减少超过半屏：只能先将其带入视口；
+        // 该情形下不存在「气泡头部短暂显示」的画面。
         state.animateScrollToItem(lastIndex)
         return
     }
@@ -1609,7 +1607,7 @@ internal suspend fun settleToBottom(state: LazyListState, lastIndex: Int) {
     if (overflow > 0) state.animateScrollBy(overflow.toFloat(), Motion.spring())
 }
 
-/** 气泡右下角的时间只到分钟。复用一个实例：流式输出时每条气泡都在重组，别每次都 new。 */
+/** 气泡右下角的时间仅精确到分钟。复用单个实例：流式输出时每条气泡均会重组，无需每次新建。 */
 internal val usageClock = SimpleDateFormat("HH:mm", Locale.US)
 
 internal fun clockText(at: Long): String = usageClock.format(Date(at))
@@ -1618,7 +1616,7 @@ internal fun clockText(at: Long): String = usageClock.format(Date(at))
  * 一条消息的用量 → 「本轮用量」面板要的形状。
  *
  * 兼容三种落盘：①本次改造之后（未缓存 / 缓存写入 / 推理都已经存下）；②只有「输入 / 输出 / 缓存命中」
- * 的旧版；③连缓存都没有的更老会话。后两种按「没报缓存 = 整段输入都算未缓存」补，
+ * 的旧版本；③无任何缓存的更早会话。后两种按「未上报缓存 = 整段输入均视为未缓存」补充，
  * 面板不至于给出一行「未缓存输入 0 tok」这种明显错的数。
  */
 internal fun turnUsageOf(message: ChatMessage): TurnUsageInfo {

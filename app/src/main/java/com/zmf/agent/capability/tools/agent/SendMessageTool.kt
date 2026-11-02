@@ -9,11 +9,11 @@ import com.zmf.agent.capability.tools.ToolResult
 import org.json.JSONObject
 
 /**
- * send_message 工具：给已经跑完的子智能体追加一条消息，拿回它的新结论。
+ * send_message 工具：向已执行完成的子智能体追加一条消息，并获取其新结论。
  *
- * 和 subagent 工具的区别是「接着原来的上下文跑」：子智能体的历史对话存在
- * [com.zmf.agent.capability.subagent.SubAgentRegistry] 里，App 重启后登记表清空，续聊就无从谈起。
- * provider 与 registry 同样靠 [SubAgentDeps] 注入，没接线直接报错。
+ * 与 subagent 工具的区别在于「沿用原有上下文继续执行」：子智能体的历史对话存放在
+ * [com.zmf.agent.capability.subagent.SubAgentRegistry] 中，App 重启后登记表清空，无法继续会话。
+ * provider 与 registry 同样通过 [SubAgentDeps] 注入，未注入时返回错误。
  */
 class SendMessageTool : Tool {
 

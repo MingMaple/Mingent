@@ -12,15 +12,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 「本轮用量」伴随面板的入参：[anchor] 是那枚用量按钮在窗口里的位置，[usage] 是这一轮的账。
+ * 「本轮用量」伴随面板的入参：[anchor] 为用量按钮在窗口中的位置，[usage] 为本轮的用量记录。
  *
- * 两者必须一起传：面板上的数字与「贴着哪一枚按钮」是同一次点击的产物，分开存会错位。
+ * 两者必须一并传入：面板数字与「贴附哪一枚按钮」源自同一次点击，分开存储会错位。
  */
 internal data class TurnUsageTarget(val usage: TurnUsageInfo, val anchor: Offset)
 
 /**
- * 长按已发送图片时的小窗：只这两件事：存下这一张、回到这条提问。
- * 带上 relPath 是因为「长按哪张就保存哪张」，不能拿整条的图片列表糊过去。
+ * 长按已发送图片时的小窗：仅两项功能：保存当前图片、回到这条提问。
+ * 携带 relPath 是因为「长按哪张就保存哪张」，不可用整条消息的图片列表替代。
  */
 internal data class ImageMenuTarget(
     val relPath: String,
@@ -30,9 +30,9 @@ internal data class ImageMenuTarget(
 )
 
 /**
- * 图片详情的入参：这条消息的全部图片（缩略图顺序 = 选择/发送顺序）+ 被点开的那张下标。
+ * 图片详情的入参：这条消息的全部图片（缩略图顺序 = 选择/发送顺序）与被点开图片的下标。
  *
- * 一起传而不是只传一张：详情里要能左右切换查看，只给一张就切不了。
+ * 一并传入而非仅传一张：详情中需支持左右切换查看，仅给一张则无法切换。
  */
 internal data class ViewerTarget(val paths: List<String>, val startIndex: Int)
 
@@ -51,27 +51,27 @@ internal enum class AppPage {
     MODEL, PERMISSION, PACKAGE, LOGS, SCHEDULE, SUBAGENT, ARCHIVE, TRASH,
     // 设置首页（SETTINGS）→ 通用设置（GENERAL）/ 模型（MODEL）/ 长期记忆（MEMORY）/
     // 上下文洞察（CONTEXT_HUB）/ 上下文配置（CONTEXT_CONFIG）/ 包管理（PACKAGE）/ 数据（SETTINGS_DATA）；
-    // 轨迹是由主页左滑进入的全屏页，不属于设置层。
-    // 统计 / 提示词 / 思考三页已并进「上下文洞察」与「模型」：同一件事在两处入口只会让人怀疑哪个是真的。
+    // 轨迹为由主页左滑进入的全屏页，不属于设置层。
+    // 统计、提示词、思考三页已并入「上下文洞察」与「模型」：同一功能在两处入口易引起对真实来源的疑问。
     GENERAL, MEMORY, CONTEXT_HUB, CONTEXT_CONFIG, TRACE,
-    // 关于是只读页（版本 / 开源地址 / 第三方组件），从设置首页最底部的卡片进
+    // 关于为只读页（版本 / 开源地址 / 第三方组件），从设置首页最底部的卡片进入
     ABOUT,
-    // 计划是主页右上角那枚按钮进的独立页（不挂在设置层下），返回即回主页。
-    // 目标没有预览页：/goal 走命令解析，状态只看输入框右侧那枚只读图标
+    // 计划页由主页右上角按钮进入的独立页（不挂在设置层下），返回即回主页。
+    // 目标没有预览页：/goal 走命令解析，状态仅显示为输入框右侧的只读图标
     PLAN,
-    // 内置浏览器：回复里的链接点开进这里。返回（侧滑/返回键）只回主页，**页面不关**：
-    // 顶栏会多出一枚网页图标，点回来接着用（页面实例留在 BrowserHolder 里，登录态不丢）。
+    // 内置浏览器：回复中的链接点击后进入此页。返回（侧滑/返回键）仅回主页，**页面不关闭**：
+    // 顶栏会多出一枚网页图标，点击可返回继续使用（页面实例保留在 BrowserHolder 中，登录态不丢失）。
     BROWSER
 }
 
 /**
  * 聊天页的全部界面状态（瞬时态，不落盘）。
  *
- * 存在的理由：原 [ChatScreen] 是 1,800 行的一个函数，二十多个浮层各自 `remember` 在自己那一层，
- * 想抽成独立 composable 就得把这几十个状态一个个从参数表里递下去。改成集中持有后，子组合只管
- * 用 `var page by ui.page` 取一个委托，读写直接落到同一份状态上——拆分因此是纯搬动，不改行为。
+ * 存在的理由：原 [ChatScreen] 是 1,800 行的单一函数，二十多个浮层各自 `remember` 于所在层级，
+ * 抽成独立 composable 需将这几十个状态逐一从参数表传递。改为集中持有后，子组合仅需
+ * 以 `var page by ui.page` 取一个委托，读写直接落到同一份状态上——拆分因此仅为迁移，不改变行为。
  *
- * 字段名与原来的局部变量**逐字一致**，这是故意的：搬块时正文一个字都不用改。
+ * 字段名与原局部变量**逐字一致**，这是有意为之：迁移过程中正文无需改动。
  * 需要按 key 复位的状态（`pendingSession` / `planIdsKnown` 等）不放在这里，它们跟着各自的
  * `remember(key)` 留在组合里。
  */
@@ -79,25 +79,25 @@ internal class ChatUiState(context: Context) {
     /** 当前所在的二级页；null = 主页。 */
     val page: MutableState<AppPage?> = mutableStateOf(null)
 
-    /** 回收站页返回时自增：数据页一直挂在这层下面，不换 key 那行统计就不会刷新。 */
+    /** 回收站页返回时自增：数据页始终挂在该层之下，不更换 key 则该行统计不会刷新。 */
     val trashRefreshKey: MutableState<Int> = mutableStateOf(0)
 
     val drawerOpen: MutableState<Boolean> = mutableStateOf(false)
 
-    /** 上下文洞察页是从哪进来的：主页输入框那条路要退回主页，设置首页那条要退回设置。 */
+    /** 上下文洞察页的来源：自主页输入框进入则返回主页，自设置首页进入则返回设置。 */
     val contextHubFromHome: MutableState<Boolean> = mutableStateOf(false)
 
     /** 抽屉里的「＋ 新建工作区」：抽屉没有输入框，弹一个极简输入框。 */
     val showCreateWorkspace: MutableState<Boolean> = mutableStateOf(false)
 
-    /** 包管理 / 会话列表这两页的内容区是 HorizontalPager，只有停在第一页时抽屉才敢抢向右的位移。 */
+    /** 包管理与会话列表两页的内容区为 HorizontalPager，仅停在第一页时抽屉方可拦截向右的位移。 */
     val pagerAtFirstPage: MutableState<Boolean> = mutableStateOf(true)
 
     val extraPrompt: MutableState<String> = mutableStateOf(PromptStore.loadExtra(context))
     val overridePrompt: MutableState<String> =
         mutableStateOf(PromptStore.loadOverride(context).orEmpty())
 
-    /** 输入栏实测高度：附件面板要浮在它上面，写死 dp 会跟字号档位对不上。 */
+    /** 输入栏实测高度：附件面板需浮于其上，固定 dp 会与字号档位不一致。 */
     val inputBarHeightPx: MutableState<Int> = mutableStateOf(0)
     val topBarHeightPx: MutableState<Int> = mutableStateOf(0)
 
@@ -113,18 +113,18 @@ internal class ChatUiState(context: Context) {
     val includeLogs: MutableState<Boolean> = mutableStateOf(false)
     val includeMemory: MutableState<Boolean> = mutableStateOf(false)
 
-    /** Ubuntu 环境段的真实体积（字节）：0 表示还没量出来。 */
+    /** Ubuntu 环境段的真实体积（字节）：0 表示尚未测量。 */
     val terminalBytes: MutableState<Long> = mutableStateOf(0L)
     val importUri: MutableState<Uri?> = mutableStateOf(null)
 
     /** 「清理未引用附件」的结果：只在这一层显示，页面关掉就没了。 */
     val orphanStatus: MutableState<String?> = mutableStateOf(null)
 
-    /** 余额是「查了才有」的临时结果，不落盘：只在模型页显示。 */
+    /** 余额为「查询后才有」的临时结果，不落盘：仅在模型页显示。 */
     val balance: MutableState<BalanceResult?> = mutableStateOf(null)
     val balanceBusy: MutableState<Boolean> = mutableStateOf(false)
 
-    /** 分叉会话的「瞬灭再加载」：分叉完屏幕内容要闪一下。 */
+    /** 分叉会话的「短暂空白后重新加载」：分叉完成后屏幕内容闪烁一次。 */
     val forkReloading: MutableState<Boolean> = mutableStateOf(false)
 
     /** 「本轮用量」伴随面板。 */
@@ -132,7 +132,7 @@ internal class ChatUiState(context: Context) {
     val selectionTarget: MutableState<SelectionTarget?> = mutableStateOf(null)
     val selectionVisible: MutableState<Boolean> = mutableStateOf(false)
 
-    /** 图片长按小窗：内容与可见性分开存，收起那 140ms 里内容还得留在场上播淡出。 */
+    /** 图片长按小窗：内容与可见性分开存储，收起后的 140ms 内内容仍需保留以播放淡出。 */
     val imageMenuTarget: MutableState<ImageMenuTarget?> = mutableStateOf(null)
     val imageMenuVisible: MutableState<Boolean> = mutableStateOf(false)
     val rollbackUserIndex: MutableState<Int?> = mutableStateOf(null)
@@ -140,13 +140,13 @@ internal class ChatUiState(context: Context) {
     /** 清单条点开后的全表弹窗（只读）。 */
     val todoDialogVisible: MutableState<Boolean> = mutableStateOf(false)
 
-    /** 清单条是否被用户收起：只影响这一屏，不动盘上的清单。 */
+    /** 清单条是否被用户收起：仅影响当前界面，不修改磁盘上的清单。 */
     val todoBarHidden: MutableState<Boolean> = mutableStateOf(false)
 
-    /** 列表当前是否贴着底：只在这里记，因为键盘弹起那一刻再问就晚了。 */
+    /** 列表当前是否贴底：仅在此处记录，键盘弹起时再查询已过晚。 */
     val wasAtBottom: MutableState<Boolean> = mutableStateOf(true)
 
-    /** 输入框弹出面板的「开着没 / 关掉」把手。面板状态仍归 Composer，父层只借它铺遮罩。 */
+    /** 输入框弹出面板的开关入口。面板状态仍归 Composer，父层仅借此铺设遮罩。 */
     val composerPanel = ComposerPanelHost()
 
     /** 进上下文洞察页；[fromHome] 决定返回落到哪一层（主页 / 设置首页）。 */
@@ -157,12 +157,12 @@ internal class ChatUiState(context: Context) {
     }
 
     /**
-     * 所有「分叉」入口都走它：遮罩盖住 → 真正切会话 → 淡出，露出重新加载后的内容。
+     * 所有「分叉」入口均走此路径：遮罩覆盖 → 实际切换会话 → 淡出，露出重新加载后的内容。
      */
     fun forkWithReload(scope: CoroutineScope, action: () -> Unit) {
         scope.launch {
             forkReloading.value = true
-            // 等遮罩盖实了再换数据，避免用户看见中间态
+            // 等待遮罩完全覆盖后再替换数据，避免显示中间状态
             delay(80)
             action()
             delay(110)

@@ -15,7 +15,7 @@ import kotlin.math.abs
 /**
  * 长按检测，只观察不消费事件。
  *
- * 挂在整块回合上时，仍要靠子节点处理点击（工具卡、代码块的复制按钮），因此这里从不调用
+ * 挂载于整个回合时，仍需由子节点处理点击（工具卡、代码块的复制按钮），因此此处从不调用
  * consume；超过触摸阈值或手指抬起即放弃，不抢占列表滚动。
  */
 @Composable
@@ -35,13 +35,13 @@ fun Modifier.saltLongPress(onLongPress: (Offset) -> Unit): Modifier {
                     if (change == null || !change.pressed) {
                         held = false
                     } else if (event.changes.count { it.pressed } > 1) {
-                        // 第二根手指落下多半是缩放或双指拖动，长按必须让位
+                        // 第二根手指落下通常表示缩放或双指拖动，长按须让步
                         held = false
                     } else if (abs(change.position.x - origin.x) > slop ||
                         abs(change.position.y - origin.y) > slop
                     ) {
-                        // 按里程而不是直线距离：横竖任一方向滑走都算「不是长按」，
-                        // 否则惯性收住时的手指微移会被当成按住不动
+                        // 按位移而非直线距离判定：横向或纵向任一方向滑出均视为非长按，
+                        // 否则惯性停止时的手指微移会被误判为静止按住
                         held = false
                     }
                 }

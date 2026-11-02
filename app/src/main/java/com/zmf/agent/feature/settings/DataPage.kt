@@ -48,8 +48,7 @@ import kotlinx.coroutines.withContext
 /**
  * 「数据」页（二级）：导入导出、附件占用与清理、日志、归档会话。
  *
- * 入口在设置首页的那一行；行序、文案、可用条件跟分类页时代保持一致，
- * 免得用户按老位置点空。附件占用要数目录，进页面先刷一次，真正读盘交给 ViewModel 在 IO 里做。
+ * 附件占用需统计目录，进入页面时先刷新一次，实际读盘在 IO 线程完成。
  */
 @Composable
 fun DataSettingsPage(
@@ -59,12 +58,12 @@ fun DataSettingsPage(
     onLogs: () -> Unit,
     onArchive: () -> Unit,
     onTrash: () -> Unit,
-    /** 回收站页返回时自增：DataPage 一直挂在这层下面，不换 key 就不会重新统计。 */
+    /** 回收站页返回时自增；不换 key 则不会重新统计。 */
     trashRefreshKey: Int = 0,
     archivedCount: Int,
     attachmentUsage: String?,
     backupStatus: String?,
-    /** 上一次导出/导入的结果：显示在这一页，不再往主页那条状态行上挂。 */
+    /** 最近一次导出/导入的结果，仅在本页显示。 */
     backupNotice: String? = null,
     orphanStatus: String?,
     onRefreshAttachment: () -> Unit,
@@ -74,11 +73,11 @@ fun DataSettingsPage(
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // 终端环境是否装好：「不在」时把那句提示直接摆在页面上，不用等用户去终端里撞黑屏
+    // 终端环境是否就绪；异常时在页面上提示，避免用户进入终端后才发现问题
     var terminalInstalled by remember { mutableStateOf(TerminalEnv.isInstalled(context)) }
     var confirmReinstall by remember { mutableStateOf(false) }
     var reinstallNote by remember { mutableStateOf<String?>(null) }
-    // 回收站的条数与占用：进页面时在 IO 里数一次（条目数受 512 MB 上限约束，扫一遍很便宜）
+    // 回收站条数与占用：进入页面时在 IO 线程统计一次（条目受 512 MB 上限约束，扫描开销小）
     var trashSummary by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(trashRefreshKey) {
         trashSummary = withContext(Dispatchers.IO) {
@@ -88,7 +87,7 @@ fun DataSettingsPage(
     }
 
     Surface(
-        // 铺满且不透明；最外层吞掉点击，避免穿透点到下面的页面
+        // 铺满且不透明；最外层拦截点击，避免穿透到下层页面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -165,7 +164,6 @@ fun DataSettingsPage(
                     )
                 }
                 orphanStatus?.let { message -> DataNote(message = message) }
-                // 导出/导入的进度与结果就落在底部这行小字里（不单独开一个模块）
                 backupStatus?.let { status -> DataNote(message = status) }
                 backupNotice?.let { notice -> DataNote(message = notice) }
                 reinstallNote?.let { message -> DataNote(message = message) }
@@ -208,7 +206,6 @@ fun DataSettingsPage(
     }
 }
 
-/** 分组卡片：Salt 的圆角 16dp，卡片底走 colorScheme.surface，不描边。 */
 @Composable
 private fun DataCard(content: @Composable () -> Unit) {
     Surface(
@@ -224,7 +221,6 @@ private fun DataCard(content: @Composable () -> Unit) {
     }
 }
 
-/** 卡片内的分隔线：从文字左边起，不横穿整张卡片。 */
 @Composable
 private fun DataDivider() {
     HorizontalDivider(
@@ -232,7 +228,7 @@ private fun DataDivider() {
     )
 }
 
-/** 一行入口；onClick 为 null 表示只读信息行（不画「›」）。 */
+/** 一行入口；onClick 为 null 时为只读信息行。 */
 @Composable
 private fun DataRow(
     title: String,
@@ -244,7 +240,6 @@ private fun DataRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // 只读行（value 那几行）根本不挂点击，也就没有按压反馈
             .then(
                 if (onClick != null) {
                     Modifier.saltCardRow(enabled = enabled, onClick = onClick)
@@ -282,7 +277,7 @@ private fun DataRow(
     }
 }
 
-/** 一行说明小字（备份进度、清理结果）。 */
+/** 说明文字：备份进度、清理结果等。 */
 @Composable
 private fun DataNote(message: String) {
     Text(

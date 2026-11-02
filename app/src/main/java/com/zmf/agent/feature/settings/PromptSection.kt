@@ -83,7 +83,7 @@ fun PromptSection(
     var extraDraft by remember(extraPrompt) { mutableStateOf(extraPrompt) }
     var overrideDraft by remember(overridePrompt) { mutableStateOf(overridePrompt) }
 
-    // 预览始终跟草稿走（不是跟已保存的值走），刚打完字就能看到拼起来的实际样子
+    // 预览始终基于草稿而非已保存值，输入后即可看到拼接的实际结果
     val preview = remember(extraDraft, overrideDraft) {
         PromptBuilder.build(
             PromptInput(extraInstructions = extraDraft, systemOverride = overrideDraft)
@@ -93,7 +93,7 @@ fun PromptSection(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            // 卡片自带页面边距：调用方不再套一层横向内距，免得两页拼起来宽度不一致
+            // 卡片自带页面边距：调用方不额外设置横向内距，避免两个页面拼接时宽度不一致
             .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 2.dp)
     ) {
         PromptCard(title = "提示词") {
@@ -181,7 +181,7 @@ fun PromptSection(
 @Composable
 private fun PromptCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(
-        // 卡片自己裁一刀：内部行的波纹是矩形，不裁会在 16dp 圆角处露方角
+        // 卡片自身裁剪：内部行的波纹为矩形，不裁剪会在 16dp 圆角处露出方角
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp)),
@@ -200,7 +200,7 @@ private fun PromptCard(title: String, content: @Composable ColumnScope.() -> Uni
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            // 末尾不再放固定 Spacer：卡片内距全部分配给最后一行自己，
+            // 末尾不设固定 Spacer：卡片内距全部分配给最后一行，
             // 折叠时「预览」这一行才能贴到卡片下缘、波纹被下圆弧裁成半圆。
             content()
         }
@@ -224,7 +224,7 @@ private fun PromptEntryHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // 波纹通栏，形状交给卡片的 16dp 圆角去裁；行内不再自己定圆角。
+            // 波纹通栏，形状由卡片的 16dp 圆角裁剪；行内不单独定义圆角。
             .saltCardRow { onToggle() }
             .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = bottomPadding),
         verticalAlignment = Alignment.CenterVertically
@@ -290,7 +290,7 @@ private fun PromptEditor(
 }
 
 /**
- * 自绘输入框：不能用 OutlinedTextField 的默认 focus 边框（Material 蓝），
+ * 自绘输入框：不使用 OutlinedTextField 的默认焦点边框（Material 蓝），
  * 这里聚焦态描 Salt 绿，失焦态是一条极淡的中性描边。
  */
 @Composable
@@ -316,8 +316,8 @@ private fun PromptField(
         // 内容区 = 输入框去掉 decorationBox 里的内距（左右 12dp、上下 10dp）
         val textWidthPx = with(density) { (maxWidth - 24.dp).toPx() }.toInt().coerceAtLeast(1)
         val textHeightPx = with(density) { (maxHeight - 20.dp).toPx() }
-        // 文本是否真的装不下：只有装不下时，输入框滚到边界后的余量才该被吃掉。
-        // 装得下还把余量吃掉的话，手指划在短输入框上整页会滑不动（BoundedScroll 同一个口径）。
+        // 文本是否超出可视区域：仅在超出时，输入框滚到边界后的剩余位移才交由输入框消耗。
+        // 若未超出仍消耗剩余位移，在短输入框上滑动时整页将无法滚动（与 BoundedScroll 口径一致）。
         val overflows = remember(value, textWidthPx, textHeightPx, textStyle) {
             measurer.measure(
                 text = AnnotatedString(value),

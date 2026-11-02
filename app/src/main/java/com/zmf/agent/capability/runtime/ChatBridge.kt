@@ -13,38 +13,37 @@ import kotlinx.coroutines.launch
 /**
  * 悬浮球小窗 ↔ 聊天状态的数据桥。
  *
- * 小窗 Service 和主 App 是同一个进程，所以不走 AIDL、不走 Binder：
- * 界面侧把 [ChatPort] 的实现塞进来，小窗直接读它的 Compose 状态。
- * 桥本身只认窄口、不认 ChatViewModel（2026-10-30 从 feature/float 上移 capability/runtime，
- * 顺带把「小窗和定时任务都复用聊天」这条 feature→feature 依赖断掉）。
- * Service 注册时机由 App 侧决定（本对象只管存取，写成可空 var，注销时赋 null 即可）。
+ * 小窗 Service 与主 App 处于同一进程，因此不使用 AIDL 或 Binder：
+ * 界面侧注入 [ChatPort] 的实现，小窗直接读取其 Compose 状态。
+ * 本对象只依赖窄接口，不依赖 ChatViewModel；小窗与定时任务共用聊天能力，避免 feature 之间的依赖。
+ * Service 的注册时机由 App 侧决定（本对象只负责存取，字段可空，注销时赋 null）。
  *
- * 线程：Service 和 App 的主线程是同一个，读状态都在主线程，不需要额外同步；
- * 引用本身用 @Volatile 兜住「别的线程读一次」的极端情况。
+ * 线程：Service 与 App 的主线程相同，状态读取均在主线程，无需额外同步；
+ * 引用本身使用 @Volatile 以保证其他线程可见性。
  */
 object ChatBridge {
 
-    /** 真正的引用；对外通过 [port] 暴露（写的时候顺带 bump 快照版本）。 */
+    /** 真正的引用；对外通过 [port] 暴露（写入时同时递增快照版本）。 */
     @Volatile
     private var bound: ChatPort? = null
 
     /**
-     * 绑定版本号：绑上来 / 换绑 / 注销时 +1。
-     * 它是 Compose 快照状态，读过 [messages] / [title] 的组合会被它通知重组，
-     * 否则「Service 先起、App 后注册」这种情况下小窗会一直停在空列表。
+     * 绑定版本号：绑定 / 换绑 / 注销时 +1。
+     * 它是 Compose 快照状态，读取过 [messages] / [title] 的组合会因它通知而重组，
+     * 否则「Service 先启动、App 后注册」时小窗将始终显示空列表。
      */
     private var bindVersion by mutableStateOf(0)
 
     /**
      * 小窗发消息用的作用域：ChatPort.send 的签名要一个 scope，
-     * 实现方自己并不持有（主界面那边是 rememberCoroutineScope 传进去的）。
-     * 这里用 Main.immediate：状态写入和流式回调本来就要在主线程。
+     * 实现方并不持有该作用域（主界面通过 rememberCoroutineScope 传入）。
+     * 此处使用 Main.immediate：状态写入与流式回调本就需要在主线程执行。
      */
     private val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /**
-     * App 侧注册位：把实现赋进来即可；注销时赋 null。
-     * 注册方会拿它做 === 判重，所以类型是可写的 ChatPort?。
+     * App 侧注册位：将实现赋值即可；注销时赋 null。
+     * 注册方会使用 === 判重，因此类型为可写的 ChatPort?。
      */
     var port: ChatPort?
         get() = bound
@@ -56,14 +55,14 @@ object ChatBridge {
 
     /**
      * 当前会话的原始消息列表（实现方直接返回 SnapshotStateList，不 copy）：
-     * 组合里遍历它就会自动订阅，新消息进来小窗自己重组。
+     * 组合中遍历它会自动订阅，新消息到达时小窗自动重组。
      */
     fun messages(): List<ChatMessage> = current()?.messages() ?: emptyList()
 
     /**
      * 小窗发送一条消息。
-     * 流式中（isStreaming）时实现方内部会直接返回，不会打断正在生成的回复；
-     * 这里只做空串过滤与异常兜底，免得小窗把服务搞崩。
+     * 流式生成期间（isStreaming）实现方会直接返回，不打断正在生成的回复；
+     * 此处仅做空串过滤与异常兜底，避免小窗导致服务异常。
      */
     fun send(text: String) {
         val target = current() ?: return
@@ -73,19 +72,19 @@ object ChatBridge {
             .onFailure { FileLog.log("float", "小窗发送失败：" + it) }
     }
 
-    /** 会话名：实现方已处理过「没标题 = 新会话」，取不到就兜底成「会话」。 */
+    /** 会话名：实现方已处理「无标题即新会话」的情况，取不到时兜底为「会话」。 */
     fun title(): String {
         val target = current() ?: return "会话"
         return runCatching { target.title() }.getOrDefault("会话").ifBlank { "会话" }
     }
 
-    /** 小窗会话切换列表；桥没绑上时给空表（小窗显示「还没有其它会话」）。 */
+    /** 小窗会话切换列表；桥未绑定时返回空列表（小窗显示「还没有其它会话」）。 */
     fun sessions(): List<ChatPortSession> {
         val target = current() ?: return emptyList()
         return runCatching { target.sessions() }.getOrDefault(emptyList())
     }
 
-    /** 小窗里点了某条会话：切过去。切完消息表由实现方替换，小窗跟着重组。 */
+    /** 在小窗中选中某条会话后切换至该会话。切换完成后消息表由实现方替换，小窗随之重组。 */
     fun switchSession(id: String) {
         val target = current() ?: return
         runCatching { target.switchSession(id) }
@@ -93,10 +92,10 @@ object ChatBridge {
     }
 
     /**
-     * 后台（定时任务）改过会话文件之后通知界面重读一次（2026-10-25）。
+     * 后台（定时任务）修改会话文件后通知界面重新读取。
      *
-     * 不加这个的话，后台追加的会话要等用户杀掉进程重进才看得见——界面的 sessionList 是内存快照。
-     * 切到主线程执行：reloadSessions 会写 Compose 状态。
+     * 若缺少此通知，后台追加的会话需等用户重启进程后才可见，因为界面的 sessionList 是内存快照。
+     * 切换到主线程执行：reloadSessions 会写入 Compose 状态。
      */
     fun notifySessionsChanged() {
         if (bound == null) return
@@ -110,7 +109,7 @@ object ChatBridge {
     /** 读一次快照版本 + 拿引用：绑定/换绑能触发重组。 */
     @Suppress("UNUSED_EXPRESSION")
     private fun current(): ChatPort? {
-        // 这一行是 Compose 快照读，不要删
+        // 此处读取 Compose 快照状态，用于触发重组，不可移除
         bindVersion
         return bound
     }

@@ -52,7 +52,7 @@ import java.util.Locale
  *
  * 页面只做三件事：看（原路径 / 大小 / 时间）、恢复、永久删除（单条或清空）。
  * 淘汰（7 天 / 单池 512 MB）不在这里做，那是 App 启动时的后台动作，
- * 让用户手动点「清理」只会把一件自动化的事变成负担。
+ * 让用户手动点击「清理」会把一项自动化行为转化为用户负担。
  */
 @Composable
 fun TrashPage(onBack: () -> Unit) {
@@ -64,7 +64,7 @@ fun TrashPage(onBack: () -> Unit) {
     var confirmPurge by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<TrashStore.Entry?>(null) }
     // 每次恢复/删除后自增，让下面的 LaunchedEffect 重新读盘（不引 ViewModel：
-    // 这一页的数据源是文件系统本身，重读一次比维护一份内存副本更不容易走样）
+    // 这一页的数据源是文件系统本身，重读一次比维护一份内存副本更不易产生偏差）
     var generation by remember { mutableStateOf(0) }
 
     LaunchedEffect(generation) {
@@ -76,7 +76,7 @@ fun TrashPage(onBack: () -> Unit) {
     val totalBytes = entries.sumOf { it.bytes }
 
     Surface(
-        // 铺满且不透明；最外层吞掉点击，避免穿透点到下面的页面
+        // 铺满且不透明；最外层拦截点击，避免事件穿透到下方的页面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -242,7 +242,7 @@ private fun TrashRow(
     onDelete: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    // SAF 目录推不出本地路径时这条只能看、不能恢复：把按钮置灰，点了也不会假装成功
+    // SAF 目录无法推出本地路径时，这条记录只能查看、不能恢复：按钮置灰，避免给出虚假的成功反馈
     val canRestore = !entry.localPath.isNullOrBlank()
     Row(
         modifier = Modifier

@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -49,7 +48,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -73,22 +71,22 @@ import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.common.saltCursorBrush
 import com.zmf.agent.uikit.markdown.MarkdownText
 
-/** 小窗只读展示最近多少条消息（老消息不铺进 LazyColumn，省内存也省布局）。 */
+/** 小窗只读展示的最近消息条数（较早消息不放入 LazyColumn，减少内存与布局开销）。 */
 private const val MAX_SHOWN = 80
 
 /**
- * 小窗折叠：正文完整高度超过**可视高**的这个比例才折。
+ * 小窗折叠：正文完整高度超过可视高度的该比例时才折叠。
  *
- * 用比例而不是写死的 dp：小窗的宽高由用户随便拖，同一段话在拉高的窗口里该整段铺开、
- * 在压矮的窗口里才该折起来。主页按屏幕 45% 折，这里放宽到 62%：小窗本来就矮，
- * 折得太早会只剩个标题，反而要看两遍。
+ * 使用比例而非固定 dp：小窗宽高由用户自由拖动，同一段内容在较高的窗口中应完整显示，
+ * 在较矮的窗口中才折叠。主页按屏幕 45% 折叠，此处放宽至 62%：小窗高度较小，
+ * 过早折叠会仅显示标题，导致需要查看两次。
  */
 private const val FLOAT_FOLD_AT_RATIO = 0.62f
 
-/** 折叠态最多占可视高的比例：窗口压矮时跟着收，拉高时自动摊开。 */
+/** 折叠态占可视高度的最大比例：窗口变矮时随之收缩，拉高时自动展开。 */
 private const val FLOAT_FOLDED_RATIO = 0.42f
 
-/** 小窗整体留给阴影的内缩：窗口是服务给的精确像素（默认 240x320dp），阴影得画在窗口里面才看得见。 */
+/** 小窗为阴影预留的内边距：窗口尺寸由服务提供精确像素（默认 240x320dp），阴影需绘制在窗口内部才能显示。 */
 private val SHADOW_PADDING = 5.dp
 
 /** 小窗圆角：12dp。 */
@@ -100,57 +98,57 @@ private val TOP_BAR_HEIGHT = 48.dp
 /** 工具条圆按钮直径：30dp。 */
 private val TOOL_BUTTON_SIZE = 30.dp
 
-/** 右侧调宽手柄：命中区 16dp 宽 × 满高（窗内，贴右边缘）。 */
+/** 右侧调宽手柄：命中区为 16dp 宽、满高（位于窗口内，贴合右边缘）。 */
 private val RIGHT_HANDLE_HIT_W = 16.dp
 
-/** 底部调高手柄：命中区 满宽 × 12dp（窗内，贴底边；占位在输入行下方，不叠在输入行上）。 */
+/** 底部调高手柄：命中区为满宽、12dp 高（位于窗口内，贴合底边；位于输入行下方，不与输入行重叠）。 */
 private val BOTTOM_HANDLE_HIT_H = 12.dp
 
-/** 手柄视觉：长边 60dp、短边 6dp、圆角 3dp（右侧竖条 / 底部横条共用）。 */
+/** 手柄视觉：长边 60dp、短边 6dp、圆角 3dp（右侧竖条与底部横条共用）。 */
 private val HANDLE_LONG = 60.dp
 private val HANDLE_THIN = 6.dp
 private val HANDLE_CORNER = 3.dp
 
-/** 手柄配色：空闲 12% 底 + 30% 描边，拖动中加深到 22% / 45%（一点进度感）。 */
+/** 手柄配色：空闲时底色 12%、描边 30%，拖动中加深至 22% 与 45%（提供进度反馈）。 */
 private const val HANDLE_BG_IDLE = 0.12f
 private const val HANDLE_BG_DRAG = 0.22f
 private const val HANDLE_BORDER_IDLE = 0.30f
 private const val HANDLE_BORDER_DRAG = 0.45f
 
 /**
- * 输入框焦点变化的对外钩子。
+ * 输入框焦点变化的对外回调。
  *
- * 服务侧只用它做一件事：输入框**真正获得焦点**的那一刻请求一次 IME（200ms 防抖）。
- * 窗口的 flags 在展开时就一次性设成可获焦，**不随焦点变化**：上一版正是这里
- * 反复改 flags，窗口一失焦系统就收键盘、代码又去 showSoftInput，键盘来回闪。
- * Composable 的形参是定死的，所以用一个 CompositionLocal 把这件事回传给服务，
- * 默认实现是空操作（单独预览也不会崩）。
+ * 服务侧仅用于一项操作：输入框真正获得焦点时请求一次 IME（200ms 防抖）。
+ * 窗口 flags 在展开时一次性设为可获焦，不随焦点变化；若在此反复修改 flags，
+ * 窗口失焦时系统会收起键盘，代码又调用 showSoftInput，导致键盘反复闪烁。
+ * Composable 形参固定，因此通过 CompositionLocal 将该事件回传给服务，
+ * 默认实现为空操作（单独预览也不会崩溃）。
  */
 val LocalFloatInputFocus = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 
 /**
- * 系统小窗里的对话面板（尺寸由服务给，默认 240x320dp，圆角 12dp，八级阴影）。
+ * 系统小窗中的对话面板（尺寸由服务提供，默认 240x320dp，圆角 12dp，八级阴影）。
  *
- * 顶部 48dp 工具条按参考实现分两端：左边「会话切换 + 折叠回球」，
- * 右边「回主页 + 关闭」，中间一条可拖空白；**不再显示会话名**。
- * 会话切换点开后面板铺满消息区，列出未归档会话（无图标，当前会话标「当前」）。
- * 中间只读展示当前会话消息，底部一行输入（surface 面片 + 圆角，**不描白边**），
- * 回车 / 点发送都走 [onSend]。
+ * 顶部 48dp 工具条分为两端：左侧为会话切换与折叠回球，
+ * 右侧为回主页与关闭，中间为可拖动空白区域；不显示会话名。
+ * 会话切换展开后，面板铺满消息区，列出未归档会话（无图标，当前会话标记「当前」）。
+ * 中间只读展示当前会话消息，底部为输入行（surface 面片与圆角，无描边），
+ * 回车与点击发送均调用 [onSend]。
  *
- * 图标：工程里没有 material-icons 依赖（也不许新增），所以四个图标用 Canvas 手画，
- * 不新增任何资源文件，任何系统字体下都能渲染。
+ * 图标：工程未引入 material-icons 依赖，因此四个图标使用 Canvas 绘制，
+ * 不新增资源文件，在任何系统字体下均可正常渲染。
  *
- * 手势（锚点都是窗口左上角，热区与换算跟 Operit 的逆向结论一致）：
- * - 移动：**只有左右按钮组之间那块空白**能拖（[onMoveBy]，位移直接透传 px）；
- * - 调宽：右边缘一条 16dp 宽 × 满高的竖条（[onResizeWidth]），只改宽、x 不动；
- * - 调高：底边一条 满宽 × 12dp 的横条（[onResizeHeight]），在输入行下方，只改高、y 不动；
- * - 松手：[onGestureEnd] 告诉服务「这一段手势结束」，服务只在这时落盘一次。
+ * 手势（锚点均为窗口左上角，触控区域与换算关系与参考实现一致）：
+ * - 移动：仅左右按钮组之间的空白区域可拖动（[onMoveBy]，位移直接按 px 传递）；
+ * - 调宽：右边缘 16dp 宽、满高的竖条（[onResizeWidth]），仅修改宽度，x 不变；
+ * - 调高：底边满宽、12dp 高的横条（[onResizeHeight]），位于输入行下方，仅修改高度，y 不变；
+ * - 松手：[onGestureEnd] 通知服务「本次手势结束」，服务仅在此刻持久化一次。
  *
- * 尺寸自适应：内距固定 8dp / 20dp（右侧给调宽手柄让位），按钮组固定宽度、
- * 中间可拖区吃剩余宽度且没有最小宽度——窗口拖窄到极限时先让出可拖区，按钮始终完整可点。
+ * 尺寸自适应：内边距固定为 8dp 与 20dp（右侧为调宽手柄留出空间），按钮组宽度固定，
+ * 中间可拖动区域占用剩余宽度且无最小宽度——窗口拖至最窄时优先缩减可拖动区域，按钮始终完整可点。
  *
- * 这里仍然只负责画和把手指位移换算成增量，真正改窗口参数 / 夹取 / 落盘全在
- * FloatingBallService 里。
+ * 此处仅负责绘制并将手指位移换算为增量，实际修改窗口参数、边界夹取与持久化均由
+ * FloatingBallService 完成。
  */
 @Composable
 fun FloatingChatWindow(
@@ -168,16 +166,16 @@ fun FloatingChatWindow(
 ) {
     val focusHook = LocalFloatInputFocus.current
     var text by remember { mutableStateOf("") }
-    // 会话切换面板是否展开：铺在消息区上，点某条会话即切换并收起
+    // 会话切换面板是否展开：覆盖于消息区之上，点击某条会话即切换并收起
     var sessionPanel by remember { mutableStateOf(false) }
-    // 小窗不在 Activity 里，不用 rememberLazyListState（它走 rememberSaveable，需要 SavedStateRegistryOwner）
+    // 小窗不在 Activity 中，不使用 rememberLazyListState（其依赖 rememberSaveable，需要 SavedStateRegistryOwner）
     val listState = remember { LazyListState() }
-    // 消息区当前尺寸（px）：拖底边改窗口高度 / 拖右边改宽度都会让它变，用来触发一次「贴底」。
-    // 存 IntSize 而不是单个高度：窗口拉宽会让长文本重新折行、最后一条的位置也会变，
-    // 两维都参与才叫「窗口尺寸变了就重新贴底」。
+    // 消息区当前尺寸（px）：拖动底边改变窗口高度或拖动右边改变宽度时均会变化，用于触发一次「贴底」。
+    // 保存 IntSize 而非单个高度：窗口拉宽会导致长文本重新换行，最后一条的位置也会变化，
+    // 两个维度都参与才能实现「窗口尺寸变化后重新贴底」。
     var messageAreaSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // 只挑用户/AI 两种正常气泡：工具消息、系统提示在小窗里没地方展开，直接跳过
+    // 仅选取用户与 AI 两类正常气泡：工具消息与系统提示在小窗中无法展开，直接跳过
     val shown = ArrayList<ChatMessage>()
     for (message in messages) {
         if ((message.role == "user" || message.role == "assistant") && message.content.isNotBlank()) {
@@ -187,17 +185,17 @@ fun FloatingChatWindow(
     val visible = if (shown.size > MAX_SHOWN) shown.subList(shown.size - MAX_SHOWN, shown.size) else shown
 
     /*
-     * 贴底：两个触发条件共用这一段。
-     * 1) 消息条数变了：新回复进来，小窗就这么点高，不跟到底等于看不见最新回复；
-     * 2) 消息区尺寸变了：拖底边把窗口往下压时视口变矮，原来的滚动量不再贴底，
-     *    消息会卡在上一格、不跟输入框一起上移。尺寸变化后重新「滚到最后一项」，
-     *    LazyListState 会把这次滚动夹到内容末尾，视觉上就是最后一条贴着输入框往上走。
-     * 触发点在 LazyColumn 的 onSizeChanged（布局阶段写 state，重组后这个 effect 才跑，不抢布局）。
+     * 贴底：两个触发条件共用该逻辑。
+     * 1) 消息条数变化：新回复进入时，小窗可视高度有限，不滚动到底部将无法看到最新回复；
+     * 2) 消息区尺寸变化：向下拖动底边后视口变矮，原有滚动量无法保持贴底，
+     *    消息会停留在上一位置，无法随输入框上移。尺寸变化后重新「滚动到最后一项」，
+     *    LazyListState 会将该次滚动限制到内容末尾，表现为最后一条紧贴输入框上移。
+     * 触发点位于 LazyColumn 的 onSizeChanged（在布局阶段写入 state，重组后该 effect 才执行，不干扰布局）。
      */
     LaunchedEffect(visible.size, messageAreaSize) {
         if (visible.isNotEmpty()) runCatching { listState.scrollToItem(visible.lastIndex) }
     }
-    // 小窗被收起/销毁时补一次「失焦」：否则窗口会一直以为输入框还占着焦点，收起后还抢键盘
+    // 小窗收起或销毁时补充一次「失焦」：否则窗口会持续认为输入框持有焦点，收起后仍抢占键盘
     DisposableEffect(Unit) {
         onDispose { focusHook(false) }
     }
@@ -211,23 +209,22 @@ fun FloatingChatWindow(
         }
     }
 
-    // 内缩 SHADOW_PADDING：阴影画在窗口里，贴着窗口边缘会被裁掉
+    // 内缩 SHADOW_PADDING：阴影绘制在窗口内部，贴合窗口边缘会被裁剪
     Box(Modifier.fillMaxSize().padding(SHADOW_PADDING)) {
         Surface(
             modifier = Modifier
                 .fillMaxSize()
                 .shadow(elevation = 8.dp, shape = RoundedCornerShape(WINDOW_CORNER), clip = false),
             shape = RoundedCornerShape(WINDOW_CORNER),
-            // 画布用**页面底色**而不是 surface：surface 正好等于 AI 气泡色，
-            // 那样气泡会糊在背景里。换成页面底色后，小窗里的三层（底 / AI 气泡 / 用户气泡）
-            // 与主页对话页是同一套层次。
+            // 画布使用页面底色而非 surface：surface 与 AI 气泡色相同，会导致气泡与背景混为一体。
+            // 改用页面底色后，小窗的三层（底、AI 气泡、用户气泡）与主页对话页层次一致。
             color = MaterialTheme.colorScheme.background
         ) {
-            // 内容 + 两个贴边手柄：手柄画在窗口**里面**，贴着「会动的那条边」
+            // 内容与两个贴边手柄：手柄绘制在窗口内部，贴合可变动的那条边
             Box(Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize()) {
-                    // 标题栏固定 48dp、输入行 + 底部手柄贴在下面、中间那块 weight(1f) 吃满剩余高度：
-                    // 窗口变宽变高时只有中间的消息区变大，标题栏 / 输入行不会被压缩
+                    // 标题栏固定为 48dp，输入行与底部手柄位于下方，中间区域使用 weight(1f) 占满剩余高度：
+                    // 窗口变宽或变高时仅消息区扩展，标题栏与输入行不会被压缩
                     TopBar(
                         sessionsOpen = sessionPanel,
                         onSessions = { sessionPanel = !sessionPanel },
@@ -238,7 +235,7 @@ fun FloatingChatWindow(
                         onGestureEnd = onGestureEnd
                     )
 
-                    // 消息区：会话切换面板铺在它上面（同一块区域，切完自动收起）
+                    // 消息区：会话切换面板覆盖其上（同一区域，切换后自动收起）
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                     if (visible.isEmpty()) {
                         Box(
@@ -252,8 +249,8 @@ fun FloatingChatWindow(
                             )
                         }
                     } else {
-                        // 折叠阈值按**当前可视高**现算：窗口是用户随便拖的，同一段话
-                        // 拉高时摊开、压矮时才折，写死的 dp 在很矮的窗口里会一折到底。
+                        // 折叠阈值按当前可视高度实时计算：窗口由用户自由拖动，同一段内容
+                        // 在较高时展开、较矮时折叠，固定 dp 在高度较小的窗口中会导致完全折叠。
                         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                             val foldAt = maxHeight * FLOAT_FOLD_AT_RATIO
                             val foldedHeight = maxHeight * FLOAT_FOLDED_RATIO
@@ -261,7 +258,7 @@ fun FloatingChatWindow(
                                 state = listState,
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    // 尺寸一变就记下来（同一个值写进去不会触发重组），交给上面的贴底 effect
+                                    // 尺寸变化时记录（写入相同值不会触发重组），交由上方的贴底 effect 处理
                                     .onSizeChanged { messageAreaSize = it },
                                 contentPadding = PaddingValues(vertical = 6.dp)
                             ) {
@@ -296,15 +293,15 @@ fun FloatingChatWindow(
                         onSubmit = submit
                     )
 
-                    // 底部调高手柄：在输入行**下方**独占 12dp（窗口内最底部），不叠在输入行上，
-                    // 免得点发送按钮的下沿被误判成 resize
+                    // 底部调高手柄：位于输入行下方，独占 12dp（窗口内最底部），不与输入行重叠，
+                    // 避免点击发送按钮下缘时被误判为 resize
                     BottomResizeHandle(
                         onResizeHeight = onResizeHeight,
                         onGestureEnd = onGestureEnd
                     )
                 }
 
-                // 右侧调宽手柄：16dp 宽 × 满高，叠在最上层、贴右边缘（标题栏/输入行都让开了它）
+                // 右侧调宽手柄：16dp 宽、满高，位于最上层并贴合右边缘（标题栏与输入行均已避让）
                 RightResizeHandle(
                     modifier = Modifier.align(Alignment.CenterEnd),
                     onResizeWidth = onResizeWidth,
@@ -316,11 +313,11 @@ fun FloatingChatWindow(
 }
 
 /**
- * 顶部 48dp 工具条：左「会话切换 + 转悬浮窗（折叠回球）」、右「回主页 + 关闭」，中间可拖。
+ * 顶部 48dp 工具条：左侧为「会话切换 + 折叠回球」，右侧为「回主页 + 关闭」，中间可拖动。
  *
- * 按参考实现重排（2026-10-31）：**不再显示会话名**，四个按钮平均贴两端，
- * 中间只剩一条可拖空白。窗口被拖窄时按钮不动、可拖区先被吃掉，
- * 左右内距固定 8dp / 20dp（右侧 20dp 是给调宽手柄让位），所以任意尺寸下都不会压到内容。
+ * 不显示会话名，四个按钮分布于两端，中间仅保留可拖动空白。窗口拖窄时按钮位置不变、
+ * 可拖动区域优先缩减，左右内边距固定为 8dp 与 20dp（右侧 20dp 为调宽手柄留出空间），
+ * 因此任意尺寸下均不会遮挡内容。
  */
 @Composable
 private fun TopBar(
@@ -338,7 +335,7 @@ private fun TopBar(
         modifier = Modifier
             .fillMaxWidth()
             .height(TOP_BAR_HEIGHT)
-            // end 让到 20dp：右边缘 16dp 是调宽手柄的命中区，别让它盖住「✕」按钮
+            // 右侧内边距为 20dp：右边缘 16dp 为调宽手柄的命中区，避免遮挡「✕」按钮
             .padding(start = 8.dp, end = 20.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -347,8 +344,8 @@ private fun TopBar(
         }
         Spacer(Modifier.width(6.dp))
         CircleToolButton(onClick = onCollapse) { ChevronDownIcon(iconColor) }
-        // 可拖区：dragAmount 是布局 px（我们没有 scale，等于屏幕 px），原样透传给服务。
-        // 不给最小宽度：窗口拖窄到极限时可拖区先消失，按钮仍然完整可见可点。
+        // 可拖动区域：dragAmount 为布局 px（未使用 scale，等同于屏幕 px），原样传递给服务。
+        // 不设置最小宽度：窗口拖至最窄时可拖动区域优先消失，按钮仍完整可见可点。
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -371,8 +368,8 @@ private fun TopBar(
 /**
  * 会话切换面板：铺满消息区，列出未归档会话（按最近更新排序，无图标）。
  *
- * 用页面底色而不是浮层灰色：小窗本身很小，再叠一层半透明会看不清标题；
- * 当前会话用强调色标出来，点其它行即切换并自动收起。
+ * 使用页面底色而非浮层灰色：小窗尺寸较小，叠加半透明层会导致标题难以辨认；
+ * 当前会话以强调色标记，点击其他行即切换并自动收起。
  */
 @Composable
 private fun SessionPickerPanel(
@@ -430,10 +427,10 @@ private fun SessionPickerPanel(
 }
 
 /**
- * 右侧调宽手柄：命中区 16dp 宽 × 满高，视觉一条 6×60dp 圆角竖条（居中）。
+ * 右侧调宽手柄：命中区为 16dp 宽、满高，视觉为居中的 6×60dp 圆角竖条。
  *
- * 只认水平位移：dragAmount.x 原样交给服务，服务只改 lp.width、绝不碰 x/y
- * ⇒ 左边缘固定、右边缘向右长（锚点左上角）。松手才调 onGestureEnd。
+ * 仅识别水平位移：dragAmount.x 原样交给服务，服务仅修改 lp.width，不改变 x/y，
+ * 即左边缘固定、右边缘向右扩展（锚点左上角）。松手时才调用 onGestureEnd。
  */
 @Composable
 private fun RightResizeHandle(
@@ -471,10 +468,10 @@ private fun RightResizeHandle(
 }
 
 /**
- * 底部调高手柄：命中区 满宽 × 12dp，视觉一条 60×6dp 圆角横条（居中）。
+ * 底部调高手柄：命中区为满宽、12dp 高，视觉为居中的 60×6dp 圆角横条。
  *
- * 只认竖直位移：dragAmount.y 原样交给服务，服务只改 lp.height
- * ⇒ 上边缘固定、下边缘向下长（锚点左上角）。松手才调 onGestureEnd。
+ * 仅识别竖直位移：dragAmount.y 原样交给服务，服务仅修改 lp.height，
+ * 即上边缘固定、下边缘向下扩展（锚点左上角）。松手时才调用 onGestureEnd。
  */
 @Composable
 private fun BottomResizeHandle(
@@ -510,7 +507,7 @@ private fun BottomResizeHandle(
     }
 }
 
-/** 手柄视觉：底色 12% + 30% 描边，拖动中加深到 22% / 45%（简单的一档进度感）。 */
+/** 手柄视觉：底色 12%、描边 30%，拖动中加深至 22% 与 45%（提供简单的进度反馈）。 */
 @Composable
 private fun HandleBar(modifier: Modifier, dragging: Boolean, color: Color) {
     Box(
@@ -527,7 +524,7 @@ private fun HandleBar(modifier: Modifier, dragging: Boolean, color: Color) {
     )
 }
 
-/** 30dp 圆按钮（工具条上的三个）。 */
+/** 30dp 圆按钮（工具条上的按钮）。 */
 @Composable
 private fun CircleToolButton(onClick: () -> Unit, content: @Composable () -> Unit) {
     Box(
@@ -561,7 +558,7 @@ private fun ListIcon(color: Color) {
     }
 }
 
-/** 房子图标：屋顶折线 + 屋身方框，两条路径描边。 */
+/** 房子图标：屋顶折线与屋身方框，两条路径描边。 */
 @Composable
 private fun HomeIcon(color: Color) {
     Canvas(Modifier.size(14.dp)) {
@@ -618,62 +615,58 @@ private fun CloseIcon(color: Color) {
 }
 
 /**
- * 一条消息气泡：只读、走**和主页同一套** [MarkdownText]（代码块、列表、粗体都一样）。
+ * 一条消息气泡：只读，使用与主页一致的 [MarkdownText]（代码块、列表、粗体表现相同）。
  *
- * 气泡**占满左右**（左右各 12dp 内边距）：窗口拉宽以后正文要跟着一起变宽。
- * 上一版有两处把它钉死在了旧尺寸上：外层 widthIn(max = 215dp) 卡着宽度上限、
- * 内层 Row 的 Arrangement 按角色靠左/靠右，于是窗口变宽后右边空一大截。
- * 现在左右对齐没有意义了（气泡已经占满整行），角色只决定底色。
+ * 气泡占满左右宽度（左右各 12dp 内边距）：窗口拉宽后正文随之变宽。
+ * 左右对齐已无意义（气泡占满整行），角色仅决定底色。
  *
- * 不用带 `shape` 的 `Surface`：小窗能拉得很高，一条长回复的气泡也会长到几千像素，
- * 而 `Surface` 的裁剪图层长到那个尺寸后，里面代码块的「缩进 / 复制」就收不到点击
- * （主页的气泡也踩过同一个坑：长到几千像素后，里面代码块的按钮收不到点击）。
- * `Box + background(color, shape)` 视觉一致、但不建裁剪图层。
+ * 不使用带 `shape` 的 `Surface`：小窗可拉至较高尺寸，长回复的气泡可达数千像素，
+ * 而 `Surface` 的裁剪图层达到该尺寸后，内部代码块的「缩进 / 复制」无法接收点击
+ * （主页气泡同样存在该问题）。`Box + background(color, shape)` 视觉一致且不创建裁剪图层。
  *
- * 原先这里写死 `maxLines = 14` 省略超长回复；改用 Markdown 后不能按行截断
- * （截在一半会把代码块切坏），改为**按块折叠**：超过当前可视高就到整段末尾折起来，
- * 右下角压一枚和主页同一款的 [FoldToggle]，展开 / 收起只动本气泡的高度。
+ * 不使用 `maxLines` 截断：Markdown 内容按行截断会破坏代码块，因此改为按块折叠：
+ * 超过当前可视高度时在整段末尾折叠，右下角显示与主页一致的 [FoldToggle]，
+ * 展开与收起仅改变本气泡的高度。
  */
 @Composable
 private fun MessageBubble(message: ChatMessage, foldAt: Dp, foldedHeight: Dp) {
     val isUser = message.role == "user"
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    // 与主页气泡同一套配色：用户气泡 Palette.BubbleUserLight／BubbleUserDark（画布上最亮）、
-    // AI 气泡 Palette.BubbleAiLight／BubbleAiDark（比画布深一档）。窗口画布也换成了页面底色，
-    // 所以这里直接用不透明的气泡色即可，折叠遮罩也能真的盖住最后一行。小窗原来用户气泡是
-    // primary 的 14%：主题 primary 是 AccentBlue，整屏单色里就那两块是浅蓝，跟全局配色对不上。
+    // 与主页气泡使用同一套配色：用户气泡为 Palette.BubbleUserLight／BubbleUserDark（画布上最亮），
+    // AI 气泡为 Palette.BubbleAiLight／BubbleAiDark（较画布深一档）。窗口画布使用页面底色，
+    // 因此可直接使用不透明气泡色，折叠遮罩也能完全覆盖最后一行。
     val bubbleColor = if (isUser) {
         if (isDark) Palette.BubbleUserDark else Palette.BubbleUserLight
     } else {
         if (isDark) Palette.BubbleAiDark else Palette.BubbleAiLight
     }
-    // 展开态只活在这一屏：滑出小窗视口再回来重新折起（与主页口径一致）
+    // 展开状态仅在当前屏有效：滑出小窗视口后返回会重新折叠（与主页一致）
     var expanded by remember { mutableStateOf(false) }
     Box(
-        // fillMaxWidth 之后 padding：底色/圆角画在内缩 12dp 的区域里，气泡本身吃满可用宽度
+        // 先 fillMaxWidth 再 padding：底色与圆角绘制在内缩 12dp 的区域，气泡本身占满可用宽度
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 3.dp)
-            // 展开 / 收起只动气泡高度，不重新折行
+            // 展开与收起仅改变气泡高度，不重新换行
             .animateContentSize(animationSpec = tween(180), alignment = Alignment.TopStart)
             .background(color = bubbleColor, shape = RoundedCornerShape(12.dp))
     ) {
         MarkdownText(
             text = message.content,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-            // 小窗比主页窄，正文字号跟着收一档（代码块字号由 MarkdownText 按 0.88 等比缩）
+            // 小窗较主页窄，正文字号相应缩小一级（代码块字号由 MarkdownText 按 0.88 等比缩放）
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurface,
             codeBackground = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f),
-            // 用户自己排的换行照主页口径保留：用户气泡留空行，AI 气泡收起连续空行
+            // 用户手动换行按主页规则保留：用户气泡保留空行，AI 气泡合并连续空行
             keepBlankLines = isUser,
-            // 折叠只服务用户的长消息：AI 气泡与主页口径一致，始终整段铺开、永不折叠。
-            // 不传阈值与按钮，MarkdownText 就走「不限高」的直铺分支。
+            // 折叠仅用于用户的长消息：AI 气泡与主页一致，始终完整展示、不折叠。
+            // 不传阈值与按钮时，MarkdownText 使用「不限高」的直铺分支。
             foldAt = if (isUser) foldAt else Dp.Unspecified,
             foldedHeight = if (isUser) foldedHeight else Dp.Unspecified,
             expanded = expanded,
             foldColor = bubbleColor,
-            // 按钮落点按小窗自己的内边距（10 / 7dp）算，否则会被推到气泡外面
+            // 按钮位置按小窗自身内边距（10 / 7dp）计算，否则会被推到气泡之外
             foldToggleInsetX = 10.dp,
             foldToggleInsetY = 7.dp,
             foldToggle = if (isUser) {
@@ -686,8 +679,8 @@ private fun MessageBubble(message: ChatMessage, foldAt: Dp, foldedHeight: Dp) {
 }
 
 /**
- * 底部一行输入：BasicTextField 装在圆角 surface 面片里（无描边），右边一个圆形发送按钮。
- * 回车（IME 的发送）与点按钮两条路径都落到同一个 submit。
+ * 底部输入行：BasicTextField 置于圆角 surface 面片内（无描边），右侧为圆形发送按钮。
+ * 回车（IME 发送）与点击按钮两条路径均调用同一个 submit。
  */
 @Composable
 private fun InputRow(
@@ -700,7 +693,7 @@ private fun InputRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // end 让到 20dp：右边缘 16dp 是调宽手柄的命中区，不然发送按钮右半截会按不动
+            // 右侧内边距为 20dp：右边缘 16dp 为调宽手柄的命中区，否则发送按钮右半部分无法点击
             .padding(start = 10.dp, end = 20.dp, top = 2.dp, bottom = 10.dp),
         verticalAlignment = Alignment.Bottom
     ) {
@@ -736,9 +729,8 @@ private fun InputRow(
             )
         }
         Spacer(Modifier.width(8.dp))
-        // 发送键跟主页 Composer 同一套配色：底色 UiColors.accentFill（浅色 #4176E6 / 深色 #7AAAFF），
-        // 图标用 UiColors.onAccent（浅色白 / 深色墨），不可发时压到 40%。
-        // 小窗原来直接刷 AccentBlue，是整屏里唯一一块饱和蓝，跟全局配色对不上。
+        // 发送按钮与主页 Composer 使用同一套配色：底色为 UiColors.accentFill（浅色 #4176E6、深色 #7AAAFF），
+        // 图标为 UiColors.onAccent（浅色白、深色墨），不可发送时透明度降至 40%。
         Box(
             modifier = Modifier
                 .size(36.dp)

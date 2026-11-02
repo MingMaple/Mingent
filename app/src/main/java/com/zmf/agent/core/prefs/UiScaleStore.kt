@@ -1,16 +1,16 @@
-package com.zmf.agent.uikit.theme
+package com.zmf.agent.core.prefs
 
 import android.content.Context
 import kotlin.math.abs
 
 /**
- * 界面字号档位（只放大 sp，不动 dp）。
+ * 界面字号档位，只放大 sp，不改变 dp。
  *
- * 只动字体是有意的：图标、间距、按钮高度跟着一起放会把「特大」变成整屏撑爆，
- * 用户要的是「字看得清」，不是「所有东西都变大」。
+ * 仅调整字体尺寸是有意设计：若图标、间距与按钮高度一并放大，最高档位会使整屏元素溢出；
+ * 用户需要的是文字可辨识，而非全部元素放大。
  *
- * 档位制而不是滑杆：字号不是连续量，多一档不如少一档好记，也避免了 1.037 这种
- * 存进 prefs、下次显示时跟档位名对不上的尴尬。
+ * 采用档位而非滑块：字号并非连续量，档位数量更少、更易记忆，也避免 1.037 这类数值
+ * 存入 prefs 后与档位名称不一致。
  */
 object UiScaleStore {
 
@@ -21,14 +21,14 @@ object UiScaleStore {
     val STEPS = listOf(0.85f, 1.0f, 1.15f, 1.3f)
 
     /**
-     * 读档位。
+     * 读取档位。
      *
-     * 存进来的值不落在 STEPS 上（旧版本写过别的比例 / 备份是从别处还原的 / 有人手改了 xml）
-     * 就回落 1f：宁可回到标准字号，也不要让 label() 显示一个跟实际比例对不上的名字。
+     * 存储值不在 [STEPS] 中时回落至 1f，包括旧版本写入其他比例、备份来自其他环境或 xml 被手动修改；
+     * 宁可回到标准字号，也不使 [label] 显示与实际比例不符的名称。
      */
     fun load(context: Context): Float {
         val raw = prefs(context).getFloat(KEY_SCALE, 1f)
-        // float 在 xml 里是十进制字符串往返，理论上精确；留一点容差只为不依赖这一点。
+        // float 在 xml 中以十进制字符串往返，理论上精确；保留少量容差，避免依赖该特性。
         return STEPS.firstOrNull { abs(it - raw) < 0.001f } ?: 1f
     }
 
@@ -37,7 +37,7 @@ object UiScaleStore {
         prefs(context).edit().putFloat(KEY_SCALE, v).apply()
     }
 
-    /** 档位 → 界面上的中文名；不在档位上（旧值 / 手改过 xml）时返回「标准」。 */
+    /** 档位对应的中文名；不在档位上时返回「标准」，包括旧值与 xml 被手动修改的情况。 */
     fun label(v: Float): String = when {
         abs(v - 0.85f) < 0.001f -> "小"
         abs(v - 1.15f) < 0.001f -> "大"

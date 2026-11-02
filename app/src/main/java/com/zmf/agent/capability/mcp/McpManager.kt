@@ -15,13 +15,13 @@ import kotlinx.coroutines.flow.asStateFlow
  * [McpToolAdapter] 注册进 [ToolRegistry]（来源名「mcp:<服务名>」）。
  *
  * 三条硬规则：
- * 1. **单个服务失败不影响别的服务**：谁失败谁标 FAILED 并记原因，其余的照旧 READY；
- * 2. **重载前先把所有 mcp 来源摘干净**：不然删掉的旧工具会一直留在注册表里；
+ * 1. **单个服务失败不影响其他服务**：失败者标记为 FAILED 并记录原因，其余服务仍保持 READY；
+ * 2. **重载前先移除全部 mcp 来源**：否则已删除的旧工具会长期留在注册表；
  * 3. **每个服务复用一个 [McpTransport]**（[McpClient] 或 [McpStdioClient]）：Mcp-Session-Id / 子进程
- *    存在 client 里，重连时复用才不会每次重新握手或重启进程。
- *    服务的 transport/url/headers/命令 变了才换新实例（旧实例随本次 reload 清掉，stdio 的进程要真的杀掉）。
+ *    存在于 client 中，重连时复用可避免每次重新握手或重启进程。
+ *    仅当服务的 transport/url/headers/命令 发生变化时才创建新实例（旧实例随本次 reload 清理，stdio 进程必须实际终止）。
  *
- * 状态用 StateFlow 暴露，包管理页直接 collect 就能实时看进度（CONNECTING → READY/FAILED）。
+ * 状态通过 StateFlow 暴露，包管理页直接 collect 即可实时查看进度（CONNECTING → READY/FAILED）。
  */
 object McpManager {
 
@@ -74,7 +74,7 @@ object McpManager {
     suspend fun reload(context: Context, registry: ToolRegistry) {
         val servers = McpServerStore.load(context)
 
-        // 1. 旧来源全部摘掉：配置里删掉的服务也要摘，不能靠新列表漏掉
+        // 1. 旧来源全部移除：配置中删除的服务也需移除，不能因新列表遗漏而保留
         val names = HashSet<String>()
         _status.value.forEach { names.add(it.server.name) }
         servers.forEach { names.add(it.name) }
@@ -92,7 +92,7 @@ object McpManager {
         }
         _status.value = results.toList()
 
-        // 2. 逐个连：谁失败只标自己
+        // 2. 逐个连接：单个失败仅影响自身
         val usedKeys = HashSet<String>()
         for ((index, server) in servers.withIndex()) {
             if (!server.enabled) continue
@@ -105,7 +105,7 @@ object McpManager {
             } catch (e: Exception) {
                 ServerStatus(server, ServerState.FAILED, 0, describe(e))
             }
-            // 每连完一个就推一次状态，界面上能看到「谁先连上」
+            // 每连接完一个即推送一次状态，界面可显示各服务的连接顺序
             _status.value = results.toList()
         }
 
@@ -116,8 +116,8 @@ object McpManager {
     }
 
     /**
-     * 停止全部 MCP：把 "mcp:" 来源的工具全部摘掉，状态置为 DISABLED（配置不动）。
-     * 之后想恢复要再调一次 [reload]。
+     * 停止全部 MCP：移除 "mcp:" 来源的全部工具，状态置为 DISABLED（配置不变）。
+     * 之后需要恢复时应再次调用 [reload]。
      */
     fun stopAll(registry: ToolRegistry) {
         val names = HashSet<String>()
@@ -146,7 +146,7 @@ object McpManager {
         val infos = client.listTools().getOrElse { error ->
             return ServerStatus(server, ServerState.FAILED, 0, describe(error))
         }
-        // 适配器里用 lambda 取「当前」的 client，重连后不用重建适配器
+        // 适配器通过 lambda 获取「当前」client，重连后无需重建适配器
         val adapters = infos.map { info -> McpToolAdapter(server, info) { clientOf(context, server) } }
         registry.register(SOURCE_PREFIX + server.name, adapters)
         val message = if (adapters.isEmpty()) "已连接，但服务端没有提供工具" else "已连接"
@@ -169,7 +169,7 @@ object McpManager {
                 val entry = iterator.next()
                 if (entry.key in used) continue
                 iterator.remove()
-                // stdio 的「连接」是本机进程：只是从表里删掉的话进程会一直挂着
+                // stdio 的「连接」是本机进程：仅从表中移除会导致进程长期驻留
                 runCatching { entry.value.close() }
             }
         }

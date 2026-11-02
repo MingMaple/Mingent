@@ -12,8 +12,8 @@ import java.io.File
  *
  * - transport：传输方式，三种取值：
  *   - "http"：新版 Streamable HTTP（POST 一个地址，响应可能是 JSON 也可能是 text/event-stream）；
- *   - "sse"：旧版 HTTP+SSE（先 GET 一条事件流，从 event: endpoint 里拿后续 POST 地址）；
- *   - "stdio"：本地进程（起一条命令，用「一行一个 JSON」的 JSON-RPC 通过 stdin/stdout 对话）。
+ *   - "sse"：旧版 HTTP+SSE（先 GET 一条事件流，从 event: endpoint 中获取后续 POST 地址）；
+ *   - "stdio"：本地进程（启动一条命令，通过 stdin/stdout 以「一行一个 JSON」的 JSON-RPC 通信）。
  * - url：服务地址（http 为 MCP 端点，sse 为事件流地址）；stdio 不用，留空。
  * - headers：附加请求头（认证 token 之类），POST/GET 都会带上；stdio 不用。
  * - command/args/env/cwd：stdio 专用，其它传输为空。
@@ -26,12 +26,12 @@ data class McpServer(
     val headers: Map<String, String> = emptyMap(),
     val enabled: Boolean = true,
     /**
-     * stdio 专用四件套。默认值全空，所以只有 http/sse 的旧 mcp.json 读进来照样成立。
+     * stdio 专用四组字段。默认值全部为空，因此仅含 http/sse 的旧 mcp.json 仍可正常读取。
      *
-     * - [command]：可执行名或绝对路径（在 App 内 Ubuntu 里解析，所以 npx / python3 都能直接写）；
-     * - [args]：参数数组，一个元素一个参数，不靠空格拆（带空格的参数才不会被打散）；
+     * - [command]：可执行名或绝对路径（在 App 内 Ubuntu 中解析，可直接填写 npx / python3）；
+     * - [args]：参数数组，一个元素对应一个参数，不按空格拆分（含空格的参数因此不会被拆分）；
      * - [env]：追加给子进程的环境变量（KEY=VALUE）；
-     * - [cwd]：子进程工作目录（Ubuntu 里的路径，空则 /root）。
+     * - [cwd]：子进程工作目录（Ubuntu 中的路径，空则 /root）。
      */
     val command: String = "",
     val args: List<String> = emptyList(),
@@ -66,9 +66,9 @@ data class McpServer(
  * 结构 {"servers":[{name,transport,url,headers,enabled[,command,args,env,cwd]}]}；
  * 最后四个键只在 transport=="stdio" 时写，旧文件没有它们，读的时候按空值处理。
  *
- * 和 SessionStore / WorkSpaceStore 一样，整个文件一次覆盖写：
- * 服务配置是用户手工填的，几条到几十条，不需要数据库。
- * 所有读写失败都只记日志、不抛异常：配置坏了顶多是「没有 MCP 服务」，不能把 App 弄崩。
+ * 与 SessionStore / WorkSpaceStore 一致，整个文件一次覆盖写入：
+ * 服务配置由用户手工填写，数量从几条到几十条，无需数据库。
+ * 所有读写失败仅记日志、不抛异常：配置损坏最多表现为「没有 MCP 服务」，不应导致 App 崩溃。
  */
 object McpServerStore {
 
@@ -92,10 +92,10 @@ object McpServerStore {
     /**
      * 读全部服务配置。
      *
-     * - 文件不存在 → 空表（用户还没配过）；
-     * - JSON 坏掉 / 读盘失败 → 记日志后返回空表，不抛异常；
-     * - name 为空的条目直接丢弃：name 是注册表来源名和工具前缀，不能空；
-     * - 名字重复的保留第一条（否则两个服务会互相顶掉工具）。
+     * - 文件不存在 → 空表（用户尚未配置）；
+     * - JSON 损坏 / 读盘失败 → 记日志后返回空表，不抛异常；
+     * - name 为空的条目直接丢弃：name 是注册表来源名与工具前缀，不能为空；
+     * - 名称重复时保留第一条（否则两个服务会互相覆盖工具）。
      */
     fun load(context: Context): List<McpServer> {
         val file = storeFile(context)
@@ -110,7 +110,7 @@ object McpServerStore {
         }
     }
 
-    /** 整体覆盖写；先写 .tmp 再 rename，避免写到一半被杀留下坏文件。失败只记日志。 */
+    /** 整体覆盖写；先写 .tmp 再 rename，避免写入中途被终止而留下损坏文件。失败仅记日志。 */
     fun save(context: Context, list: List<McpServer>) {
         try {
             val array = JSONArray()
@@ -133,7 +133,7 @@ object McpServerStore {
         }
     }
 
-    /** 按 name 新增或覆盖，返回保存后的完整列表（方便调用方直接拿去刷新界面）。 */
+    /** 按 name 新增或覆盖，返回保存后的完整列表（便于调用方直接刷新界面）。 */
     fun upsert(context: Context, server: McpServer): List<McpServer> {
         val current = load(context).toMutableList()
         val index = current.indexOfFirst { it.name == server.name }
@@ -143,7 +143,7 @@ object McpServerStore {
         return list
     }
 
-    /** 按 name 删除，返回保存后的完整列表；名字不存在就当没这回事。 */
+    /** 按 name 删除，返回保存后的完整列表；名称不存在则忽略。 */
     fun remove(context: Context, name: String): List<McpServer> {
         val current = load(context)
         val list = current.filterNot { it.name == name }
@@ -162,7 +162,7 @@ object McpServerStore {
             .put(KEY_URL, server.url)
             .put(KEY_HEADERS, headers)
             .put(KEY_ENABLED, server.enabled)
-        // stdio 字段只在 stdio 时落盘：http/sse 的条目里塞空数组/空对象纯粹是噪声
+        // stdio 字段仅在 stdio 时落盘：http/sse 条目写入空数组 / 空对象只会形成噪声
         if (McpServer.normalizeTransport(server.transport) == McpServer.TRANSPORT_STDIO) {
             val args = JSONArray()
             for (arg in server.args) args.put(arg)
@@ -221,7 +221,7 @@ object McpServerStore {
         return map
     }
 
-    /** args 数组；非字符串元素（手改坏了）跳过，不让一条脏数据毁掉整份配置。 */
+    /** args 数组；非字符串元素（手动修改导致损坏）跳过，避免单条异常数据导致整份配置失效。 */
     private fun readStringList(array: JSONArray?): List<String> {
         if (array == null || array.length() == 0) return emptyList()
         val list = ArrayList<String>(array.length())

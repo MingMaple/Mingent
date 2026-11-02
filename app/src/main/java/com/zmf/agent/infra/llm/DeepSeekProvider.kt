@@ -16,8 +16,8 @@ import java.util.concurrent.TimeUnit
 /**
  * DeepSeek（OpenAI 兼容）流式实现。
  *
- * 多提供商后它同时是「任何 OpenAI 兼容端点」的实现：baseUrl / apiKey 由调用方按当前
- * [com.zmf.agent.infra.llm.ProviderConfig] 传进来，类名保留是为了不牵动调用方与日志口径。
+ * 该类同时作为任意 OpenAI 兼容端点的实现：baseUrl / apiKey 由调用方按当前
+ * [com.zmf.agent.infra.llm.ProviderConfig] 传入；保留类名以避免影响调用方与日志口径。
  *
  * 关键约束：请求若带 tools，历史里每条 assistant 消息都必须回传 reasoning_content，
  * 否则服务端直接 400。见 https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
@@ -34,23 +34,23 @@ class DeepSeekProvider(
         .build()
 
     override fun stream(request: ChatRequest): Flow<LlmEvent> = flow {
-        // 端点空着（自定义 provider 还没填地址）时先给一句人话：
-        // 拼一个 "/chat/completions" 去请求只会抛底层异常，用户看不出该改哪里
+        // 端点为空（自定义 provider 尚未填写地址）时优先返回明确提示：
+        // 直接拼接 "/chat/completions" 请求只会抛出底层异常，用户无法判断需修改何处
         val base = baseUrl.trim().trimEnd('/')
         if (base.isEmpty()) {
             emit(LlmEvent.Failed(-1, "当前提供商没有填写 Base URL，请到设置里补上"))
             return@flow
         }
 
-        // 开源包不带任何内置密钥：空 Key 直接发出去只会拿到一句 401，用户不知道该去哪填。
-        // 这里在请求前就拦住，并明确指到「设置 → 模型」。
+        // 开源包不包含内置密钥：空 Key 直接发送只会返回 401，用户无法得知填写位置。
+        // 此处于请求前拦截，并明确指出「设置 → 模型」。
         if (apiKey.isBlank()) {
             emit(LlmEvent.Failed(-1, "当前提供商还没有配置 API 密钥，请到设置 → 模型里填写"))
             return@flow
         }
 
-        // 地址本身不合法（少了 https:// 之类）时 OkHttp 会在 build 阶段抛 IllegalArgumentException，
-        // 这一句提前收住，用户看到的是「地址无效」而不是一条底层异常
+        // 地址不合法（如缺少 https://）时 OkHttp 会在 build 阶段抛出 IllegalArgumentException；
+        // 此处提前捕获，用户看到的是「地址无效」而非底层异常
         val httpRequest = try {
             Request.Builder()
                 .url(base + "/chat/completions")
@@ -208,7 +208,7 @@ class DeepSeekProvider(
             root.put("reasoning_effort", request.reasoningEffort)
         }
         // 输出上限：只有摘要请求会带上（口径含推理 token）。
-        // 不设就一个字段都不加，对话请求的行为与改造前完全一致。
+        // 不设置时不添加任何字段，对话请求行为与既有实现一致。
         request.maxTokens?.takeIf { it > 0 }?.let { root.put("max_tokens", it) }
 
         val messages = JSONArray()
@@ -260,7 +260,7 @@ class DeepSeekProvider(
                 obj.put("content", m.content)
                 obj.put("tool_call_id", m.toolCallId ?: "")
             }
-            // user / system：带图片时 content 走多模态数组，不带就是原来的字符串（历史请求一字不变）
+            // user / system：带图片时 content 使用多模态数组，不带图片时使用原字符串（历史请求逐字不变）
             else -> obj.put("content", contentOf(m))
         }
         return obj
@@ -269,7 +269,7 @@ class DeepSeekProvider(
     /**
      * 正文的两种形态。
      *
-     * 没有 [ChatMessage.imageDataUrls] 时返回纯字符串，跟改造前完全一致；
+     * 无 [ChatMessage.imageDataUrls] 时返回纯字符串，与既有实现完全一致；
      * 有图片时换成 OpenAI 兼容的多模态数组：先一段 text，再每张图一段 image_url。
      * assistant / tool 分支不走这里：历史里的助手消息只保留图片**路径**（images 字段），
      * 图片数据只在真正发用户消息的那一次请求里出现。
@@ -293,7 +293,7 @@ class DeepSeekProvider(
     }
 }
 
-/** 读可空整数：字段不存在或为 JSON null 时返回 null：「没报」和「报了 0」是两件事。 */
+/** 读取可空整数：字段不存在或为 JSON null 时返回 null：「未上报」与「上报 0」含义不同。 */
 private fun JSONObject.optIntOrNull(key: String): Int? {
     if (!has(key) || isNull(key)) return null
     return optInt(key, 0)

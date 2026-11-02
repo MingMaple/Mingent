@@ -10,6 +10,9 @@ object InsightColors {
     const val ASSISTANT = 0xFF3B82F6
     const val TOOL_RESULTS = 0xFF14B8A6
     const val OUTPUT = 0xFFEC4899
+
+    /** 其他开销：不属于上述七段的时间归集。 */
+    const val OTHER = 0xFF9A9AA5
 }
 
 /** 洞察页的范围筛选。 */

@@ -10,8 +10,8 @@ import java.util.zip.ZipInputStream
 /**
  * 一个 Skill：目录形态是 <root>/<id>/SKILL.md，也接受单文件 <root>/<id>.md。
  *
- * 格式：YAML frontmatter 里必须有两个字段 name / description（name 用 kebab-case），
- * 正文就是给模型看的指令。我们不发明新格式。
+ * 格式：YAML frontmatter 中必须包含 name / description 两个字段（name 使用 kebab-case），
+ * 正文即提供给模型的指令。本实现不引入新格式。
  */
 data class SkillEntry(
     val id: String,
@@ -26,8 +26,8 @@ data class SkillEntry(
 /**
  * Skill 的发现 / 加载 / 导入。
  *
- * 加载策略：**目录不塞进系统提示词**，只把「名字 + 一句话描述」作为 available_skills
- * 列表注入；正文等模型用 skill 工具取，这样几十个 skill 也不会把上下文吃满。
+ * 加载策略：**目录不写入系统提示词**，仅将「名称 + 一句话描述」作为 available_skills
+ * 列表注入；正文由模型通过 skill 工具按需读取，避免大量技能占用上下文。
  */
 object SkillStore {
 
@@ -75,7 +75,7 @@ object SkillStore {
 
     /**
      * 读正文（含 frontmatter 之后的所有内容）。
-     * 返回 null 表示找不到；超过 256KB 就截断，不让一个巨型 skill 把上下文撑爆。
+     * 返回 null 表示找不到；超过 256KB 时截断，避免超长技能文本占满上下文。
      */
     fun load(context: Context, key: String): String? {
         val entry = find(context, key) ?: return null
@@ -89,8 +89,8 @@ object SkillStore {
     }
 
     /**
-     * 从 zip 导入：zip 里可以有一个技能目录（含 SKILL.md），也可以直接是 SKILL.md。
-     * 所有条目都做 ZipSlip 校验，越界直接整包失败（不留半截文件）。
+     * 从 zip 导入：zip 中可以包含一个技能目录（含 SKILL.md），也可以直接为 SKILL.md。
+     * 所有条目均执行 ZipSlip 校验，越界时整包失败（不遗留不完整文件）。
      */
     fun importZip(context: Context, uri: Uri): Result<Int> = runCatching {
         val root = root(context)
@@ -121,7 +121,7 @@ object SkillStore {
                 }
             }
         } ?: error("打不开这个文件")
-        // 找到 SKILL.md 的位置，把它所在的目录整体搬进 skills/
+        // 定位 SKILL.md，将其所在目录整体移入 skills/
         val skillFile = staging.walkTopDown().firstOrNull {
             it.isFile && it.name.equals(SKILL_FILE, true)
         } ?: error("zip 里没有 SKILL.md")
@@ -130,7 +130,7 @@ object SkillStore {
         val dest = File(root, id)
         if (dest.exists()) dest.deleteRecursively()
         if (skillDir == staging) {
-            // zip 根目录就是技能目录
+            // zip 根目录本身即技能目录
             if (!staging.renameTo(dest)) {
                 staging.copyRecursively(dest, overwrite = true)
                 staging.deleteRecursively()

@@ -7,13 +7,13 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 
 /**
- * 吞「点击」、不吞「拖动」的拦截层。
+ * 拦截点击、不拦截拖动的图层。
  *
- * 全屏二级页盖在聊天页之上时，点击不能穿透到下面；但抽屉的横滑是父节点的手势，
- * 一旦用了 detectTapGestures，它会在 DOWN 那一帧就把事件 consume 掉，父层的拖拽再也起不来。
- * 这里改成「不消费 DOWN，只在自己没移动、手指抬起时消费 UP」：
- * - 点击：抬起事件被吞，不会穿透到下层；
- * - 横滑：DOWN 没被吞，父层的 draggable 能正常开始，页面里的分页器也能抢到。
+ * 全屏二级页覆盖在聊天页之上时，点击不得穿透至下层；但抽屉横向滑动属于父节点手势，
+ * 若使用 detectTapGestures，它会在 DOWN 事件时即 consume，父层拖拽无法启动。
+ * 此处改为「不消费 DOWN，仅在未移动且手指抬起时消费 UP」：
+ * - 点击：抬起事件被消费，不会穿透至下层；
+ * - 横滑：DOWN 未被消费，父层 draggable 可正常启动，页面内分页器亦可接管。
  */
 fun Modifier.blockTapsOnly(): Modifier = this.then(
     Modifier.pointerInput(Unit) {

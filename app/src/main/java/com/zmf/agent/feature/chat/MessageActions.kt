@@ -66,11 +66,11 @@ enum class TailIcon { COPY, SELECT_TEXT, FORK, ROLLBACK, USAGE }
 /**
  * 气泡尾部那一行：图标按钮 + 时间。
  *
- * 为什么不再用长按弹窗：动作按钮直接摆在气泡尾巴上，看一眼就知道能做什么；
- * 看一眼就知道能做什么；长按弹窗要先知道「可以长按」才会去长按。
- * 按钮数量按功能需要来，不追求和别的客户端一样多。
+ * 为什么不使用长按弹窗：动作按钮直接置于气泡尾部，一眼即可得知可执行的操作；
+ * 长按弹窗需先知晓「可以长按」才会使用。
+ * 按钮数量按功能需要确定，不追求与其他客户端一致。
  *
- * [usageAnchor] 只在点用量按钮时回调，参数是那枚图标在窗口里的位置，伴随面板靠它定位。
+ * [usageAnchor] 仅在点击用量按钮时回调，参数为该图标在窗口中的位置，伴随面板据此定位。
  */
 @Composable
 fun MessageTailRow(
@@ -87,11 +87,9 @@ fun MessageTailRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         icons.forEach { kind ->
-            // 每枚按钮自己记位置：面板要贴在「用户点的那一枚」上方，而不是气泡的某个角
+            // 每枚按钮自行记录位置：面板需贴附「用户点击的那一枚」上方，而非气泡的某个角
             var origin by remember { mutableStateOf(Offset.Zero) }
-            // 触控反馈跟「＋」那颗一样：只有点击涟漪，不做「按住底色 + 缩小」。
-            // 这些是点一下就走的按钮，按住缩放是给长按手势的语汇，放在这里反而误导
-            // 这些是点一下就走的按钮，按住缩放是给长按手势的语汇，放在这里反而误导。
+            // 触控反馈与「＋」按钮一致：仅有点击涟漪，不做「按住底色 + 缩小」；按住缩放的交互语汇属于长按手势，用于点击即执行的按钮会造成误导。
             Box(
                 modifier = Modifier
                     .size(30.dp)
@@ -110,11 +108,11 @@ fun MessageTailRow(
     }
 }
 
-/** 尾部按钮的图标：线宽与圆角沿用本工程手绘图标那一套（18×18 单位坐标）。 */
+/** 尾部按钮的图标：线宽与圆角沿用本项目手绘图标的规范（18×18 单位坐标）。 */
 @Composable
 private fun TailGlyph(kind: TailIcon, tint: Color, iconSize: Dp) {
     if (kind == TailIcon.USAGE) {
-        // 用量复用输入条那颗小圆柱：同一件事在两处必须是同一个图标
+        // 用量复用输入条的小圆柱：同一功能在两处必须使用同一图标
         CylinderGlyph(tint = tint, iconSize = iconSize)
         return
     }
@@ -123,7 +121,7 @@ private fun TailGlyph(kind: TailIcon, tint: Color, iconSize: Dp) {
         val stroke = Stroke(width = line, cap = StrokeCap.Round, join = StrokeJoin.Round)
         when (kind) {
             TailIcon.COPY -> {
-                // 两张叠起来的纸：后面那张露一角，前面那张完整
+                // 两张叠放的纸：后方纸张露出一角，前方纸张完整
                 drawRoundRect(
                     color = tint,
                     topLeft = Offset(5.8f, 3.2f),
@@ -140,14 +138,14 @@ private fun TailGlyph(kind: TailIcon, tint: Color, iconSize: Dp) {
                 )
             }
             TailIcon.SELECT_TEXT -> {
-                // 三条横线，末行短一截：读作「一段可以被挑走的文本」
+                // 三条横线，末行较短：表示「一段可被选中的文本」
                 drawLine(tint, Offset(3.8f, 5.2f), Offset(14.2f, 5.2f), line, StrokeCap.Round)
                 drawLine(tint, Offset(3.8f, 9.0f), Offset(14.2f, 9.0f), line, StrokeCap.Round)
                 drawLine(tint, Offset(3.8f, 12.8f), Offset(10.4f, 12.8f), line, StrokeCap.Round)
             }
             TailIcon.FORK -> {
                 // 一条横线，右端分成上下两岔，末端各一个圆圈：
-                // 只有两条斜线时会被读成「＜」，加上末端两点才读得出「一条线分出去两支」
+                // 仅有两条斜线时会被识别为「＜」，加上末端两点方可读出「一条线分出两支」
                 drawLine(tint, Offset(2.4f, 9.0f), Offset(9.0f, 9.0f), line, StrokeCap.Round)
                 drawLine(tint, Offset(9.0f, 9.0f), Offset(12.8f, 4.8f), line, StrokeCap.Round)
                 drawLine(tint, Offset(9.0f, 9.0f), Offset(12.8f, 13.2f), line, StrokeCap.Round)
@@ -181,14 +179,14 @@ private fun TailGlyph(kind: TailIcon, tint: Color, iconSize: Dp) {
 }
 
 /**
- * 伴随面板：贴着触发按钮浮出来，点 / 划面板以外的任何地方都收。
+ * 伴随面板：贴附触发按钮浮出，点击或滑动面板以外的任何位置均收起。
  *
- * 用「全屏遮罩 + 自己排版」而不是 Dialog：面板不压暗背景、不打断视线，
- * 而且它必须能贴着被点的那一枚按钮出现：Dialog 是居中弹窗，位置由系统定死了。
- * 关卡片的观感交给调用方（本工程的 PanelCard），这里只管定位与关闭。
+ * 使用「全屏遮罩 + 自行排版」而非 Dialog：面板不压暗背景、不打断视线，
+ * 且必须能贴附被点击的那一枚按钮：Dialog 为居中弹窗，位置由系统固定。
+ * 卡片观感交由调用方（本项目的 PanelCard），此处仅负责定位与关闭。
  *
- * 宽度由调用方给：卡片本身是 fillMaxWidth，量之前必须知道多宽，否则无约束下量不出自然宽度。
- * 高度不预设：先量卡片、再按它的真实高度决定落在按钮上方还是下方，不会出现「第一帧跳一下」。
+ * 宽度由调用方提供：卡片本身为 fillMaxWidth，测量之前必须已知宽度，否则在无约束下无法量出自然宽度。
+ * 高度不预设：先测量卡片，再按其真实高度决定位于按钮上方或下方，不会出现「第一帧跳动」。
  */
 @Composable
 fun SaltPopover(
@@ -207,14 +205,14 @@ fun SaltPopover(
 
     var appear by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { appear = true }
-    // 不做 alpha 淡入（与输入框上那六张面板同一条结论）：
-    // 节点带 alpha 时 Android 不画 elevation 阴影，阴影会拖到最后一帧才「啪」地出现。
-    // 所以这里只动缩放，「弹出来」的手感交给 spring，卡片始终不透明，阴影从第一帧就在。
+    // 不做 alpha 淡入（与输入框上的六张面板结论相同）：
+    // 节点带 alpha 时 Android 不绘制 elevation 阴影，阴影会延至最后一帧突然出现。
+    // 因此此处仅改变缩放，「弹出」效果交由 spring，卡片始终不透明，阴影自第一帧即存在。
     val scale by animateFloatAsState(if (appear) 1f else 0.90f, Motion.softSpring(), label = "popScale")
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 遮罩不压暗背景，但吃掉这一层上的所有手势：
-        // 点、划、按住都算「点到面板以外」，一律收面板，同时别让底下的消息列表跟着滚
+        // 遮罩不压暗背景，但消费该层上的所有手势：
+        // 点击、滑动、按住均视为「点击面板以外」，一律收起面板，同时避免底层消息列表随之滚动
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -254,7 +252,7 @@ fun SaltPopover(
                 val cardHeight = placeable.height
                 val maxX = (constraints.maxWidth - cardWidth - edge).coerceAtLeast(edge)
                 val x = (anchor.x - cardWidth / 2f).coerceIn(edge, maxX)
-                // 优先贴在被点按钮的上方（面板向上展开，不挡住用户正在看的那条消息）
+                // 优先贴附于被点击按钮的上方（面板向上展开，不遮挡用户正在查看的消息）
                 val above = anchor.y - cardHeight - gap
                 val maxY = (constraints.maxHeight - cardHeight - edge).coerceAtLeast(edge)
                 val y = if (above >= edge) above else (anchor.y + gap).coerceIn(edge, maxY)
@@ -266,10 +264,10 @@ fun SaltPopover(
 
 
 /**
- * 长按后的小菜单：出现在按压位置附近，不是底部大面板。
+ * 长按后的小菜单：出现在按压位置附近，而非底部大面板。
  *
  * 遮罩只做很淡的一层并且只做淡入，卡片自己在原地缩放出现，
- * 之前把整块（含遮罩）一起从底部滑上来，屏幕上才会出现「上三分之一没被罩住」的分界线。
+ * 此前将整块（含遮罩）自底部滑入，屏幕上才会出现「上三分之一未被遮罩覆盖」的分界线。
  */
 @Composable
 fun MessageContextMenu(
@@ -321,7 +319,7 @@ fun MessageContextMenu(
             color = MaterialTheme.colorScheme.surface,
             shadowElevation = 10.dp
         ) {
-            // 行自己带内距：Column 不垫上下留白，首/末行的波纹才能贴到 16dp 圆弧上
+            // 行自带内距：Column 不设上下留白，首/末行的波纹方可贴附 16dp 圆弧并被裁为圆角
             Column(modifier = Modifier) {
                 actions.forEach { action ->
                     Text(

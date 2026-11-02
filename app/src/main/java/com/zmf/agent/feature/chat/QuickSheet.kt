@@ -19,17 +19,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.theme.Palette
-import com.zmf.agent.uikit.theme.UiColors
 
 /*
- * 模型 / 推理等级的二级窗：点一级窗里的某一行，就在同一张卡片里展开可选项。
+ * 模型 / 推理等级的二级窗：点击一级窗中的某一行，即在同张卡片内展开可选项。
  *
- * 为什么不做成「跳设置页」：改个模型要离开对话、进设置、回来、再确认，一趟四步。
- * 为什么不做成「再叠一张浮窗」：一级窗已经贴在输入框上方，再叠一张会把键盘和输入区挤得更远，
- * 而且两张卡片的圆角、阴影、停靠方式都要各自对齐一次，只要有一处偏差看着就散。
- * 就地换内容最省事：卡片、宽度、阴影、动画全是同一套，只是里面换了一页。
+ * 为什么不做成「跳设置页」：修改模型需离开对话、进入设置、返回并再次确认，共四步。
+ * 为什么不做成「再叠一张浮窗」：一级窗已贴在输入框上方，再叠一张会进一步压缩键盘与输入区，
+ * 且两张卡片的圆角、阴影、停靠方式需各自对齐，任一处偏差均会破坏整体观感。
+ * 就地替换内容最简单：卡片、宽度、阴影、动画均沿用同一套，仅内部替换一页。
  *
- * 二级窗里选完即生效并收起；点标题行的「‹」退回一级，不关面板。
+ * 二级窗中选择后即生效并收起；点击标题行的「‹」退回一级，不关闭面板。
  */
 
 /** 二级窗里的一个服务商：模型列表为空表示「用户自己填」，界面上退回内置模板。 */
@@ -38,8 +37,8 @@ data class QuickProvider(val id: String, val name: String, val models: List<Stri
 /**
  * 模型 / 推理等级二级窗的全部数据与回调。
  *
- * 打包成一个对象而不是七个参数：这两页要的东西彼此相关（谁当前选中、选中之后干什么），
- * 拆成七个参数后 Composer 的签名会长到没人愿意读，而且每次加一项都要改三层。
+ * 打包为一个对象而非七个参数：这两页所需数据相互关联（当前选中项及选中后的行为），
+ * 拆成七个参数会使 Composer 的签名过长，且每次新增一项需修改三层。
  */
 data class QuickSheetState(
     val providers: List<QuickProvider> = emptyList(),
@@ -57,7 +56,7 @@ internal enum class QuickSheetPage { ROOT, MODEL, EFFORT }
 /** 「关」不是接口取值（不在 [ApiDefaults.EFFORTS] 里），只作界面上的一个选项。 */
 internal const val EFFORT_OFF = "off"
 
-/** 模型显示名：内置两个用模板里的中文别名，其余（自定义 provider）直接显示 id。 */
+/** 模型显示名：内置两项使用模板中的中文别名，其余（自定义 provider）直接显示 id。 */
 internal fun modelDisplayName(modelId: String): String =
     ApiDefaults.MODELS.firstOrNull { it.first == modelId }?.second ?: modelId
 
@@ -70,7 +69,7 @@ internal fun effortDisplayName(effort: String): String = when (effort) {
     else -> effort
 }
 
-/** 二级窗里的一行：左边名字、右边勾。选中只改字色 + 勾，不画背景块，跟设置页的选择行一个口径。 */
+/** 二级窗中的一行：左侧名称、右侧勾选。选中仅改变字色与勾，不绘制背景块，与设置页的选择行保持一致。 */
 @Composable
 internal fun QuickOptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -99,20 +98,20 @@ internal fun QuickOptionRow(label: String, selected: Boolean, onClick: () -> Uni
 /**
  * 模型页：按服务商分组，每组下面列它的模型。
  *
- * 一份 provider 的 models 为空表示「交给用户自己填」，这时退回内置模板列表，
- * 否则自定义服务商在这一页会是一个空组，看着像加载失败。
+ * 某 provider 的 models 为空表示「交由用户自行填写」，此时退回内置模板列表，
+ * 否则自定义服务商在该页会显示为空组，看似加载失败。
  */
 @Composable
 internal fun QuickModelPage(
     state: QuickSheetState,
     onPick: (providerId: String, modelId: String) -> Unit
 ) {
-    // 二级窗只列功能行：顶部不再有「‹ 模型」这类层级标题与返回键（只设功能按钮）
+    // 二级窗仅列功能行：顶部不含「‹ 模型」等层级标题与返回键（仅保留功能按钮）
     Column(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                // 列表可能很长（十几个自定义服务商），限高后内部竖滚，别把输入框顶出屏幕
+                // 列表可能较长（十几个自定义服务商），限高后内部纵向滚动，避免将输入框推出屏幕
                 .heightIn(max = 300.dp)
                 .verticalScroll(rememberScrollState())
         ) {
@@ -135,7 +134,7 @@ internal fun QuickModelPage(
     }
 }
 
-/** 强度页：「关」排在最前，后面才是接口支持的 low / high / max。 */
+/** 强度页：「关」排在最前，其后为接口支持的 low / high / max。 */
 @Composable
 internal fun QuickEffortPage(state: QuickSheetState, onPick: (String) -> Unit) {
     val current = if (state.thinkingEnabled) state.effort else EFFORT_OFF

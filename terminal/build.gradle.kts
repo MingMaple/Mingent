@@ -15,12 +15,11 @@ android {
 
     defaultConfig {
         minSdk = 26
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
         ndk {
-            // 2026-10-27：补 x86_64，只为了让桌面模拟器（AVD mingent）能测到「记忆」这类要调 PTY 的页面。
-            // libpty 由 CMake 从 pty.c 编出来，纯 C 可移植；jniLibs 里那几个预编译的 arm64 二进制
-            // （proot/bash/busybox/sudo）不会进 x86_64 包，所以模拟器上终端/PRoot 仍不可用 —— 只保证 UI 能进。
+            // 补 x86_64 只为让桌面模拟器能测到需要调用 PTY 的页面。libpty 由 CMake 从 pty.c
+            // 编出，纯 C 可移植；jniLibs 中的预编译 arm64 二进制（proot/bash/busybox/sudo）
+            // 不进 x86_64 包，因此模拟器上终端与 PRoot 仍不可用，只保证界面可以进入。
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
@@ -67,8 +66,6 @@ android {
                 "META-INF/NOTICE.txt"
             )
         }
-    }
-    packaging {
         jniLibs {
             useLegacyPackaging = true
         }
@@ -98,7 +95,6 @@ dependencies {
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)
-    implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons.extended)
     implementation(libs.compose.animation)

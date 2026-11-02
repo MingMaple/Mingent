@@ -12,8 +12,8 @@ enum class GoalPhase { ACTIVE, PAUSED, DONE }
 /**
  * 一条长期目标。
  *
- * objective 是目标正文（模型写给人看的那句话）；rounds 由 AgentLoop 每自动续跑一轮 +1，
- * 落盘保留是为了「切会话回来还记得跑到第几轮」；note 是进度附注，complete 时当作结论。
+ * objective 是目标正文（面向用户描述的语句）；rounds 由 AgentLoop 每自动续跑一轮递增 1，
+ * 持久化保留以便切换会话后仍可获知已执行轮次；note 是进度附注，完成时作为结论。
  */
 data class Goal(
     val objective: String,
@@ -38,7 +38,7 @@ fun GoalPhase.label(): String = when (this) {
  * 覆盖写一条就是「换目标」，没有「同时有两个目标」这种状态。
  *
  * 和 SessionStore 一样整文件覆盖写、先 .tmp 再 rename：写到一半被杀时旧文件仍是完整的。
- * 读写失败只记日志不抛：目标读不出来顶多是「当没有目标」，不能让对话崩掉。
+ * 读写失败只记日志不抛异常：目标读取失败时按无目标处理，不得导致对话中断。
  */
 object GoalStore {
 
@@ -89,7 +89,7 @@ object GoalStore {
         return Goal(
             objective = objective,
             phase = parsePhase(obj.optString(KEY_PHASE, "")),
-            // rounds 只增不减，负数（手改文件 / 旧版本）当 0
+            // rounds 只增不减，负数（手工修改文件或旧版本数据）按 0 处理
             rounds = obj.optInt(KEY_ROUNDS, 0).coerceAtLeast(0),
             note = text(obj, KEY_NOTE),
             createdAt = obj.optLong(KEY_CREATED_AT, 0L),
@@ -98,10 +98,10 @@ object GoalStore {
     }
 
     /**
-     * 写某会话的目标（有就覆盖，别的会话的目标原样保留）。
+     * 写某会话的目标（已存在则覆盖，其他会话的目标保持不变）。
      *
-     * createdAt 只在第一次写时补上（之后不再变），updatedAt 每次都刷成当前时刻：
-     * 页面要靠它判断「这条目标多久没动过」，让调用方自己填容易填错或忘了更新。
+     * createdAt 仅在首次写入时补齐，updatedAt 每次写入均更新为当前时刻：
+     * 页面据此判断目标的最近更新间隔，由调用方自行填写容易遗漏或产生错误。
      */
     @Synchronized
     fun save(context: Context, sessionId: String, goal: Goal) {
@@ -128,7 +128,7 @@ object GoalStore {
         }
     }
 
-    /** 删掉某会话的目标（用户点「删除目标」时用）；没有就当没这回事。 */
+    /** 删除某会话的目标（用户点击「删除目标」时调用）；不存在时直接返回。 */
     @Synchronized
     fun clear(context: Context, sessionId: String) {
         try {
@@ -144,7 +144,7 @@ object GoalStore {
         }
     }
 
-    /** 阶段名 → 枚举；不认识的（旧文件 / 手改）一律按 ACTIVE，宁可让用户手动暂停，也不让目标假死。 */
+    /** 阶段名 → 枚举；无法识别的取值（旧文件或手工修改）一律按 ACTIVE，避免目标停留在无效状态。 */
     private fun parsePhase(raw: String): GoalPhase = when (raw.trim().uppercase()) {
         GoalPhase.PAUSED.name -> GoalPhase.PAUSED
         GoalPhase.DONE.name -> GoalPhase.DONE
@@ -161,7 +161,7 @@ object GoalStore {
 
     /**
      * 读字符串字段：缺字段 / 显式 null / 字符串 "null" 一律当空串。
-     * org.json 的 optString 遇到 JSON null 会返回字符串 "null"，拼进界面就是一个 "null"。
+     * org.json 的 optString 遇到 JSON null 会返回字符串 "null"，直接显示在界面上。
      */
     private fun text(obj: JSONObject, key: String): String {
         if (!obj.has(key) || obj.isNull(key)) return ""
@@ -172,7 +172,7 @@ object GoalStore {
     /**
      * 读整个文件当 root；文件坏掉就当空对象。
      *
-     * 这里是有意「丢别的会话」的：坏文件本来就没有可信内容，从空表重写比让本次写入也失败要好。
+     * 此处有意丢弃其他会话的数据：损坏文件本来就没有可信内容，从空表重写优于让本次写入失败。
      */
     private fun readRoot(file: File): JSONObject {
         if (!file.exists() || !file.isFile || file.length() == 0L) return JSONObject()
@@ -185,7 +185,7 @@ object GoalStore {
         }
     }
 
-    /** 先写 .tmp 再 rename；rename 失败（个别文件系统）退化成直接覆盖，保证内容落地。 */
+    /** 先写 .tmp 再 rename；rename 失败（个别文件系统）时退化为直接覆盖，确保内容写入。 */
     private fun writeRoot(file: File, root: JSONObject) {
         val json = root.toString()
         file.parentFile?.mkdirs()

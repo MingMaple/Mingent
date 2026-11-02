@@ -15,13 +15,13 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
- * 在 App 内的 Ubuntu 24 (PRoot) 里跑一条 shell 命令。
+ * 在 App 内的 Ubuntu 24 (PRoot) 中执行一条 shell 命令。
  *
- * 底层走 TerminalManager.executeHiddenCommand()（后台常驻 bash 管道、无 PTY、无回显、无提示符），
- * 拿到的是真实退出码，stdout/stderr 已合并。每条命令都是新的子进程，
- * 所以工作目录必须显式拼 "cd <cwd> && <cmd>"，不要指望跨命令保留 cwd。
+ * 底层使用 TerminalManager.executeHiddenCommand()（后台常驻 bash 管道、无 PTY、无回显、无提示符），
+ * 可获得真实退出码，stdout/stderr 已合并。每条命令均为新的子进程，
+ * 因此工作目录必须在命令中显式拼接 "cd <cwd> && <cmd>"，不能依赖跨命令保留。
  *
- * 隐藏执行内部有 Thread.sleep，必须放在 Dispatchers.IO 上，否则会卡主线程。
+ * 隐藏执行内部包含 Thread.sleep，必须置于 Dispatchers.IO，否则会阻塞主线程。
  */
 class TerminalTool : Tool {
 
@@ -57,21 +57,21 @@ class TerminalTool : Tool {
         val cwd = args.optString("cwd", "").trim().ifEmpty { DEFAULT_CWD }
 
         // 第一道：高危闸门（删除/截断语义），**先于档位判定**：完全档只豁免越界，不豁免高危。
-        // 命令文本里的路径会按 PRoot 的 bind mount 表映射回宿主再判（/sdcard、/data/data/<pkg> 等），
-        // 只按文本猜「这是 Ubuntu 内部路径」会漏掉真实落点。
+        // 命令文本中的路径会按 PRoot 的 bind mount 表映射回宿主后再判定（/sdcard、/data/data/<pkg> 等），
+        // 仅依据文本推测「这是 Ubuntu 内部路径」会遗漏真实落点。
         val risk = HighRiskGate.checkTerminal(ctx, raw, cwd)
         if (!risk.allowed) {
             return ToolResult.Error(risk.message ?: "终端命令被高危闸门拒绝")
         }
 
-        // 第二道：越界与危险命令黑名单（只拿用户/模型给的原始 command 判断，绝不把 cwd 拼进来再判
-        //（cwd 是执行细节，拼进去会让「cd /sdcard」这种写法被当成命令本身越界误拦）
+        // 第二道：越界与危险命令黑名单（仅使用用户或模型提供的原始 command 判定，不得拼接 cwd 后再判定；
+        //（cwd 属于执行细节，拼接后会使「cd /sdcard」这类写法被当作命令本身越界而误拦）
         val decision = ToolPolicy.checkTerminal(ctx.permission, raw)
         if (!decision.allowed) {
             return ToolResult.Error(decision.reason ?: ToolPolicy.deniedText(ctx.permission, "终端"))
         }
 
-        // 开了 SSH 后 executeHiddenCommand 会走远端，和「App 内 Ubuntu」的语义不符，直接挡住让用户先关。
+        // 开启 SSH 后 executeHiddenCommand 会走远端，与「App 内 Ubuntu」的语义不符，因此直接拒绝并要求用户先关闭。
         val sshEnabled = ctx.context
             .getSharedPreferences("ssh_config", Context.MODE_PRIVATE)
             .getBoolean("ssh_enabled", false)
@@ -80,7 +80,7 @@ class TerminalTool : Tool {
         }
 
         val timeoutMs = args.optLong("timeout_ms", DEFAULT_TIMEOUT_MS).coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
-        // proot 里每条命令都是新子进程，cwd 不跨命令，只能拼在命令最前面
+        // proot 中每条命令均为新的子进程，cwd 不跨命令保留，只能拼接在命令最前面
         val full = "cd " + cwd + " && " + raw
 
         return try {
@@ -89,7 +89,7 @@ class TerminalTool : Tool {
             }
             render(result)
         } catch (e: CancellationException) {
-            // 用户点了「停止」：必须原样抛出，否则取消渗不下去
+            // 用户点了「停止」：必须原样抛出，否则取消无法传播
             throw e
         } catch (e: Exception) {
             ToolResult.Error("终端执行异常：" + (e.message ?: e.javaClass.simpleName))
@@ -114,7 +114,7 @@ class TerminalTool : Tool {
         }
     }
 
-    /** 去 ANSI、去首尾空白，再按「前 4000 + 省略标注 + 后 8000」截断，免得把上下文撑爆。 */
+    /** 去除 ANSI 控制符与首尾空白，再按「前 4000 + 省略标注 + 后 8000」截断，避免占满上下文。 */
     private fun cleanOutput(raw: String): String {
         val clean = runCatching { TerminalApi.stripAnsi(raw) }.getOrElse { raw }.trim()
         if (clean.length <= MAX_OUTPUT_CHARS) return clean
@@ -130,7 +130,7 @@ class TerminalTool : Tool {
         const val MIN_TIMEOUT_MS = 5_000L
         const val MAX_TIMEOUT_MS = 600_000L
 
-        /** 返回给模型的输出上限：超出就保留头尾，中间标注省略了多少字符。 */
+        /** 返回给模型的输出上限：超出时保留头尾，并在中间标注省略的字符数。 */
         const val MAX_OUTPUT_CHARS = 12_000
         const val HEAD_CHARS = 4_000
         const val TAIL_CHARS = 8_000

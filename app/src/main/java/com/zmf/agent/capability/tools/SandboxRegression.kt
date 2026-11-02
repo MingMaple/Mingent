@@ -13,16 +13,16 @@ import java.nio.file.Files
 /**
  * 沙箱判定的启动期回归自检：用例覆盖删除判定、回收站禁区、终端命令与授权码。
  *
- * 为什么要有它：删除闸门的判定错误**不会抛异常**，只会表现为「某个本该拒绝的路径被放行」。
- * 这种错误在正常使用里几乎看不见（没人会天天删根目录），一旦发生却是 150 GB 级别的后果。
- * 所以把最关键的判定固化成用例，每次启动跑一遍纯逻辑，错了立刻在日志与审计里看得见。
+ * 为什么需要：删除闸门的判定错误**不会抛出异常**，仅表现为「某个本应拒绝的路径被放行」。
+ * 此类错误在日常使用中几乎不可见（极少有人删除根目录），一旦发生则可能造成 150 GB 级别的后果。
+ * 因此将关键判定固化为用例，每次启动执行一遍纯逻辑，出错时立即在日志与审计中可见。
  *
- * 边界（必须如实）：这里测的是**判定函数**，不是「真实文件系统一定安全」。
- * 终端里的变量展开、脚本内部、eval 等仍然只能靠文本层尽力，
- * 真正的兜底是 Android 权限与 PRoot 根文件系统的可重建性。
+ * 边界（须如实说明）：此处测试的是**判定函数**，并非「真实文件系统一定安全」。
+ * 终端中的变量展开、脚本内部、eval 等仍只能依靠文本层尽力拦截，
+ * 最终保障来自 Android 权限与 PRoot 根文件系统的可重建性。
  *
- * 用假环境（cacheDir 下临时目录）而不是真机目录：判定逻辑是纯函数，给什么环境按什么判；
- * 这样用例在任何设备、任何权限档下结果都一样，不会因为「这台机器上没有 /sdcard」而误报。
+ * 使用假环境（cacheDir 下的临时目录）而非真实设备目录：判定逻辑为纯函数，按给定环境判定；
+ * 用例在任何设备、任何权限档下结果一致，不会因「当前设备没有 /sdcard」而误报。
  */
 object SandboxRegression {
 
@@ -38,12 +38,12 @@ object SandboxRegression {
     )
 
     /**
-     * 跑一遍全部用例。
+     * 执行全部用例。
      *
      * @return 通过数 / 总数，方便调用方记一条审计
      *
-     * CRITICAL 用例失败时**自动停用删除能力**：判定函数错了，任何「放行」都不可信；
-     * 停用只影响本次进程，重启重跑自检、通过后自动恢复。
+     * CRITICAL 用例失败时**自动停用删除能力**：判定函数出错后，任何「放行」结果均不可信；
+     * 停用仅影响当前进程，重启重跑自检并通过后自动恢复。
      */
     fun run(context: Context): Pair<Int, Int> {
         HighRiskGate.enableDeletion()
@@ -91,7 +91,7 @@ object SandboxRegression {
             FileLog.log(TAG, "回归自检异常：" + e)
             0 to 0
         } finally {
-            // 用例期间反复绑过假环境：跑完必须绑回真实设备，否则后续工具会按假路径判定
+            // 用例期间多次绑定假环境：执行完毕后必须重新绑定真实设备，否则后续工具会按假路径判定
             runCatching { HighRiskGate.bind(context) }
             runCatching { base.deleteRecursively() }
         }
@@ -105,8 +105,8 @@ object SandboxRegression {
         val files = File(base, "env/data/data/app/files")
         val appPrivate = files.parentFile!!
         val externalRoot = File(base, "env/storage/emulated/0")
-        // 回收站判定按「/Android/data/<包名>/files/.trash」匹配，假环境必须照真实结构摆，
-        // 否则禁区规则在自检里永远命中不了
+        // 回收站判定按「/Android/data/<包名>/files/.trash」匹配，假环境必须与真实结构一致，
+        // 否则禁区规则在自检中始终无法命中
         val externalFiles = File(externalRoot, "Android/data/com.zmf.agent/files")
         val rootfs = File(base, "env/rootfs")
 
@@ -287,8 +287,8 @@ object SandboxRegression {
             cmd("rm -rf /root/proj/node_modules"),
             HighRiskGate.Risk.SAFE
         )
-        // cwd=/root 的 ./build 解析后是 /root/build：家目录的**一级目录**，
-        // 可能就是整份工程，按定档要一次授权码，不能算「深层目录」直接放行。
+        // cwd=/root 的 ./build 解析后为 /root/build：属于家目录的**一级目录**，
+        // 可能即完整工程，按定档规则需一次授权码，不得视为「深层目录」直接放行。
         out += Case("cwd=/root 的 rm -rf ./build", cmd("rm -rf ./build"), HighRiskGate.Risk.CONFIRM)
         out += Case(
             "rm -rf ./node_modules（cwd 在工作区内）",
@@ -296,13 +296,13 @@ object SandboxRegression {
             HighRiskGate.Risk.SAFE
         )
 
-        // 字符串层交叉校验：这四种写法最容易让「文本拼路径」与真实落点分叉
+        // 字符串层交叉校验：以下四种写法最易使「文本拼接路径」与真实落点产生分歧
         out += Case("rm -rf ./..（逃出工作区）", cmd("rm -rf ./..", workspaceGuest), HighRiskGate.Risk.FORBIDDEN)
         out += Case("rm -rf a/../../b", cmd("rm -rf a/../../b", workspaceGuest), HighRiskGate.Risk.CONFIRM)
         out += Case("rm -rf //sdcard", cmd("rm -rf //sdcard"), HighRiskGate.Risk.FORBIDDEN)
         out += Case("rm -rf /root/", cmd("rm -rf /root/"), HighRiskGate.Risk.FORBIDDEN)
 
-        // Shizuku 通道：宿主视角，不经过 bind 映射（否则「不拦」就成了删除后门）
+        // Shizuku 通道：宿主视角，不经过 bind 映射（否则「未拦截」将成为删除绕过途径）
         /** 宿主视角（Shizuku）的终端命令 → 风险级；不走 bind 映射。 */
         fun host(command: String): HighRiskGate.Risk =
             worst(HighRiskGate.classifyCommand(env, workspace, command, "/", hostMode = true))
@@ -407,8 +407,8 @@ object SandboxRegression {
     /**
      * 工作区内的大目录删除要升为确认档。
      *
-     * 用稀疏文件造 256 MB（`setLength` 不真占盘，跑得快）；造不出来就跳过这两条，
-     * 不伪装成通过。这两条是 ADVISORY：它依赖文件系统行为，失败不该停用整个删除能力。
+     * 使用稀疏文件构造 256 MB（`setLength` 不实际占用磁盘，执行较快）；无法构造时跳过这两条，
+     * 不标记为通过。这两条为 ADVISORY：依赖文件系统行为，失败不应停用整个删除能力。
      */
     private fun collectScaleCases(context: Context, out: MutableList<Case>) {
         val base = File(File(context.cacheDir, "sandbox-reg"), "scale")
@@ -446,13 +446,13 @@ object SandboxRegression {
     // =========================================================================
 
     /**
-     * [SafeDelete] 的真实落盘行为：这里不再用假环境，而是在 cache 下真建目录与软链接。
+     * [SafeDelete] 的真实落盘行为：此处不使用假环境，而是在 cache 下实际创建目录与软链接。
      *
-     * 为什么必须测执行层：判定正确不代表执行正确。历史事故里 harness 的**拼接**出错，
-     * 而拼接发生的正是「从目标往下走」的执行阶段；软链接跟随也是执行阶段才会发生的事。
-     * 用例跑在 App 自己的 cache 里，删坏也只影响自检目录，[run] 的 finally 会整体清掉。
+     * 为什么必须测试执行层：判定正确不代表执行正确。历史事故中测试脚手架（harness）的**拼接**出错，
+     * 而拼接发生在「从目标向下遍历」的执行阶段；软链接跟随同样只在执行阶段发生。
+     * 用例运行在 App 自身的 cache 中，误删仅影响自检目录，[run] 的 finally 会整体清理。
      *
-     * 软链接创建在个别文件系统上会被拒绝：失败就跳过那两条用例，不伪装成通过。
+     * 软链接创建在个别文件系统上会被拒绝：失败时跳过这两条用例，不标记为通过。
      */
     private fun collectFsCases(base: File): List<Pair<String, Boolean>> {
         val out = ArrayList<Pair<String, Boolean>>(5)

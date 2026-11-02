@@ -14,19 +14,19 @@ import android.provider.Settings
 /**
  * Android 侧系统权限的「查询 + 跳转」小工具。
  *
- * 只做两件事，不做授权决策、也不碰 Shizuku（Shizuku 自己的状态在 [ShizukuBridge]）：
- * 1. **[status]**：一次性把权限页要显示的几项状态查全；查询本身没有副作用，页面回到前台就重查一次；
- * 2. **open*Settings**：把用户送到对应的系统页。系统页是「用户自己决定」的地方，
- *    App 只在用户回来之后重查状态，不假设用户点了什么。
+ * 仅执行两项职责，不做授权决策，也不涉及 Shizuku（其状态由 [ShizukuBridge] 管理）：
+ * 1. **[status]**：一次性查询权限页所需的各项状态；查询本身无副作用，页面回到前台时重新查询；
+ * 2. **open*Settings**：将用户引导至对应的系统页面。系统页由用户自行决定，
+ *    App 仅在用户返回后重新查询状态，不预设用户操作结果。
  *
- * 所有跳转都 runCatching 包住：国产 ROM 上这些 action 经常没 Activity 接，
- * 抛 ActivityNotFoundException 直接崩过一次用户就不会再点第二次，所以失败一律返回 false 让调用方兜底。
+ * 所有跳转均以 runCatching 包裹：国产 ROM 上这些 action 常无 Activity 接收，
+ * 抛出 ActivityNotFoundException 后用户往往不再重试，因此失败一律返回 false，由调用方处理。
  */
 object AndroidPermissions {
 
     /** 权限页要显示的全部状态；true = 已授权。 */
     data class Status(
-        /** 共享存储的运行时权限（targetSdk 28 上 READ/WRITE_EXTERNAL_STORAGE 仍按老规则弹框）。 */
+        /** 共享存储的运行时权限（targetSdk 28 上 READ/WRITE_EXTERNAL_STORAGE 仍按旧规则弹出授权框）。 */
         val storage: Boolean,
         /** 整盘访问（Android 11+ 的 MANAGE_EXTERNAL_STORAGE）；低版本一律 false。 */
         val storageLegacy: Boolean,
@@ -42,7 +42,7 @@ object AndroidPermissions {
         val allFiles: Boolean
     )
 
-    /** 查一次当前状态。不碰 Shizuku，也不申请任何东西。 */
+    /** 查询当前状态。不涉及 Shizuku，也不发起任何申请。 */
     fun status(context: Context): Status {
         val allFiles = isAllFilesGranted()
         return Status(
@@ -76,7 +76,7 @@ object AndroidPermissions {
         }.getOrDefault(false)
     }
 
-    // ---- 跳系统页：统一 runCatching，回不来就 false ----
+    // ---- 跳转系统页：统一使用 runCatching，失败时返回 false ----
 
     /** 悬浮窗权限页（「显示在其他应用上层」）。 */
     fun openOverlaySettings(context: Context): Boolean =
@@ -85,8 +85,8 @@ object AndroidPermissions {
     /**
      * 电池优化白名单页。
      *
-     * 先试「直接弹忽略电池优化的确认框」；部分 ROM 不认这个 action（或没声明
-     * REQUEST_IGNORE_BATTERY_OPTIMIZATIONS），就退回电池优化列表页让用户自己选。
+     * 优先尝试「直接弹出忽略电池优化的确认框」；部分 ROM 不支持该 action（或未声明
+     * REQUEST_IGNORE_BATTERY_OPTIMIZATIONS），则退回电池优化列表页供用户选择。
      */
     fun openBatterySettings(context: Context): Boolean {
         val request = Intent(
@@ -133,8 +133,8 @@ object AndroidPermissions {
     private fun packageUri(context: Context): Uri = Uri.parse("package:" + context.packageName)
 
     /**
-     * 起系统页。必须 NEW_TASK：这些跳转常从非 Activity 的 Context（悬浮窗里）发出，
-     * 少了这个 flag 会直接抛异常，用户看到的就是「点了没反应」。
+     * 启动系统页。必须使用 NEW_TASK：这些跳转常从非 Activity 的 Context（悬浮窗）发出，
+     * 缺少该 flag 会直接抛出异常，表现为点击无响应。
      */
     private fun start(context: Context, intent: Intent): Boolean = runCatching {
         context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

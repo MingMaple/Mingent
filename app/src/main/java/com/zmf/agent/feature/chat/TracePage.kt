@@ -89,7 +89,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
-import com.zmf.agent.uikit.markdown.MarkdownText
 import com.zmf.agent.uikit.markdown.copyCode
 import com.zmf.agent.uikit.components.CopyRevealHost
 import com.zmf.agent.uikit.components.claimCopyOnGesture
@@ -113,13 +112,13 @@ fun TracePage(
     messages: List<ChatMessage>,
     onBack: () -> Unit,
     // 图片缩略图的解码根：ChatMessage.images 存的是工作区相对路径，解析口径与主页一致
-    // （主页那份 imageRoot 在 ChatScreen 里算好后一起传进来）。传 null 只是不画缩略图，不会崩。
+    // （主页那份 imageRoot 在 ChatScreen 里算好后一起传进来）。传 null 只是不画缩略图，不会导致崩溃。
     imageRoot: File? = null
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     // 不缓存「旧结果」，只缓存「同样的输入」：messages 是原地 append 的快照列表，
     // 拿列表身份当 key 会永远命中第一帧；改看「条数 + 头尾两条的内容量」。
-    // 流式时末条在涨、静止时不变，静止状态下展开行、滚动、框选都不再重推一遍字符串。
+    // 流式时末条持续增长、静止时不变，静止状态下展开行、滚动、框选均不重新推送字符串。
     // 头一条的对象身份也进 key：换会话时条数与长度都可能撞上，但对象不会是同一个
     val trace = remember(
         messages.size,
@@ -140,7 +139,7 @@ fun TracePage(
     // 轮、条目、块三张表是同一次遍历的产物，所以一起缓存：分开缓存会各自失效、互相错位
     val entries = trace.entries
     val events = trace.events
-    // 展开卡片最多占屏高 45%（含标题行）：剩下的留给时间线本身，不然点开一条就看不见上下文了
+    // 展开卡片最多占屏高 45%（含标题行）：其余空间留给时间线本身，否则展开一条后将无法看到上下文
     val maxDetailHeight = (LocalConfiguration.current.screenHeightDp.dp * DetailMaxScreenRatio - DetailCardChrome)
         .coerceAtLeast(ThinkingDetailMaxHeight)
 
@@ -153,7 +152,7 @@ fun TracePage(
         listState.scrollToItem(entries.lastIndex)
     }
 
-    // 松手后滚到选中第一块所在的那一行：不然框在概览上、内容却在屏幕外，联动等于没做。
+    // 松手后滚动至选中第一块所在行：否则框选位于概览而内容在屏幕外，联动将失效。
     // 概览只在松手时下发集合，拖动中这个 key 不变，列表一帧都不会跟着跳
     LaunchedEffect(selection) {
         if (selection.isEmpty()) return@LaunchedEffect
@@ -165,7 +164,7 @@ fun TracePage(
     }
 
     Surface(
-        // 与工作区页同一套浮层口径：铺满不透明，最外层吞点击防穿透
+        // 与工作区页同一套浮层约定：铺满且不透明，最外层消费点击以防穿透
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -233,7 +232,7 @@ fun TracePage(
                         top = 0.dp,
                         bottom = 28.dp
                     ),
-                    // 到顶 / 到底继续滑不再把整块内容顶起来：长表回弹会让人以为滚错了位置
+                    // 到达顶部 / 底部后继续滑动不会使整块内容位移：长表回弹易被误认为滚动位置错误
                     overscrollEffect = null
                 ) {
                     items(
@@ -265,7 +264,7 @@ fun TracePage(
                                         // 点的是被压暗的行（框选之外的）：先展开它，再把框选收掉。
                                         // 压暗与概览上的高亮都由 selection 推出来，清空 selection 就一起复原。
                                         // 这里只会被 TraceRow 的 clickable 调到：拖动 / 滑动一旦超过 touchSlop
-                                        // 就会被滚动或外层手势吃掉，不会走进这个回调。
+                                        // 会被滚动或外层手势消费，不会进入该回调。
                                         if (faded) {
                                             expandedKey = line.key
                                             selection = emptySet()
@@ -310,7 +309,7 @@ private val SubRowIndent = 12.dp
 private val ChipCorner = 8.dp
 private val DetailCorner = 18.dp
 
-/** 思考详情的限高：和主页思考框同一口径（180dp），别让一整屏都是过程。 */
+/** 思考详情的限高：与主页思考框同一约定（180dp），避免整屏均为过程。 */
 private val ThinkingDetailMaxHeight = 180.dp
 
 /** 「复制」按钮的固定占位宽度：宽度固定，出现/消失不会挤动旁边任何东西。 */
@@ -336,7 +335,7 @@ private const val ArgLimit = 36
 /** 工具还在跑时的行尾状态：单独提出来，配色和「→ 结果」区分开。 */
 private const val RunningText = "执行中…"
 
-/** 连续空白折成一个空格；放常量里免得每行都新建正则。 */
+/** 连续空白折叠为一个空格；置于常量中避免每行新建正则。 */
 private val Spaces = Regex("[ \t]{2,}")
 
 /**
@@ -550,7 +549,7 @@ private fun callLine(
     stepLabel: String = ""
 ): TraceLine {
     val sub = call.name.startsWith("mcp__")
-    // 非 MCP 工具的行摘要改成「一句话干了什么」（读取 test.txt / 运行命令 …），
+    // 非 MCP 工具的行摘要改为「一句话说明执行内容」（读取 test.txt / 运行命令 …），
     // 和卡片标题行用同一个纯函数，两处不会说出两种话。
     val headline = if (sub) {
         call.name + " " + oneLine(flat(call.arguments), ArgLimit)
@@ -608,7 +607,7 @@ private fun RoundLabel(number: Int) {
 }
 
 /**
- * 时间线的一行：标签 + 摘要 + 结果预览，点一下在正下方坠出详情卡片。
+ * 时间线的一行：标签 + 摘要 + 结果预览，点击后在正下方展开详情卡片。
  *
  * 详情做成「行下坠」而不是跳页：截图里的详情在右侧是另一套布局，
  * 手机上没有右边，下坠能把「这一条说了什么」和「它在时间线的哪一格」绑在一起。
@@ -665,7 +664,7 @@ private fun TraceRow(
         AnimatedVisibility(
             visible = expanded,
             // 高度用临界阻尼（不走过头），淡入淡出仍用 tween：
-            // 欠阻尼弹簧收缩时会先压过头再弹回来，看上去像「动画结束后又跳一下」。
+            // 欠阻尼弹簧收缩时会先压过头再弹回来，看起来像「动画结束后再次跳动」。
             enter = expandVertically(animationSpec = Motion.heightSpring()) +
                 fadeIn(animationSpec = Motion.fadeIn()),
             exit = shrinkVertically(animationSpec = Motion.heightSpring()) +
@@ -720,9 +719,9 @@ private fun KindChip(kind: TraceKind) {
  *
  * 工具调用整块交给共用 [ToolBlock]：参数折叠成一行摘要、结果 240dp 内滚、复制按钮
  * 都用它那一份实现，轨迹页这边只保留「从哪一行坠出来」的定位与上下留白，
- * 不再自己画「参数 / 结果」两段自绘 UI。
+ * 不自行绘制「参数 / 结果」两段 UI。
  *
- * 其余行（用户 / 助手 / 思考 / 上下文）仍是原来的浮层：18dp 圆角、6dp 阴影、1dp 发丝边，
+ * 其余行（用户 / 助手 / 思考 / 上下文）仍保留原浮层样式：18dp 圆角、6dp 阴影、1dp 发丝边，
  * 标题钉住、正文滚：翻一屏长思考的时候还得知道自己在看哪一行。
  */
 @Composable
@@ -754,7 +753,7 @@ private fun DetailCard(
 
     // 非工具行：正文浮层，长文在卡片内滚。
     // 思考卡的限高单独收紧到 180dp（和主页的思考框同一口径）：整屏高的思考卡
-    // 看着就像正文，用户要的是「一眼扫过过程」。
+    // 外观近似正文，而用户需要的是「快速浏览过程」。
     // 思考与助手都收到同一档：助手正文常常很长，展开后一屏占满就没法「一眼扫过过程」
     // 折叠阈值与思考块一致。
     val cap = if (line.kind == TraceKind.Thinking || line.kind == TraceKind.Assistant) {
@@ -764,7 +763,7 @@ private fun DetailCard(
     }
     val onSurface = MaterialTheme.colorScheme.onSurface
     val context = LocalContext.current
-    // 「复制」的全局唯一身份：摸别的块时按钮会从这张卡身上挪走（和主页同一口径）
+    // 「复制」的全局唯一标识：操作其他块时按钮会从该卡迁移（与主页同一约定）
     val copyKey = rememberCopyBlockKey()
     val traceCopyVisible = CopyRevealHost.owner === copyKey
     var traceCopied by remember { mutableStateOf(false) }
@@ -779,7 +778,7 @@ private fun DetailCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 2.dp, bottom = 8.dp)
-            // 卡片内摸一下就显示「复制」
+            // 卡片内操作后即显示「复制」
             .claimCopyOnGesture(copyKey)
             .shadow(elevation = 6.dp, shape = shape, clip = false)
             .border(1.dp, onSurface.copy(alpha = 0.06f), shape),
@@ -841,7 +840,7 @@ private fun DetailCard(
             CompositionLocalProvider(LocalOverscrollFactory provides null) {
                 BoundedScrollColumn(maxHeight = cap) {
                     // 用户消息带图：先画一排缩略图（与主页同边长、同圆角），点击进同一个查看器。
-                    // 纯图片消息正文为空，就别再补一句「没有可显示的内容」。
+                    // 纯图片消息正文为空，不补充「没有可显示的内容」。
                     val thumbRoot = imageRoot?.takeIf { line.images.isNotEmpty() }
                     if (thumbRoot != null) {
                         TraceThumbRow(
@@ -917,7 +916,7 @@ private fun TraceImageThumb(relPath: String, root: File, onTap: () -> Unit) {
     }
 }
 
-/** 展开卡的正文：等宽段行距放宽一格，长参数才不至于黏成一坨。 */
+/** 展开卡的正文：等宽段行距放宽一格，长参数才不会粘连成块。 */
 @Composable
 private fun DetailText(text: String, mono: Boolean) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -958,29 +957,6 @@ private fun headLine(text: String, limit: Int): String {
     if (text.isBlank()) return ""
     val first = text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
     return oneLine(first, limit)
-}
-
-/**
- * 工具行右侧那句人话：优先取描述 / 命令这类一眼能读的字段，读不出再退回参数原文。
- * 截图里的工具行是「# run_code 解压并读第五包反馈」这种句子，不是一坨 JSON。
- */
-private fun argSummary(raw: String): String {
-    if (raw.isBlank()) return ""
-    val obj = runCatching { org.json.JSONObject(raw) }.getOrNull() ?: return oneLine(raw, ArgLimit)
-    val preferred = listOf(
-        "description", "command", "path", "file_path", "query", "url", "prompt",
-        "text", "content", "name", "id"
-    )
-    for (key in preferred) {
-        val value = obj.optString(key, "")
-        if (value.isNotBlank()) return oneLine(value, ArgLimit)
-    }
-    val keys = obj.keys()
-    while (keys.hasNext()) {
-        val value = obj.optString(keys.next(), "")
-        if (value.isNotBlank()) return oneLine(value, ArgLimit)
-    }
-    return oneLine(raw, ArgLimit)
 }
 
 /**
@@ -1028,7 +1004,7 @@ private val LaneLabelWidth = 20.dp
 /** 框选两侧的竖条：2dp 细线才不挡住色块本身。 */
 private val SelectionBarWidth = 2.dp
 
-/** 拖动条本体 4dp；可触摸区抬到 20dp，否则手指根本按不中。 */
+/** 拖动条本体 4dp；可触摸区扩大至 20dp，否则手指难以准确命中。 */
 private val PanBarHeight = 4.dp
 private val PanBarTouch = 20.dp
 
@@ -1210,7 +1186,7 @@ private fun LaneLabel(text: String) {
  * 顶部概览：三行 lane 按事件顺序从左往右铺块，下面挂一条拖动条。
  *
  * 一块 = 时间线一行，三行共用同一条时间轴：框选的最小单位因此从「轮」变成「块」，
- * 一轮里那几条工具调用可以只挑一条看，不再被轮的边界绑住。
+ * 一轮中的多次工具调用可单独选取查看，不受轮次边界限制。
  * 模块上的手势只干一件事：框选。按下点就是区间起点、拖动点就是终点；
  * 横向平移平时交给下面那条细条，只有手指贴到左右边缘时才由框选自己带一段自动平移。
  */
@@ -1284,7 +1260,7 @@ private fun TraceOverview(
                                     fingerX = change.position.x
                                     if (!dragging && abs(fingerX - down.position.x) > slop) {
                                         dragging = true
-                                        // 手指停在边缘不动时 Compose 不再投递 pointer 事件，
+                                        // 手指停留于边缘不动时 Compose 停止投递 pointer 事件，
                                         // 只靠事件驱动的自动平移会立刻停住，所以另起一个按帧推进的协程
                                         if (maxPan < 0f && viewport > edge * 2f) {
                                             autoScroll = dragScope.launch {
@@ -1445,4 +1421,3 @@ private fun thumbLength(track: Float, viewport: Float, content: Float, minThumb:
     if (viewport <= 0f || content <= viewport) return track
     return (track * (viewport / content)).coerceIn(minOf(minThumb, track), track)
 }
-

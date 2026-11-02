@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -18,34 +19,35 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.theme.LocalAccentFg
 
 /**
- * 设置页里「整行可点」的统一写法：先按行自己的形状裁剪，再挂 bounded 水波纹。
+ * 设置页中「整行可点击」的统一写法：先按行自身的形状裁剪，再挂载 bounded 水波纹。
  *
- * 为什么不直接用 `Modifier.clickable {}`：默认的 indication 是不裁剪的方形波纹，
- * 铺在圆角卡片里就会在四角露出方块，一眼就是没裁干净。
- * 所以形状必须由调用方按「这一行真正所属的容器」传进来（卡片内首行/末行可以用带圆角的那两角，
- * 中间行直接矩形即可），这里只负责裁 + 波动。
+ * 不直接使用 `Modifier.clickable {}` 的原因：默认 indication 为不裁剪的方形波纹，
+ * 铺在圆角卡片中会在四角露出方形区域，明显未裁剪。
+ * 因此形状必须由调用方按「该行实际所属的容器」传入（卡片内首行与末行可使用带圆角的两角，
+ * 中间行使用矩形），此处仅负责裁剪与波纹。
  *
- * 波纹颜色取 onSurface 的 10%（深色 14%）：点击反馈是「按下处起一圈淡淡的扩散」，
- * 与 Salt Player 的手感一致。曾经试过整块平涂压暗（黑 12%／30%），实测在长列表里
+ * 波纹颜色取 onSurface 的 10%（深色 14%）：点击反馈为按下处起一圈淡扩散，
+ * 与 Salt Player 的手感一致。曾尝试整块平涂压暗（黑 12%／30%），实测在长列表中
  * 缺少「按下的是哪一行」的定位感，已回退。
  *
- * 深色为什么是 14% 而不是同一个 10%：DSH 的 `interactive-bg-active` 就是
- * 浅色 10% 墨、深色 14% 白——暗底上同一档透明度看起来更弱，要补三个点才等效。
+ * 深色使用 14% 而非相同的 10%：DSH 的 `interactive-bg-active` 即为
+ * 浅色 10% 墨、深色 14% 白；暗色背景上相同透明度视觉更弱，需提高三个百分点才能等效。
  *
  * ## 焦点环
  *
- * 手指点、鼠标点都不出环，只有键盘 Tab / 方向键 / 手柄把焦点移上来时才画一圈 2dp 强调色描边
- * （`focus-visible` 的语义）。它回答的是「现在按回车会触发谁」，与按压波纹是两件事，
- * 所以不用同一个 interaction 状态：波纹读 Press，环读 Focus。
+ * 手指与鼠标点击均不显示焦点环，仅键盘 Tab、方向键或手柄将焦点移入时绘制 2dp 强调色描边
+ * （`focus-visible` 语义）。它表示「当前回车将触发哪个元素」，与按压波纹不同，
+ * 因此不使用同一 interaction 状态：波纹读取 Press，焦点环读取 Focus。
  *
- * 画在 `.clip(shape)` 之前，是外层修饰符，因此不会被形状裁掉；
- * 同样因为它是绘制而不是布局，加了环的行位置尺寸一点不变。
+ * 绘制于 `.clip(shape)` 之前，属于外层修饰符，因此不会被形状裁剪；
+ * 同时由于仅为绘制而非布局，添加焦点环不改变行的位置与尺寸。
  */
 @Composable
 fun Modifier.saltRowClickable(
@@ -73,17 +75,17 @@ fun Modifier.saltRowClickable(
 }
 
 /**
- * 卡片内整行的标准写法：**不自己画圆角**，交给卡片自身的 `clip(RoundedCornerShape(16.dp))` 去裁。
+ * 卡片内整行的标准写法：**不自行绘制圆角**，交由卡片自身的 `clip(RoundedCornerShape(16.dp))` 裁剪。
  *
- * 这样得到的就是同一套判定：
- *  - 首行：波纹顶部被卡片上圆弧裁掉 → 上圆下平；
- *  - 中间行：上下都不碰圆弧 → 纯矩形，不是圆角框；
- *  - 末行：波纹底部被卡片下圆弧裁掉 → 上平下圆；
- *  - 只有一行：四角都跟卡片圆弧（卡片裁的就是四角）。
+ * 由此得到统一判定：
+ *  - 首行：波纹顶部被卡片上圆弧裁剪，呈上圆下平；
+ *  - 中间行：上下均不触及圆弧，为纯矩形而非圆角框；
+ *  - 末行：波纹底部被卡片下圆弧裁剪，呈上平下圆；
+ *  - 仅一行：四角均跟随卡片圆弧（卡片本身裁剪四角）。
  *
- * 前提：行必须**横向通栏**（卡片内的 Column 不能有 horizontal padding，行的内距自己带）。
- * 卡片 Column 若有 vertical padding，首/末行与圆弧之间会露一条小直边：那种情况
- * 改用 [saltRowClickable] 显式给角（`RoundedCornerShape(16.dp)`）。
+ * 前提：行必须**横向通栏**（卡片内 Column 不得设置 horizontal padding，行的内边距由自身提供）。
+ * 若卡片 Column 设置 vertical padding，首行与末行和圆弧之间会露出直边：此时
+ * 改用 [saltRowClickable] 显式指定圆角（`RoundedCornerShape(16.dp)`）。
  */
 @Composable
 fun Modifier.saltCardRow(enabled: Boolean = true, onClick: () -> Unit): Modifier =
@@ -92,18 +94,21 @@ fun Modifier.saltCardRow(enabled: Boolean = true, onClick: () -> Unit): Modifier
 /**
  * 顶栏图标按钮：40dp 热区 + 10dp 圆角，波纹按自身圆角裁剪。
  *
- * 为什么不用裸 `Modifier.clickable`：默认 indication 不裁剪，按下去会在圆角按钮的
- * 四角露出方形波纹，和按钮形状对不上（计划页、浏览页原先都是这个问题）。
- * 这里统一走 [saltRowClickable]，顺带把键盘聚焦环也接上。
+ * 不使用裸 `Modifier.clickable` 的原因：默认 indication 不裁剪，按下时会在圆角按钮
+ * 四角露出方形波纹，与按钮形状不符（计划页、浏览页此前均存在该问题）。
+ * 此处统一使用 [saltRowClickable]，同时接入键盘焦点环。
  *
- * @param glyph 图标字形（本 App 的顶栏一律用字形，不引图标包）
- * @param enabled 为 false 时只画淡、不接点击：与「点了没反应」区分开
+ * @param glyph 图标字形（本 App 顶栏统一使用字形，不引入图标包）
+ * @param enabled 为 false 时仅降低透明度，不响应点击，以便与「点击无反应」区分
+ * @param glyphOffsetY 仅偏移字形，不移动热区。不同字形的墨迹中心高度不同
+ *   （「⟳」偏低、「↗」偏高），同行并排时需分别校准，见 BrowserPage 顶栏。
  */
 @Composable
 fun TopIconButton(
     glyph: String,
     enabled: Boolean = true,
     fontSize: TextUnit = 20.sp,
+    glyphOffsetY: Dp = 0.dp,
     onClick: () -> Unit
 ) {
     val color = MaterialTheme.colorScheme.onSurface
@@ -115,6 +120,7 @@ fun TopIconButton(
     ) {
         Text(
             text = glyph,
+            modifier = Modifier.offset(y = glyphOffsetY),
             fontSize = fontSize,
             color = if (enabled) color else color.copy(alpha = 0.28f)
         )

@@ -77,8 +77,8 @@ data class LedgerUsage(
 /**
  * 全局总账的一份只读快照：统计页直接读它，不改 [UsageLedger] 内部状态。
  *
- * 旧字段（totalPromptTokens / todayPromptTokens 等）保留成计算属性，
- * 免得调用点跟着新结构一起改。
+ * 旧字段（totalPromptTokens / todayPromptTokens 等）保留为计算属性，
+ * 避免调用点随新结构同步修改。
  */
 data class LedgerSnapshot(
     val total: LedgerUsage = LedgerUsage(),
@@ -97,7 +97,7 @@ data class LedgerSnapshot(
     val todayCompletionTokens: Int get() = today.completion
     val todayRequests: Int get() = today.requests
 
-    /** 按天账本逐字段求和；`null` 表示还没算过（由调用方缓存，别在大循环里反复调）。 */
+    /** 按天账本逐字段求和；`null` 表示尚未计算（由调用方缓存，避免在大循环中反复调用）。 */
     val daysSum: LedgerUsage by lazy { days.values.fold(LedgerUsage()) { acc, day -> acc.merge(day) } }
 
     /**
@@ -128,7 +128,7 @@ data class LedgerSnapshot(
             genTokens = (total.genTokens - sum.genTokens).coerceAtLeast(0),
             toolCalls = (total.toolCalls - sum.toolCalls).coerceAtLeast(0),
             costCny = (total.costCny - sum.costCny).coerceAtLeast(0.0)
-            // composition 不参与差额：v1 没有八段明细，凭空摊进某一段就是伪造
+            // composition 不参与差额：v1 无八段明细，凭空分摊到某一段属于伪造
         )
     }
 
@@ -178,7 +178,7 @@ internal fun LedgerUsage.merge(other: LedgerUsage): LedgerUsage = LedgerUsage(
 /**
  * 全局用量总账（stats.json）：**只增不减的历史总账**。
  *
- * 口径（用户定死，别改）：
+ * 口径（由用户确定，不得修改）：
  * - 删会话 / 归档 / 清工作区都**不动**这里；只有真的发生模型请求才往上加。
  * - 本会话的累计另存在 sessions.json 的会话记录里，两套账互不覆盖。
  * - 按天桶用于「近 7 天 / 近 30 天 / 范围筛选」；只保留最近 [DAYS_KEEP] 天。
@@ -191,7 +191,7 @@ object UsageLedger {
     private const val FILE_NAME = "stats.json"
     private const val TAG = "stats"
 
-    /** 按天账本保留天数：7 天 / 30 天 / 全部区间都够用。 */
+    /** 按天账本保留天数：覆盖 7 天、30 天与全部区间。 */
     const val DAYS_KEEP = 120
 
     private const val KEY_VERSION = "version"
@@ -202,7 +202,7 @@ object UsageLedger {
     private const val KEY_COST_BACKFILLED = "costBackfilled"
     private const val KEY_ROUNDS_BACKFILLED = "roundsBackfilled"
 
-    // v1 扁平键：只读迁移用，不再新写
+    // v1 扁平键：仅用于只读迁移，不参与写入
     private const val KEY_TOTAL_PROMPT = "totalPromptTokens"
     private const val KEY_TOTAL_COMPLETION = "totalCompletionTokens"
     private const val KEY_TOTAL_REQUESTS = "totalRequests"
@@ -235,8 +235,8 @@ object UsageLedger {
     // ---- 对外 ----
 
     /**
-     * 读总账。重复调用是空操作（内存里已载入就不再读盘），所以各处放心调用。
-     * 文件不存在 / 空 / JSON 坏掉 / 缺字段，一律当 0，不崩。
+     * 读取总账。重复调用为空操作（内存中已载入则不再次读盘），因此可安全调用。
+     * 文件不存在、为空、JSON 损坏或缺少字段时一律按 0 处理，不崩溃。
      */
     @Synchronized
     fun load(context: Context) {
@@ -313,7 +313,7 @@ object UsageLedger {
     /**
      * 一次性回填历史轮次：只数现存会话自分叉边界之后、用户亲手输入的 user 消息。
      *
-     * 回填后轮次进入总账，之后删会话不再让全局轮次回落。
+     * 回填后轮次计入总账，此后删除会话不会导致全局轮次回落。
      */
     @Synchronized
     fun backfillRounds(context: Context, sessions: List<ChatSession>) {
@@ -467,7 +467,7 @@ object UsageLedger {
         lastUsedAt = 0L
     }
 
-    /** 整体覆盖写；先写 .tmp 再 rename，失败退化成直接覆盖，绝不抛。 */
+    /** 整体覆盖写；先写 .tmp 再 rename，失败时退化为直接覆盖，不抛出异常。 */
     @Synchronized
     private fun save(context: Context) {
         try {

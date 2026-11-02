@@ -14,14 +14,14 @@ import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.PlanStore
 import com.zmf.agent.core.store.label
 
-/** 批准计划时替用户发出的那句话；正文与日志共用一份，别两处各写一遍。 */
+/** 批准计划时代替用户发送的语句；正文与日志共用一份，避免两处各写一遍。 */
 private const val PLAN_APPROVE_TEXT = "按计划开始执行"
 
 /**
  * 计划模式、计划与目标、以及四条斜杠命令（/plan /goal /compact /permission）。
  *
- * 从 [ChatViewModel] 搬出，行为不变：状态字段名与原成员逐字一致，方法体原样照搬；
- * 消息发送、权限切换、压缩与界面提示都用构造 lambda 注入，不反向攥住 ViewModel。
+ * 从 [ChatViewModel] 拆出，行为不变：状态字段名与原成员逐字一致，方法体原样保留；
+ * 消息发送、权限切换、压缩与界面提示均以构造 lambda 注入，不反向持有 ViewModel。
  */
 class PlanGoalController(
     private val appContext: Context,
@@ -54,7 +54,7 @@ class PlanGoalController(
      * 计划模式开关的唯一写法：状态、落盘、日志三处保持一致（斜杠命令也走它）。
      *
      * 名字必须是 apply* 而不是 set*：`var planMode` 的自动 setter 已占用 setPlanMode 的 JVM 签名，
-     * 同名函数会 Platform declaration clash（busyMode 那次踩过同一个坑）。
+     * 同名函数会引发 Platform declaration clash（busyMode 曾出现同一问题）。
      */
     private fun applyPlanMode(enabled: Boolean) {
         if (planMode == enabled) return
@@ -71,7 +71,7 @@ class PlanGoalController(
     /**
      * 斜杠命令入口：输入以 / 开头时先在这里拦一道。
      *
-     * 返回值就是「这句话已经被吃掉了」：true = 不要再当普通消息发出去。
+     * 返回值表示「该句已被消费」：true = 不作为普通消息发送。
      * 认不出来的 /xxx（比如 /技能名）一律返回 false，让它照常发出去。
      */
     fun handleSlashCommand(text: String): Boolean {
@@ -94,7 +94,7 @@ class PlanGoalController(
     /**
      * /compact：立刻压一次上下文。
      *
-     * 为什么要这个命令：以前只有加号面板里的「压缩」入口，没法写进脚本、也没法在对话里直接说；
+     * 为什么需要该命令：此前仅提供加号面板中的「压缩」入口，无法写入脚本，也无法在对话中直接输入；
      * 压缩做成命令的同时也是自测入口（先发一句话、再 /compact，就能验证压缩与缓存）。
      */
     private fun handleCompactCommand(): Boolean {
@@ -105,7 +105,7 @@ class PlanGoalController(
     /**
      * /permission <只读|工作区|完全>（也认 read/workspace/full）：切权限档。
      *
-     * 切档入口就是 `/permission <preset>`；原来只有左下角那颗 chip，
+     * 切档入口为 `/permission <preset>`；此前仅提供左下角 chip，
      * 自动化测试得靠点坐标，做成命令后一条 input text 就能切。
      */
     private fun handlePermissionCommand(arg: String): Boolean {
@@ -156,7 +156,7 @@ class PlanGoalController(
         }
         val sub = arg.substringBefore(' ').lowercase()
         val rest = arg.substringAfter(' ', "").trim()
-        // pause/resume/clear/edit 都是「对已有目标动手」：没有目标就先说清楚，别假装成功
+        // pause/resume/clear/edit 均为「对已有目标执行操作」：无目标时先明确说明，不可伪装成功
         if ((sub == "pause" || sub == "resume" || sub == "clear" || sub == "edit") && goal == null) {
             setActivity("还没有目标：发 /goal <目标> 先建一个")
             return true
@@ -182,7 +182,7 @@ class PlanGoalController(
                     setActivity("目标已改写")
                 }
             }
-            // 不是子命令：整段就是新目标
+            // 非子命令：整段内容即为新目标
             else -> createGoal(arg)
         }
         return true
@@ -203,7 +203,7 @@ class PlanGoalController(
         goal = next
         GoalStore.save(appContext, currentSessionId(), next)
         FileLog.log("goal", "新目标（第 0 轮）：" + objective.take(60))
-        // 流式中 send 会直接返回：那一轮收尾时 goal 已经是 ACTIVE，续跑链会把这一轮补上
+        // 流式中 send 会直接返回：该轮收尾时 goal 已为 ACTIVE，续跑链会补上本轮
         sendNow(objective, false)
     }
 
@@ -221,23 +221,23 @@ class PlanGoalController(
     }
 
     /**
-     * 重读当前会话的计划列表：流结束与进计划页时各调一次，别每帧调（要读盘）。
+     * 重读当前会话的计划列表：流结束与进入计划页时各调用一次，不可每帧调用（需读盘）。
      *
      * 选中态在这里一起校正：原选中那份被删掉、或第一次读到计划时，落到最新的一份。
      * 用户刚看到的应该就是模型刚交的那份。
      */
     fun reloadPlans() {
-        // 记住重读之前有哪几份：用来认出「这次真的多了新计划」
+        // 记录重读前的计划数量：用于识别「本次确实新增了计划」
         val before = plans.map { it.id }.toSet()
         val list = PlanStore.loadPlans(appContext, currentSessionId())
         plans = list
         val current = selectedPlanId
         val fresh = list.filter { it.id !in before }
         selectedPlanId = when {
-            // 模型刚交了新计划：直接把预览切到最新那份（用户点右上角按钮就该看到它，
-            // 而不是还停在上次看过的旧计划上）
+            // 模型刚提交新计划：直接将预览切换至最新一份（用户点击右上角按钮时应看到该份，
+            // 而非停留在上次查看的旧计划）
             fresh.isNotEmpty() -> fresh.last().id
-            // 没有新计划就停在用户上次看的那份：从计划页返回主页再进来，还是同一页
+            // 无新计划则停留在用户上次查看的一份：从计划页返回主页后再次进入，仍为同一页
             current != null && list.any { it.id == current } -> current
             list.isNotEmpty() -> list.last().id
             else -> null
@@ -292,7 +292,7 @@ class PlanGoalController(
     /** 删除一份计划：删完的列表由 PlanStore 还回来，选中态基于同一份数据校正。 */
     fun deletePlan(id: String) {
         if (plans.none { it.id == id }) return
-        // deletePlan 直接把删完的列表还回来：省一次读盘，选中态也基于同一份数据校正
+        // deletePlan 直接返回删除后的列表：省去一次读盘，选中态也基于同一份数据校正
         val remaining = PlanStore.deletePlan(appContext, currentSessionId(), id)
         val wasSelected = selectedPlanId == id
         plans = remaining
@@ -305,30 +305,30 @@ class PlanGoalController(
     /**
      * 「按计划开始执行」：关掉计划模式，再把所选计划连正文一起当成一次普通发送。
      *
-     * 为什么走 send 而不是直接开跑：用户批准的是一句话，它该和其他提问一样留下 user 气泡、
-     * 记日志、落盘，而不是偷偷改状态让模型「自己开始」。流式中直接忽略：会和正在跑的那轮抢 messages。
+     * 选择发送而非直接执行的原因：用户批准的是一句话，它应与其他提问一样生成 user 气泡、
+     * 写入日志并落盘，而不是直接修改状态使模型自行开始。流式响应期间直接忽略，否则会与当前轮次争用 messages。
      * [plans] 不清：同意之后计划预览还要能对着逐条执行、回看。
      */
     fun approvePlan(planId: String) {
         if (isStreaming()) return
         val target = plans.firstOrNull { it.id == planId } ?: plans.lastOrNull()
-        // 双保险：页面上按钮已经灰了，这里再拦一道，两份真值可能差一拍
-        //（比如这页还开着，另一处刚把它废弃了），过期状态绝不能执行
+        // 双重校验：页面上按钮已置灰，此处再次拦截；两处状态可能短暂不一致
+        //（例如该页仍打开而另一处已将其废弃），过期状态绝不可执行
         if (target != null && !target.actionable) {
             reportError("该计划此前已处理，不可重复执行；如需执行请让模型重新提交一份计划")
             FileLog.log("plan", "拒绝执行已处理的计划 " + target.id + "（状态=" + target.status + "）")
             return
         }
         if (target != null) selectedPlanId = target.id
-        // 先落状态再发消息：下面是 send()，而 send 会把「还悬着待确认」的计划当废弃处理，
-        // 顺序反过来的话刚被批准的这份会先被废弃、再被当成可执行的那份发出去
+        // 先写入状态再发送消息：下方 send() 会将「仍待确认」的计划视为废弃，
+        // 顺序相反时刚批准的计划会先被废弃、再作为可执行项发送
         if (target != null) {
             plans = PlanStore.markPlan(
                 appContext,
                 currentSessionId(),
                 target.id,
                 PlanStore.STATUS_APPROVED,
-                // 同一时刻只该有一份等着被批准：其余还在等确认的跟着作废
+                // 同一时刻仅应有一份等待批准：其余待确认计划随之作废
                 abandonOtherPending = true
             )
         }
@@ -338,9 +338,9 @@ class PlanGoalController(
             "plan",
             "用户批准计划 " + (target?.id ?: "-") + "（" + (target?.title ?: "无标题") + "）：关闭计划模式并开始执行"
         )
-        // programmatic = true：这条「用户消息」是 App 替用户代发的（按钮点击），不是用户手打的一句话。
-        // 高危删除的授权码只认真实用户消息，代发消息里的码一律不认：否则「批准计划」就成了
-        // 一个可以顺带批准删除的后门（令牌必须绑定最近一条真实 user 消息）。
+        // programmatic = true：该「用户消息」由 App 代替用户发送（按钮点击），并非用户手写。
+        // 高危删除的授权码仅认可真实用户消息，代发消息中的授权码一律不识别：否则「批准计划」将成为
+        // 可顺带批准删除的漏洞（令牌必须绑定最近一条真实 user 消息）。
         sendNow(if (target != null) approvePlanText(target) else PLAN_APPROVE_TEXT, true)
     }
 
@@ -352,7 +352,7 @@ class PlanGoalController(
      * 为什么不用 system 发：这本来就是用户说的话，进历史后还要能回看、回滚、编辑重发。
      */
     private fun approvePlanText(plan: PlanDoc): String = buildString {
-        // 气泡里只留这一句：同意执行的是哪一份，一眼能看出来
+        // 气泡中仅保留该句：可直观确认同意执行的是哪一份计划
         append(PLAN_APPROVE_TEXT).append("：").append(plan.title.ifBlank { "未命名计划" })
         append("\n\n").append(PLAN_DETAIL_MARKER)
         append("\n计划标题：").append(plan.title)
@@ -369,14 +369,14 @@ class PlanGoalController(
      * 有意什么都不做：用户点这个是为了回到对话里补充要求，这里替他发消息反而会把「再看看」变成一次发送。
      */
     fun continuePlanEdit(planId: String) {
-        // 点了就等于这份被消费掉：两个按钮变灰，不能回头再点一次「同意执行」
+        // 点击后即视为该计划已被消费：两个按钮置灰，不可再次点击「同意执行」
         if (plans.none { it.id == planId }) return
         plans = PlanStore.markPlan(appContext, currentSessionId(), planId, PlanStore.STATUS_EDITED)
         FileLog.log("plan", "用户选择继续修改计划 " + planId + "，该份标记为已处理")
-        // 其余什么都不做：页面自己负责返回主页，替用户发消息会把「再看看」变成一次发送
+        // 其余操作均不执行：页面自行负责返回主页，代替用户发送消息会将「再看看」变为一次发送
     }
 
-    /** 暂停目标（/goal pause）：暂停后这一轮结束就不再自动续跑。 */
+    /** 暂停目标（/goal pause）：暂停后本轮结束即停止自动续跑。 */
     fun pauseGoal() = applyGoalPhase(GoalPhase.PAUSED)
 
     /** 继续目标（/goal resume）。 */

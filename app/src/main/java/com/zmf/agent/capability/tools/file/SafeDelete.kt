@@ -7,11 +7,11 @@ import java.io.File
  * 安全的递归删除。
  *
  * 与 `File.deleteRecursively()` 的关键区别：
- * 1. **不跟随符号链接**：软链接本身当文件删，绝不进链接内部（否则「工作区里的链接 → /」会端掉根）；
- * 2. **逐项判定后删除**：每一项都在自己的父目录里删，天然不会跳到父目录之外；
- * 3. **可统计**：返回删掉的文件数 / 目录数 / 字节数，回执能告诉模型到底动了多少东西。
+ * 1. **不跟随符号链接**：软链接按文件本身删除，不进入链接目标（否则「工作区内的链接 → /」可能删除根目录）；
+ * 2. **逐项判定后删除**：每项都在其父目录中删除，不会越出父目录范围；
+ * 3. **可统计**：返回删除的文件数、目录数与字节数，便于回执中说明实际改动范围。
  *
- * 注意：这不是事务。删到一半失败会留下「已删一部分」的状态，[Stats.failed] 会如实报出来。
+ * 注意：该操作不是事务。中途失败会留下「已删除一部分」的状态，[Stats.failed] 会如实报告。
  */
 internal object SafeDelete {
 
@@ -39,7 +39,7 @@ internal object SafeDelete {
     }
 
     private fun deleteRecursive(file: File, stats: Stats): Boolean {
-        // 先判软链接：目录软链在 isDirectory 上会被解析成 true，跟着进去就删到别处了
+        // 先判软链接：目录软链在 isDirectory 上会被解析成 true，跟随进入会删除链接目标
         val symlink = PathGate.isSymlink(file)
         if (!symlink && file.isDirectory) {
             val children = file.listFiles()
@@ -49,7 +49,7 @@ internal object SafeDelete {
                     if (!deleteRecursive(child, stats)) all = false
                 }
             }
-            // 目录本身删不掉（非空 / 权限）也要计数，回执才能解释「为什么还剩东西」
+            // 目录本身删除失败（非空或权限不足）也要计数，以便回执说明残留原因
             if (file.delete()) {
                 stats.dirs++
             } else {
@@ -70,7 +70,7 @@ internal object SafeDelete {
         }
     }
 
-    /** 软链接目标可能已断，`exists()` 会返回 false，但链接本身仍在，必须单独认一次。 */
+    /** 软链接目标可能已断开，`exists()` 会返回 false，但链接本身仍存在，必须单独判定一次。 */
     private fun existsNoFollow(file: File): Boolean =
         file.exists() || PathGate.isSymlink(file)
 }

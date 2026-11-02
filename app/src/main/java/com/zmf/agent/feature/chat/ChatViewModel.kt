@@ -82,10 +82,9 @@ internal const val ATTACHMENT_PATHS_MARKER = "【附件·已上传到当前工�
 /**
  * 批准执行时把计划正文（标题 / 步骤 / 备注）粘进提问的固定开头。
  *
- * 正文必须带给模型：不然它只会按自己最后写的那份做，选中的是哪份就丢了；
- * 但**不该出现在用户气泡里**：计划页上已经能逐条看，聊天里再糊一屏只会把这条气泡
- * 撑成一个要上下滑的模块。
- * 所以发送时拼、气泡渲染时按这个标记整段裁掉。
+ * 正文必须提供给模型：否则模型只会按自身最后生成的一份执行，所选版本即丢失；
+ * 但**不应出现在用户气泡中**：计划页已可逐条查看，聊天中再展示整段只会使该气泡成为需上下滚动的模块。
+ * 因此发送时拼接，气泡渲染时按此标记整段裁除。
  */
 internal const val PLAN_DETAIL_MARKER = "【计划原文·仅供模型执行】"
 
@@ -108,8 +107,8 @@ class ChatViewModel(context: Context) : AgentUi {
         /**
          * 单轮最多跑多少次工具。
          *
-         * 原来是 10，用户实测「每十次工具调用就断一次、必须回『继续』」，实际用起来像被打断。
-         * 抬到 64：一次提问里装得下装环境、编译、批量改文件这种长活；真死循环还有「停止」按钮兜底。
+         * 上限原为 10，用户实测「每十次工具调用即中断一次，必须回复『继续』」，实际体验类似被打断。
+         * 提高至 64：一次提问可容纳搭建环境、编译、批量修改文件等长任务；真正死循环仍有「停止」按钮兜底。
          */
         private const val MAX_ROUNDS = 64
     }
@@ -118,7 +117,7 @@ class ChatViewModel(context: Context) : AgentUi {
 
     private val registry = ToolRegistry()
 
-    /** 工具表对外只读：包管理页（MCP 启停）要拿它去注册/注销，别的地方不要改。 */
+    /** 工具表对外只读：包管理页（MCP 启停）需据此注册/注销，其他位置不要修改。 */
     val toolRegistry: ToolRegistry get() = registry
 
     /** 上下文压缩策略（摘要式滚动压缩）：只影响发给模型的请求视图，界面历史不动。 */
@@ -190,7 +189,7 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 备份 / 恢复的状态与动作，实现与依赖装配见 [BackupController]；下面成员保持原有调用口。 */
     private val backup = BackupController(appContext = appContext)
 
-    /** 会话与工作区的状态与动作都在这里；下面四个转发口就是原来的四个属性。 */
+    /** 会话与工作区的状态与动作均在此；以下四个转发入口对应原有的四个属性。 */
     private val sessionStore: SessionController = SessionController(
         appContext = appContext,
         messages = messages,
@@ -241,8 +240,8 @@ class ChatViewModel(context: Context) : AgentUi {
     /**
      * 最近一次请求的用量文本。
      *
-     * 气泡里已经把「输入 / 输出」内嵌进去了，这条不再画在列表外面（用户要的就是外面少一行）；
-     * 字段留着兼容，别再加渲染。
+     * 气泡中已内嵌「输入 / 输出」，该条不绘制在列表之外（用户需求为减少一行）；
+     * 字段保留以兼容旧数据，不新增渲染。
      */
     val usageText: String? get() = context.usageText
 
@@ -454,24 +453,24 @@ class ChatViewModel(context: Context) : AgentUi {
         // 安全审计日志（删除/截断/禁区写/权限切换都记这里）：与 FileLog 分开两个文件，
         // 用户排查「是不是模型删错了」时不用在几万行运行日志里翻
         AuditLog.init(appContext)
-        // 沙箱回归：启动时跑一遍纯逻辑判定用例，把「闸门是否还认得根/工作区/系统目录」钉住。
-        // 只写日志不阻断启动：判定错了要能看见，但用户不该因为一条断言失败就打不开 App
+        // 沙箱回归：启动时执行纯逻辑判定用例，确认「闸门是否仍识别根目录、工作区与系统目录」。
+        // 仅写日志，不阻断启动：判定错误必须可查，但用户不应因一条断言失败而无法打开 App
         runCatching { SandboxRegression.run(appContext) }
             .onFailure { FileLog.log("sandbox-reg", "回归自检异常：" + (it.message ?: it.javaClass.simpleName)) }
         // 全局总账先读回来：stats.json 坏掉 / 缺字段时里面自己回落到 0，不会影响会话表
         UsageLedger.load(appContext)
         // 工作区表与会话表读回来，决定当前会话并载入它的消息（见 SessionController.loadInitial）
         sessionStore.loadInitial()
-        // 费用总账一次性回填：按现存会话自己的消息逐轮算钱（分叉克隆段不计），之后删会话不再影响全局费用
+        // 费用总账一次性回填：按现存会话自身的消息逐轮计算费用（分叉克隆段不计），此后删除会话不影响全局费用
         UsageLedger.backfillCost(
             appContext,
             sessionList.flatMap { it.messages.drop(it.inheritedUsage.messages) }
         )
-        // 轮次总账一次性回填：同样只数现存会话，之后删会话不再让「轮次」回落
+        // 轮次总账一次性回填：同样仅统计现存会话，此后删除会话不会使「轮次」回落
         UsageLedger.backfillRounds(appContext, sessionList)
         // 顺带扫一次 Skill 目录：提示词里的 available_skills 段要用，不能等到第一次请求再读盘
         refreshSkillCatalog()
-        // 顺手清掉 7 天前的 spill 落盘（后台做，失败也无所谓，不阻塞启动）
+        // 同时清理 7 天前的 spill 落盘（后台执行，失败可忽略，不阻塞启动）
         summaryScope.launch {
             runCatching { withContext(Dispatchers.IO) { SpillStore.cleanup(appContext) } }
         }
@@ -509,7 +508,7 @@ class ChatViewModel(context: Context) : AgentUi {
                 override fun onLost(network: Network) { networkAvailable = false }
             })
         }.onFailure { FileLog.log("net", "注册网络回调失败：" + it.message) }
-        // 最后按「已经载入的那条会话」重算一次统计：不跑这一步，冷启动首屏的轮数/步数是 0，
+        // 最后按「已载入的会话」重新计算统计：缺少该步骤时，冷启动首屏的轮数/步数为 0，
         // 因为 stats 初始是空快照，要靠 resetStats 从会话记录里把累计读回来
         resetStats()
     }
@@ -595,7 +594,7 @@ class ChatViewModel(context: Context) : AgentUi {
             // 于是「思考中途打开计划」从下一轮请求起就生效，不用重建循环
             planMode = planMode,
             androidVersion = Build.VERSION.RELEASE.orEmpty(),
-            // 当前时间进尾部快照（不进 system）：带星期与时区偏移，免得模型按 UTC 解释
+            // 当前时间写入尾部快照（不写入 system）：包含星期与时区偏移，避免模型按 UTC 解释
             nowText = nowText(),
             skills = skills,
             extraInstructions = PromptStore.loadExtra(appContext),
@@ -650,7 +649,7 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 面板里点「计划」：切换并落盘。 */
     fun togglePlanMode() = planGoal.togglePlanMode()
 
-    /** 斜杠命令入口：true = 这句话已经被命令吃掉，不要再当普通消息发出去。 */
+    /** 斜杠命令入口：true = 该句已被命令消费，不作为普通消息发送。 */
     fun handleSlashCommand(text: String): Boolean = planGoal.handleSlashCommand(text)
 
     /** 重读当前会话的计划列表（流结束与进计划页时各调一次）。 */
@@ -815,7 +814,7 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 切换繁忙时的发送行为并落盘（只影响下一次「繁忙时发送」）。 */
     fun applyBusyMode(mode: BusySendMode) = sender.applyBusyMode(mode)
 
-    /** 改排队消息的正文；改成空串等于把它移出队列。 */
+    /** 修改排队消息的正文；改为空串即将其移出队列。 */
     fun editQueued(id: Long, text: String) = sender.editQueued(id, text)
 
     /** 把某条排队消息移出队列。 */
@@ -970,7 +969,7 @@ class ChatViewModel(context: Context) : AgentUi {
 
     // ---- AgentUi ----
 
-    /** 新一轮开始：只记本次回复已跑到的最大轮次；状态行的轮/步已有固定显示，不再重复提示。 */
+    /** 新一轮开始：仅记录本次回复已达到的最大轮次；状态行的轮/步已有固定显示，不重复提示。 */
     override fun onRound(round: Int) {
         // 只记「本次回复」的步数口径，会话累计由流结束时的 commitSteps 加一次
         context.noteRound(round)

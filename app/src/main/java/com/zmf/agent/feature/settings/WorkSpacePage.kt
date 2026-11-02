@@ -47,20 +47,15 @@ import androidx.compose.ui.window.DialogProperties
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Motion
-import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 import java.io.File
 
 /**
- * 「新建工作区」弹窗（工作区目录选择的界面入口）。
+ * 「新建工作区」弹窗，包含工作区目录选择的界面入口。
  *
- * 默认状态**只有**名称输入、确定、取消三样东西：下面挂一条可展开的「自定义」，
- * 展开后才是目录选择区（[WorkspaceDirPicker]），**在原窗口内展开**，不另弹窗口。
- *
- * 「确定」的口径：名称不能空；目录留空 = 老行为（用应用私有目录）；
- * 填了路径就必须是存在的目录，否则原地提示一句、不关窗、不建工作区。
- * 建工作区这件事本身交给 [onCreate] 的宿主（它去调 WorkSpaceStore.createWithRoot），
- * 这里只管收输入、做校验，不碰存储。
+ * 默认仅显示名称输入、确定与取消；「自定义」展开后在当前窗口内显示目录选择区（[WorkspaceDirPicker]）。
+ * 名称不能为空；目录留空表示使用应用私有目录，填写路径则必须是存在且可读的目录，否则原地提示且不关闭窗口。
+ * 建工作区由 [onCreate] 的宿主调用 WorkSpaceStore.createWithRoot 完成，此处仅负责收集输入与校验。
  */
 @Composable
 fun CreateWorkspaceDialog(
@@ -77,7 +72,7 @@ fun CreateWorkspaceDialog(
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
-    // 确定：只做校验与回调，落盘/建目录全在宿主那一侧（弹窗不认识 WorkSpaceStore）
+    // 提交：仅做校验与回调，落盘与建目录由宿主负责
     fun submit() {
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) {
@@ -112,12 +107,11 @@ fun CreateWorkspaceDialog(
             Column(
                 modifier = Modifier
                     .heightIn(max = 560.dp)
-                    // 内距在滚动层外面：滚起来时四周留白不跟着跑
+                    // 内距置于滚动层之外，滚动时四周留白保持固定
                     .padding(horizontal = 20.dp, vertical = 18.dp)
                     .verticalScroll(rememberScrollState())
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 名称：默认折叠时这就是整个弹窗的主体，和极简输入框一个手感
                     BasicTextField(
                         value = name,
                         onValueChange = {
@@ -138,7 +132,7 @@ fun CreateWorkspaceDialog(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(16.dp))
-                                    // 聚焦时底色略深一档：Salt 的输入反馈是「按下去深一点」，不是描一圈亮边
+                                    // 聚焦时底色加深一档，沿用 Salt 以底色深浅表达输入反馈的方式
                                     .background(onSurface.copy(alpha = if (nameFocused) 0.07f else 0.04f))
                                     .padding(horizontal = 12.dp, vertical = 11.dp)
                             ) {
@@ -181,7 +175,7 @@ fun CreateWorkspaceDialog(
                     )
                 }
 
-                // 可展开栏目：左「自定义」、右箭头，点哪儿都行，展开区在原窗口内长出来
+                // 可展开栏目：左「自定义」、右箭头，展开区在当前窗口内显示
                 WorkspaceCustomHeader(
                     expanded = customOpen,
                     onToggle = { customOpen = !customOpen }
@@ -194,7 +188,7 @@ fun CreateWorkspaceDialog(
                     WorkspaceDirPicker(
                         path = path,
                         treeUri = treeUri,
-                        // 手输 / 点进子目录都算「按路径走」：之前的 SAF 授权就作废，免得两套根打架
+                        // 手动输入或进入子目录均按路径处理，同时清除 SAF 授权，避免两种根路径冲突
                         onPathEdited = { edited ->
                             path = edited
                             treeUri = null
@@ -212,7 +206,7 @@ fun CreateWorkspaceDialog(
     }
 }
 
-/** 折叠栏的标题行：左「自定义」、右「▾」，展开时箭头弹簧翻转 180°（跟提示词折叠卡同一套手感）。 */
+/** 折叠栏标题行：展开时箭头弹簧翻转 180°，动效与提示词折叠卡一致。 */
 @Composable
 private fun WorkspaceCustomHeader(expanded: Boolean, onToggle: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface

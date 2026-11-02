@@ -18,11 +18,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 
 /**
- * 气泡右下角的展开 / 收起按钮：圆角小条 + 一枚细箭头，底色取气泡本身的一层淡色。
+ * 气泡右下角的展开 / 收起按钮：圆角条与细箭头，底色取气泡自身的一层淡色。
  *
- * 不做圆片也不加外圈：那圈环状阴影和气泡的平面语言不搭，拆成圆角矩形后像气泡自己的一个角标。
+ * 不采用圆形按钮，也不添加外圈：环状阴影与气泡的扁平风格不协调；改为圆角矩形后，视觉上相当于气泡自身的角标。
  *
- * 主页气泡与悬浮小窗共用同一枚——两处的折叠观感必须是同一个东西，所以它住在 uikit 而不是某个 feature。
+ * 主页气泡与悬浮小窗共用同一组件：两处的折叠交互须保持一致，因此置于 uikit 而非某个 feature。
  */
 @Composable
 internal fun FoldToggle(expanded: Boolean, onClick: () -> Unit) {

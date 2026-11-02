@@ -21,17 +21,17 @@ import java.util.concurrent.ConcurrentHashMap
  * - **先于档位判定**：完全档只豁免「越界」，不豁免「高危」，后果不因档位而减轻；
  * - **三分级**：`SAFE` 直接放行（工作区内的文件、深层目录），`CONFIRM` 需一次授权码，
  *   `FORBIDDEN` 永久拒绝（存储根 / 工作区根 / App 核心数据 / Ubuntu 根）；
- * - **不进入授权流程的根级退化**：规范化后的目标若等于或包含根级位置，直接
- *   `CRITICAL_PATH_ERROR` 永久拒绝：那是「路径解析错了」，用户授权的对象根本不是它，
- *   给令牌没有意义（拼路径出错会一路删到整盘，只能靠这道防线兜住）；
- * - **一次性授权码**：与 OAuth 2.0 授权码单次使用同构。码只认「会话里最近一条真实 user 消息」
- *   （`programmatic=false`），逐字出现即可；assistant 内容、模型复述、参数里传的码都不参与判定。
+ * - **根级目标不进入授权流程**：规范化后的目标若等于或包含根级位置，直接以
+ *   `CRITICAL_PATH_ERROR` 永久拒绝：此类情况属于「路径解析错误」，用户授权的对象并非该路径，
+ *   签发令牌没有意义（拼接路径出错可能删除整个磁盘，只能依靠此防线约束）；
+ * - **一次性授权码**：与 OAuth 2.0 授权码的单次使用语义相同。授权码仅识别「会话中最近一条真实 user 消息」
+ *   （`programmatic=false`），逐字出现即可；assistant 内容、模型复述、参数中传递的码均不参与判定。
  *
- * 为什么令牌只放内存：5 分钟 TTL 已覆盖「用户当场确认」的时间尺度；进程重启后旧码全部失效，
- * 比落盘更安全（落盘反而要处理「重启前签发的码在重启后仍有效」这种不该存在的状态）。
+ * 为什么令牌仅保存在内存：5 分钟 TTL 已覆盖「用户当场确认」的时间范围；进程重启后旧码全部失效，
+ * 比落盘更安全（落盘还需处理「重启前签发的码在重启后仍有效」这一不应存在的状态）。
  *
- * 终端部分只是**文本层最佳努力**：变量、eval、脚本内部仍可绕过文本检查，
- * 真正的兜底是 Android 文件权限与 PRoot rootfs 的可重建性。提示词与拒绝文案都必须如实说明这一点。
+ * 终端部分仅为**文本层的最佳努力**：变量、eval 与脚本内部仍可绕过文本检查，
+ * 最终保障来自 Android 文件权限与 PRoot rootfs 的可重建性。提示词与拒绝文案均须如实说明这一点。
  */
 object HighRiskGate {
 
@@ -44,7 +44,7 @@ object HighRiskGate {
      * 文本层对命令的覆盖度。
      *
      * `PARTIAL` = 命令里出现了变量、脚本、管道喂解释器这类**静态看不见**的构造；
-     * 此时任何被判成 `SAFE` 的删除都降一档（`SAFE → CONFIRM`）：「没看出来」不等于「安全」。
+     * 此时任何被判成 `SAFE` 的删除均降低一档（`SAFE → CONFIRM`）：「未能识别」不等于「安全」。
      */
     enum class Coverage { FULL, PARTIAL }
 
@@ -87,7 +87,7 @@ object HighRiskGate {
     /** 体积阈值：200 MB。 */
     private const val SCALE_BYTE_LIMIT = 200L * 1024L * 1024L
 
-    /** 探测预算：超过就按「较大规模」处理，绝不无限扫盘。 */
+    /** 探测预算：超出时按「较大规模」处理，不执行无上限的磁盘扫描。 */
     private const val SCALE_PROBE_BUDGET_MS = 300L
 
     private const val SCALE_PROBE_BUDGET_NS = SCALE_PROBE_BUDGET_MS * 1_000_000L
@@ -95,8 +95,8 @@ object HighRiskGate {
     /**
      * Ubuntu 里「家目录级」的根：`/root` 与 `/home`。
      *
-     * 这两个目录下的**一级**目录很可能就是一整份工程（`/root/proj`、`/home/proj`），
-     * 删掉它等于删掉整份代码，所以一律升确认档：与「深在这个目录之下」的常规清理区分开。
+     * 这两个目录下的**一级**目录很可能是完整工程（`/root/proj`、`/home/proj`），
+     * 删除该目录等同于删除完整代码，因此一律提升为确认档：与「位于该目录更深处」的常规清理区分。
      */
     private val HOME_LIKE_ROOTS = setOf("root", "home")
 
@@ -126,12 +126,12 @@ object HighRiskGate {
     /**
      * 已用掉的码：key = 码本身，value = 用掉的时间。
      *
-     * 为什么需要单独记：码用掉后要从 [pending] 里删，否则单次使用就无从谈起；
-     * 但删了之后同一个码再来，就只能落到 `pending[code] == null → continue`，
-     * 最终报成 [Approval.NO_CODE]「没有授权码」：用户在重发旧码时看到的是
-     * 「你没有给码」，而事实是「给了、用过了」。记一份短期「用过的码」既保住单次语义，
+     * 为什么需要单独记录：授权码使用后须从 [pending] 删除，否则无法实现单次使用；
+     * 但删除后同一授权码再次提交时，只能进入 `pending[code] == null → continue` 分支，
+     * 最终返回 [Approval.NO_CODE]「没有授权码」，导致用户重发旧码时看到「未提供授权码」，
+     * 而实际情况是「已提供且已使用」。记录一份短期「已用授权码」既可维持单次语义，
      * 又能给出准确原因。
-     * 生命周期跟 [pending] 一样按 TTL 清，表不会随会话无限增长。
+     * 生命周期与 [pending] 一致，按 TTL 清理，表不会随会话无限增长。
      */
     private val used = ConcurrentHashMap<String, Long>()
 
@@ -140,8 +140,8 @@ object HighRiskGate {
     /**
      * 判定所需的宿主路径集合。
      *
-     * 单独抽出来的理由：回归用例要用「假根」构造路径（不依赖真实设备目录），
-     * 判定逻辑本身必须是纯函数：给什么环境就按什么环境判。
+     * 单独抽取的理由：回归用例需使用「假根」构造路径（不依赖真实设备目录），
+     * 判定逻辑本身必须是纯函数：环境如何给定，即按该环境判定。
      */
     class SandboxEnv(
         val filesDir: File,
@@ -203,8 +203,8 @@ object HighRiskGate {
     /**
      * 启动自检的 CRITICAL 用例失败时置为非 null：删除能力整体停用。
      *
-     * 为什么停用是合理的：判定函数错了，任何一条「放行」都不可信；停用比放行安全，
-     * 而且用户能在设置页看见原因，重启（自检通过）即可恢复。
+     * 为什么停用是合理的：判定函数出错后，任何「放行」结果均不可信；停用比放行安全，
+     * 且用户可在设置页查看原因，重启（自检通过）后即可恢复。
      */
     @Volatile
     private var deletionDisabledReason: String? = null
@@ -231,8 +231,8 @@ object HighRiskGate {
      *
      * @param target 已解析出的目标（工作区内可能是 SAF 推不出的 File；SAF 工作区请传 [isDirectory] 并用
      *               [checkWorkspaceDelete]）
-     * @param forceConfirm 该位置进不了回收站（不同卷 / rename 失败 / SAF 超预算）时置 true：
-     *                     安全区也升为确认档：「不可恢复」必须让用户知道。
+     * @param forceConfirm 该位置无法进入回收站（不同卷 / rename 失败 / SAF 超预算）时置 true：
+     *                     安全区同样提升为确认档，使「不可恢复」这一后果为用户所知。
      */
     fun checkDelete(
         ctx: ToolContext,
@@ -251,10 +251,10 @@ object HighRiskGate {
     }
 
     /**
-     * SAF 工作区内的删除：整棵授权树都是用户自己选的，深度 0（树根）之外直接放行。
+     * SAF 工作区内的删除：整棵授权树均由用户自行选择，深度 0（树根）之外直接放行。
      *
-     * 为什么不做 canonical：SAF 目录在 File 视角根本不存在，host 路径可能推不出来；
-     * 而「用户亲手授权的工作区」本身就是合法的能力路径。
+     * 为什么不做 canonical：SAF 目录在 File 视角下并不存在，host 路径可能无法推导；
+     * 而「用户授权的工作区」本身即为合法的能力路径。
      */
     fun checkWorkspaceDelete(
         ctx: ToolContext,
@@ -306,13 +306,13 @@ object HighRiskGate {
     /**
      * Shizuku 通道（Android shell，宿主视角）的删除语义判定。
      *
-     * 与 [checkTerminal] 的区别：Shizuku 命令里的路径就是**宿主路径**（`/sdcard` 是真正的
-     * 共享存储、`/system` 是真正的系统分区），不需要 guest→host 映射；按原样 canonical 即可。
+     * 与 [checkTerminal] 的区别：Shizuku 命令中的路径即为**宿主路径**（`/sdcard` 为真实的
+     * 共享存储、`/system` 为真实的系统分区），无需 guest→host 映射；按原样 canonical 即可。
      *
-     * 拦截口径：这条通道的 uid 是 shell，比 App 自己权限更大；一旦放行删除，
-     * 它就成了「绕过回收站与删除闸门」的后门。所以**任何删除语义一律 FORBIDDEN 且不签发令牌**
+     * 拦截规则：该通道的 uid 为 shell，权限高于 App 自身；一旦放行删除，
+     * 即形成「绕过回收站与删除闸门」的途径。因此**任何删除语义一律 FORBIDDEN 且不签发令牌**
      * （`rm/rmdir/unlink/shred/find -delete/xargs rm/pm clear/pm uninstall/mv`）。
-     * `mv` 等价于删除：源端消失且不进回收站。
+     * `mv` 等价于删除：源端消失且不进入回收站。
      */
     fun checkHostCommand(ctx: ToolContext, command: String): Decision {
         val env = envOf(ctx)
@@ -402,10 +402,10 @@ object HighRiskGate {
     /**
      * 对「删除动词 + 单一明确目标」做一次有界规模探测。
      *
-     * 为什么需要：终端删除没法进回收站（命令整条交给 bash，应用层插不进 rename），
-     * 工作区内 `rm -rf` 原本直接 SAFE，而整盘被误删正是这种形态。规模超过阈值就升 CONFIRM。
+     * 为什么需要：终端删除无法进入回收站（命令整体交给 bash，应用层无法插入 rename），
+     * 工作区内的 `rm -rf` 原被判定为 SAFE，而整盘误删正是这种形态。规模超过阈值时提升为 CONFIRM。
      *
-     * 探测失败/超时**不降档**（按「较大规模」处理）：宁可多问一次，也不放过一次不可恢复的大删除。
+     * 探测失败或超时**不降档**（按「较大规模」处理）：宁可多确认一次，也不放过一次不可恢复的大规模删除。
      */
     private fun probeScale(findings: List<RiskFinding>, command: String): List<RiskFinding> {
         if (findings.size != 1) return findings
@@ -553,7 +553,7 @@ object HighRiskGate {
     ): RiskFinding {
         val workspace = PathGate.canonicalOrNearestOrNull(workspaceRoot) ?: workspaceRoot.absoluteFile
 
-        // ① 工作区根：删它等于删掉整个工作区，永久拒绝
+        // ① 工作区根：删除该路径等同于删除整个工作区，永久拒绝
         if (canon.path == workspace.path) {
             return RiskFinding(
                 Risk.FORBIDDEN,
@@ -562,7 +562,7 @@ object HighRiskGate {
                 canon.path
             )
         }
-        // ② 工作区内：这是 Agent 自己的地盘，直接放行（文件/目录都不再问）
+        // ② 工作区内：该区域属于 Agent 自身的工作范围，直接放行（文件与目录均不再确认）
         if (PathGate.depthOf(workspace, canon) > 0) {
             return RiskFinding(Risk.SAFE, "工作区内", label, canon.path)
         }
@@ -630,7 +630,7 @@ object HighRiskGate {
      *
      * 两类都算：
      * 1. **等于**根：`/`、`/data`、存储根、工作区根、App 私有目录、Ubuntu 根、`/root`…
-     * 2. **包含**根：目标是一个父目录，删下去会连带端掉工作区 / App 数据 / Ubuntu 环境。
+     * 2. **包含**根：目标为父目录，删除后将影响工作区 / App 数据 / Ubuntu 环境。
      *
      * 这一类**不进入授权流程**：解析结果本身失去意义，用户授权的对象不是它。
      */
@@ -659,7 +659,7 @@ object HighRiskGate {
             }
         }
 
-        // 目标是某个关键根的祖先：删它会连带端掉一整个区域
+        // 目标是某个关键根的祖先：删除后将影响整个区域
         val critical = listOf(
             "工作区" to workspace,
             "App 数据" to env.canonicalFilesDir,
@@ -926,9 +926,9 @@ object HighRiskGate {
      * 通配删除（`rm -rf *`、`rm -rf 目录/` 后接通配）：范围只能按「基底目录」估。
      *
      * 判据：
-     * - 工作区内 → 放行（自己的地盘，`rm -rf *` 是常规操作）；
+     * - 工作区内 → 放行（属于 Agent 自身工作范围，`rm -rf *` 为常规操作）；
      * - 基底是 `/`、共享存储根、Ubuntu 顶层系统目录 → 永久拒绝；
-     * - 基底是 `/root` → 确认（`rm -rf *` 会烧掉整份工程）；
+     * - 基底是 `/root` → 确认（`rm -rf *` 将删除完整工程）；
      * - 其它 → 确认（范围不可枚举）。
      */
     private fun classifyWildcard(
@@ -1404,15 +1404,15 @@ object HighRiskGate {
         for (key in pending.keys) {
             if (pending[key]?.sessionId == sessionId) pending.remove(key)
         }
-        // 「用过的码」只按时间记，没有会话归属；用例要的是确定性，这里整体清掉
+        // 「已用授权码」仅按时间记录，没有会话归属；用例需要确定性，因此在此整体清除
         used.clear()
     }
 
     /**
      * 供回归用例验证规模探测。
      *
-     * 为什么不直接把 [ScaleLevel] 改成 internal：那是只服务于「探测结果」的内部枚举，
-     * 对外暴露会让人误以为它是判定结果；包一层测试专用枚举，语义边界更干净。
+     * 为什么不直接将 [ScaleLevel] 改为 internal：该枚举仅用于表示「探测结果」，
+     * 对外暴露会使调用方误认为它是判定结果；额外包一层测试专用枚举可使语义边界更清晰。
      */
     internal enum class ScaleLevelForTest { SMALL, LARGE, UNKNOWN }
 

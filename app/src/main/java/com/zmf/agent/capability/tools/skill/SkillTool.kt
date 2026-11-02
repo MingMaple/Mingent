@@ -13,11 +13,11 @@ import org.json.JSONObject
 /**
  * skill 工具：按名字加载一个 Skill 的完整正文。
  *
- * 为什么要有它：系统提示词里只放 available_skills 目录（名字 + 一句话描述），
- * 几十个 Skill 也不会把上下文吃满；模型真要用某个 Skill 时再调这个工具把正文取回来。
- * 不传 name 时列出全部可用 Skill，方便模型自己发现「有哪些能用的」。
+ * 设计目的：系统提示词中只放入 available_skills 目录（名称与一句话描述），
+ * 即使 Skill 数量较多也不会占满上下文；模型实际使用某个 Skill 时再调用该工具取回正文。
+ * 不传 name 时列出全部可用 Skill，便于模型发现可用的能力。
  *
- * 只读本地文件、不写任何东西，所以权限档是 READ_ONLY。
+ * 仅读取本地文件、不执行任何写入，因此权限档为 READ_ONLY。
  */
 class SkillTool : Tool {
 
@@ -48,7 +48,7 @@ class SkillTool : Tool {
                 if (key.isEmpty() || key.equals("null", ignoreCase = true)) listAll(ctx) else loadOne(ctx, key)
             }
         } catch (e: CancellationException) {
-            // 用户点了「停止」：原样抛出，否则取消渗不下去
+            // 用户点击「停止」：原样抛出，否则取消无法向上传播
             throw e
         } catch (e: Exception) {
             ToolResult.Error("读取 Skill 失败：" + (e.message ?: e.javaClass.simpleName))
@@ -74,16 +74,16 @@ class SkillTool : Tool {
         return ToolResult.Ok(text)
     }
 
-    /** 加载一个 Skill 的正文，按 DSH 同款信封包起来，模型能一眼看出边界与资源位置。 */
+    /** 加载一个 Skill 的正文，按 DSH 同款信封包裹，使模型能清晰识别边界与资源位置。 */
     private fun loadOne(ctx: ToolContext, key: String): ToolResult {
         // 先 find 拿到规范名字（用户/模型可能传的是目录 id），加载仍然走 SkillStore.load
         val entry = SkillStore.find(ctx.context, key)
             ?: return ToolResult.Error("没有这个 Skill：" + key + "（可用 list 查看）")
         val body = SkillStore.load(ctx.context, entry.id)
             ?: return ToolResult.Error("没有这个 Skill：" + key + "（可用 list 查看）")
-        // 信封三段：名字 → 资源指引（base 目录，正文里的相对路径都相对它解析）→ 正文。
+        // 包裹分三段：名称 → 资源指引（base 目录，正文中的相对路径均相对该目录解析）→ 正文。
         // 与 DSH 的 <skill_content>/<skill_resources>/<skill_instructions> 对齐；
-        // base 目录就是 SkillEntry.dir，本地技能天然有这个落点。
+        // base 目录即 SkillEntry.dir，本地技能均以此作为资源解析基准。
         return ToolResult.Ok(
             "<skill_content name=\"" + entry.name + "\">\n" +
                 "<skill_resources>\n" +

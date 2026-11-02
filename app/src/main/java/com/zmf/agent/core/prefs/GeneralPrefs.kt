@@ -4,11 +4,12 @@ import android.content.Context
 import com.zmf.agent.core.model.BusySendMode
 
 /**
- * 通用设置里两个新开关的落盘（2026-10-30 从 feature/settings 上移 core：
- * 发送流程的繁忙策略与设置页读的是同一份，属于数据容器，不是页面私有）。
+ * 通用设置中部分开关的持久化。
  *
- * 和 ThemeStore / UiScaleStore 共用 "app_prefs" 这一个文件：备份导出的是整个
- * app_prefs.xml，多开一个文件反而要在备份逻辑里多登记一处。
+ * 发送流程的繁忙策略与设置页使用同一份数据，属于数据容器而非页面私有。
+ *
+ * 与 ThemeStore / UiScaleStore 共用 "app_prefs" 文件：备份导出的是整个 app_prefs.xml，
+ * 独立文件会增加备份逻辑的登记项。
  */
 object GeneralPrefs {
 
@@ -16,7 +17,7 @@ object GeneralPrefs {
     private const val KEY_TRACE_VIEW = "trace_view"
     private const val KEY_BUSY_SEND = "busy_send"
 
-    /** 显示工作代码视图：默认关，工作区还没配好时开着一屏代码块太吵。 */
+    /** 显示工作代码视图：默认关闭，工作区尚未配置时开启会展示满屏代码块。 */
     fun loadTraceView(context: Context): Boolean =
         prefs(context).getBoolean(KEY_TRACE_VIEW, false)
 
@@ -29,7 +30,7 @@ object GeneralPrefs {
     fun loadBusyMode(context: Context): BusySendMode =
         BusySendMode.fromName(prefs(context).getString(KEY_BUSY_SEND, null))
 
-    /** 写入繁忙发送策略：存的是枚举名，不是界面文案，改文案不会读坏旧值。 */
+    /** 写入繁忙发送策略：存储枚举名而非界面文案，修改文案不影响旧值读取。 */
     fun saveBusyMode(context: Context, mode: BusySendMode) {
         prefs(context).edit().putString(KEY_BUSY_SEND, mode.name).apply()
     }

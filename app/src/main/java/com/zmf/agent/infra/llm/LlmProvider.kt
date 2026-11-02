@@ -21,8 +21,8 @@ data class ChatRequest(
     /**
      * 输出上限（token），null = 不传（走服务端默认）。
      *
-     * 目前只有摘要请求会设：用它兜住「摘要不能比原文还长」，
-     * 对话请求不设：它本来就要按用户提问自由长度输出。
+     * 目前仅摘要请求设置该值：用于保证摘要不超过原文；
+     * 对话请求不设置，其输出长度应由用户提问决定。
      */
     val maxTokens: Int? = null
 )
@@ -45,17 +45,17 @@ sealed interface LlmEvent {
 
     /**
      * 一次请求收尾。`cachedTokens` 是这次输入里命中**提示词缓存**的那部分 token：
-     * 服务端没返回（非 DeepSeek / 老接口 / 没开缓存）时为 0，界面上要显示「—」而不是「0%」。
+     * 服务端未返回（非 DeepSeek、旧接口或未启用缓存）时为 0，界面应显示「—」而非「0%」。
      *
-     * 其余三个字段是为「换别家模型也把账记全」加的：各家把用量放在不同位置、口径也不同，
-     * 归一化在这里做完，上层（循环、界面、落盘）只面对一套桶。
+     * 其余三个字段用于在其他模型下完整记账：各家上报用量的位置与口径不同，
+     * 归一化在此处完成，上层（循环、界面、落盘）仅面对一套统一结构。
      */
     data class Finished(
         val finishReason: String?,
         val promptTokens: Int,
         val completionTokens: Int,
         val cachedTokens: Int = 0,
-        /** 服务端这次有没有报缓存字段：没报就一个字都不能算，界面上显示「—」而不是 0%。 */
+        /** 服务端是否上报缓存字段：未上报时不得计入，界面显示「—」而非 0%。 */
         val cacheReported: Boolean = false,
         /** 写入缓存的 tokens：Anthropic 系会报，DeepSeek / OpenAI 没有这一项（null = 不报）。 */
         val cacheWriteTokens: Int? = null,
@@ -75,10 +75,10 @@ sealed interface LlmEvent {
 }
 
 /**
- * 一次请求的用量桶，**已按服务商口径归一化**：上层不用再判断「这家报没报缓存」。
+ * 一次请求的用量桶，**已按服务商口径归一化**：上层无需再判断各服务商是否上报缓存。
  *
- * 为什么要归一化：DeepSeek 的 prompt_tokens 含缓存命中，Anthropic 系的 input_tokens 只是未缓存部分；
- * 不统一的直接后果是「未缓存输入」这一行在换家模型之后算错一整段缓存。
+ * 归一化的原因：DeepSeek 的 prompt_tokens 含缓存命中，Anthropic 系的 input_tokens 仅为未缓存部分；
+ * 若不统一，「未缓存输入」会在切换模型后少算或多算一整段缓存。
  */
 data class UsageBuckets(
     /** 输入总量（未缓存 + 缓存读取 + 缓存写入），跨服务商同一口径。 */
@@ -88,7 +88,7 @@ data class UsageBuckets(
     val uncachedInputTokens: Int,
     /** 命中缓存的输入 token 数；[cacheReadReported] 为 false 时恒为 0。 */
     val cacheReadTokens: Int,
-    /** 服务端报没报缓存读取：没报时面板上那一行整行不显示，而不是写 0。 */
+    /** 服务端是否上报缓存读取：未上报时面板不显示该行，而非写入 0。 */
     val cacheReadReported: Boolean,
     /** 缓存写入：null = 这家服务商没有这一项（DeepSeek / OpenAI），面板上不显示这一行。 */
     val cacheWriteTokens: Int? = null,

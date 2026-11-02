@@ -14,18 +14,18 @@ import org.json.JSONObject
 /**
  * todo_write 工具：整表替换当前会话的待办清单。
  *
- * 为什么是「整表替换」而不是 add/update/remove 三件套：
- * 模型每次都能看到自己上一版的清单，直接交一份新的更简单，也不会出现
- * 「删了一半、改到一半」的中间态；持久化那边也就一次覆盖写。
+ * 为何采用「整表替换」而非 add / update / remove 三个独立操作：
+ * 模型每次均能看到上一版清单，直接提交新版本更为简便，也不会产生
+ * 「删除一半、修改一半」的中间状态；持久化侧同样只需一次覆盖写。
  *
- * 只写自己的 appdata/todos.json，不碰工作区文件，所以权限档是 READ_ONLY
- * ：只读档下模型也该能整理自己的待办，不能因为「写清单」被拦。
+ * 仅写入自身的 appdata/todos.json，不涉及工作区文件，因此权限档为 READ_ONLY：
+ * 只读档下模型也应能够整理自己的待办，不因「写清单」被拦截。
  */
 class TodoTool : Tool {
 
     override val name = "todo_write"
 
-    /** 待办写的是 App 自己的状态，只读档下同样拒绝。 */
+    /** 待办写入 App 自身状态，只读档同样拒绝。 */
     override val mutates = true
 
     override val description =
@@ -61,16 +61,16 @@ class TodoTool : Tool {
     override val minPermission = PermissionLevel.READ_ONLY
 
     override suspend fun invoke(args: JSONObject, ctx: ToolContext): ToolResult {
-        // 缺参数和「显式 null」要分开报：org.json 的 optJSONArray 分不出这两种情况
+        // 「缺少参数」与「显式 null」需分别报告：org.json 的 optJSONArray 无法区分这两种情况
         if (!args.has("todos") || args.isNull("todos")) {
             return ToolResult.Error("缺少 todos 参数：请把完整清单放进 todos 数组（清空就传空数组）")
         }
         val array = args.optJSONArray("todos")
             ?: return ToolResult.Error("todos 必须是数组，收到的是：" + args.opt("todos").toString().take(120))
 
-        // 逐条校验：content trim 后必须非空，status 收敛成三种合法值。
-        // 只要有一条不合格就整表拒绝：模型交上来的是一份完整清单，悄悄吞掉一条
-        // 会让它以为写成功了，下一次读回来却少一项，比直接报错更难查。
+        // 逐条校验：content 去空白后必须非空，status 收敛为三种合法值。
+        // 任一条不合格即整表拒绝：模型提交的是完整清单，静默丢弃一条
+        // 会使模型误以为写入成功，而下次读回时少一项，比直接报错更难排查。
         val parsed = ArrayList<Todo>(array.length())
         for (i in 0 until array.length()) {
             val obj = array.optJSONObject(i)
@@ -83,7 +83,7 @@ class TodoTool : Tool {
         }
 
         val todos = tidy(parsed)
-        // 落盘失败由 TodoStore 自己记日志兜住（不抛），这里不再套一层 try
+        // 落盘失败由 TodoStore 自行记录日志（不抛出），此处不再额外包裹 try
         withContext(Dispatchers.IO) { TodoStore.save(ctx.context, ctx.sessionId, todos) }
         return ToolResult.Ok(summaryText(todos))
     }
@@ -91,9 +91,9 @@ class TodoTool : Tool {
     /**
      * 收尾：内容去重 + 同时最多一条 in_progress。
      *
-     * 同名任务对用户就是同一个勾选框，留最先出现的那条；
-     * 多条 in_progress 会让「当前正在做什么」无法判断，保留第一条、其余降级成 pending
-     * （降级而不是报错：模型只是没整理好，没必要让它重写整张表）。
+     * 同名任务对用户而言是同一个勾选框，保留最先出现的一条；
+     * 多条 in_progress 会使「当前正在做什么」无法判断，保留第一条，其余降级为 pending
+     * （降级而非报错：模型只是未整理好，无需让模型重写整张表）。
      */
     private fun tidy(todos: List<Todo>): List<Todo> {
         val seen = HashSet<String>()
@@ -114,7 +114,7 @@ class TodoTool : Tool {
         return out
     }
 
-    /** 回给模型的文本用英文：与主流 todo 工具的输出格式对得上。 */
+    /** 返回给模型的文本使用英文：与主流 todo 工具的输出格式一致。 */
     private fun summaryText(todos: List<Todo>): String {
         val pending = todos.count { it.status == TodoStore.PENDING }
         val inProgress = todos.count { it.status == TodoStore.IN_PROGRESS }

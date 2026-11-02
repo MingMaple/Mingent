@@ -45,14 +45,12 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.infra.system.AndroidPermissions
 import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.uikit.common.saltRowClickable
-import com.zmf.agent.uikit.theme.Palette
-import com.zmf.agent.uikit.theme.UiColors
 
 /**
- * 「权限管理」页（设置下的二级页）：把手机端真正卡住功能的几项权限集中成一张清单。
+ * 「权限管理」页（设置下的二级页）：将手机端实际制约功能的几项权限集中为一张清单。
  *
  * 只做「看状态 + 送去授权」：能看到的就是系统里查得到的状态，点击就是把用户送到
- * 系统弹框 / 系统设置页 / Shizuku 自己的授权框，回来之后重查一次状态，不猜结果。
+ * 系统弹框 / 系统设置页 / Shizuku 自身的授权框，返回后重新查询状态，不以推断代替系统结果。
  * 版式照 Salt：整页铺满、分组圆角卡片、每行 56dp；行里只有名字和「未授权」这种最短状态，
  * 正常授权时不留任何解释小字。
  */
@@ -67,7 +65,7 @@ fun PermissionPage(onBack: () -> Unit) {
     var storageDenied by remember { mutableStateOf(false) }
     val shizuku by ShizukuBridge.state.collectAsState()
 
-    // 申请结果只用来触发重查：系统到底给了什么一律回系统看，不拿回调里的布尔值当真
+    // 申请结果仅用于触发重新查询：系统实际授予的状态一律以系统为准，不以回调中的布尔值作为最终结果
     val storageLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
@@ -79,13 +77,13 @@ fun PermissionPage(onBack: () -> Unit) {
         ActivityResultContracts.RequestPermission()
     ) { _ -> status = AndroidPermissions.status(context) }
 
-    // 进页面先对一次（Binder 可能在别的页面掉过，等不到 ON_RESUME）
+    // 进入页面先查询一次（Binder 可能在其它页面掉线，等不到 ON_RESUME）
     LaunchedEffect(Unit) {
         ShizukuBridge.refresh()
         status = AndroidPermissions.status(context)
     }
 
-    // 用户去系统页授权完回来时 Activity 会走 ON_RESUME：顺手把两类状态一起刷新
+    // 用户从系统页授权返回时 Activity 会走 ON_RESUME：此时同时刷新两类状态
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -104,15 +102,15 @@ fun PermissionPage(onBack: () -> Unit) {
     val storageGranted = status.storage || status.allFiles
     val storageDetail = when {
         status.storage -> ""
-        // 已经由整盘访问覆盖：一句最短状态，不再解释为什么
+        // 已经由整盘访问覆盖：仅给出最短状态，不解释原因
         status.allFiles -> "已由「所有文件访问」覆盖"
-        // 点过但系统没弹框（Android 14 上常见）：别把用户扔回「未授权」原地打转
+        // 点过但系统未弹框（Android 14 上常见）：避免用户停留在「未授权」状态反复重试
         storageDenied -> "系统未授予"
         else -> ""
     }
 
     Surface(
-        // 页面铺满且不透明；最外层吞掉点击，避免穿透点到下面的设置页
+        // 页面铺满且不透明；最外层拦截点击，避免事件穿透到下方的设置页
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -166,7 +164,7 @@ fun PermissionPage(onBack: () -> Unit) {
                     detail = if (status.allFiles) "" else "未授权",
                     granted = status.allFiles,
                     onClick = {
-                        // 低版本没有这项权限，跳不过去就用 Toast 说清楚，别让用户以为按钮坏了
+                        // 低版本没有这项权限，无法跳转时用 Toast 说明，避免用户误认为按钮失效
                         if (!AndroidPermissions.openAllFilesSettings(context)) {
                             Toast.makeText(context, "当前系统没有整盘文件访问开关", Toast.LENGTH_SHORT).show()
                         }
@@ -228,12 +226,12 @@ fun PermissionPage(onBack: () -> Unit) {
                                 if (activity == null) {
                                     toastNoActivity(context)
                                 } else if (!ShizukuBridge.requestPermission()) {
-                                    // 服务刚好掉线或其实已授权：重判一次，别让界面停在旧值
+                                    // 服务刚掉线或实际已授权：重新判定一次，避免界面停留在旧值
                                     ShizukuBridge.refresh()
                                 }
                             }
 
-                            // 没装 / 没启动：只能把用户送到 Shizuku 本体，剩下由它自己引导
+                            // 未安装 / 未启动：只能引导用户进入 Shizuku 本体，后续引导由该应用完成
                             else -> openShizuku(context)
                         }
                     }

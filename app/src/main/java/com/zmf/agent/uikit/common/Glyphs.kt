@@ -23,21 +23,21 @@ import com.zmf.agent.uikit.icons.UnitGlyph
 import com.zmf.agent.uikit.theme.Motion
 
 /*
- * 全 App 线稿图标的口径都收在这里：单位网格（18×18 / 24×24）、1.8 圆头描边、颜色一律交给调用方 tint。
+ * 全局线稿图标的规范统一在此：单位网格（18×18 / 24×24）、1.8 圆头描边、颜色统一交由调用方 tint。
  *
- * 这是「图标体系统一」落地的两块公共件：
- * - GlyphIcon：「＋」菜单与权限档那一套面板线稿，已提成公共件；
- * - Chevron：全 App 只认两种箭头形态、两档尺寸，不再各处写「▾ ▸ › ⌄」这样的文字箭头。
+ * 这是图标体系统一的两项公共组件：
+ * - GlyphIcon：「＋」菜单与权限档使用的面板线稿，已提取为公共组件；
+ * - Chevron：全局仅使用两种箭头形态与两档尺寸，不再在各处使用「▾ ▸ › ⌄」等文字箭头。
  */
 
-/** 面板线稿的种类；别的页面要画同一枚图标只认这个枚举，不各自再描一遍路径。 */
+/** 面板线稿的种类；其他页面绘制同一图标时仅使用该枚举，不重复描摹路径。 */
 enum class PanelGlyph { FILE, FOLDER, GOAL, PLAN, COMPACT, SHIELD, EXPORT, CONTEXT, SKILL, SLASH, WARNING }
 
 /**
  * 按 [glyph] 画一枚线稿图标。
  *
- * 路径写的是 18×18 单位空间，[size] 换档时线宽跟着等比缩放，
- * 所以给 16dp 就是原来那套观感；计划与模型两枚直接复用工程里已有的矢量与圆柱体。
+ * 路径基于 18×18 单位空间，[size] 变化时线宽等比缩放，
+ * 因此 16dp 下保持原有视觉比例；计划与模型两枚直接复用工程中已有的矢量与圆柱体。
  */
 @Composable
 fun GlyphIcon(glyph: PanelGlyph, size: Dp, tint: Color) {
@@ -188,22 +188,22 @@ fun GlyphIcon(glyph: PanelGlyph, size: Dp, tint: Color) {
 }
 
 /**
- * 折叠箭头的两种形态，全 App 只允许这两种：
- * - [RIGHT_DOWN]：折叠时朝右（›），展开时朝下（⌄），即「点开，下面多出一层」；
- * - [UP_DOWN]：折叠时朝下（⌄），展开时朝上（⌃），即「这一条展开后还能收回去」。
+ * 折叠箭头的两种形态，全局仅允许这两种：
+ * - [RIGHT_DOWN]：折叠时朝右（›），展开时朝下（⌄），表示「展开后下方增加一层」；
+ * - [UP_DOWN]：折叠时朝下（⌄），展开时朝上（⌃），表示「该条展开后可再次收起」。
  *
- * 两种形态共用同一条 45° 折线，只是转过的角度不同。
+ * 两种形态共用同一条 45° 折线，仅旋转角度不同。
  */
 enum class ChevronKind { RIGHT_DOWN, UP_DOWN }
 
-/** 箭头只有两档尺寸：行内小箭头 12dp，独立按钮 / 标题行 16dp，不许再出现第三档。 */
+/** 箭头仅有两档尺寸：行内小箭头 12dp，独立按钮 / 标题行 16dp，不得出现第三档。 */
 enum class ChevronSize(val dp: Dp) { SMALL(12.dp), NORMAL(16.dp) }
 
 /**
- * 折叠箭头：一条朝右的 45° 折线绕画布中心转，展开时转成朝下（或朝上）。
+ * 折叠箭头：一条朝右的 45° 折线绕画布中心旋转，展开时转为朝下（或朝上）。
  *
- * 线宽 1.8 按 24×24 网格算，随 [size] 等比缩放；旋转走 [Motion.spring]，跟抽屉、卡片的开合同一套手感，
- * 切换时不会「跳一下换了个形状」。
+ * 线宽 1.8 按 24×24 网格计算，随 [size] 等比缩放；旋转使用 [Motion.spring]，与抽屉、卡片的开合保持一致手感，
+ * 切换时不会出现形状突变。
  */
 @Composable
 fun Chevron(
@@ -243,9 +243,9 @@ fun Chevron(
 /** 24 网格里的箭头线宽。 */
 private const val CHEVRON_STROKE = 1.8f
 
-/** 单位坐标系里的描边规格：端点、拐角都收圆，跟 DSH 图标的观感一致。 */
+/** 单位坐标系中的描边规格：端点与拐角均为圆角，与 DSH 图标视觉一致。 */
 private fun iconStroke(width: Float = 1.8f): Stroke =
     Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round)
 
-/** 拼单位坐标路径的小工具。 */
+/** 用于构建单位坐标路径的工具函数。 */
 private fun iconPath(build: Path.() -> Unit): Path = Path().apply(build)

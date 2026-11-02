@@ -34,30 +34,30 @@ interface AgentUi {
     /**
      * 一次请求的用量（已按服务商口径归一化，见 [UsageBuckets]）。
      *
-     * 只在 [Args.thinking] 无关的这个回调里报账：界面累计成本轮的账，定时任务与子智能体不关心。
+     * 仅由该回调统一上报：界面累计成本轮的用量，定时任务与子智能体不关心。
      */
     fun onUsage(usage: UsageBuckets)
     /** 本轮以失败收尾时回调一句给人看的错误；被恢复掉的失败不会触发。 */
     fun onError(message: String)
 
     /**
-     * 一次回复的时间账（毫秒）：模型流累计 + 工具执行累计，循环结束时回调一次。
+     * 一次回复的时间统计（毫秒）：模型流累计 + 工具执行累计，循环结束时回调一次。
      *
-     * 给默认空实现：定时任务与子智能体不关心计时，它们不该被迫实现一个空方法。
+     * 提供默认空实现：定时任务与子智能体无需计时，不应被迫实现空方法。
      */
     fun onTiming(modelMillis: Long, toolMillis: Long) {}
 
     /**
-     * 一次回复的输出侧账目（本回合计）：首 token 等待与纯生成时长、输出 tokens。
+     * 一次回复的输出侧统计（本回合）：首 token 等待与纯生成时长、输出 tokens。
      *
-     * 单列一个默认空实现，是为了不动定时任务与子智能体：它们不显示速度，也不该被迫接这四个数。
-     * 口径说明：[ttftMillis]/[ttftCount] 是各次请求「发出 → 第一个字」的平均分母；
-     * [genMillis] 只算「第一个字 → 最后一个字」，不含等首字，输出速度才有意义。
+     * 单独提供默认空实现，以免影响定时任务与子智能体：它们不显示速度，也不应被迫接收这四个数值。
+     * 口径说明：[ttftMillis]/[ttftCount] 为各次请求「发出 → 第一个字」的平均分母；
+     * [genMillis] 仅计算「第一个字 → 最后一个字」，不含首字等待，输出速度才具有意义。
      */
     fun onOutputTiming(timing: OutputTiming) {}
 }
 
-/** 输出侧账目；[ttftCount] 是请求次数，[ttftMillis] 是这些请求的首字等待之和。 */
+/** 输出侧统计；[ttftCount] 为请求次数，[ttftMillis] 为这些请求的首字等待之和。 */
 data class OutputTiming(
     val ttftMillis: Long = 0,
     val ttftCount: Int = 0,
@@ -85,42 +85,42 @@ data class ContextSummaryState(
 )
 
 /**
- * Agent 主循环：请求 → 流式输出 → 若有工具调用就执行并回填 → 再请求，直到模型不再要工具。
+ * Agent 主循环：请求 → 流式输出 → 若有工具调用则执行并回填 → 再次请求，直至模型不再请求工具。
  *
- * 消息列表直接由调用方持有（Compose 的 SnapshotStateList），循环内部只追加/替换，
- * 这样界面能实时看到「思考 / 正文 / 工具卡」三种状态，历史也不用再同步一份。
+ * 消息列表由调用方持有（Compose 的 SnapshotStateList），循环内部只追加或替换，
+ * 界面因此能实时显示「思考 / 正文 / 工具卡」三种状态，历史无需再同步一份。
  */
 class AgentLoop(
     private val provider: LlmProvider,
     private val registry: ToolRegistry,
     private val model: String,
     private val maxRounds: Int = 10,
-    /** 上下文压缩策略；每次请求前现取，改设置立刻生效。 */
+    /** 上下文压缩策略；每次请求前读取，修改设置后立即生效。 */
     private val contextPolicy: () -> ContextPolicy = { ContextPolicy() },
-    /** 当前会话的摘要状态；同样每次请求前现取，摘要刚生成也能立刻生效。 */
+    /** 当前会话的摘要状态；同样每次请求前读取，摘要生成后即可生效。 */
     private val contextState: () -> ContextSummaryState = { ContextSummaryState() },
     /**
      * 系统提示词输入（环境 / 权限档 / Skill / 附加指令 / 覆盖）。
      *
-     * 同样每次请求前现取：换工作区、切权限档、改附加指令都不用重建 AgentLoop。
-     * 默认值是一份兜底输入，调用方还没接线时也至少能拿到身份、环境和「工作区档」提示。
+     * 同样每次请求前读取：切换工作区、权限档或附加指令，均无需重建 AgentLoop。
+     * 默认值为兜底输入，调用方尚未接线时也能获得身份、环境与「工作区档」提示。
      */
     private val promptProvider: () -> PromptInput = { PromptInput() }
 ) {
 
     /**
-     * 上次注入的工作区指令指纹，只用来在日志里标出「内容已变」，不参与「投不投」的判断。
+     * 上次注入的工作区指令指纹，仅用于在日志中标记「内容已变」，不参与是否注入的判断。
      *
-     * 为什么不按指纹决定投不投：指令只进请求视图、不写 messages，请求视图每轮都重建，
-     * 按指纹跳过等于让第 2..N 轮工具调用丢掉工作区约定。
+     * 为什么不依据指纹决定是否注入：指令仅进入请求视图、不写入 messages，请求视图每轮重建，
+     * 按指纹跳过将导致第 2..N 轮工具调用缺少工作区约定。
      */
     private var injectedInstructionsHash: String? = null
 
     /**
-     * 上一轮 provider 流花了多少毫秒。
+     * 上一轮 provider 流的毫秒数。
      *
-     * 计时必须贴着 stream / collect 的边界量：streamOnce 里还要拼提示词、读工作区指令，
-     * 那部分算进「模型耗时」会把磁盘 IO 混进模型的账里。
+     * 计时必须紧贴 stream / collect 的边界：streamOnce 还需拼装提示词、读取工作区指令，
+     * 将这部分计入模型耗时会把磁盘 IO 混入模型统计。
      */
     private var lastStreamMillis = 0L
 
@@ -142,16 +142,16 @@ class AgentLoop(
     private var lastRequestOutputTokens = 0
 
     /**
-     * 本次尝试失败时给用户看的那一整句（可能带我们加的「请求失败（HTTP 400）：」前缀）。
+     * 本次尝试失败时向用户展示的完整语句（可能带有「请求失败（HTTP 400）：」前缀）。
      *
-     * 为什么先存下来、由 run 统一报：流一开始报错时我们还不知道能不能「压缩后重发」，
-     * 当场 ui.onError 会让恢复成功后界面上还挂着一条其实已经失败过的红字。
+     * 为什么先保存、由 run 统一上报：流开始报错时尚未确定能否「压缩后重发」，
+     * 立即调用 ui.onError 会使恢复成功后界面仍保留一条已失败的红色提示。
      */
     private var lastFailure = ""
 
     /**
-     * 同上，但只存提供方原文（不带我们的前缀）：判「是不是上下文溢出」要用原话，
-     * 前缀里的 HTTP 码和中文说明都不该参与匹配。
+     * 同上，仅保存提供方原文（不含本应用添加的前缀）：判断「是否上下文溢出」需依据原文，
+     * 前缀中的 HTTP 码与中文说明不应参与匹配。
      */
     private var lastFailureRaw = ""
 
@@ -159,30 +159,25 @@ class AgentLoop(
         /**
          * 交计划的工具名。
          *
-         * 为什么单独硬编码一个名字：写计划是唯一「产出即收尾」的工具，计划已经交给用户过目了，
-         * 再让模型往下问一轮，它只会补几句「以上是计划」，白花一次请求。
+         * 为什么单独硬编码该名称：写计划是唯一「产出即收尾」的工具，计划已交用户审阅，
+         * 若再请求一轮，模型只会补充「以上是计划」，浪费一次请求。
          */
         const val PLAN_TOOL = "write_plan"
 
         /**
-         * 状态变化时写进运行时快照「本轮变化」那一行的短句。
+         * 状态变化时写入运行时快照「本轮变化」行的短句。
          *
-         * 以前是独立追加一条「（系统提示）…」消息，只在该次请求出现、下一轮就消失；
-         * 现在并进快照，与状态行同处一块，模型读状态时一定同时读到「刚刚变了」。
+         * 状态变化不再单独追加「（系统提示）…」消息（该类消息仅在该次请求出现、下一轮即消失），
+         * 而是并入快照，与状态行同处一块，模型读取状态时必定同时读取变化提示。
          */
         const val PLAN_MODE_ON_NOTICE = "用户把模式切到了「计划模式」"
         const val PLAN_MODE_OFF_NOTICE = "用户关掉了「计划模式」，回到普通模式"
     }
 
-    /**
-     * 状态变化**不再靠实例字段**判断：字段在每轮开跑时会被清空（[run] 开头），
-     * 跨轮切换就永远拿不到变化提示：打开计划模式后模型仍答「普通模式」，就是被清空的结果。
-     * 现在改为与历史里最后一份运行时快照比对，见 [streamOnce] 里的 previous / changeLines。
-     */
-    /** 上一次请求的前缀指纹（system 长度/摘要 + 工具表摘要）：变化时记一行 [cache] 日志。 */
+    /** 上一次请求的前缀指纹（system 长度 / 摘要 + 工具表摘要）：变化时记录一行 [cache] 日志。 */
     private var lastCacheFingerprint: String? = null
 
-    /** 前缀指纹用的 8 位摘要：只回答「变没变」，不做任何安全用途。 */
+    /** 前缀指纹用的 8 位摘要：仅用于判断「是否变化」，不用于任何安全用途。 */
     private fun shortHash(text: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-1")
             .digest(text.toByteArray(Charsets.UTF_8))
@@ -195,11 +190,11 @@ class AgentLoop(
     }
 
     /**
-     * 跑一次完整回复。
+     * 执行一次完整回复。
      *
-     * @param userText 这条提问的正文；**null = 不追加新的用户消息**，直接在当前历史之后继续跑。
-     *   插话（忙时往历史里塞的那条 user 消息）之后本轮可能已经结束，需要再跑一回合把它接上，
-     *   这时不能再追加一条一样的消息，否则模型会看到同一句话被问了两遍。
+     * @param userText 这条提问的正文；**null = 不追加新的用户消息**，直接在当前历史之后继续执行。
+     *   插话（忙时写入历史的那条 user 消息）之后本轮可能已结束，需要再执行一回合接续，
+     *   此时不得重复追加相同消息，否则模型会看到同一提问出现两次。
      */
     suspend fun run(
         messages: MutableList<ChatMessage>,
@@ -213,30 +208,30 @@ class AgentLoop(
         /**
          * [images] 对应的 base64 data URL，只对本次请求有效（不落盘）。
          *
-         * 由调用方读盘现编：模型接口要 data URL，磁盘上只有文件；把它存进会话会撑爆 sessions.json。
+         * 由调用方读盘后即时生成：模型接口需要 data URL，磁盘上仅有文件；将其存入会话会使 sessions.json 膨胀。
          */
         imageDataUrls: List<String> = emptyList(),
         /**
          * 上下文溢出的恢复入口：返回 true = 已经压过、请求视图需要重建。
          *
-         * 默认 null：子智能体与定时任务没有摘要能力，也不该被这条恢复路径改变行为。
-         * 只有「压缩功能是开的、调用方真的接了这个回调」时才会重发一次，且只重发这一次。
+         * 默认 null：子智能体与定时任务没有摘要能力，也不应被这条恢复路径改变行为。
+         * 仅在压缩功能开启且调用方确实接入该回调时重发一次，且只重发这一次。
          */
         onOverflow: (suspend () -> Boolean)? = null,
         /**
          * 落盘检查点：调用方在这里把会话写进磁盘。
          *
-         * 两个必设屏障：**发模型请求之前**（内容 = 已提问 + 已拿到的结果）、**执行有副作用的工具之前**
-         * （内容 = 已记录的调用意图）。之前只有回合结束才落盘，进程被杀就会把整轮丢掉：实测过一次
-         * 19 条掉到 14 条。null = 不落盘（子智能体 / 定时任务按原样跑）。
+         * 两个必设屏障：**发送模型请求之前**（内容 = 已提问 + 已获取的结果）、**执行有副作用的工具之前**
+         * （内容 = 已记录的调用意图）。此前仅在回合结束时落盘，进程被杀会丢失整轮：实测曾出现
+         * 19 条降至 14 条。null = 不落盘（子智能体 / 定时任务按原逻辑执行）。
          */
         onCheckpoint: (suspend (String) -> Unit)? = null,
         /**
          * [userText] 是不是 App 代发的。
          *
          * 只有真实用户输入才可能构成高危操作的一次性授权；计划页的「按计划开始执行」
-         * 是 App 以 user 角色代发的，必须标 true：否则模型可以把授权码写进计划，
-         * 用户点一下按钮就成了一次伪造授权。
+         * 由 App 以 user 角色代发，必须标记为 true：否则模型可将授权码写入计划，
+         * 用户点击按钮即形成一次伪造授权。
          */
         userTextProgrammatic: Boolean = false
     ): Int {
@@ -299,9 +294,9 @@ class AgentLoop(
                 textMillis += lastTextMillis
                 toolArgMillis += lastToolArgMillis
 
-                // 溢出恢复：只给一次机会。
-                // 为什么不是「重试到成功」：溢出说明发的东西太多，压一次还不够就该让用户看见，
-                // 否则会在同一轮里反复花整次请求的钱。
+                // 溢出恢复：只提供一次机会。
+                // 为什么不是「重试到成功」：溢出说明发送内容过多，压缩一次仍不足时应让用户知晓，
+                // 否则会在同一轮重复消耗整次请求。
                 if (!completed && canRecoverOverflow(onOverflow)) {
                     FileLog.log(
                         "context",
@@ -309,7 +304,7 @@ class AgentLoop(
                     )
                     val compacted = onOverflow != null && onOverflow.invoke()
                     if (compacted) {
-                        // 失败的尝试已经把占位气泡删掉了，这里按当前长度重新占位
+                        // 失败的尝试已删除占位消息，此处按当前长度重新占位
                         assistantIndex = messages.size
                         messages.add(ChatMessage(role = "assistant", content = ""))
                         completed =
@@ -327,29 +322,29 @@ class AgentLoop(
                     }
                 }
                 if (!completed) {
-                    // 恢复不了（没接线 / 没开压缩 / 压不动）或重发仍失败：原样把提供方那句话给用户，
-                    // 不包装成「压缩失败」，也不吞掉：用户要看到的就是提供方到底说了什么
+                    // 无法恢复（未接线 / 未开启压缩 / 压缩无效）或重发仍失败：原样返回提供方信息，
+                    // 不包装为「压缩失败」，也不吞没：用户需要看到提供方的原始说明
                     if (lastFailure.isNotEmpty()) ui.onError(lastFailure)
                     return round
                 }
                 val calls = messages.getOrNull(assistantIndex)?.toolCalls.orEmpty()
                 if (calls.isEmpty()) return round
 
-                // 本轮产出了计划就直接收尾：计划已经落地，不再问下一轮
+                // 本轮产出计划后立即结束：计划已落地，不再请求下一轮
                 var producedPlan = false
                 for (call in calls) {
                     ui.onToolStarted(call)
                     toolCalls++
                     if (call.name == PLAN_TOOL) producedPlan = true
                     // 屏障②：执行有副作用的工具之前落盘。
-                    // 只为「已派发」留证据：崩在工具执行中，重载后能看到这条调用、并补一条「结果未知」，
-                    // 而不是让模型以为它没做过（或者以为做完了）。只读工具不写盘，那是纯 IO 浪费。
+                    // 仅为「已派发」保留证据：若在工具执行中崩溃，重载后能看到该调用并补一条「结果未知」，
+                    // 而非让模型误判未执行或已执行。只读工具不写盘，避免无效 IO。
                     if (registry.mutates(call)) checkpoint(onCheckpoint, "before-tool:" + call.name)
                     val toolStartedAt = System.nanoTime()
                     val raw = withContext(Dispatchers.IO) { registry.execute(call, toolContext) }
                     toolMillis += (System.nanoTime() - toolStartedAt) / 1_000_000
-                    // 超大输出不整段塞进上下文：落盘后只回「头 + 省略 + 尾 + 文件路径」，
-                    // 模型要细看再用 read_file 分页读。
+                    // 超长输出不整段写入上下文：落盘后仅返回「头 + 省略 + 尾 + 文件路径」，
+                    // 模型需要细节时再用 read_file 分页读取。
                     val result = if (raw.ok) {
                         val spilled = withContext(Dispatchers.IO) {
                             SpillStore.process(toolContext.context, toolContext.sessionId, call.name, raw.text)
@@ -375,7 +370,7 @@ class AgentLoop(
                 }
 
                 if (producedPlan) {
-                    // 写进日志是因为这一轮结束得「早」：没有正文、没有下一轮，排查时要知道是工具触发的
+                    // 记入日志是因为该轮结束得「早」：无正文、无下一轮，排查时需确认由工具触发
                     FileLog.log("plan", "write_plan 已产出计划，结束本轮")
                     return round
                 }
@@ -383,8 +378,8 @@ class AgentLoop(
             ui.onError("本轮已连续调用 " + maxRounds + " 次工具，先停下等你确认下一步。")
             return round
         } finally {
-            // 放在 finally：被「停止」打断的那一轮也要把已经花掉的时间报上去，
-            // 否则计时只在成功的回合里累计，任务一停就整段丢失
+            // 放在 finally：被「停止」打断的那一轮也需上报已消耗的时间，
+            // 否则计时仅在成功回合中累计，任务一旦停止即整段丢失
             ui.onTiming(modelMillis, toolMillis)
             ui.onOutputTiming(
                 OutputTiming(
@@ -404,9 +399,9 @@ class AgentLoop(
     /**
      * 调一次落盘检查点，失败**只记日志、不拦回合**。
      *
-     * 这里有意比 fail-closed 更宽松（写不进去也不拦请求 / 不拦工具）：
-     * 我们的写失败几乎只来自「磁盘满」这种全局故障，这时拦住模型请求只会让用户连话都问不出去、
-     * 也没法让它帮忙清理。所以这里降级成 best-effort，但一定留痕。
+     * 此处有意比 fail-closed 更宽松（写入失败也不拦截请求 / 工具）：
+     * 写失败几乎只由「磁盘满」这类全局故障引起，此时拦截模型请求会导致用户无法提问，
+     * 也无法请求模型协助清理。因此降级为 best-effort，但必须留痕。
      */
     private suspend fun checkpoint(onCheckpoint: (suspend (String) -> Unit)?, reason: String) {
         if (onCheckpoint == null) return
@@ -423,22 +418,22 @@ class AgentLoop(
      * 这次失败值不值得试一次「压缩后重发」。
      *
      * 三个条件缺一不可：调用方给了压缩入口、压缩功能是开的、失败原因确实是上下文超限。
-     * 前两条保证「没接线的调用方（子智能体 / 定时任务）与没开压缩的用户」行为完全不变：
-     * 没开压缩就没什么可压的，白跑一次摘要只是给用户多等几秒。
+     * 前两条保证「未接线的调用方（子智能体 / 定时任务）与未开启压缩的用户」行为完全不变：
+     * 未开启压缩则无内容可压，额外执行一次摘要只会增加用户等待时间。
      */
     private fun canRecoverOverflow(onOverflow: (suspend () -> Boolean)?): Boolean {
         if (onOverflow == null) return false
         if (!contextPolicy().enabled) return false
-        // 提供方原话优先：我们自己加的中文前缀不参与判断
+        // 提供方原文优先：本应用添加的中文前缀不参与判断
         return isContextOverflow(if (lastFailureRaw.isNotEmpty()) lastFailureRaw else lastFailure)
     }
 
     /**
      * 提供方说的是不是「上下文太长」。
      *
-     * 为什么只认这几组词：各家措辞不同（DeepSeek 常用 "maximum context length" / "too many tokens"），
-     * 而误判的代价很实在：白花一次完整请求，还可能把「网络断了」说成「上下文溢出」，把用户引到错的方向。
-     * 所以宁可漏判（用户还能像以前那样手点压缩），也不放宽到「只要提到 token 就算」。
+     * 为什么仅识别这几组词：各家措辞不同（DeepSeek 常用 "maximum context length" / "too many tokens"），
+     * 误判代价明确：浪费一次完整请求，且可能将「网络中断」误判为「上下文溢出」，误导用户。
+     * 因此宁可漏判（用户仍可手动触发压缩），也不放宽至「只要提及 token 即判定」。
      */
     private fun isContextOverflow(message: String): Boolean {
         val text = message.lowercase()
@@ -455,7 +450,7 @@ class AgentLoop(
 
     /**
      * 跑一轮流式请求。返回 false 表示这一轮失败，失败原文记在 [lastFailure] / [lastFailureRaw]，
-     * 由调用方决定「压缩后重发」还是「直接报给用户」，流里不报，是因为这两种可能还没分出来。
+     * 由调用方决定「压缩后重发」还是「直接报给用户」；流中不上报，因为这两种可能尚未区分。
      */
     private suspend fun streamOnce(
         messages: MutableList<ChatMessage>,
@@ -485,17 +480,17 @@ class AgentLoop(
         val policy = contextPolicy()
         val state = contextState()
 
-        // ① 摘要覆盖过的部分不再进请求：从 user 边界 summaryUpTo 起（分界永远落在整轮开头）
+        // ① 摘要覆盖过的部分不再进入请求：从 user 边界 summaryUpTo 起（分界始终落在整轮开头）
         var start = 0
         var withSummary = false
-        // 这里只认「有没有摘要」：摘要开关管的是「自动触发」，手动压缩出来的摘要任何情况下都要生效
+        // 此处仅判断「是否存在摘要」：摘要开关控制「自动触发」，手动压缩生成的摘要在任何情况下均应生效
         if (state.text.isNotEmpty()) {
             val upTo = state.upTo
             if (upTo in 0 until history.size && history[upTo].role == "user") {
                 start = upTo
                 withSummary = true
             } else {
-                // 回滚 / 删消息后分界可能失效：宁可多带原文，也不把一轮切成半截
+                // 回滚 / 删除消息后分界可能失效：宁可多带原文，也不将一轮切成半截
                 FileLog.log("context", "摘要分界失效（" + upTo + " / " + history.size + " 条），本次退回全量")
             }
         }
@@ -506,15 +501,15 @@ class AgentLoop(
             if (fallbackStart > start) start = fallbackStart
         }
 
-        // 每次请求现取提示词输入（权限档 / 计划模式都在里面，用户中途切换下一句就生效）。
-        // 摘要不再进快照/提示词：它作为独立的检查点消息插在历史之前（见下面 withSummary 那段）。
+        // 每次请求前读取提示词输入（权限档 / 计划模式均在其中，用户中途切换后下一句即生效）。
+        // 摘要不再进入快照 / 提示词：它作为独立的检查点消息插在历史之前（见下方 withSummary 部分）。
         val input = promptProvider()
 
         // 运行时快照：挂在本轮那条 user 消息上，**只写一次**，此后逐字节复用。
-        // 必须在下面 sanitized / request 组装**之前**挂：组装拿的是消息对象，挂晚一步这一轮的快照
-         // 就发不出去、只会在下一轮才出现（模型会答「本轮没有附带新的状态块」）。
-        // 「本轮变了什么」由**历史里最后一份快照**比对得出，不用实例字段（字段在 run() 开头就被清空，
-         // 跨轮切换永远拿不到变化提示）。与上一份完全相同就不再追加。
+        // 必须在下方 sanitized / request 组装**之前**挂载：组装读取的是消息对象，挂载晚一步这一轮
+        // 的快照就无法发出，只会在下一轮出现（模型会回答「本轮没有附带新的状态块」）。
+        // 「本轮变化」由**历史中最后一份快照**比对得出，不使用实例字段（字段在 run() 开头即被清空，
+        // 跨轮切换将无法获得变化提示）。与上一份完全相同则不追加。
         val previous = messages.indices.reversed()
             .map { messages[it].runtimeSnapshot }
             .firstOrNull { it.isNotEmpty() }
@@ -535,28 +530,28 @@ class AgentLoop(
                 messages[snapshotOwner] = messages[snapshotOwner].copy(runtimeSnapshot = snapshot)
             }
         }
-        // [history] 是本函数开头从 messages 拷出来的一份（同对象引用）：刚换掉的那条必须同步回去，
-         // 否则下面 sanitized / request 拿到的仍是**没有快照的旧对象**：
-         // 这里踩过两次同样的坑，第一次就是在 request 组装之后才挂快照。
+        // [history] 是本函数开头从 messages 拷贝出来的一份（同对象引用）：刚替换的那条必须同步回去，
+        // 否则下方 sanitized / request 获取到的仍为**没有快照的旧对象**：
+        // 此处曾两次出现同一问题，第一次是在 request 组装之后才挂载快照。
         if (snapshotOwner in history.indices) history[snapshotOwner] = messages[snapshotOwner]
 
         val tail = history.subList(start, history.size)
         val sanitized = tail.sanitized()
-         // 压缩发生之后，超长的工具输出在**请求视图**里折掉中段（见 [ToolResultPruner]：
-        // 压力确认后才折，低于压力线不动，宁可多付 token 也留全）。只改这次发出去的字节，
-        // 不改 messages、不改界面；同一段内容的折叠形态恒定，前缀缓存不会因为它逐轮抖动。
+         // 压缩发生之后，超长的工具输出在**请求视图**中折叠中段（见 [ToolResultPruner]：
+        // 压力确认后才折叠，低于压力线不变，宁可多付 token 也保留全文）。仅修改本次发送的字节，
+        // 不修改 messages 与界面；同一段内容的折叠形态恒定，前缀缓存不会因其逐轮波动。
         val pruneActive = withSummary || (policy.enabled && state.fallback)
         val viewMessages = if (pruneActive) ToolResultPruner.prune(sanitized) else sanitized
         val request = ArrayList<ChatMessage>(viewMessages.size + 1)
         // system 只放**稳定层**（身份 / 设备 / 边界 / 工具总则 / 沟通 / 记忆 / 计划确认 / Skill / 附加指令）：
-         // 契约是同一会话内**一字不变**：它在请求最前缀，只有恒定才吃得到 provider 的前缀缓存。
+         // 契约是同一会话内**一字不变**：它位于请求最前缀，只有保持恒定才能命中 provider 的前缀缓存。
         // 会变的（权限档 / 计划模式 / 工作区 / 时间 / 摘要）全部走末尾的运行时快照。
         val systemText = PromptBuilder.buildStable(input)
         if (systemText != null) request.add(ChatMessage(role = "system", content = systemText))
 
-        // 工作区指令文件（AGENTS.md / CLAUDE.md 系列）：每次请求前现读，用户改完文件下一轮就生效。
-         // 有就必须每轮都带：指令只进请求视图、不写 messages，请求视图每轮重建，
-        // 少带一轮模型就少一轮约定可看。位置固定在 system 之后、历史之前，prefix 也稳定。
+        // 工作区指令文件（AGENTS.md / CLAUDE.md 系列）：每次请求前读取，用户修改文件后下一轮即生效。
+         // 存在时必须每轮携带：指令仅进入请求视图、不写入 messages，请求视图每轮重建，
+        // 缺少一轮则模型少一轮约定可参考。位置固定在 system 之后、历史之前，前缀亦保持稳定。
         val instructions = withContext(Dispatchers.IO) { AgentInstructions.load(toolContext.workspaceRoot) }
         if (instructions != null) {
             request.add(
@@ -579,23 +574,22 @@ class AgentLoop(
             }
             injectedInstructionsHash = instructions.hash
         } else {
-            // 文件被删也要把指纹清掉：同样的内容再放回来时还能打出一行「内容已变」
+            // 文件被删除时也要清除指纹：相同内容重新出现时仍能记录一行「内容已变」
             injectedInstructionsHash = null
         }
         // 压缩检查点：一条独立的 user 消息，紧跟在 system / 工作区指令之后、历史原文之前。
-         // 为什么这么摆：checkpoint 是**合成 user 消息**，
-        // 放在被遮蔽区间的原位（也就是第一个可动消息处），一次生成后冻结；node 0（system）永不进压缩区间。
+         // 为何如此放置：checkpoint 是**合成 user 消息**，
+        // 放在被遮蔽区间的原位（即第一个可动消息处），一次生成后冻结；node 0（system）永不进入压缩区间。
         // 这样「system + 检查点」成为永久复用的前缀，之后只追加新消息，缓存不会被压缩反复打断。
         if (withSummary) {
             request.add(ChatMessage(role = "user", content = PromptBuilder.checkpointText(state.text)))
         }
         request.addAll(viewMessages)
 
-         // 运行状态以**独立的一条 user 消息**跟在它所属的用户消息后面。不要再拼进用户那句话里：
-         // 拼进去的时候模型把它当成用户原话的
-         // 一部分，两次回答「本轮消息未附带状态块」。
-        // 只认新格式（抬头 = PromptBuilder.SNAPSHOT_MARKER）：老会话里的旧快照带着权限档/计划模式，
-        // 拼回去等于把过期状态重新塞给模型，一律跳过。
+         // 运行状态以**独立的一条 user 消息**跟在所属用户消息之后，不得拼入用户消息正文：
+         // 拼入时模型会将其视为用户原话的一部分，曾两次回答「本轮消息未附带状态块」。
+        // 只识别新格式（抬头 = PromptBuilder.SNAPSHOT_MARKER）：旧会话中的旧快照带有权限档 / 计划模式，
+        // 拼回请求等于将过期状态重新提供给模型，一律跳过。
         val withState = ArrayList<ChatMessage>(request.size + 4)
         for (message in request) {
             withState.add(message)
@@ -607,9 +601,9 @@ class AgentLoop(
         }
         request.clear()
         request.addAll(withState)
-         // 模式 / 权限档的「刚刚变了」那句不再单独发：它已经作为「本轮变化」写进运行时快照
-        // （见上面 changeLines），与状态行同处一块。位置、来源都只剩一处，模型不会在
-         // 「快照说一套、末尾提示说另一套」之间做选择。
+         // 模式 / 权限档的「刚刚变了」语句不再单独发送：它已作为「本轮变化」写入运行时快照
+        // （见上方 changeLines），与状态行同处一块。位置与来源仅保留一处，模型不会在
+         // 「快照与末尾提示不一致」之间作出选择。
         if (start > 0 || withSummary) {
             FileLog.log(
                 "context",
@@ -618,24 +612,24 @@ class AgentLoop(
                     ContextCompactor.estimate(request) + " tokens）"
             )
         }
-        // 工具表与系统提示词用同一个 planMode 来源，避免「提示词说在计划模式、工具表却给了写工具」
-        // 工具表恒定（不按档位 / 计划模式裁剪）：进出模式或切档不再改请求前缀，缓存不会被整体作废
+        // 工具表与系统提示词使用同一个 planMode 来源，避免「提示词声明处于计划模式、工具表却提供写工具」
+        // 工具表恒定（不按档位 / 计划模式裁剪）：进出模式或切换档位不改变请求前缀，缓存不会整体失效
         val specs = registry.specs()
         // 记一行「本轮到底下发了哪些工具」：档位、计划模式、工具名。
-         // 为什么要记这一行：曾经模型两次声称「只有只读工具、没有 write_file」，而工具表里其实有；
-        // 日志只记档位、不记工具表时，这类争议只能靠推理定案；多记这一行就能一次查清。
+         // 为何记录此行：模型曾两次声称「只有只读工具、没有 write_file」，而工具表实际包含该工具；
+        // 日志仅记录档位、不记录工具表时，此类争议只能依靠推理定案；记录此行即可一次查清。
         FileLog.log(
             "tools",
             "本轮工具表 " + specs.size + " 个（档位=" + toolContext.permission.name +
                 "，计划模式=" + (if (input.planMode) "开" else "关") + "）：" +
                 specs.joinToString(", ") { it.name }
         )
-         // 前缀指纹：system 与工具表各自「变没变」，只在变化时记一行。
-         // 前缀缓存按字节前缀匹配，这两处任何一处变了，从变化处起后面全部重算，
-         // 有了这行，「这轮为什么没命中」一眼能定性，不用再靠推理。
+         // 前缀指纹：system 与工具表分别判断「是否变化」，仅在变化时记录一行。
+         // 前缀缓存按字节前缀匹配，任一处的变化都会导致从变化处起全部重新计算；
+         // 记录该行后可快速定性「本轮为何未命中」，无需再依靠推理。
         val cacheSystem = request.firstOrNull { it.role == "system" }?.content.orEmpty()
-        // 描述也算工具定义的一部分（模型看到的就是 name + description + 参数 schema），
-         // 早期只串了 name + parametersJson 长度，改描述时指纹不变，诊断会误判成「工具表没变」。
+        // 描述也属于工具定义（模型看到的是 name + description + 参数 schema），
+         // 早期仅拼接 name 与 parametersJson 长度，修改描述时指纹不变，诊断会误判为「工具表未变化」。
         val cacheTools = specs.joinToString("|") { it.name + ":" + it.description.length + ":" + it.parametersJson.length }
         val fingerprint = cacheSystem.length.toString() + "/" + shortHash(cacheSystem) +
             " tools=" + specs.size + "/" + shortHash(cacheTools)
@@ -666,17 +660,17 @@ class AgentLoop(
             )
         }
 
-        // 只量「等模型」这一段：请求拼装、读工作区指令都在这之前，不该算成模型耗时
+        // 仅统计「等待模型」这一段：请求拼装、读取工作区指令均在此之前，不应计入模型耗时
         val streamStartedAt = System.nanoTime()
-        // 首字时间与末字时间：TTFT 与「纯生成速度」都从这两根针里算。
-         // 只认真正出了字的片段（思考也算，它是模型在说话），工具调用增量不算，那部分没有 token 速率可言
+        // 首字与末字时间：TTFT 与「纯生成速度」均由这两个时间点计算。
+         // 仅统计实际产生内容的片段（思考内容也算，属于模型输出），工具调用增量不计，该部分无 token 速率。
         var firstTokenAt = 0L
         var lastTokenAt = 0L
         /**
          * 生成阶段的块计时：流式事件按类型切换即切块（思考 / 正文 / 工具参数）。
          *
-         * DSH 用 block-start 标记切块；我们这里没有标记，但事件类型本身就是分界，
-         * 一段的结束到下一段的开始之间的空档归下一段，三段互不重叠、加起来就是整个生成窗口。
+         * DSH 使用 block-start 标记切块；此处没有该标记，但事件类型本身即为分界，
+         * 一段结束到下一段开始之间的空档归入下一段，三段互不重叠，合计即整个生成窗口。
          */
         var blockKind = 0
         var blockStartAt = 0L
@@ -695,14 +689,14 @@ class AgentLoop(
             blockKind = kind
             blockStartAt = at
         }
-        /** 记一次增量时间戳：第一次调用定首字起点，之后每次更新末字时间。 */
+        /** 记录一次增量时间戳：首次调用确定首字起点，之后每次更新末字时间。 */
         fun markToken() {
             val now = System.nanoTime()
             if (firstTokenAt == 0L) firstTokenAt = now
             lastTokenAt = now
         }
-         // 屏障①：发请求之前落盘。此刻历史里已经有用户的提问与上次的工具结果，
-        // 崩在这里丢的只是「这一条还没生成的回答」，不会有无法解释的半截记录。
+         // 屏障①：发送请求前落盘。此刻历史中已有用户提问与上次的工具结果，
+        // 在此崩溃仅丢失「尚未生成的回答」，不会产生无法解释的不完整记录。
         checkpoint(onCheckpoint, "before-request")
         try {
             provider.stream(
@@ -747,7 +741,7 @@ class AgentLoop(
                     }
 
                     is LlmEvent.Finished -> {
-                        // 归一化只在这里做一次：把各家的 usage 变成同一套桶，界面、落盘、日志都吃这一套
+                        // 归一化仅在此处执行一次：将各家 usage 转换为统一结构，界面、落盘、日志均使用该结果
                         val buckets = UsageBuckets.of(
                             promptTokens = event.promptTokens,
                             completionTokens = event.completionTokens,
@@ -759,7 +753,7 @@ class AgentLoop(
                         )
                         lastCachedTokens = buckets.cacheReadTokens
                         lastRequestOutputTokens = buckets.completionTokens
-                        // 一行用量账：命中率以后用日志复核，不靠状态行单点数字。
+                        // 一行用量记录：命中率后续通过日志复核，不依赖状态行的单一数值。
                         // 实测参考：97.6K 输入 / 8 轮时命中 84.7%，属该长度的正常范围。
                         val hitText = if (buckets.cacheReadReported && buckets.promptTokens > 0) {
                             String.format(
@@ -798,7 +792,7 @@ class AgentLoop(
             lastFailureRaw = e.message.orEmpty()
             lastFailure = "请求异常：" + (e.message ?: e.javaClass.simpleName)
         } finally {
-            // 取消也要记：用户点停止时这一轮的等待时间是真实花掉的
+            // 取消也需记录：用户点击停止时，本轮等待时间已实际消耗
             val endedAt = System.nanoTime()
             switchBlock(0, endedAt)
             lastStreamMillis = (endedAt - streamStartedAt) / 1_000_000
@@ -807,7 +801,7 @@ class AgentLoop(
             lastToolArgMillis = toolArgMs
             if (firstTokenAt > 0L) {
                 lastTtftMillis = (firstTokenAt - streamStartedAt) / 1_000_000
-                // 只出一个字时 lastTokenAt == firstTokenAt：生成时长按 0 算，速度那边自己兜底，不除零
+                // 仅产生一个字时 lastTokenAt == firstTokenAt：生成时长按 0 计算，速度计算处自行兜底，避免除零
                 lastGenMillis = (lastTokenAt - firstTokenAt) / 1_000_000
             }
         }
@@ -827,8 +821,8 @@ class AgentLoop(
     }
 
     /**
-     * 发请求前的清洗：丢掉空 assistant 占位、孤儿 tool 消息，以及「有 tool_calls 但结果不齐」的整轮。
-     * 停止按钮打断工具执行时，历史里就会留下这种半截轮次，不清洗下一轮必定 400。
+     * 发送请求前的清洗：丢弃空 assistant 占位、孤立的 tool 消息，以及「有 tool_calls 但结果不完整」的整轮。
+     * 停止按钮打断工具执行时，历史中会留下此类不完整轮次，未清洗则下一轮必定返回 400。
      */
     private fun List<ChatMessage>.sanitized(): List<ChatMessage> {
         val out = ArrayList<ChatMessage>(size)
@@ -866,8 +860,8 @@ class AgentLoop(
 /**
  * 伪工具标记过滤。
  *
- * 标记可能被拆到两个 delta 里（例如「...<|DS」+「ML|>...」），所以尾巴上可能是标记前缀的
- * 部分要先扣住不显示，确认不是标记再放出去；一旦命中就永久截断本轮。
+ * 标记可能被拆分到两个 delta 中（例如「...<|DS」+「ML|>...」），因此尾部可能是标记前缀的
+ * 部分需暂缓输出，确认不是标记后再放出；一旦命中即永久截断本轮。
  */
 class DsmlFilter(private val label: String) {
 

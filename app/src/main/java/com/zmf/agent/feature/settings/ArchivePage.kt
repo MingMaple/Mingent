@@ -47,7 +47,7 @@ fun ArchivePage(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
 
-    // 分组只在数据变化时重算：组内按 updatedAt 倒序，工作区已被删掉的会话归进未分类
+    // 仅在数据变化时重算分组；工作区已删除的会话归入未分类
     val known = remember(workspaces) { workspaces.map { it.id }.toSet() }
     val groups = remember(workspaces, archived) {
         val buckets = archived.groupBy { it.workspaceId?.takeIf { id -> id in known } }
@@ -60,7 +60,7 @@ fun ArchivePage(
     }
 
     Surface(
-        // 铺满且不透明；最外层吞掉点击，避免穿透点到下面的聊天界面
+        // 铺满且不透明；最外层拦截点击，避免穿透到下层聊天界面
         modifier = Modifier
             .fillMaxSize()
             .blockTapsOnly(),
@@ -125,7 +125,7 @@ fun ArchivePage(
     }
 }
 
-/** 一行归档会话：标题 + 相对时间，右侧「恢复」「删除」；点行 = 恢复，长按 = 删除。 */
+/** 归档会话行：点击恢复，长按删除。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ArchiveRow(

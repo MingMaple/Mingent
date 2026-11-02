@@ -10,8 +10,8 @@ import org.json.JSONObject
 /**
  * job_list：列出当前会话的后台任务，一行一条 `<id> [<kind>] <status> — <label>`。
  *
- * 只列本会话的（归属由 [JobRegistry] 按 sessionId 过滤），别的会话的任务既看不到也碰不到。
- * 语义对齐 DSH 的 `job_list`，输出格式让模型能一眼看出「哪个还活着、哪个已经结算」。
+ * 只列本会话的任务（归属由 [JobRegistry] 按 sessionId 过滤），其他会话的任务不可见也不可操作。
+ * 语义对齐 DSH 的 `job_list`，输出格式应便于模型判断任务的运行与结算状态。
  */
 class JobListTool : Tool {
 

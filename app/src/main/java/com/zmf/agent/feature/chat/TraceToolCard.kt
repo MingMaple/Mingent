@@ -44,13 +44,11 @@ import com.zmf.agent.uikit.common.ChevronKind
 import com.zmf.agent.uikit.common.ChevronSize
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
-import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
-import com.zmf.agent.uikit.markdown.MarkdownText
 import com.zmf.agent.uikit.markdown.MarkdownCodeBlock
 import com.zmf.agent.uikit.markdown.copyCode
 import com.zmf.agent.uikit.components.CopyRevealHost
@@ -130,16 +128,16 @@ fun TraceToolCard(
     // 参数 / 代码 / 输出共用同一份「代码块底色」，比卡片本身再浅一档
     val bodyBackground = onSurface.copy(alpha = 0.06f)
 
-    // 卡片默认折叠成一行（工具名 + 状态）：参数 / 代码 / 输出要点开才看。
-    // 一轮里常常连着七八次工具调用，全摊开会把这一轮的回答挤到看不见。
-    // 轨迹页是「点进来看详情」，进来就该是展开的
+    // 卡片默认折叠为一行（工具名 + 状态）：参数 / 代码 / 输出需点击展开。
+    // 一轮中常连续七八次工具调用，全部展开会将本轮回答挤出可视区域。
+    // 轨迹页为「点击查看详情」，进入时应为展开状态
     var open by rememberSaveable { mutableStateOf(true) }
     var copied by remember { mutableStateOf(false) }
-    // 「复制」的全局唯一身份：展开 + 摸过这块才显示，摸别的块就挪过去
+    // 「复制」的全局唯一标识：展开且操作过该块后才显示，操作其他块时迁移
     val copyKey = rememberCopyBlockKey()
     val copyVisible = open && CopyRevealHost.owner === copyKey
 
-    // 父层接了「点块外」的话，计数一变就立刻收回；不接也照样能用
+    // 父层若接收「点击块外」事件，计数变化即立即收回；未接收时仍可正常使用
     LaunchedEffect(outsideTapKey) {
         if (outsideTapKey != null) CopyRevealHost.release(copyKey)
     }
@@ -152,14 +150,14 @@ fun TraceToolCard(
     }
 
     val running = output == null
-    // 状态只留一个词：拿到结果就写「完成」，没拿到就先空着。
-    // 不再区分成功 / 失败 / 成败未知：调用结束就是结束，具体的错在输出里能看到，
-    // 卡片上多一个红字反而更吵。
+    // 状态仅保留一个词：取得结果即写「完成」，未取得则暂空。
+    // 不区分成功 / 失败 / 成败未知：调用结束即结束，具体错误可在输出中查看，
+    // 卡片上额外的红字反而干扰阅读。
     val statusColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
     val statusText = if (running) "" else "完成"
-    // 一句话总结（「读取 test.txt」「运行命令 tail -c 20 …」）：标题行给用户看这条工具干了什么
+    // 一句话总结（「读取 test.txt」「运行命令 tail -c 20 …」）：标题行向用户展示该工具执行了什么
     val headline = remember(toolName, arguments) { toolSummary(toolName, arguments) }
-    // 参数等于没有（空串 / 空对象）时整块不渲染：避免「参数 缩进」下面只剩一个空花括号
+    // 参数为空（空串 / 空对象）时整块不渲染：避免「参数 缩进」下仅剩一个空花括号
     val argsBlank = remember(arguments) { toolArgIsBlank(arguments) }
     // 输出里真实存在的图片 → 附件卡（缩略图 + 文件名 + 类型/大小/尺寸）
     val attachments = remember(output, imageRoot) { toolAttachments(output, imageRoot) }
@@ -173,11 +171,11 @@ fun TraceToolCard(
         shape = RoundedCornerShape(14.dp),
         modifier = modifier
             .fillMaxWidth()
-            // 复制归属挂在内容区（见下面那个 Column），不挂在整卡上：
-            // 以前点标题行那一下也算「摸过」，于是「点一下展开没有按钮、再点一下收起反而出现」。
+            // 复制归属挂载于内容区（见下方 Column），不挂载于整卡：
+            // 若挂载于整卡，点击标题行也会被视为「操作过」，出现「点击展开无按钮、再次点击收起却出现」。
     ) {
-        // 内边距下放到每一块内容上：标题行要顶到卡片边缘，波纹才铺满整行
-        // （反馈不做成行内一个小矩形）。
+        // 内边距下放至各块内容：标题行需顶至卡片边缘，波纹方可铺满整行
+        // （反馈不设计为行内小矩形）。
         Column {
             /* -------------------------- 标题行 -------------------------- */
             Row(
@@ -197,9 +195,9 @@ fun TraceToolCard(
                     modifier = Modifier.size(13.dp)
                 )
                 Spacer(Modifier.width(5.dp))
-                // 标题行只放「这条工具干了什么」：工具名那行字删掉、简介语句移到前面，
-                // 图标保留。工具名仍进复制文本（buildToolCopyText），信息不丢。
-                // 12sp：这句是标题，不是附属小字。
+                // 标题行仅显示「这条工具执行了什么」：工具名文字移除、简介语句前置，
+                // 图标保留。工具名仍进入复制文本（buildToolCopyText），信息不丢失。
+                // 12sp：该句为标题，非附属小字。
                 Text(
                     text = headline,
                     modifier = Modifier.weight(1f),
@@ -217,7 +215,7 @@ fun TraceToolCard(
                         color = onSurface.copy(alpha = 0.4f)
                     )
                 }
-                // 「复制」占一块固定宽度：出现 / 消失都不挪动任何别的元素（口径见 [ToolBlock] 的同段说明）。
+                // 「复制」占用固定宽度：出现或消失均不移动其他元素（约定见 [ToolBlock] 同段说明）。
                 Box(
                     modifier = Modifier
                         .width(CopySlot)
@@ -249,7 +247,7 @@ fun TraceToolCard(
                     Text(text = statusText, fontSize = 11.sp, color = statusColor)
                 }
                 Spacer(Modifier.width(6.dp))
-                // 折着的时候给个朝右的小箭头，用户才知道这行能点开
+                // 折叠时显示朝右的小箭头，用户方可得知该行可点击展开
                 Chevron(
                     expanded = open,
                     size = ChevronSize.SMALL,
@@ -262,14 +260,14 @@ fun TraceToolCard(
             Column(
                 modifier = Modifier
                     .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
-                    // 展开后内容区任意位置按下 / 滑动都叫出复制（Initial 阶段，不消费事件）
+                    // 展开后内容区任意位置按下或滑动均触发复制（Initial 阶段，不消费事件）
                     .claimCopyOnGesture(copyKey),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
             /* -------------------------- 参数区 -------------------------- */
-            // 直接展示，不再有二级「展开 / 收起」：卡片本身已经是「点开才看」的那一层，
-            // 里面再折一层会让收起动效叠两段（表现为「收完又跳一下」）。
-            // 参数等于没有时整块不渲染（空对象不该画出一个空块）。
+            // 直接展示，无二级「展开 / 收起」：卡片本身已是「点击才看」的层级，
+            // 内部再折叠会使收起动效叠加两段（表现为「收起后再次跳动」）。
+            // 参数为空时整块不渲染（空对象不应绘制空块）。
             if (!argsBlank) {
                 BoundedScrollColumn(
                     maxHeight = BlockBodyMaxHeight,
@@ -289,9 +287,9 @@ fun TraceToolCard(
             }
 
             /* -------------------------- 代码区（可选） -------------------------- */
-            // 终端类工具的命令、write_file 的片段走这里；没有就不占位。
-            // 高度同样由 MarkdownCodeBlock 自己限高（240dp 内滚，超出才吃滑动）：命令和 diff 片段
-            // 一样可能很长，读的时候不该把整条会话撑开一屏多。
+            // 终端类工具的命令、write_file 的片段由此渲染；无内容时不占位。
+            // 高度同样由 MarkdownCodeBlock 自行限高（240dp 内滚，超出才消费滑动）：命令与 diff 片段
+            // 同样可能较长，阅读时不应使整条会话扩展超过一屏。
             if (codeBody != null) {
                 MarkdownCodeBlock(
                     code = codeBody,
@@ -308,7 +306,7 @@ fun TraceToolCard(
 
             /* -------------------------- 输出区 -------------------------- */
             if (output != null) {
-                // 只有上面还有参数/代码时才加「输出」小标题，否则整块就是输出，不必标注
+                // 仅当上方存在参数/代码时才添加「输出」小标题，否则整块即为输出，无需标注
                 if (!argsBlank || codeBody != null) {
                     Text(
                         text = "输出",
@@ -324,7 +322,7 @@ fun TraceToolCard(
                 ) {
                     Text(
                         text = output.ifBlank { "（无输出）" },
-                        // 内边距给在正文上：让它跟着内容一起滚动，不占滚动区
+                        // 内边距设置于正文上：随内容一同滚动，不占滚动区
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
@@ -335,8 +333,8 @@ fun TraceToolCard(
             }
 
             /* -------------------------- 图片附件 -------------------------- */
-            // 输出里真实存在的图片单独排成附件卡（缩略图 + 文件名 + 类型/大小/尺寸），
-            // 点开交给主页同一套查看器。没有图就整段不出。
+            // 输出中真实存在的图片单独排列为附件卡（缩略图 + 文件名 + 类型/大小/尺寸），
+            // 点击交由主页同一套查看器。无图片则整段不显示。
             if (attachments.isNotEmpty()) {
                 ToolAttachmentRow(
                     attachments = attachments,
@@ -353,12 +351,12 @@ fun TraceToolCard(
 /* ------------------------------ 内部实现 ------------------------------ */
 
 /**
- * 横向行滑到头之后，把剩下那点横向位移就地吃掉，不让外层抽屉 / 轨迹页接手。
+ * 横向行滑至尽头后，将剩余横向位移就地消费，不让外层抽屉 / 轨迹页接手。
  *
- * 为什么不用 nestedScroll：horizontalScroll 到边界时既不再消费、也不把余量交给
+ * 为什么不用 nestedScroll：horizontalScroll 到边界时既不消费、也不将余量交给
  * onPostScroll，所以 onPostScroll 根本收不到；再往外推就是「把抽屉拉出来」。
  *
- * 为什么走 Initial 阶段逐帧判：到边界之后子节点本身已经不再消费，等 Main 阶段看到时
+ * 为什么走 Initial 阶段逐帧判定：到边界后子节点本身已不消费，待 Main 阶段处理时
  * 外层可能已经接走；这里只问「贴没贴到这一侧 + 方向是不是往外」，贴住了就 consume，
  * 行内还有余量时一律不碰（滑动仍归 horizontalScroll），竖向为主的位移也不碰，
  * 所以竖着滑消息列表不受影响。
@@ -368,7 +366,7 @@ fun TraceToolCard(
 private fun Modifier.traceCardHorizontalAtEdge(state: ScrollState): Modifier = pointerInput(state) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        // 累计位移判方向：只看单帧的话，慢速拖动一帧不过几像素，永远判不出横向
+        // 累计位移判定方向：仅看单帧时，慢速拖动一帧仅数像素，无法判定横向
         var dx = 0f
         var dy = 0f
         while (true) {

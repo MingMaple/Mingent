@@ -40,7 +40,7 @@ android {
         targetSdk = 28
         // 版本规则（2026-10-26 定）：首位/中位由用户定（助手可推荐），末位由助手按改动程度自行 +1；
         // 每次打包 versionCode 必须 +1（跨 versionName 也不重置），否则覆盖安装会因「版本未升高」被系统直接拒掉
-        versionCode = 98
+        versionCode = 101
         versionName = "1.1.2"
     }
 
@@ -138,8 +138,6 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.ui.tooling.preview)
-    debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
 // ---------------------------------------------------------------
@@ -148,12 +146,11 @@ dependencies {
 // 把「谁不许依赖谁」从文档约定变成构建失败：
 //   gradle :app:checkArchitecture
 //
-// 规则来源：_Docs/模块化.md §2 依赖矩阵
+// 规则来源：_Docs/模块化.md §2 依赖矩阵。只检查新层
+// （core / uikit / infra / capability / feature / app），不属于任何层的包跳过。
 //
-// 存量豁免：ui/ agent/ tools/ core/ schedule/ service/ 等老目录还在搬迁中，不属于任何新层，
-// 一律跳过；只有新层（uikit/ infra/ capability/ feature/）被强制检查。
-//
-// 白名单不是放水：每条都带编号与原因，并登记在 03_执行台账.md，搬完即刻删除。
+// 白名单为空：跨 feature 依赖经由 app/navigation 装配，共享件放在 uikit，
+// 跨 feature 的窄口下沉到 capability。新增条目必须写明编号与原因。
 // ---------------------------------------------------------------
 val checkArchitecture by tasks.registering {
     group = "verification"
@@ -197,9 +194,7 @@ val checkArchitecture by tasks.registering {
         )
 
         // 编号: 层 / 来源包前缀 / 被依赖包前缀 / 原因
-        // from 前缀不可省：feature 层如果只按「层」放行，等于整个 feature 之间都放开了
-        // 2026-10-30 清零：导航壳与小窗/定时投递的跨 feature 依赖改由 app/navigation 装配，
-        // 共享件上移 uikit、跨 feature 窄口下沉 capability，此后不再新增条目。
+        // from 前缀不可省：feature 层若只按层放行，等于放开了整个 feature 之间的依赖
         data class Wl(val layer: String, val fromPrefix: String, val toPrefix: String, val why: String)
         val whiteList = emptyList<Wl>()
 

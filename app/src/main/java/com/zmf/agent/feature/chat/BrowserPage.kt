@@ -34,12 +34,12 @@ import com.zmf.agent.uikit.theme.UiColors
  *
  * 布局是两层：
  *   顶栏   ← 回主页（**不关网页**）｜当前标签的标题 + 域名｜⟳ 刷新｜↗ 用系统默认浏览器打开当前页
- *   标签栏 一个地址一枚标签，点标签切过去（切走的页面不重载、登录态不丢），点 × 才真的关掉。
- *          标签多了左右滑，和计划页那条计划条同一套手势（[blockHorizontalAtEdge]）。
+ *   标签栏 一个地址一枚标签，点击标签切换（已切走的页面不重载、登录态不丢失），点击 × 才真正关闭。
+ *          标签较多时左右滑动，与计划页的计划条共用同一套手势（[blockHorizontalAtEdge]）。
  *
- * 为什么 AndroidView 的 onRelease 是空的：Compose 把这页从窗口摘下来时，默认行为会把
- * WebView 一起带走；而口径是「返回不关闭网页」，所以这里禁止销毁，只让壳和窗口脱钩。
- * 真正销毁只发生在用户点 × 关闭标签时。
+ * 为什么 AndroidView 的 onRelease 为空：Compose 将该页从窗口摘下时，默认行为会
+ * 一并销毁 WebView；而约定是「返回不关闭网页」，因此此处禁止销毁，仅使壳与窗口脱钩。
+ * 真正销毁仅在用户点击 × 关闭标签时发生。
  */
 @Composable
 fun BrowserPage(onBack: () -> Unit) {
@@ -47,7 +47,7 @@ fun BrowserPage(onBack: () -> Unit) {
     val active = BrowserState.active
     val context = LocalContext.current
 
-    // 最后一个标签被关掉：这一页没有内容可留，直接回主页（顶栏的网页图标也随之消失）
+    // 最后一个标签被关闭：该页已无内容，直接返回主页（顶栏网页图标随之消失）
     LaunchedEffect(tabs.size) {
         if (tabs.isEmpty()) onBack()
     }
@@ -55,7 +55,7 @@ fun BrowserPage(onBack: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxSize()
-            // 盖在聊天页之上：点击不能穿透（拖动仍然放行，页面里要能横滑）
+            // 覆盖在聊天页之上：点击不可穿透（拖动仍放行，页面需支持横滑）
             .blockTapsOnly(),
         color = MaterialTheme.colorScheme.background
     ) {
@@ -84,7 +84,7 @@ fun BrowserPage(onBack: () -> Unit) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    // 第二行给域名：标题和地址分开放，才知道自己在哪个站上
+                    // 第二行显示域名：标题与地址分开，便于确认当前站点
                     if (host.isNotBlank() && host != headLine) {
                         Text(
                             text = host,
@@ -95,14 +95,16 @@ fun BrowserPage(onBack: () -> Unit) {
                         )
                     }
                 }
-                // 刷新：原先在右侧最外，现在挪到「‹」这一格（那个后退箭头没有历史时按不动，已撤掉）
+                // 刷新：原位于右侧最外，现移至「‹」这一格（后退箭头无历史时不可点击，已移除）。
+                // 字形「⟳」的墨迹中心天然低于「↗」，此处仅上移字形，热区与圆角不变
                 TopIconButton(
                     glyph = "⟳",
                     enabled = active != null,
                     fontSize = 17.sp,
+                    glyphOffsetY = (-2).dp,
                     onClick = { BrowserHolder.reload() }
                 )
-                // 转发：把当前这一页交给系统默认浏览器打开，内置页的登录态与历史都留着不动
+                // 转发：将当前页交由系统默认浏览器打开，内置页的登录态与历史保持不变
                 TopIconButton(
                     glyph = "↗",
                     enabled = shareable,
@@ -112,8 +114,8 @@ fun BrowserPage(onBack: () -> Unit) {
             }
 
             // 标签栏常驻：只有一个页面时也保留这一行（条目只有一个），
-            // 这样「页面设计」在多页与单页时是同一套，不会因为少一个标签整块布局往上跳。
-            // 样式与行为都来自 TabStrip：和计划页的计划条是同一份实现（含选中项自动入视野）。
+            // 使多页与单页的页面布局一致，不会因少一个标签而整体上移。
+            // 样式与行为均来自 TabStrip：与计划页的计划条为同一实现（含选中项自动进入视野）。
             if (tabs.isNotEmpty()) {
                 TabStrip(
                     items = tabs.map { tab ->
@@ -126,7 +128,7 @@ fun BrowserPage(onBack: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
             }
 
-            // 进度条只有真在加载时才出现（0–99）：完成后消失，不占版面
+            // 进度条仅在确实加载时显示（0–99）：完成后消失，不占版面
             val loading = active?.loading == true
             val progress = active?.progress ?: 0
             if (loading && progress in 1..99) {
@@ -147,15 +149,15 @@ fun BrowserPage(onBack: () -> Unit) {
                     Text(text = "没有打开的网页", fontSize = 14.sp, color = UiColors.subText)
                 }
             } else {
-                // key(标签 id)：切换标签时整块换掉 AndroidView，新标签的壳挂进来、
-                // 旧标签的 WebView 留在自己的壳里（不销毁、不重载）
+                // key(标签 id)：切换标签时整块替换 AndroidView，新标签的壳挂入，
+                // 旧标签的 WebView 保留在其壳中（不销毁、不重载）
                 key(active.id) {
                     AndroidView(
                         modifier = Modifier
                             .fillMaxSize()
                             .navigationBarsPadding(),
                         factory = { BrowserHolder.frameFor(active) },
-                        // 空实现是故意的：页面离开窗口时保留 WebView 实例（返回不关闭网页）
+                        // 空实现是有意为之：页面离开窗口时保留 WebView 实例（返回不关闭网页）
                         onRelease = { }
                     )
                 }
@@ -163,5 +165,3 @@ fun BrowserPage(onBack: () -> Unit) {
         }
     }
 }
-
-

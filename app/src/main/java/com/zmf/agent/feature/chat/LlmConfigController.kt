@@ -19,8 +19,8 @@ import com.zmf.agent.infra.llm.ProviderStore
 /**
  * 模型与提供商配置：Key、模型、端点、提供商列表，以及换配置时重建请求链路。
  *
- * 从 [ChatViewModel] 搬出，行为不变：状态字段名与原成员逐字一致，方法体原样照搬；
- * 提示词输入、上下文策略与摘要视图、子智能体依赖同步都用构造 lambda 注入，不反向攥住 ViewModel。
+ * 从 [ChatViewModel] 拆出，行为不变：状态字段名与原成员逐字一致，方法体原样保留；
+ * 提示词输入、上下文策略与摘要视图、子智能体依赖同步均以构造 lambda 注入，不反向持有 ViewModel。
  */
 class LlmConfigController(
     private val appContext: Context,
@@ -32,11 +32,11 @@ class LlmConfigController(
     private val syncSubAgentDeps: () -> Unit
 ) {
 
-    /** 用户自填的 Key；没填过时 ApiConfig 会回落到源码里的默认 Key。 */
+    /** 用户自填的 Key；未填写时 ApiConfig 会回退至源码中的默认 Key。 */
     var apiKey by mutableStateOf(ApiConfig.loadApiKey(appContext))
         private set
 
-    /** 当前模型（deepseek-flash / deepseek-v4-pro / 别家的模型 id）；改了立刻重建请求链路。 */
+    /** 当前模型（deepseek-flash / deepseek-v4-pro / 其他厂商模型 id）；修改后立即重建请求链路。 */
     var model by mutableStateOf(ApiConfig.loadModel(appContext))
         private set
 
@@ -44,18 +44,18 @@ class LlmConfigController(
     var providers by mutableStateOf<List<ProviderConfig>>(ProviderStore.load(appContext))
         private set
 
-    /** 当前提供商 id；选中态落在 app_prefs 里，重启后还停在这一条。 */
+    /** 当前提供商 id；选中态存于 app_prefs，重启后仍停留于该项。 */
     var currentProviderId by mutableStateOf(ProviderStore.currentId(appContext))
         private set
 
-    // 端点与 Key 都取自当前 provider：一个 provider 都没配时 ProviderStore 会自动建一条内置
-    // DeepSeek（老用户的 Key / 端点 / 模型都在里面），所以默认行为与单提供商版本完全一致
+    // 端点与 Key 均取自当前 provider：未配置任何 provider 时 ProviderStore 会自动创建一条内置
+    // DeepSeek（旧用户的 Key / 端点 / 模型均在其中），因此默认行为与单提供商版本完全一致
     private var provider = DeepSeekProvider(
         apiKey = ApiConfig.loadApiKey(appContext),
         baseUrl = ApiConfig.loadBaseUrl(appContext)
     )
 
-    /** 请求链路只有这里能换：Key / 端点 / 模型都是构造时固定的。 */
+    /** 请求链路仅此处可更换：Key / 端点 / 模型均为构造时固定。 */
     var loop: AgentLoop = AgentLoop(
         provider = provider,
         registry = registry,
@@ -67,7 +67,7 @@ class LlmConfigController(
     )
         private set
 
-    /** 当前请求对象（子智能体要拿同一个，否则它还在用旧 Key / 旧端点）。 */
+    /** 当前请求对象（子智能体需使用同一个，否则仍在使用旧 Key / 旧端点）。 */
     val currentProvider: LlmProvider get() = provider
 
     /** 保存并立即生效（重建 provider 与 loop）。 */
@@ -76,19 +76,19 @@ class LlmConfigController(
         if (trimmed.isEmpty() || trimmed == apiKey) return
         apiKey = trimmed
         ApiConfig.saveApiKey(appContext, trimmed)
-        // Key 写在当前 provider 里：设置页的列表也要跟着变
+        // Key 写入当前 provider：设置页的列表也需同步变化
         providers = ProviderStore.load(appContext)
         rebuildClient()
         FileLog.log("api", "已更新 API Key（长度 " + trimmed.length + "）")
     }
 
-    /** 切换模型：落盘并重建请求链路；值没变时直接返回，避免无谓的重建。 */
+    /** 切换模型：落盘并重建请求链路；值未变化时直接返回，避免无谓重建。 */
     fun applyModel(newModel: String) {
         if (newModel == model) return
         model = newModel
         ApiConfig.saveModel(appContext, newModel)
-        // 用 rebuildPipeline 而不是 rebuildClient：后者会把模型重新读一遍，
-        // 而「记下的模型不在 provider 的模型列表里就回落第一个」会把刚选的值悄悄改掉
+        // 使用 rebuildPipeline 而非 rebuildClient：后者会重新读取模型，
+        // 而「记录的模型不在 provider 的模型列表中即回退第一个」会静默修改刚选的值
         rebuildPipeline()
         FileLog.log("api", "模型切到 " + newModel)
     }
@@ -96,12 +96,12 @@ class LlmConfigController(
     /**
      * 保存当前 provider 的对话端点并立刻生效（重建 provider 与 loop）。
      *
-     * 空串对内置 DeepSeek 等于「回落官方地址」（ApiConfig 内部处理），别家则保持空、由 provider 报错提示。
+     * 空串对内置 DeepSeek 等于「回退官方地址」（ApiConfig 内部处理），其他厂商则保持空，由 provider 报错提示。
      */
     fun applyBaseUrl(url: String) {
         val before = ApiConfig.loadBaseUrl(appContext)
         ApiConfig.saveBaseUrl(appContext, url)
-        // 端点是当前 provider 的一部分：设置页的列表也要跟着变
+        // 端点为当前 provider 的一部分：设置页的列表也需同步变化
         providers = ProviderStore.load(appContext)
         rebuildClient()
         FileLog.log("api", "对话端点：" + before + " → " + ApiConfig.loadBaseUrl(appContext))
@@ -121,7 +121,7 @@ class LlmConfigController(
         FileLog.log("api", "切换提供商 " + id + "（模型=" + model + "）")
     }
 
-    /** 新增或整条替换一个提供商；改的正好是当前这条时才需要重建请求链路。 */
+    /** 新增或整条替换一个提供商；仅当修改的正是当前项时才需重建请求链路。 */
     fun saveProvider(cfg: ProviderConfig) {
         ProviderStore.upsert(appContext, cfg)
         providers = ProviderStore.load(appContext)
@@ -129,16 +129,16 @@ class LlmConfigController(
         FileLog.log("api", "保存提供商 " + cfg.id + "（" + cfg.name + "）")
     }
 
-    /** 删除提供商；最后一个删不掉（[ProviderStore.remove] 会拒绝，这里什么都不做）。 */
+    /** 删除提供商；最后一个不可删除（[ProviderStore.remove] 会拒绝，此处不执行任何操作）。 */
     fun deleteProvider(id: String) {
         if (!ProviderStore.remove(appContext, id)) return
         providers = ProviderStore.load(appContext)
-        // 删的是当前 provider：ProviderStore 已把选中态挪到第一个，这里跟着切过去重建
+        // 删除的是当前 provider：ProviderStore 已将选中态移至第一个，此处随之切换并重建
         if (ProviderStore.currentId(appContext) != currentProviderId) rebuildClient()
         FileLog.log("api", "删除提供商 " + id + "，当前=" + currentProviderId)
     }
 
-    /** 换 Key / 换端点 / 换提供商后重建请求链路：Key、端点、模型都重新从当前 provider 读一遍。 */
+    /** 更换 Key / 端点 / 提供商后重建请求链路：Key、端点、模型均重新从当前 provider 读取。 */
     private fun rebuildClient() {
         val cfg = ProviderStore.current(appContext)
         currentProviderId = cfg.id
@@ -151,11 +151,11 @@ class LlmConfigController(
      * 只换请求对象、不重新读配置。
      *
      * provider 与 loop 的 Key / 端点 / 模型都是构造时固定的，配置一变就必须换一套新对象；
-     * 单独拆出来是给「换模型」用的（见 [applyModel]）。
+     * 单独拆出供「换模型」使用（见 [applyModel]）。
      */
     private fun rebuildPipeline() {
         provider = DeepSeekProvider(apiKey = apiKey, baseUrl = ApiConfig.loadBaseUrl(appContext))
-        // provider 是新对象：子智能体必须拿到新的那个，否则它还在用旧 Key / 旧端点
+        // provider 为新对象：子智能体必须获取新实例，否则仍在使用旧 Key / 旧端点
         syncSubAgentDeps()
         loop = AgentLoop(
             provider = provider,

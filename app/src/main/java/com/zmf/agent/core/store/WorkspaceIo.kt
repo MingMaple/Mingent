@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * 工作区里的一个条目（列目录用）。
  *
- * size 未知时是 -1：SAF 的 provider 不一定会给 COLUMN_SIZE，别把「不知道」当成 0。
+ * size 未知时为 -1：SAF 的 provider 不一定提供 COLUMN_SIZE，不应将「未知」按 0 处理。
  */
 data class WorkspaceEntry(
     val name: String,
@@ -37,12 +37,12 @@ data class CopyStats(
  * 约定：
  * 1. 所有路径都是**工作区相对路径**（用 / 分隔，空串 = 根本身），绝对路径只在
  *    [relativePathOf] 里出现一次，负责把工具解析出来的 File 翻成相对路径；
- * 2. 读写的失败统一抛异常（FileNotFound / IOException），工具层用 runCatching 兜成给模型的一句错误；
+ * 2. 读写失败统一抛异常（FileNotFound / IOException），工具层用 runCatching 转换为面向模型的错误信息；
  * 3. 目录不存在不算错误：[list] 返回空列表，[exists] 返回 false。
  */
 interface WorkspaceIo {
 
-    /** 给人看的根：File 版是绝对路径，SAF 版尽量给本地可读路径。 */
+    /** 展示用根路径：File 版为绝对路径，SAF 版尽量提供本地可读路径。 */
     val displayRoot: String
 
     /** 根是不是 SAF 授权目录（File 表示不了它）。 */
@@ -93,12 +93,12 @@ interface WorkspaceIo {
     /**
      * 把 [rel] 指向的整棵条目复制到本地 [dest]（SAF 工作区进回收站用）。
      *
-     * 普通目录走 rename，用不到它；不支持或超限/失败返回 null，调用方按不可恢复处理。
+     * 普通目录使用 rename，无需该方法；不支持、超限或失败时返回 null，调用方按不可恢复处理。
      */
     fun copyTo(dest: File, rel: String, maxEntries: Int, maxBytes: Long): CopyStats? = null
 }
 
-/** 普通目录实现：根就是一个 File，行为跟改造前的 java.io.File 完全一致。 */
+/** 普通目录实现：根为一个 File，行为与 java.io.File 一致。 */
 class FileWorkspaceIo(val root: File) : WorkspaceIo {
 
     override val displayRoot: String get() = root.absolutePath
@@ -146,7 +146,7 @@ class FileWorkspaceIo(val root: File) : WorkspaceIo {
 
     override fun delete(rel: String): Boolean {
         val file = target(rel)
-        // 根目录永远不删：delete("") 传进来就当失败处理，别把整个工作区端掉
+        // 根目录永不删除：delete("") 传入时按失败处理，避免删除整个工作区
         if (file == root) return false
         return if (file.isDirectory) file.deleteRecursively() else file.delete()
     }
@@ -289,7 +289,7 @@ class SafWorkspaceIo internal constructor(
     }
 
     override fun relativePathOf(file: File): String? {
-        // 先按兜底目录认（工具的相对路径就是这么解析来的）
+        // 先按兜底目录匹配（工具的相对路径即由此解析）
         relativeUnder(fallbackRoot, file)?.let { return it }
         val local = localRoot ?: return null
         return relativeUnder(File(local), file)
@@ -367,10 +367,10 @@ class SafWorkspaceIo internal constructor(
 }
 
 /**
- * 「空壳」实现：SAF 工作区的授权失效、或用户目录被删时用它，所有写/读都失败。
+ * 占位实现：SAF 工作区授权失效或用户目录被删除时使用，所有读写均失败。
  *
- * 为什么不悄悄退回私有目录：那会让模型以为写进了用户选的目录，实际落在 App 私有沙盒里，
- * 用户在自己的文件夹里什么都看不到：宁可直接报错，让用户重新选目录。
+ * 不静默退回私有目录的原因：模型会误以为内容写入了用户选定目录，实际落在 App 私有沙盒，
+ * 用户在目标文件夹中看不到内容；因此直接报错并由用户重新选择目录。
  */
 class UnavailableWorkspaceIo(private val reason: String) : WorkspaceIo {
 
@@ -407,7 +407,7 @@ class UnavailableWorkspaceIo(private val reason: String) : WorkspaceIo {
 
 // ---- 工厂与缓存 ----
 
-/** 每个工作区根只认一次盘：工具是高频调用，不能每次都去解析 workspaces.json。 */
+/** 每个工作区根仅解析一次：工具调用频繁，不能每次解析 workspaces.json。 */
 private val IO_CACHE = ConcurrentHashMap<String, WorkspaceIo>()
 
 /**
@@ -443,7 +443,7 @@ fun clearWorkspaceIoCache(root: File? = null) {
 
 // ---- 路径工具 ----
 
-/** 把路径收敛成「工作区相对路径」：去掉开头的 /、合并重复斜杠、去尾斜杠；不允许 .. 往上跑。 */
+/** 将路径规范化为「工作区相对路径」：去除开头的 /、合并重复斜杠、去除尾部斜杠；禁止 .. 越出工作区。 */
 internal fun cleanRel(raw: String): String {
     var text = raw.trim().replace('\\', '/')
     while (text.startsWith("/")) text = text.substring(1)
