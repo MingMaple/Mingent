@@ -891,7 +891,7 @@ internal fun UserRow(
     onImageLongPress: (String, Offset) -> Unit
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val bubbleColor = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh
+    val bubbleColor = if (isDark) Palette.BubbleUserDark else Palette.BubbleUserLight
     val text = userBubbleText(message)
     // 折叠口径：近三轮完全铺开，刚发出去的消息正是用户在读的那条，不该被收起来；
     // 更早的历史按屏幕 45% 折。折叠点落在整段末尾（由 MarkdownText 按块取整），
@@ -1231,7 +1231,7 @@ internal fun AssistantRow(
     val reasoning = indices.joinToString("") { all.getOrNull(it)?.reasoningContent.orEmpty() }
     val lastIndex = indices.lastOrNull()
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val bubbleColor = if (isDark) Palette.DarkSurface else Palette.LightSurface
+    val bubbleColor = if (isDark) Palette.BubbleAiDark else Palette.BubbleAiLight
     val thinkColor = if (isDark) Palette.BubbleThinkDark else Palette.BubbleThinkLight
     val cardColor = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh
     val menuIndex = indices.firstOrNull() ?: 0

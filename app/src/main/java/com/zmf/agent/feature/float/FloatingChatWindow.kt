@@ -638,14 +638,14 @@ private fun CloseIcon(color: Color) {
 private fun MessageBubble(message: ChatMessage, foldAt: Dp, foldedHeight: Dp) {
     val isUser = message.role == "user"
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    // 与主页气泡同一套配色：用户气泡 Palette.LightSurfaceHigh／DarkSurfaceHigh（最亮）、AI 气泡 Palette.LightSurface／DarkSurface
-    // （比画布深一档）。窗口画布也换成了页面底色，所以这里直接用不透明的气泡色即可，
-    // 折叠遮罩也能真的盖住最后一行。小窗原来用户气泡是 primary 的 14%：主题 primary 是
-    // AccentBlue，整屏单色里就那两块是浅蓝，跟全局配色对不上。
+    // 与主页气泡同一套配色：用户气泡 Palette.BubbleUserLight／BubbleUserDark（画布上最亮）、
+    // AI 气泡 Palette.BubbleAiLight／BubbleAiDark（比画布深一档）。窗口画布也换成了页面底色，
+    // 所以这里直接用不透明的气泡色即可，折叠遮罩也能真的盖住最后一行。小窗原来用户气泡是
+    // primary 的 14%：主题 primary 是 AccentBlue，整屏单色里就那两块是浅蓝，跟全局配色对不上。
     val bubbleColor = if (isUser) {
-        if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh
+        if (isDark) Palette.BubbleUserDark else Palette.BubbleUserLight
     } else {
-        if (isDark) Palette.DarkSurface else Palette.LightSurface
+        if (isDark) Palette.BubbleAiDark else Palette.BubbleAiLight
     }
     // 展开态只活在这一屏：滑出小窗视口再回来重新折起（与主页口径一致）
     var expanded by remember { mutableStateOf(false) }
