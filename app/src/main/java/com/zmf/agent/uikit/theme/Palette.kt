@@ -219,7 +219,7 @@ object Palette {
     // | `alias-border-l3`（圆环底槽） | `#0000001F` | `#FFFFFF29` |
     // | `alias-interactive-bg-hover`（进度条底槽） | `#2631480F` | `#FFFFFF14` |
     //
-    // 三段构成色是组件内写死的固有色，深浅同值：系统提示词 `neutral-bluish-400`、
+    // 三段构成色是组件内固定的固有色，深浅同值：系统提示词 `neutral-bluish-400`、
     // 工具定义 `#A78BFA`、对话消息 `static-blue-450`。此处不作语义化改写：
     // 三色并列时的辨识度依赖于彼此色相不同，换成同族色则三段无法区分。
 

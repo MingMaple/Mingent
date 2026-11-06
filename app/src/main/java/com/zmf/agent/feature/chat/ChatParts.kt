@@ -890,7 +890,7 @@ internal fun WorkSpaceRow(
  * 列表项：用户消息单独一行；一个助手回合 = 到下一条提问之前的全部内容。
  *
  * [UserItem.roundsFromEnd] 是这条提问距离最新一轮的轮次差（最新一条为 0）：
- * 气泡折叠阈值按它分两档，比每次都从后往前数一遍消息省事，也能在列表复用后保持稳定。
+ * 气泡折叠阈值按它分两档，比每次从后向前遍历消息更高效，也能在列表复用后保持稳定。
  */
 internal sealed interface ChatItem {
     data class UserItem(

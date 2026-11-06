@@ -108,11 +108,20 @@ class SessionController(
      * 启动时读回工作区表与会话表，决定当前会话并载入它的消息。
      *
      * 顺序需与原先一致：先工作区（决定当前工作区时以其兜底），再会话。
+     * 三份表的读盘与 JSON 解析放在 IO 线程：sessions.json 含全部会话正文，会话越多越接近
+     * 冷启动 ANR 窗口；状态写入仍回到调用方（主线程），保证快照状态只在主线程修改。
      */
-    fun loadInitial() {
+    suspend fun loadInitial() {
         // 工作区表先读回来：默认工作区永远在，后面决定当前工作区时要用它兜底
-        val loadedSpaces = WorkSpaceStore.load(appContext)
-        val validStorages = StorageStore.loadStorages(appContext).map { it.id }.toSet()
+        val snapshot = withContext(Dispatchers.IO) {
+            InitialSnapshot(
+                spaces = WorkSpaceStore.load(appContext),
+                storageIds = StorageStore.loadStorages(appContext).map { it.id }.toSet(),
+                sessions = SessionStore.load(appContext)
+            )
+        }
+        val loadedSpaces = snapshot.spaces
+        val validStorages = snapshot.storageIds
         workspaces = loadedSpaces.map { space ->
             // 防御：存储单元记录丢失时退回默认存储单元，避免出现「工作区指向不存在的目录」
             if (space.storageId.isEmpty() || space.storageId !in validStorages) {
@@ -124,7 +133,7 @@ class SessionController(
         // 再重新读取会话表以确定当前会话：存在历史时接续最近一条，否则新建空会话
         // 顺便兜底：会话引用了已不存在的工作区（workspaces.json 丢了/坏了）就当未分类，
         // 否则这些会话在界面分组里会直接消失
-        val loaded = SessionStore.load(appContext).sortedByDescending { it.updatedAt }
+        val loaded = snapshot.sessions.sortedByDescending { it.updatedAt }
         val validIds = workspaces.map { space -> space.id }.toSet()
         var repaired = false
         val sessions = loaded.map { session ->
@@ -151,7 +160,7 @@ class SessionController(
         }
         if (repaired) {
             this.sessions = sessions
-            persistAllNow()
+            saveLoadedOnIo(sessions)
         }
         if (sessions.isEmpty()) {
             // 一条会话都没有：落在默认工作区，并创建一条可见的空白会话
@@ -159,7 +168,7 @@ class SessionController(
             val fresh = newSessionFor(currentWorkspaceId, blank = true, listed = true)
             this.sessions = listOf(fresh)
             currentSessionId = fresh.id
-            persistAllNow()
+            saveLoadedOnIo(this.sessions)
         } else {
             this.sessions = sessions
             // 恢复用户最后停留的会话，而非 updatedAt 最新的一条：定时任务与后台唤醒会刷新 updatedAt，
@@ -890,6 +899,17 @@ class SessionController(
     }
 
     /**
+     * [loadInitial] 的落盘：只在「修复缺键」与「首次建空会话」两种情况下触发。
+     * 此时处在启动阶段，整份会话表可能是数 MB，写到 IO 线程以免占用主线程。
+     */
+    private suspend fun saveLoadedOnIo(snapshot: List<ChatSession>) {
+        if (persistenceBlocked()) return
+        // 与 persistAllNow 同一口径：让排队中的异步写作废
+        persistGeneration.incrementAndGet()
+        withContext(Dispatchers.IO) { SessionStore.saveMerged(appContext, snapshot) }
+    }
+
+    /**
      * 当前会话若在盘上被追加过，就把消息补进界面。
      *
      * 只补「盘上更长」这一种情况：用户正在编辑的那份如果更长，仍以内存为准。
@@ -1141,3 +1161,10 @@ private fun PermissionLevel.displayNameCn(): String = when (this) {
     PermissionLevel.WORKSPACE -> "工作区"
     PermissionLevel.FULL -> "完全"
 }
+
+/** [SessionController.loadInitial] 在 IO 线程一次读回的三份表；仅为减少上下文切换。 */
+private data class InitialSnapshot(
+    val spaces: List<WorkSpace>,
+    val storageIds: Set<String>,
+    val sessions: List<ChatSession>
+)

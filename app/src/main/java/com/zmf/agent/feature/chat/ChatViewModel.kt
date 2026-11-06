@@ -241,6 +241,14 @@ class ChatViewModel(context: Context) : AgentUi {
             ?: globalEffortWire()
 
     var lastError by mutableStateOf<String?>(null)
+
+    /**
+     * 启动读盘（工作区表 + 全部会话正文）是否已完成。
+     *
+     * 为 false 时界面不显示「输入消息开始对话」占位、通知带来的会话 id 也暂不切换：
+     * 否则会先短暂呈现空会话，或在会话表尚未载入时丢弃这次切换。
+     */
+    var startupReady by mutableStateOf(false)
         private set
 
     /** 系统当前是否有可用网络（监听默认网络回调，不需要主动发请求）。 */
@@ -479,32 +487,58 @@ class ChatViewModel(context: Context) : AgentUi {
             runCatching { withContext(Dispatchers.IO) { SandboxRegression.run(appContext) } }
                 .onFailure { FileLog.log("sandbox-reg", "回归自检异常：" + (it.message ?: it.javaClass.simpleName)) }
         }
-        // 全局总账先读回来：stats.json 坏掉 / 缺字段时里面自己回落到 0，不会影响会话表
-        UsageLedger.load(appContext)
-        // 旧数据迁移：把「工作区自带目录」升级为「工作区 + 存储单元」，并给旧会话补上
-        // 权限与强度的快照。幂等、失败不覆盖原文件；必须先于读会话表，否则界面会先看到一批缺 storageId 的会话
-        runCatching {
-            StorageMigration.migrate(
-                appContext,
-                PermissionStore.load(appContext).wireName(),
-                globalEffortWire()
-            )
-        }.onFailure { FileLog.log("migrate", "旧数据迁移失败：" + it) }
         // 草稿端口必须先装好：下面的 loadInitial 会回填当前会话的草稿
         installDraftPort()
-        // 工作区表与会话表读回来，决定当前会话并载入它的消息（见 SessionController.loadInitial）
-        sessionStore.loadInitial()
-        // 费用与轮次总账回填：按现存会话逐条计算，仅写统计文件，不影响首帧内容，移到后台执行。
+        // 启动读盘：stats.json、旧数据迁移、工作区表与会话表（见 SessionController.loadInitial）。
+        // sessions.json 含全部会话正文，整表解析必须留在 IO；读盘结束前 startupReady 为 false，
+        // 界面不显示「输入消息开始对话」占位，避免先短暂呈现空会话。
         summaryScope.launch {
-            runCatching {
+            try {
                 withContext(Dispatchers.IO) {
-                    UsageLedger.backfillCost(
-                        appContext,
-                        sessionList.flatMap { it.messages.drop(it.inheritedUsage.messages) }
-                    )
-                    UsageLedger.backfillRounds(appContext, sessionList)
+                    // 全局总账先读回来：stats.json 坏掉 / 缺字段时里面自己回落到 0，不会影响会话表
+                    UsageLedger.load(appContext)
+                    // 旧数据迁移：把「工作区自带目录」升级为「工作区 + 存储单元」，并给旧会话补上
+                    // 权限与强度的快照。幂等、失败不覆盖原文件；必须先于读会话表，
+                    // 否则界面会先看到一批缺 storageId 的会话
+                    runCatching {
+                        StorageMigration.migrate(
+                            appContext,
+                            PermissionStore.load(appContext).wireName(),
+                            globalEffortWire()
+                        )
+                    }.onFailure { FileLog.log("migrate", "旧数据迁移失败：" + it) }
                 }
-            }.onFailure { FileLog.log("usage", "总账回填失败：" + (it.message ?: it.javaClass.simpleName)) }
+                // 工作区表与会话表读回来，决定当前会话并载入它的消息
+                sessionStore.loadInitial()
+                // 费用与轮次总账回填：按现存会话逐条计算，仅写统计文件，不影响首帧内容
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        UsageLedger.backfillCost(
+                            appContext,
+                            sessionList.flatMap { it.messages.drop(it.inheritedUsage.messages) }
+                        )
+                        UsageLedger.backfillRounds(appContext, sessionList)
+                    }
+                }.onFailure { FileLog.log("usage", "总账回填失败：" + (it.message ?: it.javaClass.simpleName)) }
+                // 待办清单跟着会话走：当前会话此时已载入，读回来的才是这一条的清单
+                reloadTodos()
+                FileLog.log("chat", "初始化完成，权限=" + permissionLevel.displayName())
+                FileLog.log(
+                    "session",
+                    "载入 " + sessionList.size + " 个会话、" + workspaceList.size + " 个工作区，当前=" + currentSessionId +
+                        "，工作区=" + (currentWorkspaceId ?: "未分类") + "，消息 " + messages.size + " 条"
+                )
+                // 启动时先算一次水位：进来的第一眼顶部状态就是对的（有历史会话时尤其重要）
+                refreshContext()
+                // 最后按「已载入的会话」重新计算统计：缺少该步骤时，冷启动首屏的轮数/步数为 0，
+                // 因为 stats 初始是空快照，要靠 resetStats 从会话记录里把累计读回来
+                resetStats()
+            } catch (e: Exception) {
+                // 读盘失败也必须放行界面，否则 startupReady 永远为 false，聊天页一直停在空白
+                FileLog.log("session", "启动读盘失败：" + (e.message ?: e.javaClass.simpleName))
+            } finally {
+                startupReady = true
+            }
         }
         // 顺带扫一次 Skill 目录：提示词里的 available_skills 段要用；目录遍历与解析同样放到后台。
         summaryScope.launch {
@@ -531,16 +565,6 @@ class ChatViewModel(context: Context) : AgentUi {
         // 子智能体的 provider 与工具表只能从「外面」注入：工具接口 invoke(args, ctx) 里拿不到这两样。
         // 没注入时 subagent 工具会明确报「子智能体未初始化」，不会假装成功
         syncSubAgentDeps()
-        // 待办清单跟着会话走：先把当前会话的清单读回来，界面一进来就是对的
-        reloadTodos()
-        FileLog.log("chat", "初始化完成，权限=" + permissionLevel.displayName())
-        FileLog.log(
-            "session",
-            "载入 " + sessionList.size + " 个会话、" + workspaceList.size + " 个工作区，当前=" + currentSessionId +
-                "，工作区=" + (currentWorkspaceId ?: "未分类") + "，消息 " + messages.size + " 条"
-        )
-        // 启动时先算一次水位：进来的第一眼顶部状态就是对的（有历史会话时尤其重要）
-        refreshContext()
         // 顶栏状态点要反映真实网络：监听默认网络回调即可，取不到 manager 就当作有网
         runCatching {
             val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -549,9 +573,6 @@ class ChatViewModel(context: Context) : AgentUi {
                 override fun onLost(network: Network) { networkAvailable = false }
             })
         }.onFailure { FileLog.log("net", "注册网络回调失败：" + it.message) }
-        // 最后按「已载入的会话」重新计算统计：缺少该步骤时，冷启动首屏的轮数/步数为 0，
-        // 因为 stats 初始是空快照，要靠 resetStats 从会话记录里把累计读回来
-        resetStats()
     }
 
     /**

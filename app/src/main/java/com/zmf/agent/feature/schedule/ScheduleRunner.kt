@@ -1,10 +1,8 @@
 package com.zmf.agent.feature.schedule
 
-import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.PowerManager
 import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.capability.loop.AgentLoop
 import com.zmf.agent.capability.loop.AgentUi
@@ -40,12 +38,10 @@ import kotlin.math.roundToInt
 import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.infra.system.AndroidPermissions
 import com.zmf.agent.capability.runtime.AgentForegroundService
+import com.zmf.agent.capability.runtime.PlatformAlarms
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -117,12 +113,6 @@ object ScheduleRunner {
      */
     private const val WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
 
-    /** 唤醒锁标签：便于在系统电池统计中识别为定时任务持有。 */
-    private const val WAKE_LOCK_TAG = "Mingent:schedule"
-
-    /** 应用级作用域：广播返回后协程仍需继续执行，因此不能绑定到 Receiver 的生命周期。 */
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     /**
      * 正在执行的任务 id。
      *
@@ -161,59 +151,32 @@ object ScheduleRunner {
             cancel(app, task.id)
             return
         }
-        val manager = app.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-        if (manager == null) {
-            FileLog.log(TAG, "拿不到 AlarmManager，「" + task.title + "」排不上")
-            return
-        }
-        val pi = pendingIntent(app, task.id)
+        // 平台排期由 capability 的窄口负责：此处只决定「用精确还是非精确」。
         // 默认用 setExactAndAllowWhileIdle（无副作用）。个别 ROM 会把这类闹钟推迟到数天之后，
         // 任务被推迟过一次（clockAlarm）即改用 setAlarmClock：系统不会推迟，代价是状态栏闹钟图标。
         // Android 12 及以上先检查「闹钟与提醒」权限：未授权时直接用非精确闹钟。
+        val pi = pendingIntent(app, task.id)
         if (AndroidPermissions.exactAlarmAllowed(app)) {
-            val exact = runCatching {
-                if (task.clockAlarm) {
-                    // 已被证明会被本机推迟的任务：改用闹钟式排期，系统不会推迟它（代价是状态栏闹钟图标）
-                    manager.setAlarmClock(AlarmManager.AlarmClockInfo(task.nextAt, clockShowIntent(app)), pi)
-                } else {
-                    manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, task.nextAt, pi)
-                }
-            }
-            if (exact.isFailure) {
-                // 个别机型即使自检通过也会抛出 SecurityException：退回非精确闹钟，
-                // 可能延迟数分钟，但必须保证任务最终执行
-                FileLog.log(TAG, "闹钟排不上（" + exact.exceptionOrNull() + "），改用非精确")
-                runCatching { manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, task.nextAt, pi) }
+            val exact = runCatching { PlatformAlarms.setExact(app, task.nextAt, pi, task.clockAlarm) }
+            // 个别机型即使自检通过也会抛出 SecurityException：退回非精确闹钟，
+            // 可能延迟数分钟，但必须保证任务最终执行
+            exact.exceptionOrNull()?.let { FileLog.log(TAG, "闹钟排不上（" + it + "），改用非精确") }
+            if (exact.getOrNull() != true) {
+                runCatching { PlatformAlarms.setInexact(app, task.nextAt, pi) }
                     .onFailure { FileLog.log(TAG, "闹钟排不上：" + it) }
             }
         } else {
             FileLog.log(TAG, "未获精确闹钟授权，改用非精确闹钟")
-            runCatching { manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, task.nextAt, pi) }
+            runCatching { PlatformAlarms.setInexact(app, task.nextAt, pi) }
                 .onFailure { FileLog.log(TAG, "闹钟排不上：" + it) }
         }
         FileLog.log(TAG, "排期「" + task.title + "」at=" + timeText(task.nextAt))
     }
 
-    /**
-     * setAlarmClock 需要「点闹钟图标去哪里」的意图：点状态栏闹钟图标回到应用即可。
-     * requestCode 固定：全应用只需要一个展示意图，与具体任务无关。
-     */
-    private fun clockShowIntent(context: Context): PendingIntent {
-        val intent = Intent().setClassName(context, com.zmf.agent.core.AppEntry.ACTIVITY)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return PendingIntent.getActivity(
-            context,
-            0,
-            intent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-    }
-
     /** 取消一条任务的闹钟（任务删除或停用时调用）。 */
     fun cancel(context: Context, taskId: String) {
         val app = context.applicationContext
-        val manager = app.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
-        runCatching { manager.cancel(pendingIntent(app, taskId)) }
+        PlatformAlarms.cancel(app, pendingIntent(app, taskId))
     }
 
     /**
@@ -272,11 +235,11 @@ object ScheduleRunner {
         // 此处先绑定，否则整轮执行不留任何痕迹，事后无法判断「没触发」还是「触发后失败」
         FileLog.init(app)
         AgentForegroundService.start(app)
-        val lock = acquireWakeLock(app)
-        scope.launch {
+        val lock = PlatformAlarms.keepAwake(app, WAKE_LOCK_TIMEOUT_MS)
+        PlatformAlarms.scope.launch {
             if (!running.add(taskId)) {
                 FileLog.log(TAG, "任务正在执行，忽略重复触发：" + taskId)
-                releaseWakeLock(lock)
+                lock?.release()
                 return@launch
             }
             try {
@@ -284,29 +247,9 @@ object ScheduleRunner {
                     .onFailure { FileLog.log(TAG, "任务 " + taskId + " 执行异常：" + it) }
             } finally {
                 running.remove(taskId)
-                releaseWakeLock(lock)
+                lock?.release()
             }
         }
-    }
-
-    /** 获取部分唤醒锁；系统拒绝（权限缺失或厂商限制）时返回 null，任务仍照常尝试执行。 */
-    private fun acquireWakeLock(app: Context): PowerManager.WakeLock? {
-        return runCatching {
-            val power = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
-                ?: return null
-            power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
-                // 不启用引用计数：每次执行只获取一次、释放一次，超时由系统兜底
-                setReferenceCounted(false)
-                acquire(WAKE_LOCK_TIMEOUT_MS)
-            }
-        }.onFailure { FileLog.log(TAG, "唤醒锁获取失败：" + it) }.getOrNull()
-    }
-
-    /** 释放唤醒锁；超时自动释放后 isHeld 为 false，不重复释放。 */
-    private fun releaseWakeLock(lock: PowerManager.WakeLock?) {
-        if (lock == null) return
-        runCatching { if (lock.isHeld) lock.release() }
-            .onFailure { FileLog.log(TAG, "唤醒锁释放失败：" + it) }
     }
 
     /** 执行一次：先记录「已触发」并安排下一次，再请求模型，最后写入会话并发送通知。 */

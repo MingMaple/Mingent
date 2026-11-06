@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.PixelFormat
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -282,10 +283,17 @@ class FloatingBallService : Service() {
         }
         // 息屏或锁屏时停止球的动画（见 screenReceiver）；注册失败不影响球本身，做异常兜底即可
         runCatching {
-            registerReceiver(screenReceiver, IntentFilter().apply {
+            val filter = IntentFilter().apply {
                 addAction(Intent.ACTION_SCREEN_ON)
                 addAction(Intent.ACTION_SCREEN_OFF)
-            })
+            }
+            // 两条都是系统保护广播：Android 13 起显式声明「不接收其它应用发送的广播」，
+            // 避免将来提升 targetSdk 后被系统要求补 flag（或拒绝注册）
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(screenReceiver, filter)
+            }
         }
         // 悬浮球服务属于普通后台服务，Android 8 及以上会在应用退至后台后回收（球随之消失）。
         // 窗口添加成功后启动常驻前台服务，使整个进程处于前台服务状态，窗口才能持续显示。

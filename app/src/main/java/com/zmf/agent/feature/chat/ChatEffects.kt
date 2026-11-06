@@ -65,7 +65,9 @@ internal fun ChatAppEffects(
     // 从通知进入：切换一次后清除 id，界面重组时避免重复切换
     // （switchSession 对「已是当前会话」本为空操作，此处仅避免每帧调用一次）
     var pendingSession by remember(initialSessionId) { mutableStateOf(initialSessionId) }
-    LaunchedEffect(pendingSession) {
+    // startupReady 作为 key：读盘完成前会话表为空，此时 switchSession 找不到目标会直接丢弃这次切换
+    LaunchedEffect(pendingSession, viewModel.startupReady) {
+        if (!viewModel.startupReady) return@LaunchedEffect
         val id = pendingSession
         if (id != null) {
             // 点击通知需先返回主页：用户可能正停留在设置 / 轨迹 / 浏览器等子页，
@@ -87,7 +89,8 @@ internal fun ChatAppEffects(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.reloadSessionsFromDisk()
+                // 启动时这次 ON_RESUME 早于读盘完成：loadInitial 本身就会读盘，跳过以免重复整表解析
+                Lifecycle.Event.ON_RESUME -> if (viewModel.startupReady) viewModel.reloadSessionsFromDisk()
                 // 退至后台时落盘一次：产品约定为「按返回仅进入后台、永不终止后台」，
                 // 但系统仍可能在后台回收进程，因此需在此时写入会话。
                 Lifecycle.Event.ON_STOP -> viewModel.persistForBackground("on-stop")

@@ -169,7 +169,9 @@ internal fun ColumnScope.ChatMessageList(
                         // 内容超过一屏后 Bottom 对齐无法生效，滚动行为与原先的 spacedBy 完全一致。
                         verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom)
                     ) {
-                        if (items.isEmpty()) {
+                        // 启动读盘完成前不显示占位文案：此时 messages 仍为空，
+                        // 先显示「输入消息开始对话」再被历史替换，会短暂呈现空会话状态
+                        if (items.isEmpty() && viewModel.startupReady) {
                             item {
                                 Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
                                     Text(

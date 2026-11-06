@@ -467,7 +467,7 @@ private fun TaskForm(
             val boundId = initial?.targetSessionId
             if (boundId != null) {
                 // 任务已绑定会话：只显示「指定会话」与该会话名称，不再提供「新会话」，
-                // 否则用户会以为改一下就能换回新建，而解绑不会自动发生
+                // 否则用户会误以为修改即可换回新建，而解绑不会自动发生
                 Text(
                     text = "指定会话 · " + (sessions.firstOrNull { it.id == boundId }
                         ?.title?.ifBlank { "新会话" } ?: "已解绑"),

@@ -40,7 +40,7 @@ android {
         targetSdk = 28
         // 版本规则（2026-10-26 定）：首位/中位由用户定（助手可推荐），末位由助手按改动程度自行 +1；
         // 每次打包 versionCode 必须 +1（跨 versionName 也不重置），否则覆盖安装会因「版本未升高」被系统直接拒掉
-        versionCode = 167
+        versionCode = 168
         versionName = "1.2.3"
     }
 
@@ -119,6 +119,9 @@ android {
 }
 
 dependencies {
+    // 纯逻辑单测（定时任务的下次触发时刻等），不依赖 Android 框架
+    testImplementation("junit:junit:4.13.2")
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
