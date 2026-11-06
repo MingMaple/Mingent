@@ -215,7 +215,8 @@ private fun searchSessions(
     workspaces: List<WorkSpace>,
     query: String,
     filter: ArchivedFilter,
-    currentSessionId: String
+    currentSessionId: String,
+    contentIndex: Map<String, String>
 ): SearchOutcome {
     val q = query.trim().lowercase()
     if (q.isEmpty()) return SearchOutcome(emptyList(), false)
@@ -237,7 +238,7 @@ private fun searchSessions(
     val content = sessions
         .filter { session ->
             searchable(session) && session.id !in localIds &&
-                session.messages.any { it.content.lowercase().contains(q) }
+                contentIndex[session.id].orEmpty().contains(q)
         }
         .sortedByDescending { it.updatedAt }
     val merged = local + content
@@ -315,9 +316,15 @@ fun AppDrawerContent(
     var filterAnchor by remember { mutableStateOf(Rect.Zero) }
     val searchFocus = remember { FocusRequester() }
     val searchActive = searchOpen && query.isNotBlank()
-    val searchOutcome = remember(sessions, workspaces, query, archivedFilter, currentSessionId) {
+    // 正文按会话预先小写化并拼接一次，逐字输入时只做 contains，避免每敲一个字都遍历全部消息并重建字符串
+    val contentIndex = remember(sessions) {
+        sessions.associate { session ->
+            session.id to session.messages.joinToString("\n") { it.content }.lowercase()
+        }
+    }
+    val searchOutcome = remember(sessions, workspaces, query, archivedFilter, currentSessionId, contentIndex) {
         if (searchActive) {
-            searchSessions(sessions, workspaces, query, archivedFilter, currentSessionId)
+            searchSessions(sessions, workspaces, query, archivedFilter, currentSessionId, contentIndex)
         } else {
             SearchOutcome(emptyList(), false)
         }

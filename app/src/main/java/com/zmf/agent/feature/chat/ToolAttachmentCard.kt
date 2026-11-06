@@ -1,6 +1,6 @@
 package com.zmf.agent.feature.chat
 
-import android.graphics.BitmapFactory
+import com.zmf.agent.uikit.common.decodeSampledBitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -103,7 +103,7 @@ private fun AttachmentThumb(relPath: String, root: File?) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val bitmap = remember(relPath, root) {
         val file = if (root != null) File(root, relPath) else File(relPath)
-        runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+        decodeSampledBitmap(file.absolutePath, THUMB_EDGE_PX)
     }
     Box(
         modifier = Modifier
@@ -124,3 +124,6 @@ private fun AttachmentThumb(relPath: String, root: File?) {
         }
     }
 }
+
+/** 工具附件缩略图最长边。 */
+private const val THUMB_EDGE_PX = 256

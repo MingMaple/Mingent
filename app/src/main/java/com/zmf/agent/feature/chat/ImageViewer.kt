@@ -1,5 +1,6 @@
 package com.zmf.agent.feature.chat
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
@@ -25,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -48,9 +50,12 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.theme.Motion
+import com.zmf.agent.uikit.common.decodeSampledBitmap
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.abs
 
@@ -80,12 +85,28 @@ fun ImageViewer(
         mutableStateOf(startIndex.coerceIn(0, (paths.size - 1).coerceAtLeast(0)))
     }
     val currentPath = paths.getOrNull(index)
-    val bitmap = remember(currentPath) {
+    // 文件头只读取尺寸，用于入场矩形与宽高比；像素数据在 IO 线程按视口能力采样解码，避免整幅原图进入内存。
+    val aspect = (remember(currentPath) {
         currentPath?.let { path ->
-            runCatching { BitmapFactory.decodeFile(File(root, path).absolutePath) }.getOrNull()
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            runCatching { BitmapFactory.decodeFile(File(root, path).absolutePath, bounds) }
+            if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                bounds.outWidth.toFloat() / bounds.outHeight.toFloat()
+            } else {
+                1f
+            }
         }
+    }) ?: 1f
+    var decodeDone by remember(currentPath) { mutableStateOf(false) }
+    val bitmap by produceState<Bitmap?>(null, currentPath) {
+        value = null
+        decodeDone = false
+        val path = currentPath ?: return@produceState
+        value = withContext(Dispatchers.IO) {
+            runCatching { decodeSampledBitmap(File(root, path).absolutePath, MAX_VIEWER_EDGE) }.getOrNull()
+        }
+        decodeDone = true
     }
-    val aspect = bitmap?.let { it.width.toFloat() / it.height.toFloat() } ?: 1f
 
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
@@ -372,9 +393,10 @@ fun ImageViewer(
                 .pointerInput(Unit) { detectTapGestures { closeNow() } }
         )
 
-        if (bitmap != null) {
+        val shown = bitmap
+        if (shown != null) {
             Image(
-                bitmap = bitmap.asImageBitmap(),
+                bitmap = shown.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
@@ -414,7 +436,7 @@ fun ImageViewer(
                         translationY = offset.y + dragY + originTranslation.y * (1f - open.value)
                     }
             )
-        } else {
+        } else if (decodeDone) {
             Text(
                 text = "无法打开图片",
                 color = MaterialTheme.colorScheme.onSurface
@@ -436,3 +458,6 @@ fun ImageViewer(
         }
     }
 }
+
+/** 查看器按最长边 2560 像素采样，兼顾四倍缩放清晰度与内存占用。 */
+private const val MAX_VIEWER_EDGE = 2560

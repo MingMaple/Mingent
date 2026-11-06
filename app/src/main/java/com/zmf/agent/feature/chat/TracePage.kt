@@ -79,6 +79,7 @@ import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.uikit.common.BoundedScrollColumn
 import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.decodeSampledBitmap
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.isDarkSurface
@@ -907,7 +908,7 @@ private fun TraceThumbRow(paths: List<String>, root: File, onTap: (Int) -> Unit)
 @Composable
 private fun TraceImageThumb(relPath: String, root: File, onTap: () -> Unit) {
     val bitmap = remember(relPath, root) {
-        runCatching { BitmapFactory.decodeFile(File(root, relPath).absolutePath) }.getOrNull()
+        decodeSampledBitmap(File(root, relPath).absolutePath, THUMB_EDGE_PX)
     }
     val onSurface = MaterialTheme.colorScheme.onSurface
     Box(
@@ -1442,3 +1443,6 @@ private fun thumbLength(track: Float, viewport: Float, content: Float, minThumb:
     if (viewport <= 0f || content <= viewport) return track
     return (track * (viewport / content)).coerceIn(minOf(minThumb, track), track)
 }
+
+/** 轨迹页缩略图最长边。 */
+private const val THUMB_EDGE_PX = 256

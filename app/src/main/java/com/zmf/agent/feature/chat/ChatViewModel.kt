@@ -473,9 +473,12 @@ class ChatViewModel(context: Context) : AgentUi {
         // 用户排查「是不是模型删错了」时不用在几万行运行日志里翻
         AuditLog.init(appContext)
         // 沙箱回归：启动时执行纯逻辑判定用例，确认「闸门是否仍识别根目录、工作区与系统目录」。
-        // 仅写日志，不阻断启动：判定错误必须可查，但用户不应因一条断言失败而无法打开 App
-        runCatching { SandboxRegression.run(appContext) }
-            .onFailure { FileLog.log("sandbox-reg", "回归自检异常：" + (it.message ?: it.javaClass.simpleName)) }
+        // 仅写日志，不阻断启动：判定错误必须可查，但用户不应因一条断言失败而无法打开 App。
+        // 该用例只读目录并写日志，放到后台执行，避免占用冷启动的主线程时间。
+        summaryScope.launch {
+            runCatching { withContext(Dispatchers.IO) { SandboxRegression.run(appContext) } }
+                .onFailure { FileLog.log("sandbox-reg", "回归自检异常：" + (it.message ?: it.javaClass.simpleName)) }
+        }
         // 全局总账先读回来：stats.json 坏掉 / 缺字段时里面自己回落到 0，不会影响会话表
         UsageLedger.load(appContext)
         // 旧数据迁移：把「工作区自带目录」升级为「工作区 + 存储单元」，并给旧会话补上
@@ -491,15 +494,23 @@ class ChatViewModel(context: Context) : AgentUi {
         installDraftPort()
         // 工作区表与会话表读回来，决定当前会话并载入它的消息（见 SessionController.loadInitial）
         sessionStore.loadInitial()
-        // 费用总账一次性回填：按现存会话自身的消息逐轮计算费用（分叉克隆段不计），此后删除会话不影响全局费用
-        UsageLedger.backfillCost(
-            appContext,
-            sessionList.flatMap { it.messages.drop(it.inheritedUsage.messages) }
-        )
-        // 轮次总账一次性回填：同样仅统计现存会话，此后删除会话不会使「轮次」回落
-        UsageLedger.backfillRounds(appContext, sessionList)
-        // 顺带扫一次 Skill 目录：提示词里的 available_skills 段要用，不能等到第一次请求再读盘
-        refreshSkillCatalog()
+        // 费用与轮次总账回填：按现存会话逐条计算，仅写统计文件，不影响首帧内容，移到后台执行。
+        summaryScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    UsageLedger.backfillCost(
+                        appContext,
+                        sessionList.flatMap { it.messages.drop(it.inheritedUsage.messages) }
+                    )
+                    UsageLedger.backfillRounds(appContext, sessionList)
+                }
+            }.onFailure { FileLog.log("usage", "总账回填失败：" + (it.message ?: it.javaClass.simpleName)) }
+        }
+        // 顺带扫一次 Skill 目录：提示词里的 available_skills 段要用；目录遍历与解析同样放到后台。
+        summaryScope.launch {
+            runCatching { withContext(Dispatchers.IO) { refreshSkillCatalog() } }
+                .onFailure { FileLog.log("skill", "技能目录扫描失败：" + (it.message ?: it.javaClass.simpleName)) }
+        }
         // 同时清理 7 天前的 spill 落盘（后台执行，失败可忽略，不阻塞启动）
         summaryScope.launch {
             runCatching { withContext(Dispatchers.IO) { SpillStore.cleanup(appContext) } }

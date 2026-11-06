@@ -183,6 +183,8 @@ fun FloatingChatWindow(
         }
     }
     val visible = if (shown.size > MAX_SHOWN) shown.subList(shown.size - MAX_SHOWN, shown.size) else shown
+    // 列表项的稳定 key：流式输出时条数会变，索引 key 会把新回合复用到旧槽位，导致展开态错位
+    val visibleOffset = shown.size - visible.size
 
     /*
      * 贴底：两个触发条件共用该逻辑。
@@ -262,7 +264,7 @@ fun FloatingChatWindow(
                                     .onSizeChanged { messageAreaSize = it },
                                 contentPadding = PaddingValues(vertical = 6.dp)
                             ) {
-                                items(visible.size) { index ->
+                                items(visible.size, key = { visibleOffset + it }) { index ->
                                     MessageBubble(
                                         message = visible[index],
                                         foldAt = foldAt,
@@ -392,7 +394,7 @@ private fun SessionPickerPanel(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(vertical = 4.dp)
             ) {
-                items(sessions.size) { index ->
+                items(sessions.size, key = { sessions[it].id }) { index ->
                     val session = sessions[index]
                     Row(
                         modifier = Modifier

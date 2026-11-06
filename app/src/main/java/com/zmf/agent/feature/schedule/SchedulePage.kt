@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,6 +55,8 @@ import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -69,7 +72,13 @@ import com.zmf.agent.uikit.common.saltFieldColors
 @Composable
 fun SchedulePage(onBack: () -> Unit) {
     val context = LocalContext.current
-    var tasks by remember { mutableStateOf(ScheduleStore.load(context)) }
+    var tasks by remember { mutableStateOf<List<ScheduleTask>>(emptyList()) }
+    var tasksLoaded by remember { mutableStateOf(false) }
+    // 任务表与工作区均为小文件，但仍放到后台读取，避免进入页面时卡住首帧。
+    LaunchedEffect(Unit) {
+        tasks = withContext(Dispatchers.IO) { ScheduleStore.load(context) }
+        tasksLoaded = true
+    }
     // 归属工作区只在表单里选择，进入页面时读一次即可
     val workspaces = remember { WorkSpaceStore.load(context) }
     var creating by remember { mutableStateOf(false) }
@@ -131,7 +140,7 @@ fun SchedulePage(onBack: () -> Unit) {
                 )
             }
 
-            if (tasks.isEmpty()) {
+            if (tasksLoaded && tasks.isEmpty()) {
                 Text(
                     text = "还没有定时任务。新建一条，到点由系统闹钟叫醒 App 跑一轮 Agent。",
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -336,7 +345,13 @@ private fun TaskForm(
     }
     var hint by remember { mutableStateOf("") }
     // 弹窗与当前选择共用该数据：仅在进入表单时读取一次，避免每次重组都读取文件
-    val sessions = remember { SessionStore.load(context).sortedByDescending { it.updatedAt } }
+    var sessions by remember { mutableStateOf<List<ChatSession>>(emptyList()) }
+    // 只需标题列表；完整会话正文的解析放到后台，避免打开表单时阻塞主线程。
+    LaunchedEffect(Unit) {
+        sessions = withContext(Dispatchers.IO) {
+            SessionStore.load(context).sortedByDescending { it.updatedAt }
+        }
+    }
 
     fun submit() {
         val now = System.currentTimeMillis()

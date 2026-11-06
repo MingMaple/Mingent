@@ -70,9 +70,11 @@ fun LogsPage(onBack: () -> Unit) {
 
     // 读取最多两个文件、1MB，不能在主线程执行；context 仅用于定位目录
     LaunchedEffect(Unit) {
-        // 日志异步写盘，读取前先刷新队列，否则最新几行不会出现在本页
-        FileLog.flush()
-        raw = withContext(Dispatchers.IO) { FileLog.readLines(context, MAX_LINES) }
+        // 日志异步写盘，读取与 fsync 都放到 IO 线程，避免日志页首帧等待落盘
+        raw = withContext(Dispatchers.IO) {
+            FileLog.flush()
+            FileLog.readLines(context, MAX_LINES)
+        }
     }
 
     // 筛选为纯内存过滤（≤2000 行），逐字符重算没有性能开销

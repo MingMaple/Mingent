@@ -18,6 +18,8 @@ dist/
 *.iml
 # 内部文档（不公开）
 PLAN.md
+# 本地装载的官方 skills（按需拉取，不入库）
+.skills/
 # 杂项
 _temp/
 *.bak

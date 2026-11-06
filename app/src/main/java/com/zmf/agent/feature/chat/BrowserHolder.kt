@@ -287,23 +287,27 @@ internal object BrowserHolder {
     }
 
     /**
-     * 仅放行 http/https 在浏览器内加载；其余 scheme（intent: / market: / weixin: / mailto:）
-     * 交由系统处理，无法处理时不执行任何操作：绝不让未知 scheme 覆盖当前页面。
+     * 仅放行 http/https 在浏览器内加载；mailto / tel / market 交由系统处理。
+     * 其余 scheme（含 intent: / file: / content: / 自定义 scheme）一律丢弃并记日志，
+     * 既不让未知 scheme 覆盖当前页面，也避免网页借本应用身份拉起任意组件。
      */
     private fun handleUrl(view: WebView, raw: String?): Boolean {
         if (raw.isNullOrBlank()) return true
         val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return true
-        return when (uri.scheme?.lowercase()) {
-            "http", "https" -> false
-            else -> {
-                runCatching {
-                    view.context.startActivity(Intent(Intent.ACTION_VIEW, uri))
-                }.onFailure { FileLog.log("browser", "外部 scheme 打不开: " + raw) }
-                true
-            }
+        val scheme = uri.scheme?.lowercase() ?: return true
+        if (scheme == "http" || scheme == "https") return false
+        if (scheme !in EXTERNAL_SCHEMES) {
+            FileLog.log("browser", "已忽略非白名单 scheme: " + scheme)
+            return true
         }
+        runCatching {
+            view.context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+        }.onFailure { FileLog.log("browser", "外部 scheme 打不开: " + scheme) }
+        return true
     }
 }
+
+private val EXTERNAL_SCHEMES = setOf("mailto", "tel", "market")
 
 /**
  * 判断「是否为同一网址」所用的键：忽略首尾空白、末尾斜杠与大小写。

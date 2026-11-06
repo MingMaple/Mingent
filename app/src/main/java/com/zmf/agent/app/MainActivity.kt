@@ -34,6 +34,10 @@ import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.core.prefs.ThemeMode
 import com.zmf.agent.core.prefs.ThemeStore
 import com.zmf.agent.core.prefs.UiScaleStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * 主界面：承载聊天页，并负责进程级初始化（通知会话跳转、崩溃日志写入、Shizuku 绑定、
@@ -62,7 +66,10 @@ class MainActivity : ComponentActivity() {
         // 日志须先于重排绑定：重排发生在界面之前，未绑定时它写的「重排 N 条」会被静默丢弃
         FileLog.init(this)
         runCatching { ScheduleRunner.installBridge(this) }
-        runCatching { ScheduleRunner.rescheduleAll(this) }
+        // 重排只读写任务表与闹钟，不参与首帧；放到后台执行，避免拖慢冷启动。
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching { ScheduleRunner.rescheduleAll(this@MainActivity) }
+        }
         // 必须早于 setContent：首帧显示的是窗口底色，未提前设置时深色主题冷启动会闪现系统浅色窗底
         applyWindowBackground()
         setContent {
@@ -194,7 +201,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun appendCrashLog(thread: Thread, error: Throwable) {
-        val dir = java.io.File(getExternalFilesDir(null), "logs")
+        // 外部存储不可用时 getExternalFilesDir 返回 null，退回应用内部日志目录，避免写出相对路径导致静默丢失
+        val dir = runCatching { com.zmf.agent.core.log.FileLog.logDir(this) }.getOrNull()
+            ?: java.io.File(filesDir, "logs")
         if (!dir.exists()) dir.mkdirs()
         val version = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName

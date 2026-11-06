@@ -2,6 +2,7 @@ package com.zmf.agent.feature.chat
 
 import com.zmf.agent.uikit.components.FoldToggle
 import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.decodeSampledBitmap
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -649,7 +650,7 @@ internal fun PendingImageThumb(
     onRemove: () -> Unit
 ) {
     val bitmap = remember(relPath) {
-        runCatching { BitmapFactory.decodeFile(File(root, relPath).absolutePath) }.getOrNull()
+        decodeSampledBitmap(File(root, relPath).absolutePath, THUMB_EDGE_PX)
     }
     val onSurface = MaterialTheme.colorScheme.onSurface
     Box(modifier = Modifier.size(PendingThumbSide)) {
@@ -1184,7 +1185,7 @@ internal fun SentImageThumb(
     onLongPress: (Offset) -> Unit
 ) {
     val bitmap = remember(relPath) {
-        runCatching { BitmapFactory.decodeFile(File(root, relPath).absolutePath) }.getOrNull()
+        decodeSampledBitmap(File(root, relPath).absolutePath, THUMB_EDGE_PX)
     }
     val onSurface = MaterialTheme.colorScheme.onSurface
     // pointerInput(relPath) 不会因为重组而重启，回调必须走 rememberUpdatedState 才是最新的那一个
@@ -1707,3 +1708,6 @@ internal fun turnUsageOf(message: ChatMessage): TurnUsageInfo {
         model = message.usageModel
     )
 }
+
+/** 列表缩略图最长边：容器最大约 88dp，取 256px 已足够，再大只会多占内存。 */
+private const val THUMB_EDGE_PX = 256
