@@ -125,6 +125,8 @@ Mingent 的内置终端（PRoot + Ubuntu 24 环境）来自 Operit AI 项目，�
   上下文滚动压缩与工具分层的设计参考，本仓库未包含其代码；
 - **dsh-context**（[github.com/bowenliang123/dsh-context](https://github.com/bowenliang123/dsh-context)，Apache-2.0）：上下文洞察与管理的
   功能逻辑参考，本仓库未包含其代码。
+- **Android Skills**（[github.com/android/skills](https://github.com/android/skills)，Apache-2.0）：本轮代码审查与修复所参照的
+  官方规范来源（安全、性能、Compose、ANR 等），本仓库未复制其代码或文档。
 
 如后续引入其中任何代码，将在此登记并补充相应许可。
 

@@ -1,6 +1,5 @@
 package com.zmf.agent.feature.chat
 
-import android.graphics.BitmapFactory
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState

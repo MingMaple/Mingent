@@ -3,14 +3,13 @@ package com.zmf.agent.feature.chat
 import com.zmf.agent.uikit.components.FoldToggle
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.decodeSampledBitmap
-import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
-import android.graphics.BitmapFactory
+import android.app.Activity
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
