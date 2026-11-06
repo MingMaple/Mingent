@@ -540,7 +540,7 @@ class ChatViewModel(context: Context) : AgentUi {
                 startupReady = true
             }
         }
-        // 顺带扫一次 Skill 目录：提示词里的 available_skills 段要用；目录遍历与解析同样放到后台。
+        // 同时扫描一次 Skill 目录：提示词里的 available_skills 段要用；目录遍历与解析同样放到后台。
         summaryScope.launch {
             runCatching { withContext(Dispatchers.IO) { refreshSkillCatalog() } }
                 .onFailure { FileLog.log("skill", "技能目录扫描失败：" + (it.message ?: it.javaClass.simpleName)) }
