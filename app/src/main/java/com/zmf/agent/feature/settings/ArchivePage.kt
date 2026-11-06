@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.core.store.WorkSpace
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.common.SaltConfirmDialog
 import com.zmf.agent.uikit.common.blockTapsOnly
@@ -92,7 +92,7 @@ fun ArchivePage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
                 .navigationBarsPadding()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {

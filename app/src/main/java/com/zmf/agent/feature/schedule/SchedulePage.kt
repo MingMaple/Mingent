@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,6 +51,7 @@ import com.zmf.agent.feature.schedule.ScheduleTask
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
@@ -65,7 +65,7 @@ import com.zmf.agent.uikit.common.saltFieldColors
 /**
  * 「定时任务」页（设置下的二级页）：列表 / 新建 / 删除。
  *
- * 布局沿用 StatsPage：Surface 铺满、Column、statusBarsPadding 与 blockTapsOnly，
+ * 布局沿用 StatsPage：Surface 铺满、Column、状态栏留白与 blockTapsOnly，
  * 左上角「←」返回，标题为单行小字号文字。这里是唯一会写入 schedules.json 的界面入口，
  * 数据读取 [ScheduleStore]，设置闹钟统一通过 [ScheduleRunner]（页面不直接操作 AlarmManager）。
  */
@@ -119,7 +119,7 @@ fun SchedulePage(onBack: () -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
         ) {

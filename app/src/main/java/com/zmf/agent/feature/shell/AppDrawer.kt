@@ -30,7 +30,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -101,6 +100,7 @@ import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.uikit.common.saltCardRow
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.icons.DshIcons
 import com.zmf.agent.uikit.icons.FolderIcon
 import com.zmf.agent.uikit.icons.PlusIcon
@@ -461,7 +461,7 @@ fun AppDrawerContent(
             // 此处若再写 widthIn(max = 320.dp)，320dp 窗口会出现「面板 260dp、内容仍按 320dp 排版」的二次错位
             .fillMaxWidth()
             .fillMaxHeight()
-            .statusBarsPadding()
+            .stableStatusBarPadding()
             .navigationBarsPadding()
             // 输入法弹起时把抽屉底部让给键盘：横屏矮窗口下抽屉是整屏浮层，
             // 不让位会把搜索框压在键盘下方（实测 915×411 会被完全盖住）

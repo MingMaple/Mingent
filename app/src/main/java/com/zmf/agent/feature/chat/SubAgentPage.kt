@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,6 +38,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.capability.subagent.SubAgentRegistry
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.markdown.MarkdownText
@@ -63,7 +63,7 @@ fun SubAgentPage(
     LaunchedEffect(entry?.state) { if (entry?.state == SubAgentRegistry.DONE) draft = "" }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(modifier = Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
+        Column(modifier = Modifier.fillMaxSize().stableStatusBarPadding().imePadding()) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically

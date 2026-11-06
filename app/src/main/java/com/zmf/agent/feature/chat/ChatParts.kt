@@ -1,5 +1,6 @@
 package com.zmf.agent.feature.chat
 
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.components.FoldToggle
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.decodeSampledBitmap
@@ -39,7 +40,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -165,7 +165,7 @@ internal fun ChatTopBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .statusBarsPadding()
+            .stableStatusBarPadding()
             .padding(horizontal = 12.dp, vertical = if (compact) 6.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -743,7 +743,7 @@ internal fun WorkSpacePage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
                 .navigationBarsPadding()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {

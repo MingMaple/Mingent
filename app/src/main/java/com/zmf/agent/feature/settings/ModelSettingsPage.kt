@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -65,6 +64,7 @@ import com.zmf.agent.infra.api.BalanceResult
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
@@ -116,7 +116,7 @@ fun ModelSettingsPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
         ) {

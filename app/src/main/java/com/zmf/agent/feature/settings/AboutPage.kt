@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.icons.BugGlyph
 import com.zmf.agent.uikit.icons.CodeGlyph
 import com.zmf.agent.uikit.icons.DocGlyph
@@ -98,7 +98,7 @@ fun AboutPage(onBack: () -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
                 .navigationBarsPadding()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {

@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -65,6 +64,7 @@ import com.zmf.agent.core.store.InsightSessionView
 import com.zmf.agent.core.store.InsightTiming
 import com.zmf.agent.core.store.LedgerComposition
 import com.zmf.agent.core.store.SessionComposition
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.components.AdaptiveStatRow
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Motion
@@ -120,7 +120,7 @@ fun ContextInsightPage(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .statusBarsPadding()
+                    .stableStatusBarPadding()
                     .navigationBarsPadding()
                     .verticalScroll(scroll)
             ) {

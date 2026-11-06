@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +28,7 @@ import com.zmf.agent.core.store.PlanStore
 import com.zmf.agent.uikit.common.TopIconButton
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.theme.UiColors
 
 /**
@@ -65,7 +65,7 @@ fun PlanPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TopIconButton(glyph = "←", onClick = onBack)

@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.DisableSelection
@@ -41,6 +40,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.theme.Motion
 import kotlinx.coroutines.launch
 
@@ -107,7 +107,7 @@ fun TextSelectionOverlay(
         color = MaterialTheme.colorScheme.background
     ) {
         Box {
-            Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            Column(modifier = Modifier.fillMaxSize().stableStatusBarPadding().navigationBarsPadding()) {
                 // 固定栏目：一直停在顶部，内容怎么滚都不动
                 Column(
                     modifier = Modifier

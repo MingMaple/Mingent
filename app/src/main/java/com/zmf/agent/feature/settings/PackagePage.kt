@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
@@ -68,6 +67,7 @@ import com.zmf.agent.capability.skill.SkillEntry
 import com.zmf.agent.capability.skill.SkillStore
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.theme.Motion
@@ -118,7 +118,7 @@ fun PackagePage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
                 .navigationBarsPadding()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {

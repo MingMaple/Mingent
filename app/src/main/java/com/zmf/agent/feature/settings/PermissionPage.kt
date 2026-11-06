@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -45,6 +44,7 @@ import com.zmf.agent.infra.system.AndroidPermissions
 import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.common.NoticeCenter
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 
 /**
  * 「权限管理」页（设置下的二级页）：将手机端实际制约功能的几项权限集中为一张清单。
@@ -119,7 +119,7 @@ fun PermissionPage(onBack: () -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
         ) {

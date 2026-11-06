@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -53,6 +52,7 @@ import com.zmf.agent.capability.context.ContextStore
 import com.zmf.agent.core.llm.ApiDefaults
 import com.zmf.agent.infra.llm.ProviderStore
 import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
@@ -131,7 +131,7 @@ fun ContextConfigPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
         ) {

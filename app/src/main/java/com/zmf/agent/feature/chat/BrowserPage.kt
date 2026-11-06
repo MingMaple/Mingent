@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -27,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.zmf.agent.uikit.common.TopIconButton
 import com.zmf.agent.uikit.common.blockTapsOnly
+import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.theme.UiColors
 
 /**
@@ -62,7 +62,7 @@ fun BrowserPage(onBack: () -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .stableStatusBarPadding()
         ) {
             val onSurface = MaterialTheme.colorScheme.onSurface
             val headLine = active?.label.orEmpty()
