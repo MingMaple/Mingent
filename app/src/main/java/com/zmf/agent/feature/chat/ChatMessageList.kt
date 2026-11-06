@@ -121,9 +121,14 @@ internal fun ColumnScope.ChatMessageList(
     var anchoredInitialPosition by remember(viewModel.currentSessionId) { mutableStateOf(false) }
     LaunchedEffect(items.size, viewModel.currentSessionId) {
         if (anchoredInitialPosition || items.isEmpty()) return@LaunchedEffect
-        anchoredInitialPosition = true
         wasAtBottom = true
-        followBottom(listState, items.lastIndex)
+        // 先完成滚动，再放开绘制：两次状态写入位于同一协程，中间不会插入新的一帧。
+        // 若在滚动前放开绘制，读盘完成后会先呈现会话顶部一帧，随后再跳到底部。
+        try {
+            followBottom(listState, items.lastIndex)
+        } finally {
+            anchoredInitialPosition = true
+        }
     }
 
     // 键盘动画期间逐帧跟随底部：视口每减少 Δ，列表同步滚动 Δ，最后一条消息在屏幕上保持不动。
@@ -158,7 +163,11 @@ internal fun ColumnScope.ChatMessageList(
                     Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.fillMaxSize(),
+                        // 首次落位完成前不绘制消息：列表仍参与布局，最后一条可被量出并滚动到位，
+                        // 但用户不会先看到会话顶部、再看到跳到底部。
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .alpha(if (anchoredInitialPosition || items.isEmpty()) 1f else 0f),
                         // 横屏高度紧凑时只收纵向内距：左右保持 16dp，气泡宽度不受影响
                         contentPadding = if (window.compactChrome) {
                             PaddingValues(horizontal = 16.dp, vertical = 8.dp)
