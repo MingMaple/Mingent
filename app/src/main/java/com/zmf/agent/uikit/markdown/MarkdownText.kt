@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -59,6 +58,7 @@ import com.zmf.agent.uikit.components.claimCopyOnGesture
 import com.zmf.agent.uikit.components.rememberCopyBlockKey
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 import com.zmf.agent.uikit.theme.UiColors
+import com.zmf.agent.uikit.common.NoticeCenter
 import kotlinx.coroutines.delay
 
 /**
@@ -625,7 +625,7 @@ internal fun copyCode(context: Context, code: String, label: String = "代码") 
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     manager?.setPrimaryClip(ClipData.newPlainText(label, code))
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-        Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+        NoticeCenter.info("已复制")
     }
 }
 

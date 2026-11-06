@@ -322,7 +322,8 @@ object UsageLedger {
         var sum = 0
         for (session in sessions) {
             for (message in session.messages.drop(session.inheritedUsage.messages)) {
-                if (message.role != "user" || message.programmatic) continue
+                // 与洞察页同口径：真人输入与定时任务都算一轮
+                if (!message.countsAsRound) continue
                 val date = dateText(message.createdAt)
                 if (date.isEmpty()) continue
                 days[date] = (days[date] ?: LedgerUsage()).copy(

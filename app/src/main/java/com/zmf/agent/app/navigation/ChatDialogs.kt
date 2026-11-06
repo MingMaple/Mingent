@@ -1,7 +1,6 @@
 package com.zmf.agent.app.navigation
 
 import android.content.Context
-import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -38,6 +37,8 @@ import com.zmf.agent.feature.chat.exportSizeText
 import com.zmf.agent.feature.chat.BackupToggleRow
 import com.zmf.agent.feature.chat.ChatUiState
 import com.zmf.agent.feature.chat.ChatViewModel
+import com.zmf.agent.uikit.common.NoticeCenter
+import com.zmf.agent.uikit.common.noticeName
 
 /**
  * 聊天页的全部模态框：新建工作区、导出选项、导入确认、导入结果、清单全表、回滚确认。
@@ -55,6 +56,9 @@ internal fun ChatDialogs(
     onExportLaunch: (String) -> Unit
 ) {
     var showCreateWorkspace by ui.showCreateWorkspace
+    var movingSessionId by ui.movingSessionId
+    var storageWorkspaceId by ui.storageWorkspaceId
+    var pendingArchiveId by ui.pendingArchiveId
     var showExportDialog by ui.showExportDialog
     var includeTerminal by ui.includeTerminal
     var includeLogs by ui.includeLogs
@@ -77,7 +81,83 @@ internal fun ChatDialogs(
                     page = null
                 } else {
                     // 目录不可用（未授权、已被删除或不可写）：提示用户，避免误认为创建成功
-                    Toast.makeText(context, "该目录不可用，请更换后重试", Toast.LENGTH_SHORT).show()
+                    NoticeCenter.error("目录不可用，请另选一个")
+                }
+            }
+        )
+    }
+
+    // 归档命中特例：多个特例合并成一个弹窗，不连续弹出
+    pendingArchiveId?.let { id ->
+        val notes = viewModel.archiveNotes(id)
+        AlertDialog(
+            onDismissRequest = { pendingArchiveId = null },
+            title = { Text("归档会话？", fontSize = 17.sp) },
+            text = {
+                Text(
+                    text = notes.joinToString("\n\n"),
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingArchiveId = null
+                    val title = noticeName(
+                        viewModel.sessionList.firstOrNull { it.id == id }?.title.orEmpty()
+                    )
+                    viewModel.archiveSession(id)
+                    // 特例路径（绑定任务被停用）同样给一条提示：弹窗关掉后要给用户结果，
+                    // 但不再提供「撤销」——任务状态已回不去，撤一半比不撤更糟
+                    NoticeCenter.show("已归档「" + title + "」，定时任务已停用")
+                }) { Text("归档") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingArchiveId = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // 会话「⋯」→「更改工作区」：单层弹窗，新建工作区在同一窗口内展开
+    movingSessionId?.let { id ->
+        val session = viewModel.sessionList.firstOrNull { it.id == id }
+        ChangeWorkspaceDialog(
+            sessionTitle = session?.title?.ifBlank { "新会话" } ?: "新会话",
+            workspaces = viewModel.workspaceList,
+            currentWorkspaceId = session?.workspaceId,
+            occupiedBy = { rootPath, treeUri -> viewModel.workspaceUsingDir(rootPath, treeUri) },
+            onDismiss = { movingSessionId = null },
+            onMove = { workspaceId ->
+                movingSessionId = null
+                val note = viewModel.moveSession(id, workspaceId)
+                if (note == null) NoticeCenter.success("已移动") else NoticeCenter.error(note)
+            },
+            onCreateAndMove = { name, rootPath, treeUri ->
+                movingSessionId = null
+                val created = viewModel.createWorkspaceAndMove(id, name, rootPath, treeUri)
+                if (created) {
+                    NoticeCenter.success("已移动")
+                } else {
+                    NoticeCenter.error("目录不可用，请另选一个")
+                }
+            }
+        )
+    }
+
+    // 工作区菜单 →「更改储存路径」：先说明后果，再选目录
+    val storageTarget = storageWorkspaceId?.let { id -> viewModel.workspaceList.firstOrNull { it.id == id } }
+    storageTarget?.let { space ->
+        ChangeStorageDialog(
+            workspaceName = space.name,
+            prompt = viewModel.changeStoragePrompt(space.id),
+            onDismiss = { storageWorkspaceId = null },
+            onConfirm = { rootPath, treeUri ->
+                storageWorkspaceId = null
+                val ok = viewModel.changeWorkspaceStorage(space.id, rootPath, treeUri)
+                if (ok) {
+                    NoticeCenter.success("已更改储存路径")
+                } else {
+                    NoticeCenter.error("目录不可用，或会话正在运行")
                 }
             }
         )

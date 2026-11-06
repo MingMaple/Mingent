@@ -4,11 +4,13 @@ import com.zmf.agent.uikit.icons.UnitGlyph
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -36,6 +38,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -286,12 +290,18 @@ fun ComposerContextPanel(
     onOpenDetail: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val onSurface = MaterialTheme.colorScheme.onSurface
     val window = if (usage.window > 0) usage.window else 1
     val fraction = (usage.used.toFloat() / window).coerceIn(0f, 1f)
     // 使用但不足 1% 时仍显示 1%，否则进度条有色而数字为 0% 时看似故障。
     // 算法位于 Composer.kt 的 contextPercent 中，输入条的圆环使用同一份
     val percent = contextPercent(usage)
+    // 三段构成：与 DSH 构成条一一对应，色值与顺序均照其组件实现
+    val parts = listOf(
+        Triple(usage.systemTokens, UiColors.meterSystem, "系统提示词"),
+        Triple(usage.toolTokens, UiColors.meterTools, "工具定义"),
+        Triple(usage.messageTokens, UiColors.meterMessages, "对话消息")
+    )
+    val partTotal = parts.sumOf { it.first }
 
     PanelCard(modifier = modifier) {
         Column(
@@ -299,7 +309,7 @@ fun ComposerContextPanel(
                 .fillMaxWidth()
                 .saltLongPress { onOpenDetail() }
                 .padding(horizontal = 14.dp)
-                .padding(top = 8.dp, bottom = 10.dp)
+                .padding(top = 10.dp, bottom = 12.dp)
         ) {
             Row(
                 modifier = Modifier
@@ -309,46 +319,72 @@ fun ComposerContextPanel(
                     .padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(text = "上下文已用 " + percent + "%", fontSize = 15.sp, color = onSurface)
+                // 标题与百分比分两档着色：标题是说明（三级），百分比是数值（一级）
+                Text(
+                    text = "上下文已用",
+                    fontSize = 12.sp,
+                    lineHeight = 20.sp,
+                    color = UiColors.meterTertiary
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = percent.toString() + "%",
+                    fontSize = 12.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = UiColors.meterPrimary
+                )
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
                     text = "~" + composerTokenText(usage.used) + " / " + composerTokenText(usage.window),
                     fontSize = 12.sp,
-                    color = onSurface.copy(alpha = 0.45f)
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(onSurface.copy(alpha = 0.1f))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(fraction)
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(UiColors.accentFill)
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    // 等宽数字：数值在两帧之间变化时不会因字宽不同而左右抖动
+                    style = TextStyle(fontFeatureSettings = "tnum"),
+                    color = UiColors.meterPrimary
                 )
             }
             Spacer(modifier = Modifier.height(10.dp))
-            UsageRow(
-                color = onSurface.copy(alpha = 0.35f),
-                title = "系统提示词",
-                tokens = usage.systemTokens
-            )
-            UsageRow(
-                color = onSurface.copy(alpha = 0.55f),
-                title = "工具定义",
-                tokens = usage.toolTokens
-            )
-            UsageRow(
-                color = onSurface.copy(alpha = 0.75f),
-                title = "对话消息",
-                tokens = usage.messageTokens
-            )
+            // 构成条：底槽固定，彩色段按各段占比切分，整条的总长仍是占用百分比
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(UiColors.meterTrack)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth(fraction)
+                        .height(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    if (partTotal <= 0) {
+                        // 有占用但三段明细都为零：只画一段整体色，不留一条空底槽
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .background(UiColors.meterTertiary, RoundedCornerShape(1.dp))
+                        )
+                    } else {
+                        parts.forEach { part ->
+                            if (part.first <= 0) return@forEach
+                            Box(
+                                modifier = Modifier
+                                    .weight(part.first.toFloat())
+                                    .fillMaxHeight()
+                                    .background(part.second, RoundedCornerShape(1.dp))
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            parts.forEach { part ->
+                UsageRow(color = part.second, title = part.third, tokens = part.first)
+            }
         }
     }
 }
@@ -614,7 +650,7 @@ private fun PanelCard(
     // 高度为 8dp：Compose 阴影半径与偏移随高度线性放大，14dp 会扩散至卡片外一大圈浅灰，8dp 则贴合圆角，边界清晰可辨。
     val panelShadow by animateDpAsState(
         targetValue = if (risen) 8.dp else 0.dp,
-        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 100, easing = FastOutSlowInEasing),
         label = "panelShadow"
     )
     Surface(
@@ -732,11 +768,10 @@ private fun ChoiceRow(
 /** 上下文明细的一行：色块 + 名称 + 右对齐数值，色块跟进度条同色，读起来对得上。 */
 @Composable
 private fun UsageRow(color: Color, title: String, tokens: Int) {
-    val onSurface = MaterialTheme.colorScheme.onSurface
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(26.dp),
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -744,10 +779,16 @@ private fun UsageRow(color: Color, title: String, tokens: Int) {
                 .size(8.dp)
                 .background(color, RoundedCornerShape(2.dp))
         )
-        Spacer(modifier = Modifier.width(9.dp))
-        Text(text = title, fontSize = 13.sp, color = onSurface.copy(alpha = 0.8f))
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(text = title, fontSize = 12.sp, lineHeight = 20.sp, color = UiColors.meterSecondary)
         Spacer(modifier = Modifier.weight(1f))
-        Text(text = "~" + composerTokenText(tokens), fontSize = 12.sp, color = onSurface.copy(alpha = 0.45f))
+        Text(
+            text = "~" + composerTokenText(tokens),
+            fontSize = 12.sp,
+            lineHeight = 20.sp,
+            style = TextStyle(fontFeatureSettings = "tnum"),
+            color = UiColors.meterPrimary
+        )
     }
 }
 

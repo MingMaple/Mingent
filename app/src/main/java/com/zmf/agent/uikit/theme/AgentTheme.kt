@@ -74,6 +74,30 @@ object UiColors {
     /** 次要文字与图标。 */
     val subText: Color
         @Composable get() = if (isDarkSurface()) Palette.DarkSubText else Palette.LightSubText
+    /** 上下文用量：数值与百分比。 */
+    val meterPrimary: Color
+        @Composable get() = if (isDarkSurface()) Palette.DarkMeterPrimary else Palette.LightMeterPrimary
+    /** 上下文用量：明细名。 */
+    val meterSecondary: Color
+        @Composable get() = if (isDarkSurface()) Palette.DarkMeterSecondary else Palette.LightMeterSecondary
+    /** 上下文用量：标题文字与圆环进度弧。 */
+    val meterTertiary: Color
+        @Composable get() = if (isDarkSurface()) Palette.DarkMeterTertiary else Palette.LightMeterTertiary
+    /** 上下文用量：进度条底槽。 */
+    val meterTrack: Color
+        @Composable get() = if (isDarkSurface()) Palette.DarkMeterTrack else Palette.LightMeterTrack
+    /** 上下文用量：圆环底槽。 */
+    val meterRingTrack: Color
+        @Composable get() = if (isDarkSurface()) Palette.DarkMeterRingTrack else Palette.LightMeterRingTrack
+    /** 上下文用量：系统提示词一段。 */
+    val meterSystem: Color
+        @Composable get() = Palette.MeterSystem
+    /** 上下文用量：工具定义一段。 */
+    val meterTools: Color
+        @Composable get() = Palette.MeterTools
+    /** 上下文用量：对话消息一段。 */
+    val meterMessages: Color
+        @Composable get() = Palette.MeterMessages
 }
 
 /** 当前是否深色底。 */

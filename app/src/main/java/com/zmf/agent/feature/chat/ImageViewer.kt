@@ -1,8 +1,8 @@
 package com.zmf.agent.feature.chat
 
 import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -23,12 +23,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -37,6 +41,10 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.theme.Motion
@@ -53,14 +61,18 @@ import kotlin.math.abs
  * 横滑必须在该层自行消费：聊天页的分页器会将手势识别为「左滑进入轨迹」，
  * 仅此处先 consume 位置变化，父层才不会收到本次滑动。
  *
- * 入场从 0.6 倍放大至原尺寸，退场缩回后再回调 onDismiss，父层无需再叠加动画。
- * 磨砂效果来自父层对会话内容的模糊，此处仅叠加半透明底与上下渐变压暗，保证图片本身清晰。
+ * 动画口径参照 PiliPlus 的图片查看流程：
+ * - 入场从被点缩略图的矩形放大到全屏；退场沿同一路径缩回，父层无需再叠加动画；
+ * - 双击以落点为锚，在 1 倍与 2 倍之间平滑切换；双指缩放限制在 1–4 倍并夹住平移边界；
+ * - 未放大时向下拖动即跟手收缩并淡出，松手超过阈值或快速下扫则关闭，否则回弹；
+ * - 底色仍为半透明遮罩，透出下层被模糊的会话内容，不使用纯黑底。
  */
 @Composable
 fun ImageViewer(
     paths: List<String>,
     startIndex: Int,
     root: File,
+    origin: Rect? = null,
     onDismiss: () -> Unit
 ) {
     // 索引在此收口一次，父层传入的越界值不会使下方 paths[index] 抛出异常
@@ -73,77 +85,149 @@ fun ImageViewer(
             runCatching { BitmapFactory.decodeFile(File(root, path).absolutePath) }.getOrNull()
         }
     }
+    val aspect = bitmap?.let { it.width.toFloat() / it.height.toFloat() } ?: 1f
+
+    var viewport by remember { mutableStateOf(IntSize.Zero) }
+    var rootOrigin by remember { mutableStateOf(Offset.Zero) }
+    // 原图按屏幕宽度等比缩放后的显示尺寸；缩略图起止点与平移边界都以此为准
+    val fitSize = remember(viewport, aspect) {
+        if (viewport.width <= 0 || viewport.height <= 0) {
+            Size.Zero
+        } else {
+            val vw = viewport.width.toFloat()
+            val vh = viewport.height.toFloat()
+            if (vw / vh > aspect) Size(vh * aspect, vh) else Size(vw, vw / aspect)
+        }
+    }
+    val viewportCenter = rootOrigin + Offset(viewport.width / 2f, viewport.height / 2f)
+    // 翻到其他图片后不再有对应缩略图，退场退回居中缩放
+    val activeOrigin = origin?.takeIf { index == startIndex }
+    val originScale = if (activeOrigin != null && fitSize.width > 0f) {
+        activeOrigin.width / fitSize.width
+    } else {
+        0.6f
+    }
+    val originTranslation = if (activeOrigin != null) {
+        activeOrigin.center - viewportCenter
+    } else {
+        Offset.Zero
+    }
 
     var scale by remember { mutableFloatStateOf(1f) }
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var offsetY by remember { mutableFloatStateOf(0f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
     // 横滑的跟手位移。相邻图片不预渲染：一张原图的位图即数十 MB，三张同时保留易触发 OOM，
     // 因此翻页实现为「当前张滑出、下一张在中间出现」，滑动完成前不切换图片。
     var dragX by remember { mutableFloatStateOf(0f) }
+    // 下滑关闭的跟手位移（仅向下，单位像素）
+    var dragY by remember { mutableFloatStateOf(0f) }
+    var imageNodeSize by remember { mutableStateOf(IntSize.Zero) }
 
     val scope = rememberCoroutineScope()
-    val appearScale = remember { Animatable(0.6f) }
-    val appearAlpha = remember { Animatable(0f) }
+    val open = remember { Animatable(0f) }
     var closing by remember { mutableStateOf(false) }
 
-    // 刚度沿用 Motion.spring()，仅将阻尼调至 1，入场顺滑且不回弹
-    val appearSpec = spring<Float>(dampingRatio = 1f, stiffness = 420f)
-    val exitSpec = tween<Float>(durationMillis = 180)
+    // 手势导致的动画需要可被新手势打断：每次开始手势都递增编号，旧协程的写入随即作废
+    var animationToken by remember { mutableIntStateOf(0) }
+    var dragJob by remember { mutableStateOf<Job?>(null) }
 
-    // 位移仅有一个写入方：跟手时直接写 dragX，松手后交由一段 animate 处理。
-    // seed 用于丢弃已取消协程可能排入下一帧的写入，避免手指与弹簧相互干扰。
-    var settleJob by remember { mutableStateOf<Job?>(null) }
-    var settleSeed by remember { mutableStateOf(0) }
-
-    /** 终止正在运行的归位动画；其已排入下一帧的写入会被 seed 校验丢弃。 */
-    fun cancelSettle() {
-        settleJob?.cancel()
-        settleJob = null
-        settleSeed++
+    fun cancelAnimation() {
+        animationToken++
+        dragJob?.cancel()
+        dragJob = null
     }
 
-    /** 把 dragX 动画到 target，收尾执行 then；中途被 cancelSettle 打断则整段作废。 */
-    fun settleTo(target: Float, spec: FiniteAnimationSpec<Float>, then: () -> Unit = {}) {
-        settleJob?.cancel()
-        settleSeed++
-        val seed = settleSeed
-        settleJob = scope.launch {
-            animate(dragX, target, animationSpec = spec) { value, _ ->
-                if (seed == settleSeed) dragX = value
+    /** 平滑改变缩放与平移；两者同时动画，视觉上是一次连续的变焦。 */
+    fun animateTransform(targetScale: Float, targetOffset: Offset) {
+        cancelAnimation()
+        val token = animationToken
+        val spec = spring<Float>(dampingRatio = 1f, stiffness = 420f)
+        scope.launch {
+            animate(scale, targetScale, animationSpec = spec) { value, _ ->
+                if (token == animationToken) scale = value
             }
-            if (seed == settleSeed) {
-                dragX = target
-                settleJob = null
+        }
+        scope.launch {
+            animate(offset.x, targetOffset.x, animationSpec = spec) { value, _ ->
+                if (token == animationToken) offset = Offset(value, offset.y)
+            }
+        }
+        scope.launch {
+            animate(offset.y, targetOffset.y, animationSpec = spec) { value, _ ->
+                if (token == animationToken) offset = Offset(offset.x, value)
+            }
+        }
+    }
+
+    fun animateDragY(target: Float, then: () -> Unit = {}) {
+        dragJob?.cancel()
+        val token = animationToken
+        dragJob = scope.launch {
+            animate(dragY, target, animationSpec = Motion.spring<Float>()) { value, _ ->
+                if (token == animationToken) dragY = value
+            }
+            if (token == animationToken) {
+                dragY = target
+                dragJob = null
                 then()
             }
         }
     }
 
-    LaunchedEffect(Unit) {
-        coroutineScope {
-            launch { appearScale.animateTo(1f, appearSpec) }
-            launch { appearAlpha.animateTo(1f, appearSpec) }
-        }
-    }
-
-    /** 关闭查看器：播完退场动画再回调 onDismiss；重复调用只生效一次。 */
+    /** 关闭查看器：缩放、平移、下滑位移回到初始值，同时沿缩略图路径退场。 */
     fun closeNow() {
         if (closing) return
         closing = true
-        cancelSettle()
+        cancelAnimation()
         dragX = 0f
+        val token = animationToken
         scope.launch {
-            // 缩回动画必须播放完毕后再回调，否则父层移除该帧后无法看到退场
             coroutineScope {
-                launch { appearScale.animateTo(0.6f, exitSpec) }
-                launch { appearAlpha.animateTo(0f, exitSpec) }
+                launch { open.animateTo(0f, tween<Float>(durationMillis = 220)) }
+                launch {
+                    animate(dragY, 0f, animationSpec = tween<Float>(durationMillis = 220)) { value, _ ->
+                        if (token == animationToken) dragY = value
+                    }
+                }
+                launch {
+                    animate(scale, 1f, animationSpec = tween<Float>(durationMillis = 160)) { value, _ ->
+                        if (token == animationToken) scale = value
+                    }
+                }
+                launch {
+                    animate(offset.x, 0f, animationSpec = tween<Float>(durationMillis = 160)) { value, _ ->
+                        if (token == animationToken) offset = Offset(value, offset.y)
+                    }
+                }
+                launch {
+                    animate(offset.y, 0f, animationSpec = tween<Float>(durationMillis = 160)) { value, _ ->
+                        if (token == animationToken) offset = Offset(offset.x, value)
+                    }
+                }
             }
             onDismiss()
         }
     }
 
-    // 底色需透出下层被模糊的对话（磨砂效果来源），因此比原先更淡：
-    // 此前 0.58/0.62 几乎不透明，呈现为纯色板
+    // 系统返回与单击图片走同一条退场动画：若由外层直接把 viewer 置空，回缩略图的过程会被跳过
+    BackHandler(enabled = !closing) { closeNow() }
+
+    LaunchedEffect(viewport, fitSize) {
+        if (viewport.width > 0 && viewport.height > 0 && open.value < 1f) {
+            open.animateTo(1f, spring<Float>(dampingRatio = 1f, stiffness = 380f))
+        }
+    }
+
+    /** 缩放到 s 时允许的最大平移量：图片边缘不得离开屏幕。 */
+    fun clampOffset(value: Offset, s: Float): Offset {
+        val maxX = ((fitSize.width * s - viewport.width) / 2f).coerceAtLeast(0f)
+        val maxY = ((fitSize.height * s - viewport.height) / 2f).coerceAtLeast(0f)
+        return Offset(
+            value.x.coerceIn(-maxX, maxX),
+            value.y.coerceIn(-maxY, maxY)
+        )
+    }
+
+    // 底色需透出下层被模糊的对话（磨砂效果来源），因此比原先更淡
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val scrim = if (isDark) Color.Black.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.34f)
     val edgeShade = Brush.verticalGradient(
@@ -156,59 +240,58 @@ fun ImageViewer(
         0f to Color.Transparent,
         1f to Color.Black.copy(alpha = 0.10f)
     )
+    // 下滑越多，遮罩越淡、图片略缩：松手前的反馈与 PiliPlus 一致
+    val dragProgress = if (viewport.height > 0) {
+        (dragY / viewport.height).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val backgroundAlpha = (open.value * (1f - dragProgress * 1.6f)).coerceIn(0f, 1f)
+    val dismissScale = 1f - dragProgress * 0.12f
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .graphicsLayer { alpha = appearAlpha.value }
-            .background(scrim)
-            .background(edgeShade)
-            .background(vignette)
-            .pointerInput(Unit) { detectTapGestures { closeNow() } }
-            // 缩放与拖动挂载于整块：图片以外留白被拖动时也由此消费，竖向事件不会漏至父层
-            .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, 4f)
-                    if (scale == 1f) {
-                        offsetX = 0f
-                        offsetY = 0f
-                    } else {
-                        offsetX += pan.x
-                        offsetY += pan.y
-                    }
+            .onGloballyPositioned { rootOrigin = it.positionInRoot() }
+            .onSizeChanged { viewport = it }
+            .pointerInput(viewport, fitSize) {
+                detectTransformGestures { centroid, pan, zoom, _ ->
+                    if (closing || fitSize.width <= 0f) return@detectTransformGestures
+                    cancelAnimation()
+                    val nextScale = (scale * zoom).coerceIn(1f, 4f)
+                    // 以双指中心为锚缩放：锚点下的像素在缩放前后保持不动
+                    val focal = centroid - Offset(viewport.width / 2f, viewport.height / 2f)
+                    val nextOffset = focal - (focal - offset) * (nextScale / scale) + pan
+                    scale = nextScale
+                    offset = clampOffset(nextOffset, nextScale)
                 }
             }
-            // 排在最后 = 事件链最内层，Main 阶段早于上述两个处理器取得事件，方可优先消费横滑
-            .pointerInput(paths) {
-                if (paths.size < 2) return@pointerInput
+            // 排在最后 = 事件链最内层，Main 阶段早于上述处理器取得事件，方可优先消费横滑与下滑
+            .pointerInput(paths, viewport) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    // 放大后横滑是拖图，翻页让位
-                    if (scale > 1f) return@awaitEachGesture
+                    // 放大后拖动是移动图片，翻页与下滑关闭均让位
+                    if (scale > 1f || closing) return@awaitEachGesture
                     val slop = viewConfiguration.touchSlop
-                    var following = false
+                    var mode = 0 // 0 = 未判定，1 = 翻页，2 = 下滑关闭
                     var dx = 0f
+                    var dy = 0f
                     var upAt = down.uptimeMillis
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Main)
-                        // 第二根手指落下为缩放：已跟手的位移回弹，不作为翻页处理
+                        // 第二根手指落下为缩放：已跟手的位移回弹，不再作为翻页或关闭处理
                         if (event.changes.count { it.pressed } > 1) {
-                            following = false
+                            mode = 0
                             break
                         }
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         dx = change.position.x - down.position.x
-                        val dy = change.position.y - down.position.y
-                        if (!following) {
-                            // 横向占优才接管翻页；竖向归缩放的 pan，其自行消费，父层同样收不到
-                            if (abs(dx) > slop || abs(dy) > slop) {
-                                if (abs(dx) <= abs(dy)) break
-                                // 接手前先终止上一段回弹，否则两处同时写入位移会发生冲突
-                                cancelSettle()
-                                following = true
-                            }
+                        dy = change.position.y - down.position.y
+                        if (mode == 0 && (abs(dx) > slop || abs(dy) > slop)) {
+                            mode = if (abs(dy) > abs(dx)) 2 else 1
+                            cancelAnimation()
                         }
-                        if (following) {
+                        if (mode == 1) {
                             change.consume()
                             // 到达尽头不移动：第一张继续向右、最后一张继续向左时，画面均不跟手
                             val neighbor = when {
@@ -217,13 +300,16 @@ fun ImageViewer(
                                 else -> false
                             }
                             dragX = if (neighbor) dx else 0f
+                        } else if (mode == 2) {
+                            change.consume()
+                            dragY = dy.coerceAtLeast(0f)
                         }
                         if (!change.pressed) {
                             upAt = change.uptimeMillis
                             break
                         }
                     }
-                    if (following) {
+                    if (mode == 1) {
                         val neighbor = when {
                             dx < 0f -> index < paths.lastIndex
                             dx > 0f -> index > 0
@@ -237,24 +323,55 @@ fun ImageViewer(
                             val target = if (dx < 0f) index + 1 else index - 1
                             val off = if (target > index) -size.width.toFloat() else size.width.toFloat()
                             // 滑出使用定长而非弹簧：弹簧需 300ms 停止，换图等待会明显迟滞
-                            settleTo(off, tween(160)) {
-                                // 位移先回正再换图：新图第一帧即居中
-                                dragX = 0f
-                                scale = 1f
-                                offsetX = 0f
-                                offsetY = 0f
-                                index = target
+                            cancelAnimation()
+                            val token = animationToken
+                            dragJob = scope.launch {
+                                animate(dragX, off, animationSpec = tween<Float>(durationMillis = 160)) { value, _ ->
+                                    if (token == animationToken) dragX = value
+                                }
+                                if (token == animationToken) {
+                                    dragX = 0f
+                                    scale = 1f
+                                    offset = Offset.Zero
+                                    index = target
+                                }
                             }
-                        } else {
-                            settleTo(0f, Motion.spring())
+                        } else if (dragX != 0f) {
+                            animateDragY(0f)
+                            val token = animationToken
+                            dragJob = scope.launch {
+                                animate(dragX, 0f, animationSpec = spring<Float>()) { value, _ ->
+                                    if (token == animationToken) dragX = value
+                                }
+                            }
                         }
-                    } else if (dragX != 0f) {
-                        settleTo(0f, Motion.spring())
+                    } else if (mode == 2) {
+                        val elapsed = (upAt - down.uptimeMillis).coerceAtLeast(1L)
+                        val fast = dragY / elapsed > 0.9f && dragY > slop * 2
+                        if (dragY > viewport.height * 0.16f || fast) {
+                            closeNow()
+                        } else {
+                            animateDragY(0f)
+                        }
+                    } else if (dragX != 0f || dragY != 0f) {
+                        dragX = 0f
+                        animateDragY(0f)
                     }
                 }
             },
         contentAlignment = Alignment.Center
     ) {
+        // 遮罩独立成层：只淡出它，图片本身保持不透明，缩略图起止动画才不会出现半透明重影
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = backgroundAlpha }
+                .background(scrim)
+                .background(edgeShade)
+                .background(vignette)
+                .pointerInput(Unit) { detectTapGestures { closeNow() } }
+        )
+
         if (bitmap != null) {
             Image(
                 bitmap = bitmap.asImageBitmap(),
@@ -262,29 +379,39 @@ fun ImageViewer(
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     // 按位图比例收缩到实际画面：图片以外的留白才会落到外层的关闭点击上
-                    .aspectRatio(bitmap.width.toFloat() / bitmap.height.toFloat())
+                    .aspectRatio(aspect)
+                    .onSizeChanged { imageNodeSize = it }
                     // 仅图片上的点击被消费，留白上的点击仍触发关闭
                     .pointerInput(Unit) {
                         detectTapGestures(
-                            onTap = { },
-                            onDoubleTap = {
-                                if (scale > 1f) {
-                                    scale = 1f
-                                    offsetX = 0f
-                                    offsetY = 0f
+                            // 单击图片即关闭：与遮罩点击、系统返回共用同一条退场动画
+                            onTap = { closeNow() },
+                            onDoubleTap = { position ->
+                                if (closing) return@detectTapGestures
+                                val focal = position - Offset(
+                                    imageNodeSize.width / 2f,
+                                    imageNodeSize.height / 2f
+                                )
+                                if (scale > 1.01f) {
+                                    animateTransform(1f, Offset.Zero)
                                 } else {
-                                    scale = 2f
+                                    val targetScale = 2f
+                                    val targetOffset = clampOffset(
+                                        focal - (focal - offset) * (targetScale / scale),
+                                        targetScale
+                                    )
+                                    animateTransform(targetScale, targetOffset)
                                 }
                             }
                         )
                     }
                     // 必须排在 pointerInput 之后：拖动位移取屏幕像素，跟手时不会相差一个缩放倍数
                     .graphicsLayer {
-                        // 入场倍率乘于同一变换上，拖动与双指缩放的比例不变
-                        scaleX = scale * appearScale.value
-                        scaleY = scale * appearScale.value
-                        translationX = offsetX + dragX
-                        translationY = offsetY
+                        val entrance = 1f + (originScale - 1f) * (1f - open.value)
+                        scaleX = scale * entrance * dismissScale
+                        scaleY = scale * entrance * dismissScale
+                        translationX = offset.x + dragX + originTranslation.x * (1f - open.value)
+                        translationY = offset.y + dragY + originTranslation.y * (1f - open.value)
                     }
             )
         } else {
@@ -304,7 +431,7 @@ fun ImageViewer(
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(bottom = 28.dp)
-                    .graphicsLayer { alpha = appearAlpha.value }
+                    .graphicsLayer { alpha = open.value }
             )
         }
     }

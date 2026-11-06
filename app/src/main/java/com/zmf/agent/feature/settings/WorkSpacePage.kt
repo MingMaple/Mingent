@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -46,6 +47,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.UiColors
 import java.io.File
@@ -100,13 +102,15 @@ fun CreateWorkspaceDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            modifier = Modifier.fillMaxWidth(0.88f),
+            modifier = Modifier
+                .widthIn(max = LocalUiWindow.current.dialogMaxWidth)
+                .fillMaxWidth(0.92f),
             shape = RoundedCornerShape(28.dp),
             color = MaterialTheme.colorScheme.surface
         ) {
             Column(
                 modifier = Modifier
-                    .heightIn(max = 560.dp)
+                    .heightIn(max = LocalUiWindow.current.dialogMaxHeight)
                     // 内距置于滚动层之外，滚动时四周留白保持固定
                     .padding(horizontal = 20.dp, vertical = 18.dp)
                     .verticalScroll(rememberScrollState())

@@ -34,7 +34,6 @@ data class InsightSessionView(
     val sessionId: String = "",
     val title: String = "当前上下文",
     val isCurrent: Boolean = true,
-    val modelLabel: String = "",
     val window: Int = 0,
     val estimatedTokens: Int = 0,
     val ratio: Float = 0f,
@@ -44,8 +43,6 @@ data class InsightSessionView(
     val tokenComposition: SessionComposition? = null,
     /** 缓存命中率；null = 服务商没报缓存字段。 */
     val cacheRate: Float? = null,
-    val promptTokens: Int = 0,
-    val completionTokens: Int = 0,
     val requests: Int = 0,
     val activeMillis: Long = 0L,
     val ttftMillis: Long = 0L,
@@ -55,12 +52,7 @@ data class InsightSessionView(
     val toolMillis: Long = 0L,
     /** 输出速度 tok/s；null = 没有上一轮数据。 */
     val outputSpeed: Int? = null,
-    val rounds: Int = 0,
-    val steps: Int = 0,
-    val replies: Int = 0,
-    val toolCalls: Int = 0,
-    /** 费用（只算已注册价目）；null = 这条会话全部不可计价。 */
-    val costCny: Double? = null
+    val toolCalls: Int = 0
 )
 
 /** 用量折线图上的一个点；分桶聚合时一天代表若干天。 */
@@ -108,8 +100,8 @@ data class InsightGlobalView(
     val range: InsightRange = InsightRange.ALL,
     val sessions: Int = 0,
     val archived: Int = 0,
-    /** 所选范围内有活动的会话数（有轮次或有 token）；会话卡副值用它体现范围。 */
-    val activeSessions: Int = 0,
+    /** 所选范围内产生过计费 token 的会话数：缓存命中率的分母口径，与 dsh 的「含 N 个会话」一致。 */
+    val usageSessions: Int = 0,
     val totalTokens: Long = 0L,
     val rounds: Int = 0,
     val costCny: Double? = null,

@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.Locale
 
 /** 环形图：segments 是（比例, 颜色）；中心两行字由调用方给。 */
 @Composable
@@ -348,30 +349,46 @@ internal fun LegendTwoLine(
     }
 }
 
-/** token 数缩写：百万级 M、万级 K，都留一位小数；一万以下原样。 */
-internal fun tokenText(tokens: Long): String = when {
-    tokens >= 1_000_000 -> oneDecimal(tokens / 1_000_000.0) + "M"
-    tokens >= 10_000 -> oneDecimal(tokens / 1_000.0) + "K"
-    else -> tokens.toString()
+/**
+ * token 数缩写：十亿 B、百万 M、千 k，均留一位小数；不足一千原样输出。
+ *
+ * 阈值与 dsh-context 的 fmt 一致（1e3 / 1e6 / 1e9）：每一档都带单位，
+ * 不会出现四位数没有单位、或一万与百万共用同一档的情况。
+ */
+internal fun tokenText(tokens: Long): String {
+    val sign = if (tokens < 0) "-" else ""
+    val value = if (tokens < 0) -tokens else tokens
+    return when {
+        value >= 1_000_000_000L -> sign + oneDecimal(value / 1_000_000_000.0) + "B"
+        value >= 1_000_000L -> sign + oneDecimal(value / 1_000_000.0) + "M"
+        value >= 1_000L -> sign + oneDecimal(value / 1_000.0) + "k"
+        else -> sign + value.toString()
+    }
 }
 
 /** 比率百分比：一位小数。 */
 internal fun percentText(ratio: Float): String =
     oneDecimal(ratio.coerceIn(0f, 1f) * 100.0) + "%"
 
-private fun oneDecimal(value: Double): String {
-    val v = (value * 10).toInt() / 10.0
-    return v.toString()
-}
+/**
+ * 固定一位小数，不省略末尾的 `.0`。
+ *
+ * 与 dsh 的 toFixed(1) 同口径：`10.0k` 而不是 `10k`，`1.0M` 而不是 `1M`。
+ * 省掉小数位会让同一列数字的字宽跳动，也会让「10」与「10.0k」看起来不像同一档。
+ */
+private fun oneDecimal(value: Double): String = String.format(Locale.US, "%.1f", value)
 
 /**
  * 时长按 DSH 的紧凑写法：秒 / 分秒 / 时分 / 天时。
  *
  * 例：`17s`、`3m17s`、`13h38m`、`2d10h`。中文「2 天 10 小时」在环形中心会被挤成两行，
  * 所以这里不写中文单位。
+ *
+ * 取整用「四舍五入」而不是「一律向上」：六段耗时要与中心的活跃时长对得上，
+ * 每段各自向上取整会让合计比总数大出一截（实测 6 秒的一轮，六段能加成 9 秒）。
  */
 internal fun durationText(millis: Long): String {
-    val totalSeconds = (millis.coerceAtLeast(0L) + 999L) / 1000L
+    val totalSeconds = kotlin.math.round(millis.coerceAtLeast(0L) / 1000.0).toLong()
     if (totalSeconds < 60L) return totalSeconds.toString() + "s"
     val minutes = totalSeconds / 60L
     if (minutes < 60L) return minutes.toString() + "m" + (totalSeconds % 60L).toString() + "s"

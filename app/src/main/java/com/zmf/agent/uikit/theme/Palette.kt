@@ -208,6 +208,45 @@ object Palette {
     val TraceContextLight = Color(0xFF00793D)
     val TraceContextDark = Color(0xFF72BB8C)
 
+    // ── 上下文用量（DSH ContextMeter）──
+    //
+    // 取值来自 DSH 的 ContextMeter 组件与它的语义令牌，逐项对应如下：
+    // | DSH 令牌 | 浅色 | 深色 |
+    // |---|---|---|
+    // | `alias-label-primary`（数值） | `neutral-bluish-1000` = `#0F1115` | `neutral-bluish-50` = `#F9FAFB` |
+    // | `alias-label-secondary`（明细名） | `neutral-bluish-700` = `#61666B` | `neutral-bluish-300` = `#CFD3D6` |
+    // | `alias-label-tertiary`（标题、圆环进度） | `neutral-bluish-600` = `#81858C` | `neutral-bluish-400` = `#ADB2B8` |
+    // | `alias-border-l3`（圆环底槽） | `#0000001F` | `#FFFFFF29` |
+    // | `alias-interactive-bg-hover`（进度条底槽） | `#2631480F` | `#FFFFFF14` |
+    //
+    // 三段构成色是组件内写死的固有色，深浅同值：系统提示词 `neutral-bluish-400`、
+    // 工具定义 `#A78BFA`、对话消息 `static-blue-450`。此处不作语义化改写：
+    // 三色并列时的辨识度依赖于彼此色相不同，换成同族色则三段无法区分。
+
+    val LightMeterPrimary = Color(0xFF0F1115)
+    val LightMeterSecondary = Color(0xFF61666B)
+    val LightMeterTertiary = Color(0xFF81858C)
+    val DarkMeterPrimary = Color(0xFFF9FAFB)
+    val DarkMeterSecondary = Color(0xFFCFD3D6)
+    val DarkMeterTertiary = Color(0xFFADB2B8)
+
+    /** 进度条底槽：浅色为 6% 蓝墨，深色为 8% 白。 */
+    val LightMeterTrack = Color(0x0F263148)
+    val DarkMeterTrack = Color(0x14FFFFFF)
+
+    /** 圆环底槽：比进度条底槽更实，环只有 2dp，过淡则读不出「还有一圈」。 */
+    val LightMeterRingTrack = Color(0x1F000000)
+    val DarkMeterRingTrack = Color(0x29FFFFFF)
+
+    /** 三段构成色：系统提示词。 */
+    val MeterSystem = Color(0xFFADB2B8)
+
+    /** 三段构成色：工具定义。 */
+    val MeterTools = Color(0xFFA78BFA)
+
+    /** 三段构成色：对话消息。 */
+    val MeterMessages = Color(0xFF4D93F8)
+
     // ── 开关关闭态轨道 ──
 
     /**

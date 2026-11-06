@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
-import android.widget.Toast
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -41,10 +40,12 @@ import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.zmf.agent.uikit.common.saltFieldColors
+import com.zmf.agent.uikit.common.NoticeCenter
 
 /** 列表最多展示的行数，与 FileLog.readLines 的默认上限一致。 */
 private const val MAX_LINES = 2000
@@ -113,11 +114,15 @@ fun LogsPage(onBack: () -> Unit) {
                 )
             }
 
-            // 窄屏放不下一行 chip，横向滚动可避免换行将搜索框挤下移
+            // 窄屏放不下一行 chip，横向滚动可避免换行将搜索框挤下移。
+            // 到左边界后继续向右推必须就地截住：否则这段位移会交给抽屉，表现为「滑到最左再滑就唤出抽屉」
+            val filterScroll = rememberScrollState()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
+                    // 拦截器必须先于 horizontalScroll 挂载（位于外层），同一节点上仅外层能收到边界余量
+                    .blockHorizontalAtEdge(filterScroll)
+                    .horizontalScroll(filterScroll)
                     .padding(horizontal = 16.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -228,7 +233,8 @@ private fun copyAll(context: Context, lines: List<String>) {
 
 /** 加 logs 前缀，避免与 PackagePage 中同签名的 toast 混淆。 */
 private fun logsToast(context: Context, text: String) {
-    Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+    // 统一走应用内提示条：系统 Toast 是独立窗口，不受深浅色主题控制
+    NoticeCenter.info(text)
 }
 
 @Composable

@@ -11,6 +11,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import com.zmf.agent.capability.loop.AgentLoop
 import com.zmf.agent.capability.loop.AgentUi
+import com.zmf.agent.capability.loop.TurnOutcome
 import com.zmf.agent.capability.jobs.JobRegistry
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.displayName
@@ -23,6 +24,7 @@ import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.core.store.Goal
 import com.zmf.agent.core.store.GoalPhase
 import com.zmf.agent.core.store.GoalStore
+import com.zmf.agent.core.store.SessionBusy
 import com.zmf.agent.core.store.UploadStore
 import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.core.store.WorkSpaceStore
@@ -278,6 +280,11 @@ class SendController(
         val images = composer.pendingImages.toList()
         // 只发附件 / 只发图片、不写字也算一次提问；三者都空才真的没得发
         if (text.isBlank() && files.isEmpty() && images.isEmpty()) return
+        // 会话被后台定时回合占着：在产生任何副作用（记轮次、收清单）之前就拒绝，避免白记一次
+        if (SessionBusy.isBusy(session.currentSessionId)) {
+            reportError("该会话正在后台执行定时任务，请稍后重试")
+            return
+        }
         // 用户开口了：连续唤醒的预算复位（封顶只约束「用户不在场时的自激链」）
         if (!programmatic) consecutiveWakes = 0
         // 新一轮提问：上一轮已经全部打勾的清单在这里收掉（必须在开跑前同步做完，见函数注释）
@@ -341,6 +348,13 @@ class SendController(
         programmatic: Boolean = false
     ) {
         reportError(null)
+        // 会话级串行：定时任务正在同一会话执行时不再起新回合，否则两侧整份覆盖写会丢消息
+        val turnSessionId = session.currentSessionId
+        if (!SessionBusy.tryAcquire(turnSessionId)) {
+            reportError("该会话正在后台执行定时任务，请稍后重试")
+            FileLog.log("chat", "会话占用中，本回合未开始：" + turnSessionId)
+            return
+        }
         // 新回合已经真正开跑：交接空档到此结束，界面回到「正在流式」这一种状态
         chainPending = false
         // 超过上限只在界面提示一句，不阻断发送（用户已经选了图，全丢掉比只发前几张更糟）。
@@ -365,6 +379,10 @@ class SendController(
             // 插话续跑（userText == null）不清：输入框里排着的东西属于用户的下一条消息
             composer.attachments.clear()
             composer.pendingImages.clear()
+            // 首轮消息发出即转正：清除空白标记并进入会话列表
+            session.markSessionStarted()
+            // 文本已进入历史，草稿随之作废，否则下次打开会回填已发送的内容
+            session.clearCurrentDraft()
         }
 
         FileLog.log(
@@ -381,6 +399,8 @@ class SendController(
         streamJob = scope.launch {
             // 用户点「停止」也会走到 finally：那种情况既不算完成也不算失败，不发通知
             var stopped = false
+            // 本轮最终答复：只取本轮新增消息，通知不会再把上一轮的答复当成本轮结果
+            var turnReply = ""
             try {
                 // 发送前置检查：命中闸门时先摘要（阻塞，失败时静默回退兜底），摘要完成后再发送主请求
                 if (context.shouldSummarize()) {
@@ -389,10 +409,8 @@ class SendController(
                     context.runSummary()
                     setActivity(null)
                 }
-                // 工具的根目录跟着当前工作区：未分类（currentWorkspaceId == null）或找不到时用默认工作区
-                val space = session.workspaces.firstOrNull { it.id == session.currentWorkspaceId }
-                    ?: WorkSpaceStore.defaultSpace(appContext)
-                val root = session.rootOf(space)
+                // 工具的根目录取会话自身的存储单元：分组变化不会让运行根漂移
+                val root = session.currentWorkspaceRoot()
                 // 图片按路径现读现编成 data URL：只对这一次请求有效，不写进会话
                 val imagePaths = images.map { it.relPath }
                 val imageDataUrls = if (imagePaths.isEmpty()) {
@@ -400,6 +418,8 @@ class SendController(
                 } else {
                     encodeImages(root, imagePaths)
                 }
+                // 本轮边界：只统计这一回合新增的消息，答复不取历史
+                val turnStart = messages.size
                 val rounds = loop().run(
                     messages = messages,
                     // null = 插话续跑：历史中已包含该用户消息，不可再次追加
@@ -432,7 +452,13 @@ class SendController(
                     // 此前仅在回合结束时落盘，进程被终止会丢失整轮（实测 19 条 → 14 条）。
                     onCheckpoint = { reason -> session.persistCheckpoint(reason) }
                 )
-                FileLog.log("loop", "结束，共 " + rounds + " 轮")
+                val outcome = TurnOutcome(rounds, messages.drop(turnStart))
+                turnReply = outcome.reply
+                FileLog.log(
+                    "loop",
+                    "结束，共 " + outcome.rounds + " 轮，本轮新增 " + outcome.added.size +
+                        " 条消息，答复 " + turnReply.length + " 字"
+                )
             } catch (e: CancellationException) {
                 stopped = true
                 FileLog.log("loop", "被用户停止")
@@ -468,14 +494,10 @@ class SendController(
                     runCatching {
                         val failure = readError()?.takeIf { it != imageNotice }
                         if (failure.isNullOrBlank()) {
-                            val reply = messages
-                                .lastOrNull { it.role == "assistant" && it.content.isNotBlank() }
-                                ?.content
-                                .orEmpty()
                             Notifier.notifyReply(
                                 appContext,
                                 "回复完成",
-                                reply.ifBlank { "（本轮已结束，没有正文输出）" },
+                                turnReply.ifBlank { "（本轮已结束，没有正文输出）" },
                                 session.currentSessionId
                             )
                         } else {
@@ -485,6 +507,8 @@ class SendController(
                         FileLog.log("notify", "通知失败：" + (it.message ?: it.javaClass.simpleName))
                     }
                 }
+                // 落盘完成后再释放会话占用：释放过早会让定时回合在界面写盘期间插进来，被旧快照覆盖
+                SessionBusy.release(turnSessionId)
                 // 收尾链放在最后：状态、落盘、通知都做完，才轮到「接着再跑一个回合」
                 if (!stopped) continueAfterTurn(scope)
             }

@@ -113,6 +113,19 @@ object AndroidPermissions {
     fun openAppSettings(context: Context): Boolean =
         start(context, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri(context)))
 
+    /**
+     * 本 App 的通知设置页。
+     *
+     * 应用 targetSdk 为 28，系统不会为它弹出通知运行时授权框（该弹框只对 targetSdk 33 及以上生效），
+     * 因此通知被关闭时只能由用户在该页面手动打开；Android 13 以下无需跳转，返回 false。
+     */
+    fun openNotificationSettings(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+        return start(context, intent)
+    }
+
     // ---- 内部 ----
 
     private fun isGranted(context: Context, permission: String): Boolean =

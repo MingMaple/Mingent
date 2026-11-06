@@ -17,10 +17,26 @@ import com.zmf.agent.capability.tools.jobs.JobKillTool
 import com.zmf.agent.capability.tools.jobs.JobListTool
 import com.zmf.agent.capability.tools.jobs.JobOutputTool
 import com.zmf.agent.capability.tools.jobs.JobStartTool
+import com.zmf.agent.capability.tools.schedule.ScheduleCreateTool
+import com.zmf.agent.capability.tools.schedule.ScheduleDeleteTool
+import com.zmf.agent.capability.tools.schedule.ScheduleListTool
 import com.zmf.agent.capability.tools.skill.SkillTool
 import com.zmf.agent.capability.tools.system.ShizukuTool
 import com.zmf.agent.capability.tools.task.TodoTool
 import com.zmf.agent.capability.tools.terminal.TerminalTool
+import com.zmf.agent.capability.tools.session.SessionArchiveTool
+import com.zmf.agent.capability.tools.session.SessionCreateTool
+import com.zmf.agent.capability.tools.session.SessionDeleteTool
+import com.zmf.agent.capability.tools.session.SessionListTool
+import com.zmf.agent.capability.tools.session.SessionMoveTool
+import com.zmf.agent.capability.tools.session.SessionRenameTool
+import com.zmf.agent.capability.tools.session.SessionRestoreTool
+import com.zmf.agent.capability.tools.session.SessionUpdateSettingsTool
+import com.zmf.agent.capability.tools.workspace.WorkspaceCreateTool
+import com.zmf.agent.capability.tools.workspace.WorkspaceDeleteTool
+import com.zmf.agent.capability.tools.workspace.WorkspaceListTool
+import com.zmf.agent.capability.tools.workspace.WorkspaceRenameTool
+import com.zmf.agent.capability.tools.workspace.WorkspaceSetRootTool
 import com.zmf.agent.capability.tools.web.WebSearchTool
 import com.zmf.agent.capability.tools.web.WebTool
 import kotlinx.coroutines.CancellationException
@@ -29,7 +45,7 @@ import org.json.JSONObject
 /**
  * 当前可用的全部工具：文件工具、App 内 Ubuntu 的 terminal、网页抓取 web_fetch、Skill 加载 skill、
  * 联网检索 web_search、任务清单 todo_write、子智能体 subagent、子智能体续聊 send_message、
- * 记忆内核 mem、计划提交 write_plan、长期目标 goal。
+ * 记忆内核 mem、计划提交 write_plan、长期目标 goal、定时任务 schedule_create / schedule_list / schedule_delete。
  *
  * subagent 依赖 [com.zmf.agent.capability.subagent.SubAgentDeps] 里注入的 provider 与工具表：
  * 没接线时它只会明确报「子智能体未初始化」，不会假装跑成功。
@@ -59,7 +75,26 @@ fun defaultTools(): List<Tool> =
         JobStartTool(),
         JobOutputTool(),
         JobListTool(),
-        JobKillTool()
+        JobKillTool(),
+        // 工作区与会话：只读写 appdata 里自己的工作区／会话文件，
+        // 因此最低权限为只读档，写操作由 mutates 在执行期拦截
+        WorkspaceListTool(),
+        WorkspaceCreateTool(),
+        WorkspaceRenameTool(),
+        WorkspaceSetRootTool(),
+        WorkspaceDeleteTool(),
+        SessionListTool(),
+        SessionCreateTool(),
+        SessionRenameTool(),
+        SessionMoveTool(),
+        SessionArchiveTool(),
+        SessionRestoreTool(),
+        SessionDeleteTool(),
+        SessionUpdateSettingsTool(),
+        // 定时任务：创建、列出、删除；数据与闹钟经 ScheduleBridge 交给 feature 域
+        ScheduleCreateTool(),
+        ScheduleListTool(),
+        ScheduleDeleteTool()
     )
 
 /**

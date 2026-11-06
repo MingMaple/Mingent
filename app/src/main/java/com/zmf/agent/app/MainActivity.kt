@@ -10,16 +10,25 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.graphics.toArgb
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import com.zmf.agent.core.AppForeground
 import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.core.notify.Notifier
+import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.feature.schedule.ScheduleRunner
 import com.zmf.agent.app.navigation.ChatScreen
+import com.zmf.agent.uikit.common.NoticeHost
 import com.zmf.agent.uikit.theme.AgentTheme
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.core.prefs.ThemeMode
@@ -44,10 +53,15 @@ class MainActivity : ComponentActivity() {
         intent?.removeExtra(Notifier.EXTRA_SESSION_ID)
         installCrashHandler()
         enableEdgeToEdge()
+        hideStatusBar()
         // Shizuku 必须在 setContent 之前初始化：权限页进入时即读取 state，
         // 且 binder 连接与丢失回调需先于界面挂载，否则首屏状态始终显示为「未安装」
         ShizukuBridge.init(this)
-        // 定时任务：进程启动时为所有已启用任务重排闹钟，用于重装、重启或被系统清除后的兜底
+        // 定时任务：先注册到会话归档所需的窄口，再为所有已启用任务重排闹钟
+        // （重排用于重装、重启或被系统清除后的兜底）
+        // 日志须先于重排绑定：重排发生在界面之前，未绑定时它写的「重排 N 条」会被静默丢弃
+        FileLog.init(this)
+        runCatching { ScheduleRunner.installBridge(this) }
         runCatching { ScheduleRunner.rescheduleAll(this) }
         // 必须早于 setContent：首帧显示的是窗口底色，未提前设置时深色主题冷启动会闪现系统浅色窗底
         applyWindowBackground()
@@ -64,19 +78,24 @@ class MainActivity : ComponentActivity() {
             }
             // uiScale 仅放大字号（AgentTheme 内部仅乘以 fontScale），修改不重建 Activity，会话不丢失
             AgentTheme(darkTheme = dark, uiScale = uiScale) {
-                ChatScreen(
-                    themeMode = mode,
-                    onThemeModeChange = { picked ->
-                        mode = picked
-                        ThemeStore.save(context, picked)
-                    },
-                    uiScale = uiScale,
-                    onUiScaleChange = { picked ->
-                        uiScale = picked
-                        UiScaleStore.save(context, picked)
-                    },
-                    initialSessionId = notificationSessionId
-                )
+                // 提示条挂在整棵界面的最外层：抽屉、设置各级页、全屏页都在它下面，
+                // 任何位置发起的一次反馈都能以同一个形态出现在屏幕顶部
+                Box(modifier = Modifier.fillMaxSize()) {
+                    ChatScreen(
+                        themeMode = mode,
+                        onThemeModeChange = { picked ->
+                            mode = picked
+                            ThemeStore.save(context, picked)
+                        },
+                        uiScale = uiScale,
+                        onUiScaleChange = { picked ->
+                            uiScale = picked
+                            UiScaleStore.save(context, picked)
+                        },
+                        initialSessionId = notificationSessionId
+                    )
+                    NoticeHost(modifier = Modifier.align(Alignment.TopCenter))
+                }
             }
         }
     }
@@ -106,6 +125,29 @@ class MainActivity : ComponentActivity() {
         sessionIdFrom(intent)?.let { notificationSessionId = it }
         // 同样移除会话 id，避免重建时再次消费
         intent.removeExtra(Notifier.EXTRA_SESSION_ID)
+    }
+
+    /**
+     * 状态栏沉浸：与 Salt 一致，默认完全隐藏，从屏幕顶部下滑时才临时伸出，
+     * 约两秒后由系统自动收回（BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE）。
+     *
+     * 不隐藏导航栏：底部手势条是全面屏返回的唯一提示，隐藏后不便于操作。
+     */
+    private fun hideStatusBar() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+
+    /**
+     * 回到前台、切回本应用或旋转屏幕后系统可能重新显示状态栏；重新申请隐藏，
+     * 保证每次回到聊天页都恢复沉浸式，而不是等用户再下滑一次。
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideStatusBar()
     }
 
     /** 前台计数加 1：只有实际显示在屏幕上的 Activity 才算用户正在查看，通知据此决定是否弹出。 */

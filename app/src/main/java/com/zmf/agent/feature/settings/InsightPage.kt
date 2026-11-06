@@ -43,12 +43,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,6 +65,7 @@ import com.zmf.agent.core.store.InsightSessionView
 import com.zmf.agent.core.store.InsightTiming
 import com.zmf.agent.core.store.LedgerComposition
 import com.zmf.agent.core.store.SessionComposition
+import com.zmf.agent.uikit.components.AdaptiveStatRow
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
@@ -248,52 +253,21 @@ private fun SessionModule(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CurrentContextTab(view: InsightSessionView) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val partsSum = view.parts.sumOf { it.tokens }
-    // 窄屏或系统大字号下：左侧数字组占用剩余宽度，右侧百分比组按自身宽度靠右，
-    // 「上下文已用」不得逐字换行；空间不足时只截断左侧的「/ N tokens」。
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.Bottom) {
-            Text(
-                text = tokenText(view.estimatedTokens.toLong()),
-                fontSize = 26.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = onSurface,
-                maxLines = 1,
-                softWrap = false
-            )
-            Text(
-                text = " / " + tokenText(view.window.toLong()) + " tokens",
-                modifier = Modifier.padding(bottom = 2.dp),
-                fontSize = 12.sp,
-                color = onSurface.copy(alpha = 0.45f),
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                text = percentText(view.ratio),
-                fontSize = 26.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = onSurface,
-                maxLines = 1,
-                softWrap = false
-            )
-            Text(
-                text = "上下文已用",
-                modifier = Modifier.padding(start = 3.dp, bottom = 2.dp),
-                fontSize = 12.sp,
-                color = onSurface.copy(alpha = 0.45f),
-                maxLines = 1,
-                softWrap = false
-            )
-        }
-    }
+    // 固定组合永远保持一行：先压间距、再按比例缩字号，不换行、不省略、不删单位。
+    // 收敛逻辑与上下限见 AdaptiveStatRow；展示型数字不随应用内字号档位放大。
+    AdaptiveStatRow(
+        leftValue = tokenText(view.estimatedTokens.toLong()),
+        leftUnit = " / " + tokenText(view.window.toLong()) + " tokens",
+        rightValue = percentText(view.ratio),
+        rightLabel = "上下文已用",
+        valueColor = onSurface,
+        noteColor = onSurface.copy(alpha = 0.45f)
+    )
     Spacer(Modifier.height(6.dp))
     StackedBar(
         segments = view.parts.map { it.tokens to argb(it.colorArgb) },
@@ -428,7 +402,7 @@ private fun GlobalSection(
         KpiCard(
             label = "全部会话",
             value = global.sessions.toString(),
-            sub = "活跃 " + global.activeSessions + " · 归档 " + global.archived,
+            sub = "其中已归档 " + global.archived + " 个",
             modifier = Modifier.weight(1f)
         )
         KpiCard(
@@ -448,7 +422,8 @@ private fun GlobalSection(
         KpiCard(
             label = "缓存命中",
             value = global.cacheRate?.let { percentText(it) } ?: "—",
-            sub = "本范围",
+            // 说明这个比例的分母：只有真正产生过计费 token 的会话才参与计算
+            sub = "含 " + global.usageSessions + " 个会话",
             modifier = Modifier.weight(1f)
         )
     }
@@ -517,6 +492,7 @@ private fun GlobalSection(
         if (composition == null || composition.total <= 0) {
             DashBlock()
         } else {
+            // 各段即为账本记录的全部构成，中心值与段合计一致
             Row(verticalAlignment = Alignment.CenterVertically) {
                 DonutRing(
                     segments = ledgerSegments(composition),
@@ -616,6 +592,11 @@ private fun SessionListCard(
         workspaceOk && (query.isBlank() || row.title.contains(query, ignoreCase = true))
     }
     val shown = filtered.take(visibleCount)
+    // 会话归属的名称：未分组与已删工作区都落到「未分类」，避免此处出现空白
+    val spaceNames = remember(workspaces) { workspaces.toMap() }
+    val workspaceName: (String?) -> String = { id ->
+        spaceNames[id] ?: "未分类"
+    }
     val archiveLabel = when (archiveFilter) {
         1 -> "隐藏已归档"
         2 -> "仅显示已归档"
@@ -635,7 +616,9 @@ private fun SessionListCard(
                 fontSize = 12.sp,
                 color = onSurface.copy(alpha = 0.45f)
             )
-            Box {
+            // 锚点固定宽度并让文字靠右：三个选项的标签长短不同，若锚点随文字变宽，
+            // DropdownMenu 贴着锚点左缘弹，位置就会在「中间偏右」与「最右侧」之间跳
+            Box(modifier = Modifier.width(184.dp), contentAlignment = Alignment.CenterEnd) {
                 Row(
                     modifier = Modifier
                         .saltRowClickable(RoundedCornerShape(8.dp)) { menuOpen = true }
@@ -733,32 +716,69 @@ private fun SessionListCard(
         } else {
             for (row in shown) {
                 Row(
+                    // 左右越出卡片内距、波纹铺到卡片边缘；行内再用等量内距把文字放回原位。
+                    // 行高显式收紧：默认正文行高 24sp 会让 14sp 与 11sp 的三行各占 24dp，
+                    // 五条会话因此把整张卡拉长近一半
                     modifier = Modifier
                         .fillMaxWidth()
-                        .saltRowClickable(RoundedCornerShape(10.dp)) { onPick(row) }
-                        .padding(vertical = 8.dp),
+                        .bleedHorizontal(16.dp)
+                        .saltRowClickable(RectangleShape) { onPick(row) }
+                        // 左侧比模块标题再缩进一档（16 + 12），三行整块因此不与标题齐头；
+                        // 右侧仍保留 16dp，可点区域与波纹靠 bleed 铺到卡片边缘
+                        .padding(start = 28.dp, top = 6.dp, end = 16.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
+                        // 标题与相对时间同行。两者字号不同（14sp / 11sp），若按盒子居中，
+                        // 小字的基线会比标题高约 5px，中文标题下看着「浮」起来；改为基线对齐，
+                        // 视觉上的底边才是齐的
+                        Row {
+                            Text(
+                                text = row.title,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .alignByBaseline(),
+                                fontSize = 14.sp,
+                                lineHeight = 18.sp,
+                                color = onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = relativeTime(row.updatedAt),
+                                modifier = Modifier
+                                    .padding(start = 8.dp)
+                                    .alignByBaseline(),
+                                fontSize = 11.sp,
+                                lineHeight = 18.sp,
+                                color = onSurface.copy(alpha = 0.35f),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                        // 第二行给出归属与规模：工作区 · 轮次 · 累计 token
                         Text(
-                            text = row.title,
-                            fontSize = 14.sp,
-                            color = onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = row.rounds.toString() + " 轮 · " + tokenText(row.tokens),
+                            text = buildString {
+                                append(workspaceName(row.workspaceId))
+                                append(" · ")
+                                append(row.rounds).append(" 轮 · ")
+                                append(tokenText(row.tokens))
+                                if (row.archived) append(" · 已归档")
+                            },
                             fontSize = 11.sp,
+                            lineHeight = 14.sp,
                             color = onSurface.copy(alpha = 0.45f),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        // 第三行只留质量指标：缓存命中与估算费用（没有价目时不写占位，避免出现「· —」）
                         Text(
-                            text = (row.cacheRate?.let { "缓存 " + percentText(it) } ?: "缓存 —") +
-                                (row.costCny?.let { " · " + moneyText(it) } ?: "") +
-                                " · " + relativeTime(row.updatedAt),
+                            text = buildString {
+                                append(row.cacheRate?.let { "缓存 " + percentText(it) } ?: "缓存 —")
+                                row.costCny?.let { append(" · ").append(moneyText(it)) }
+                            },
                             fontSize = 11.sp,
+                            lineHeight = 14.sp,
                             color = onSurface.copy(alpha = 0.35f),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -828,6 +848,31 @@ private const val WORKSPACE_NONE = "__none__"
 private fun prefix(text: String, selected: Boolean): String =
     if (selected) "✓ " + text else text
 
+/**
+ * 让该行左右各越出一段内距，铺到卡片边缘。
+ *
+ * 卡片统一给内容 16dp 横向内距。会话行若停在这条内距之内，点击波纹就会在卡片内部
+ * 圈出一块矩形，看起来像被裁过；这里把测量宽度放宽、并左移同样的距离，
+ * 行内再用等量内距把文字放回原位——文字位置不变，可点区域与波纹铺满整行。
+ */
+private fun Modifier.bleedHorizontal(inset: Dp): Modifier = layout { measurable, constraints ->
+    val extra = inset.roundToPx()
+    if (!constraints.hasBoundedWidth) {
+        val placeable = measurable.measure(constraints)
+        return@layout layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+    }
+    val width = constraints.maxWidth + extra * 2
+    val placeable = measurable.measure(
+        Constraints(
+            minWidth = width,
+            maxWidth = width,
+            minHeight = constraints.minHeight,
+            maxHeight = constraints.maxHeight
+        )
+    )
+    layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
+}
+
 // ---- 组件与格式化 ----
 
 private data class TimingSeg(
@@ -880,7 +925,8 @@ private fun compositionSegments(
     toolResults: Int,
     output: Int
 ): List<Pair<Float, Color>> {
-    val total = (system + skills + tools + user + inject + assistant + toolResults + output).coerceAtLeast(1)
+    val total = (system + skills + tools + user + inject + assistant + toolResults + output)
+        .coerceAtLeast(1)
     return listOf(
         part("系统提示词", system, total, InsightColors.SYSTEM),
         part("工具定义", tools, total, InsightColors.TOOLS),
@@ -912,8 +958,9 @@ private fun CompositionLegend(
     toolResults: Int,
     output: Int
 ) {
-    val total = (system + skills + tools + user + inject + assistant + toolResults + output).coerceAtLeast(1)
-    listOf(
+    val total = (system + skills + tools + user + inject + assistant + toolResults + output)
+        .coerceAtLeast(1)
+    val rows = listOf(
         Triple("系统提示词", system, InsightColors.SYSTEM),
         Triple("工具定义", tools, InsightColors.TOOLS),
         Triple("用户消息", user, InsightColors.USER),
@@ -922,7 +969,8 @@ private fun CompositionLegend(
         Triple("助手消息", assistant, InsightColors.ASSISTANT),
         Triple("工具结果", toolResults, InsightColors.TOOL_RESULTS),
         Triple("输出", output, InsightColors.OUTPUT)
-    ).forEach { (label, tokens, color) ->
+    )
+    rows.forEach { (label, tokens, color) ->
         LegendTwoLine(label, percentText(tokens.toFloat() / total), tokenOrDash(tokens), argb(color))
     }
 }
@@ -1051,8 +1099,17 @@ private fun argb(value: Long): Color = Color(value.toInt())
 private fun part(label: String, tokens: Int, total: Int, colorArgb: Long): Pair<Float, Color> =
     (tokens.toFloat() / total) to argb(colorArgb)
 
-private fun moneyText(value: Double): String =
-    "¥" + String.format(Locale.US, "%.2f", value)
+/**
+ * 费用显示。
+ *
+ * 小于一分钱时写「<¥0.01」而不是「¥0.00」：后者会被读成「没花钱」，
+ * 而实际只是两位小数放不下。
+ */
+private fun moneyText(value: Double): String = when {
+    value < 0 && value > -0.01 -> ">-¥0.01"
+    value > 0 && value < 0.01 -> "<¥0.01"
+    else -> "¥" + String.format(Locale.US, "%.2f", value)
+}
 
 private fun relativeTime(millis: Long): String {
     if (millis <= 0L) return "—"

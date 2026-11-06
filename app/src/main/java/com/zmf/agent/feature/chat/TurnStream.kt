@@ -42,6 +42,7 @@ import com.zmf.agent.uikit.common.Chevron
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.common.ChevronKind
 import com.zmf.agent.uikit.common.ChevronSize
+import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 import com.zmf.agent.uikit.markdown.MarkdownText
@@ -281,7 +282,7 @@ private fun TurnBodyBubble(
     // background(color, shape) 圆角与 Surface 视觉一致，但不建图层。
     Box(
         modifier = Modifier
-            .widthIn(max = 350.dp)
+            .widthIn(max = LocalUiWindow.current.assistantBubbleMaxWidth)
             .background(
                 bubbleColor,
                 RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp)

@@ -1,6 +1,8 @@
 package com.zmf.agent.uikit.common
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -49,10 +51,21 @@ import com.zmf.agent.uikit.theme.LocalAccentFg
  * 绘制于 `.clip(shape)` 之前，属于外层修饰符，因此不会被形状裁剪；
  * 同时由于仅为绘制而非布局，添加焦点环不改变行的位置与尺寸。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Modifier.saltRowClickable(
     shape: Shape,
     enabled: Boolean = true,
+    /**
+     * 长按动作；null 表示不区分长短按。
+     *
+     * 传入之后使用 [combinedClickable]：长按到阈值即触发本回调，**抬手不再触发 [onClick]**。
+     * 会话行依赖这一点——长按只用于「露出操作入口」，不应顺带把用户带进那条会话。
+     *
+     * 位置在 [onClick] 之前：Kotlin 的尾随 lambda 绑定最后一个参数，
+     * `saltCardRow { ... }` 这种写法必须继续落在 onClick 上。
+     */
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit
 ): Modifier {
     val interaction = remember { MutableInteractionSource() }
@@ -61,17 +74,27 @@ fun Modifier.saltRowClickable(
     // 焦点态与按压态分开读：同一个 interactionSource 上，Press 与 Focus 是不同的事件
     val focused = interaction.collectIsFocusedAsState().value
     val ringColor = LocalAccentFg.current
-    return this
+    val decorated = this
         .then(
             if (focused && enabled) Modifier.border(2.dp, ringColor, shape) else Modifier
         )
         .clip(shape)
-        .clickable(
+    return if (onLongClick == null) {
+        decorated.clickable(
             interactionSource = interaction,
             indication = ripple(bounded = true, color = color),
             enabled = enabled,
             onClick = onClick
         )
+    } else {
+        decorated.combinedClickable(
+            interactionSource = interaction,
+            indication = ripple(bounded = true, color = color),
+            enabled = enabled,
+            onClick = onClick,
+            onLongClick = onLongClick
+        )
+    }
 }
 
 /**
@@ -87,9 +110,13 @@ fun Modifier.saltRowClickable(
  * 若卡片 Column 设置 vertical padding，首行与末行和圆弧之间会露出直边：此时
  * 改用 [saltRowClickable] 显式指定圆角（`RoundedCornerShape(16.dp)`）。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun Modifier.saltCardRow(enabled: Boolean = true, onClick: () -> Unit): Modifier =
-    saltRowClickable(RectangleShape, enabled, onClick)
+fun Modifier.saltCardRow(
+    enabled: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
+    onClick: () -> Unit
+): Modifier = saltRowClickable(RectangleShape, enabled, onLongClick, onClick)
 
 /**
  * 顶栏图标按钮：40dp 热区 + 10dp 圆角，波纹按自身圆角裁剪。
@@ -115,7 +142,7 @@ fun TopIconButton(
     Box(
         modifier = Modifier
             .size(40.dp)
-            .saltRowClickable(RoundedCornerShape(10.dp), enabled, onClick),
+            .saltRowClickable(RoundedCornerShape(10.dp), enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Text(

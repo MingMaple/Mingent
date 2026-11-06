@@ -271,6 +271,10 @@ fun ModelSettingsPage(
                                         onClick = { onPickEffort(value) }
                                     )
                                 }
+                                SettingsNote(
+                                    text = "此处仅为新建会话的默认开关与强度；在会话中修改只影响该会话，" +
+                                        "不会影响这里的值。"
+                                )
                             }
                         }
                     }
@@ -294,20 +298,17 @@ fun ModelSettingsPage(
                                 HorizontalDivider(
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
                                 )
-                                Text(
-                                    text = "决定助手能碰多远。这里与输入区的权限开关是同一份设置，改一处两处同时生效。",
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-                                )
                                 PermissionLevel.entries.forEach { level ->
                                     PermissionTierRow(
                                         title = permissionTitle(level),
-                                        detail = permissionDetail(level),
                                         selected = level == permission,
                                         onClick = { onPickPermission(level) }
                                     )
                                 }
+                                SettingsNote(
+                                    text = "此处仅为新建会话的默认档位；在会话中切换只影响该会话，" +
+                                        "不会回写这里。"
+                                )
                             }
                         }
                     }
@@ -757,6 +758,23 @@ private fun CatalogPickerDialog(
     }
 }
 
+/**
+ * 设置项下方的说明文字。
+ *
+ * 与行内说明的区别：行内说明描述「这一项是什么」，此处专门交代「改动的作用范围」，
+ * 二者混排会让用户误判默认值与会话内取值的优先级。
+ */
+@Composable
+private fun SettingsNote(text: String) {
+    Text(
+        text = text,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 10.dp),
+        fontSize = 11.sp,
+        lineHeight = 16.sp,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+    )
+}
+
 /** 分组卡片：Salt 的圆角 16dp，卡片底走 colorScheme.surface，不描边。 */
 @Composable
 private fun SettingsCard(content: @Composable () -> Unit) {
@@ -857,11 +875,10 @@ private fun EffortRow(
     }
 }
 
-/** 一行执行权限：标题与说明上下排；选中行的标题为绿字，右侧一枚绿点。 */
+/** 一行执行权限：只有档位名，选中靠加粗与右侧圆点表达。 */
 @Composable
 private fun PermissionTierRow(
     title: String,
-    detail: String,
     selected: Boolean,
     onClick: () -> Unit
 ) {
@@ -869,30 +886,21 @@ private fun PermissionTierRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(48.dp)
             .saltCardRow { onClick() }
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        // 顶端对齐：说明文字折成两三行时，圆点仍与标题同一行，不会移至卡片中部
-        verticalAlignment = Alignment.Top
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(
-                text = title,
-                fontSize = 15.sp,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                // 选中状态已由卡片底色 + 加粗表达，文字不使用蓝色：选中位置由卡片表达，不依赖颜色
-                color = onSurface
-            )
-            Spacer(Modifier.height(3.dp))
-            Text(
-                text = detail,
-                fontSize = 12.sp,
-                color = onSurface.copy(alpha = 0.45f)
-            )
-        }
+        Text(
+            text = title,
+            modifier = Modifier.weight(1f),
+            fontSize = 15.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = onSurface
+        )
         // 选中点：卡片底色已经说明选中，这里只补一个 8dp 的实心点，颜色跟正文走
         Box(
             modifier = Modifier
-                .padding(top = 6.dp)
                 .size(8.dp)
                 .background(
                     color = if (selected) onSurface else Color.Transparent,
@@ -907,13 +915,6 @@ private fun permissionTitle(level: PermissionLevel): String = when (level) {
     PermissionLevel.READ_ONLY -> "仅可查看"
     PermissionLevel.WORKSPACE -> "工作区内修改"
     PermissionLevel.FULL -> "完全权限"
-}
-
-/** 三档的能力说明：只陈述闸门实际放行的范围，不承诺它是沙箱。 */
-private fun permissionDetail(level: PermissionLevel): String = when (level) {
-    PermissionLevel.READ_ONLY -> "只读取工作区与系统信息，不改动任何文件。"
-    PermissionLevel.WORKSPACE -> "可读写工作区，系统其它位置与外部存储不可写。默认档位。"
-    PermissionLevel.FULL -> "可读写系统任意位置，危险命令不再拦截。仅在信任任务时使用。"
 }
 
 /** 胶囊按钮：主按钮吃 Salt 绿，次要按钮吃 6% 淡影（和 SchedulePage 的 chip 同一套观感）。 */

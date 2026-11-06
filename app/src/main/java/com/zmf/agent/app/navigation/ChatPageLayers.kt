@@ -5,13 +5,18 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.zmf.agent.capability.config.ApiConfig
@@ -33,6 +38,7 @@ import com.zmf.agent.feature.settings.ModelSettingsPage
 import com.zmf.agent.feature.settings.SettingsHomePage
 import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.capability.prompt.PromptStore
+import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.core.prefs.UiScaleStore
 import kotlinx.coroutines.launch
@@ -42,8 +48,41 @@ import com.zmf.agent.feature.chat.AppPage
 import com.zmf.agent.feature.chat.ChatUiState
 import com.zmf.agent.feature.chat.ChatViewModel
 import com.zmf.agent.feature.chat.PlanPage
-import com.zmf.agent.feature.chat.SessionListPage
 import com.zmf.agent.feature.chat.SubAgentPage
+import com.zmf.agent.uikit.common.NoticeCenter
+import com.zmf.agent.uikit.common.NoticeTone
+
+/**
+ * 二级页的统一入场：横向滑入 + 内容列限宽并居中。
+ *
+ * 背景由外层铺满，页面内容限制在 640dp 以内：平板竖屏与横屏宽窗口下，
+ * 卡片与行长仍保持与手机近似的比例，而不是被拉伸到整屏宽。
+ * 背景与页面同属一个动画节点，滑入时整块一起移动，不会露出下层主页。
+ */
+@Composable
+private fun PageSlide(visible: Boolean, content: @Composable () -> Unit) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInHorizontally(Motion.spring()) { it },
+        exit = slideOutHorizontally(tween(220)) { it },
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Box(
+                modifier = Modifier
+                    .widthIn(max = LocalUiWindow.current.contentMaxWidth)
+                    .fillMaxHeight()
+            ) {
+                content()
+            }
+        }
+    }
+}
 
 /**
  * 聊天页之上的二十层全屏页面：设置首页 / 数据 / 通用设置 / 模型 / 权限 / 包管理 / 日志 /
@@ -84,9 +123,9 @@ internal fun ChatPageLayers(
         UsageLedger.load(context)
         UsageLedger.snapshot()
     }
-        // 设置、工作区、会话列表与设置下的所有页面均为独立全屏页，每页各一层 AnimatedVisibility：
+        // 设置、工作区与设置下的所有页面均为独立全屏页，每页各一层 AnimatedVisibility：
         // 下层页面保留原位，中间不会闪现主页画面；页面自身不透明，因此仅执行横向滑动。
-        AnimatedVisibility(
+        PageSlide(
             // 所有设置层页面也需计入该层：滑入时设置首页必须保留原位，否则下方会露出主页
             visible = page == AppPage.SETTINGS || page == AppPage.SETTINGS_DATA ||
                 page == AppPage.MODEL ||
@@ -94,10 +133,7 @@ internal fun ChatPageLayers(
                 page == AppPage.SCHEDULE ||
                 page == AppPage.GENERAL || page == AppPage.MEMORY ||
                 page == AppPage.CONTEXT_HUB || page == AppPage.CONTEXT_CONFIG ||
-                page == AppPage.ABOUT || page == AppPage.ARCHIVE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
+                page == AppPage.ABOUT || page == AppPage.ARCHIVE
         ) {
             SettingsHomePage(
                 onBack = { page = null },
@@ -114,12 +150,9 @@ internal fun ChatPageLayers(
 
         // 数据层需保留至其三级页（日志、归档）之上：若该层随 SETTINGS_DATA 一同滑出，
         // 三级页滑入时会将下方的「数据」页一并带走，中途露出主页。
-        AnimatedVisibility(
+        PageSlide(
             visible = page == AppPage.SETTINGS_DATA || page == AppPage.ARCHIVE ||
-                page == AppPage.LOGS || page == AppPage.TRASH,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
+                page == AppPage.LOGS || page == AppPage.TRASH
         ) {
             DataSettingsPage(
                 onBack = { page = AppPage.SETTINGS },
@@ -140,28 +173,30 @@ internal fun ChatPageLayers(
             )
         }
 
-        AnimatedVisibility(
-            visible = page == AppPage.ARCHIVE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.ARCHIVE) {
             ArchivePage(
                 workspaces = viewModel.workspaceList,
                 archived = viewModel.sessionList.filter { it.archived },
                 onBack = { page = AppPage.SETTINGS_DATA },
-                onRestore = { id -> viewModel.unarchiveSession(id) },
-                onDelete = { id -> viewModel.deleteSession(id) }
+                onRestore = { id ->
+                    // 原工作区已删除时会话归入「未分类」：这是用户看不到的降级，必须说明
+                    val demoted = viewModel.unarchiveSession(id)
+                    if (demoted) {
+                        NoticeCenter.show("已恢复，归入「未分类」", NoticeTone.Success)
+                    } else {
+                        NoticeCenter.success("会话已恢复")
+                    }
+                },
+                onDelete = { id ->
+                    viewModel.deleteSession(id)
+                    NoticeCenter.success("会话已删除")
+                },
+                deleteNote = { id -> viewModel.deleteSessionExtraNote(id) }
             )
         }
 
         // 回收站仅对用户开放（D3 主体分离）：没有对应的 Agent 工具，恢复与清空均在此页完成
-        AnimatedVisibility(
-            visible = page == AppPage.TRASH,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.TRASH) {
             TrashPage(
                 onBack = {
                     trashRefreshKey++
@@ -171,12 +206,9 @@ internal fun ChatPageLayers(
         }
 
         // 通用设置层同理：权限与定时任务两个三级页滑入时，该层必须保留原位
-        AnimatedVisibility(
+        PageSlide(
             visible = page == AppPage.GENERAL || page == AppPage.PERMISSION ||
-                page == AppPage.SCHEDULE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
+                page == AppPage.SCHEDULE
         ) {
             GeneralSettingsPage(
                 onBack = { page = AppPage.SETTINGS },
@@ -191,12 +223,7 @@ internal fun ChatPageLayers(
         }
 
         // 长期记忆：进入页面时刷新一次快照。记忆数据从磁盘读取，页面不应在主线程上访问文件
-        AnimatedVisibility(
-            visible = page == AppPage.MEMORY,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.MEMORY) {
             // 页面进入时自行调用 onRefresh，该层不额外刷新（记忆刷新需运行内核，重复一次会产生双倍开销）
             MemoryPage(
                 onBack = { page = AppPage.SETTINGS },
@@ -215,12 +242,7 @@ internal fun ChatPageLayers(
         }
 
         // 上下文洞察：纯只读页面。刷新由页面进入时自行发起（onRefresh），该层不重复调用。
-        AnimatedVisibility(
-            visible = page == AppPage.CONTEXT_HUB,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.CONTEXT_HUB) {
             ContextInsightPage(
                 initialSessionId = viewModel.currentSessionId,
                 currentSessionId = viewModel.currentSessionId,
@@ -231,21 +253,11 @@ internal fun ChatPageLayers(
             )
         }
 
-        AnimatedVisibility(
-            visible = page == AppPage.ABOUT,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.ABOUT) {
             AboutPage(onBack = { page = AppPage.SETTINGS })
         }
 
-        AnimatedVisibility(
-            visible = page == AppPage.WORKSPACE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.WORKSPACE) {
             WorkSpacePage(
                 workspaces = viewModel.workspaceList,
                 currentId = viewModel.currentWorkspaceId,
@@ -260,49 +272,7 @@ internal fun ChatPageLayers(
             )
         }
 
-        // 会话列表是抽屉的一级页
-        AnimatedVisibility(
-            visible = page == AppPage.SESSIONS,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            SessionListPage(
-                // 传入全量数据：列表行需显示所属工作区名称，归档标签页也需跨工作区
-                sessions = viewModel.sessionList,
-                workspaces = viewModel.workspaceList,
-                currentId = viewModel.currentSessionId,
-                streaming = viewModel.isStreaming,
-                onPick = { id ->
-                    viewModel.switchSession(id)
-                    page = null
-                },
-                onNew = { viewModel.newSession() },
-                onFirstPage = { pagerAtFirstPage = it },
-                onRename = { id, title -> viewModel.renameSession(id, title) },
-                onArchive = { id, archived ->
-                    if (archived) viewModel.archiveSession(id) else viewModel.unarchiveSession(id)
-                },
-                onDelete = { id -> viewModel.deleteSession(id) },
-                onFork = { id ->
-                    // 返回对话页：用户需继续在分支上对话，不应停留在列表
-                    page = null
-                    forkWithReload {
-                        // forkSession 仅作用于当前会话：从其他会话行进入时先切换
-                        if (id != viewModel.currentSessionId) viewModel.switchSession(id)
-                        viewModel.forkSession()
-                    }
-                },
-                onBack = { page = null }
-            )
-        }
-
-        AnimatedVisibility(
-            visible = page == AppPage.MODEL,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.MODEL) {
             ModelSettingsPage(
                 onBack = { page = AppPage.SETTINGS },
                 providers = viewModel.providers,
@@ -347,22 +317,12 @@ internal fun ChatPageLayers(
         }
 
         // 权限管理：同为设置下的二级页，单独一层，滑入时设置页保留原位
-        AnimatedVisibility(
-            visible = page == AppPage.PERMISSION,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.PERMISSION) {
             PermissionPage(onBack = { page = AppPage.GENERAL })
         }
 
         // 上下文配置：提示词两段、压缩策略与摘要，在一页内完成修改。保存即持久化，页面不直接访问存储
-        AnimatedVisibility(
-            visible = page == AppPage.CONTEXT_CONFIG,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.CONTEXT_CONFIG) {
             ContextConfigPage(
                 onBack = { page = AppPage.SETTINGS },
                 extraPrompt = extraPrompt,
@@ -390,12 +350,7 @@ internal fun ChatPageLayers(
         }
 
         // 计划：由模型通过 write_plan 写入。存在多份时通过标签栏切换查看，全部删除后自动返回主页
-        AnimatedVisibility(
-            visible = page == AppPage.PLAN,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.PLAN) {
             PlanPage(
                 plans = viewModel.plans,
                 selectedId = viewModel.selectedPlanId,
@@ -427,12 +382,7 @@ internal fun ChatPageLayers(
         }
 
         // 包管理：MCP 服务与 Skill 两个标签页（设置下的二级页）
-        AnimatedVisibility(
-            visible = page == AppPage.PACKAGE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.PACKAGE) {
             PackagePage(
                 registry = viewModel.toolRegistry,
                 onBack = { page = AppPage.SETTINGS },
@@ -443,32 +393,17 @@ internal fun ChatPageLayers(
         }
 
         // 日志：设置下的二级页，单独一层（LogsPage 内部在 IO 线程读取日志，不阻塞该层滑入动画）
-        AnimatedVisibility(
-            visible = page == AppPage.LOGS,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.LOGS) {
             LogsPage(onBack = { page = AppPage.SETTINGS_DATA })
         }
 
         // 定时任务：一级入口在设置里，单独一层
-        AnimatedVisibility(
-            visible = page == AppPage.SCHEDULE,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.SCHEDULE) {
             SchedulePage(onBack = { page = AppPage.SETTINGS })
         }
 
         // 子智能体详情：由右上角胶囊卡片进入，可继续发送消息
-        AnimatedVisibility(
-            visible = page == AppPage.SUBAGENT,
-            enter = slideInHorizontally(Motion.spring()) { it },
-            exit = slideOutHorizontally(tween(220)) { it },
-            modifier = Modifier.fillMaxSize()
-        ) {
+        PageSlide(visible = page == AppPage.SUBAGENT) {
             SubAgentPage(
                 entry = subAgentEntries.firstOrNull { it.id == subAgentDetailId },
                 onBack = { page = null },

@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -38,6 +39,135 @@ internal fun unitStroke(width: Float): Stroke =
 
 /** 路径构建工具函数，专用于 [UnitGlyph] 中的 18×18 坐标。 */
 internal fun unitPath(build: Path.() -> Unit): Path = Path().apply(build)
+
+/** 代码符号「&lt;/&gt;」：用于源码仓库一类入口。 */
+@Composable
+internal fun CodeGlyph(tint: Color, iconSize: Dp) {
+    UnitGlyph(iconSize = iconSize) {
+        drawPath(
+            path = unitPath {
+                moveTo(7.0f, 4.8f)
+                lineTo(3.4f, 9.0f)
+                lineTo(7.0f, 13.2f)
+            },
+            color = tint,
+            style = unitStroke(1.4f)
+        )
+        drawPath(
+            path = unitPath {
+                moveTo(11.0f, 4.8f)
+                lineTo(14.6f, 9.0f)
+                lineTo(11.0f, 13.2f)
+            },
+            color = tint,
+            style = unitStroke(1.4f)
+        )
+        drawPath(
+            path = unitPath {
+                moveTo(10.2f, 4.0f)
+                lineTo(7.8f, 14.0f)
+            },
+            color = tint,
+            style = unitStroke(1.4f)
+        )
+    }
+}
+
+/** 虫形：躯体、两根触角与四条腿，用于问题反馈。 */
+@Composable
+internal fun BugGlyph(tint: Color, iconSize: Dp) {
+    UnitGlyph(iconSize = iconSize) {
+        drawRoundRect(
+            color = tint,
+            topLeft = Offset(5.4f, 6.2f),
+            size = Size(7.2f, 8.4f),
+            cornerRadius = CornerRadius(3.6f, 3.6f),
+            style = unitStroke(1.4f)
+        )
+        drawPath(
+            path = unitPath {
+                moveTo(6.9f, 4.3f)
+                lineTo(7.7f, 6.2f)
+                moveTo(11.1f, 4.3f)
+                lineTo(10.3f, 6.2f)
+            },
+            color = tint,
+            style = unitStroke(1.4f)
+        )
+        drawPath(
+            path = unitPath {
+                moveTo(3.4f, 8.4f)
+                lineTo(5.4f, 9.4f)
+                moveTo(14.6f, 8.4f)
+                lineTo(12.6f, 9.4f)
+                moveTo(3.4f, 12.6f)
+                lineTo(5.4f, 11.6f)
+                moveTo(14.6f, 12.6f)
+                lineTo(12.6f, 11.6f)
+            },
+            color = tint,
+            style = unitStroke(1.4f)
+        )
+    }
+}
+
+/** 标签：一端为尖角、一端平口，尖角附近一个穿孔，用于版本一类的标记。 */
+@Composable
+internal fun TagGlyph(tint: Color, iconSize: Dp) {
+    UnitGlyph(iconSize = iconSize) {
+        drawPath(
+            path = unitPath {
+                moveTo(3.6f, 5.0f)
+                lineTo(10.2f, 5.0f)
+                lineTo(14.4f, 9.0f)
+                lineTo(10.2f, 13.0f)
+                lineTo(3.6f, 13.0f)
+                close()
+            },
+            color = tint,
+            style = unitStroke(1.4f)
+        )
+        drawCircle(color = tint, radius = 0.9f, center = Offset(6.4f, 9.0f))
+    }
+}
+
+/** 文档：右上角折起的一页纸，加两道文字线，用于声明一类的文本入口。 */
+@Composable
+internal fun DocGlyph(tint: Color, iconSize: Dp) {
+    UnitGlyph(iconSize = iconSize) {
+        drawPath(
+            path = unitPath {
+                moveTo(4.8f, 2.8f)
+                lineTo(10.4f, 2.8f)
+                lineTo(13.4f, 5.8f)
+                lineTo(13.4f, 15.2f)
+                lineTo(4.8f, 15.2f)
+                close()
+            },
+            color = tint,
+            style = unitStroke(1.4f)
+        )
+        drawPath(
+            path = unitPath {
+                moveTo(10.4f, 2.8f)
+                lineTo(10.4f, 5.8f)
+                lineTo(13.4f, 5.8f)
+            },
+            color = tint,
+            style = unitStroke(1.4f)
+        )
+        drawPath(
+            path = unitPath {
+                moveTo(6.8f, 9.2f)
+                lineTo(11.2f, 9.2f)
+                moveTo(6.8f, 11.8f)
+                lineTo(11.2f, 11.8f)
+            },
+            color = tint,
+            style = unitStroke(1.4f)
+        )
+    }
+}
 
 /** 上下文与模型共用的圆柱体：表示数据存储位置，含义直观。 */
 @Composable

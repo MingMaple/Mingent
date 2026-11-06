@@ -156,6 +156,7 @@ internal fun BoxScope.ChatOverlays(
         ImageViewer(
             paths = target.paths,
             startIndex = target.startIndex,
+            origin = target.origin,
             root = imageRoot,
             onDismiss = { viewer = null }
         )

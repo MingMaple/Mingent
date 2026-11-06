@@ -23,11 +23,15 @@ class ScheduleBootReceiver : BroadcastReceiver() {
         val action = intent.action
         if (action != Intent.ACTION_BOOT_COMPLETED && action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val app = context.applicationContext
+        // 开机广播同样可能冷启动进程：先绑定日志，下面这行「收到 …」才有落点
+        FileLog.init(app)
         // 重排需读取任务表并逐条写入闹钟：交由后台线程执行，并通过 goAsync 延长广播的生命周期
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 FileLog.log(TAG, "收到 " + action + "，开始重排定时任务")
+                // 开机或覆盖安装后同样需要注册：应用可能在未打开界面的情况下先收到广播
+                ScheduleRunner.installBridge(app)
                 ScheduleRunner.rescheduleAll(app)
             } catch (t: Throwable) {
                 FileLog.log(TAG, "系统事件后重排失败：" + t)

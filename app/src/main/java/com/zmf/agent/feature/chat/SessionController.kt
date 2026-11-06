@@ -6,12 +6,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.zmf.agent.capability.context.ContextEventStore
+import com.zmf.agent.capability.runtime.ScheduleBridge
+import com.zmf.agent.capability.storage.StorageReclaimer
+import com.zmf.agent.core.fs.PathGate
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
+import com.zmf.agent.core.model.PermissionLevel
+import com.zmf.agent.core.model.wireName
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.GoalStore
 import com.zmf.agent.core.store.PlanStore
 import com.zmf.agent.core.store.SessionStore
+import com.zmf.agent.core.store.Storage
+import com.zmf.agent.core.store.StorageKind
+import com.zmf.agent.core.store.StorageStore
 import com.zmf.agent.core.store.UploadStore
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
@@ -30,9 +38,11 @@ private const val KEY_OPENED_SESSION = "last_opened_session"
 /**
  * 会话与工作区：会话表、当前会话、工作区表、当前工作区，以及它们的新建/切换/归档/删除与落盘。
  *
- * 从 [ChatViewModel] 拆出，行为不变：字段名与原成员逐字一致，方法体原样保留；
- * 仅将跨模块动作改为注入——消息容器、流式标记、待发附件清理与引用路径、工具成败清理、
- * 待办/统计/错误的回显入口、导入后暂缓落盘的开关——避免该类反向持有整个 ViewModel。
+ * 目录不再挂在会话或工作区上：两者都只持有存储单元 id，运行根由存储单元解析，
+ * 因此移动会话、删除工作区、更改储存路径都不需要搬运文件。
+ *
+ * 从 [ChatViewModel] 拆出，仅将跨模块动作改为注入——消息容器、流式标记、待发附件清理与引用路径、
+ * 工具成败清理、待办/统计/错误的回显入口、导入后暂缓落盘的开关、草稿存取与当前默认偏好。
  */
 class SessionController(
     private val appContext: Context,
@@ -46,7 +56,11 @@ class SessionController(
     private val reloadTodos: () -> Unit,
     private val resetStats: () -> Unit,
     private val reportError: (String) -> Unit,
-    private val persistenceBlocked: () -> Boolean
+    private val persistenceBlocked: () -> Boolean,
+    /** 新建会话时快照进会话字段的当前权限档。 */
+    private val currentPermission: () -> PermissionLevel,
+    /** 新建会话时快照进会话字段的当前思考强度（`off` 表示关闭思考）。 */
+    private val currentEffort: () -> String
 ) {
 
     /** 全部会话，按 updatedAt 降序（第一个就是最近用过的）；侧边栏直接用。 */
@@ -60,6 +74,26 @@ class SessionController(
 
     /** 当前工作区；null = 未分类。 */
     var currentWorkspaceId by mutableStateOf<String?>(null)
+
+    /**
+     * 草稿存取入口，由 [ChatViewModel] 在输入区状态构造完成后注入。
+     *
+     * 用可空端口而不是构造参数：草稿状态属于输入区，输入区又依赖本控制器提供的会话 id，
+     * 两者互相引用，用端口打断这一环，避免初始化顺序耦合。
+     */
+    var draftPort: DraftPort? = null
+
+    /** 草稿端口：切换会话前先把当前输入落盘，切换后回填目标会话的草稿。 */
+    interface DraftPort {
+        /** 立即把当前输入写入当前会话。 */
+        fun flush()
+
+        /** 载入目标会话的草稿；没有草稿时清空输入框。 */
+        fun restore(sessionId: String)
+
+        /** 删除若干条草稿（会话被删除时调用）。 */
+        fun forget(sessionIds: Collection<String>)
+    }
 
     /**
      * 会话落盘队列。
@@ -77,29 +111,59 @@ class SessionController(
      */
     fun loadInitial() {
         // 工作区表先读回来：默认工作区永远在，后面决定当前工作区时要用它兜底
-        workspaces = WorkSpaceStore.load(appContext)
+        val loadedSpaces = WorkSpaceStore.load(appContext)
+        val validStorages = StorageStore.loadStorages(appContext).map { it.id }.toSet()
+        workspaces = loadedSpaces.map { space ->
+            // 防御：存储单元记录丢失时退回默认存储单元，避免出现「工作区指向不存在的目录」
+            if (space.storageId.isEmpty() || space.storageId !in validStorages) {
+                space.copy(storageId = StorageStore.DEFAULT_ID)
+            } else {
+                space
+            }
+        }
         // 再重新读取会话表以确定当前会话：存在历史时接续最近一条，否则新建空会话
         // 顺便兜底：会话引用了已不存在的工作区（workspaces.json 丢了/坏了）就当未分类，
         // 否则这些会话在界面分组里会直接消失
         val loaded = SessionStore.load(appContext).sortedByDescending { it.updatedAt }
         val validIds = workspaces.map { space -> space.id }.toSet()
+        var repaired = false
         val sessions = loaded.map { session ->
             val workspaceId = session.workspaceId
+            var next = session
             if (workspaceId != null && !validIds.contains(workspaceId)) {
-                session.copy(workspaceId = null)
-            } else {
-                session
+                next = next.copy(workspaceId = null)
+                repaired = true
             }
+            if (next.storageId.isEmpty()) {
+                next = next.copy(storageId = storageIdFor(next.workspaceId))
+                repaired = true
+            }
+            // 导入旧备份同样会留下缺键会话：此处按当前全局值补齐，保证快照语义自洽
+            if (next.permissionPreset.isEmpty()) {
+                next = next.copy(permissionPreset = currentPermission().wireName())
+                repaired = true
+            }
+            if (next.reasoningEffort.isEmpty()) {
+                next = next.copy(reasoningEffort = currentEffort())
+                repaired = true
+            }
+            next
+        }
+        if (repaired) {
+            this.sessions = sessions
+            persistAllNow()
         }
         if (sessions.isEmpty()) {
-            // 一条会话都没有：先落在第一个工作区（列表空就先进未分类），新会话跟着它走
+            // 一条会话都没有：落在默认工作区，并创建一条可见的空白会话
             currentWorkspaceId = workspaces.firstOrNull()?.id
-            val fresh = SessionStore.newSession().copy(workspaceId = currentWorkspaceId)
+            val fresh = newSessionFor(currentWorkspaceId, blank = true, listed = true)
             this.sessions = listOf(fresh)
             currentSessionId = fresh.id
+            persistAllNow()
         } else {
             this.sessions = sessions
-            // 恢复用户最后停留的会话，而非 updatedAt 最新的一条：定时任务与后台唤醒会刷新 updatedAt，按该值取会进入被后台唤醒的会话（用户实测如此）。
+            // 恢复用户最后停留的会话，而非 updatedAt 最新的一条：定时任务与后台唤醒会刷新 updatedAt，
+            // 按该值取会进入被后台唤醒的会话（用户实测如此）。
             val remembered = persistedSessionId()
             val latest = sessions.firstOrNull { it.id == remembered } ?: sessions.first()
             currentSessionId = latest.id
@@ -108,6 +172,7 @@ class SessionController(
             currentWorkspaceId = latest.workspaceId ?: workspaces.firstOrNull()?.id
             messages.clear()
             messages.addAll(latest.messages)
+            draftPort?.restore(latest.id)
         }
     }
 
@@ -131,22 +196,34 @@ class SessionController(
         appContext.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE)
             .getString(KEY_OPENED_SESSION, null)
 
-    /** 新建会话：当前会话先存回，再插一条空的到最前并切过去；新会话归当前工作区。 */
+    /**
+     * 新建会话。
+     *
+     * 同一工作区至多一条空白会话：已有空白会话（无论是否显示）就地复用，不重复新建，
+     * 草稿随之一并保留。用户手动新建的空白会话默认隐藏，首轮消息后转正并进入列表。
+     */
     fun newSession() {
         if (isStreaming()) return
         // 附件是「当前这条提问」的，换会话就不该带过去
         clearAttachments()
+        draftPort?.flush()
         persistCurrent()
-        val fresh = SessionStore.newSession().copy(workspaceId = currentWorkspaceId)
+        val workspaceId = currentWorkspaceId
+        val blank = sessions.firstOrNull { it.blank && !it.archived && it.workspaceId == workspaceId }
+        if (blank != null) {
+            // 复用前刷新时间：列表按 updatedAt 排序，「新会话」必须出现在最前面；
+            // 否则复用到的是很早以前那条空白会话，它会落在十几行之后，用户看不到自己刚点出来的会话
+            val touched = blank.copy(updatedAt = System.currentTimeMillis())
+            sessions = sessions.map { if (it.id == touched.id) touched else it }
+            persistAll()
+            open(touched)
+            FileLog.log("session", "复用空白会话 " + blank.id)
+            return
+        }
+        val fresh = newSessionFor(workspaceId, blank = true, listed = false)
         sessions = listOf(fresh) + sessions
-        currentSessionId = fresh.id
-        persistOpenedSession(fresh.id)
-        messages.clear()
-        clearToolOutcomes()
-        // 新会话的累计就是它自己那四个字段（刚建出来全是 0）
-        resetStats()
+        open(fresh)
         persistAll()
-        reloadTodos()
         FileLog.log("session", "新建会话 " + fresh.id + "，共 " + sessions.size + " 个")
     }
 
@@ -164,6 +241,7 @@ class SessionController(
             return
         }
         clearAttachments()
+        draftPort?.flush()
         persistCurrent()
         var target = sessions.firstOrNull { it.id == id }
         if (target == null) {
@@ -175,6 +253,13 @@ class SessionController(
             syncCurrentFromDisk()
             return
         }
+        open(target)
+        persistAll()
+        FileLog.log("session", "切到会话 " + target.id + "（" + messages.size + " 条消息）")
+    }
+
+    /** 把某条会话设为当前会话：消息、选中工作区、累计、待办与草稿一并切换。 */
+    private fun open(target: ChatSession) {
         currentSessionId = target.id
         persistOpenedSession(target.id)
         // 会话可能属于其他工作区（UI 直接点击某分组中的会话）：选中态随之切换，避免两处不一致
@@ -184,9 +269,8 @@ class SessionController(
         clearToolOutcomes()
         // 上一个会话的累计不回带：累计从目标会话自己的字段读回来（切回来就能接上）
         resetStats()
-        persistAll()
         reloadTodos()
-        FileLog.log("session", "切到会话 " + target.id + "（" + messages.size + " 条消息）")
+        draftPort?.restore(target.id)
     }
 
     /**
@@ -211,16 +295,8 @@ class SessionController(
         val boundary = (atIndex ?: snapshot.size).coerceIn(0, snapshot.size)
         val fresh = SessionStore.forked(base, snapshot.subList(0, boundary).toList())
         sessions = listOf(fresh) + sessions
-        currentSessionId = fresh.id
-        persistOpenedSession(fresh.id)
-        // 分支沿用父会话的工作区，选中态跟着它走，避免两边对不上
-        currentWorkspaceId = fresh.workspaceId
-        messages.clear()
-        messages.addAll(fresh.messages)
-        clearToolOutcomes()
-        // 待办留在父会话：新会话的清单从空表开始
+        open(fresh)
         clearTodos()
-        resetStats()
         persistAll()
         FileLog.log(
             "session",
@@ -228,64 +304,75 @@ class SessionController(
         )
     }
 
-    /** 删除会话：删的是当前会话就在当前工作区里挑下一条，一个都不剩就新建一条空的。 */
+    /**
+     * 删除会话。**仅限已归档会话**：删除统一由归档页发起，避免误触。
+     *
+     * 会话真删时，其名下的计划、目标、上下文事件、草稿与无引用图片一并清理；
+     * 若它是某内置目录的最后一个引用，目录按引用归零的规则进入回收站。
+     */
     fun deleteSession(id: String) {
         if (isStreaming()) return
-        if (sessions.none { it.id == id }) return
+        val removed = sessions.firstOrNull { it.id == id } ?: return
+        if (!removed.archived) {
+            FileLog.log("session", "未归档的会话不允许删除：" + id)
+            return
+        }
         // 先将当前会话的最新消息存回列表，避免删除操作丢失本次改动
         persistCurrent()
-        // 先留一份：列表里删掉之后，就再也看不出这条会话引用过哪些图片了
-        val removed = sessions.firstOrNull { it.id == id }
         sessions = sessions.filter { it.id != id }
         // 磁盘上同样需实际删除：仅删除内存时，合并写盘会将该会话视为「磁盘新增」并重新写入
         SessionStore.removeSession(appContext, id)
         // 会话真删了：它名下的计划/目标/上下文事件也一起收掉，否则那几个 JSON 里永远留着孤儿
         clearSessionDocs(id)
         ContextEventStore.clear(appContext, id)
+        draftPort?.forget(listOf(id))
         if (id == currentSessionId) {
             // 仅从当前工作区选择下一条：删除会话后不应跳转至其他工作区的对话
             val remaining = sessions.filter { !it.archived && it.workspaceId == currentWorkspaceId }
             if (remaining.isEmpty()) {
-                val fresh = SessionStore.newSession().copy(workspaceId = currentWorkspaceId)
+                val fresh = newSessionFor(currentWorkspaceId, blank = true, listed = true)
                 sessions = listOf(fresh) + sessions
-                currentSessionId = fresh.id
-                persistOpenedSession(fresh.id)
-                messages.clear()
+                open(fresh)
             } else {
-                val next = remaining.first()
-                currentSessionId = next.id
-                persistOpenedSession(next.id)
-                messages.clear()
-                messages.addAll(next.messages)
+                open(remaining.first())
             }
-            clearToolOutcomes()
-            // 删除只删会话本身：全局总账（UsageLedger）是历史总账，一分不动
-            resetStats()
         }
         persistAll()
-        reloadTodos()
         // 会话删除后，其引入的图片可能已无引用：在 IO 中一并清理
-        removed?.let { cleanupImagesOf(it) }
+        cleanupImagesOf(removed)
+        reclaimStorage(removed.storageId, null)
         FileLog.log("session", "删除会话 " + id + "，剩 " + sessions.size + " 个，当前=" + currentSessionId)
     }
 
     /**
-     * 删除会话后清理其引用的图片：同一工作区中已无其他会话引用时才实际删除。
+     * 删除已归档会话的确认文案中需要追加的一句。
      *
-     * 仅按该会话自身的归属工作区查找目录：images 为工作区相对路径，使用其他工作区的目录删除
+     * 仅当该会话是某内置目录的最后一个引用时返回非空：这时删除会连带把目录移入回收站，
+     * 属于用户看不到的副作用，必须在确认前说明。
+     */
+    fun deleteSessionExtraNote(id: String): String? {
+        val target = sessions.firstOrNull { it.id == id } ?: return null
+        val storage = StorageStore.find(appContext, target.storageId) ?: return null
+        if (storage.kind != StorageKind.PRIVATE) return null
+        val refs = StorageStore.refs(workspaces, sessions, storage.id)
+        if (refs.total != 1) return null
+        return "其关联的内置目录将一并移入回收站并保留 30 天，可恢复或导出。"
+    }
+
+    /**
+     * 删除会话后清理其引用的图片：同一存储单元中已无其他会话引用时才实际删除。
+     *
+     * 仅按该会话自身的存储单元查找目录：images 为存储单元相对路径，使用其他目录删除
      * 既找不到目标，也可能误删。判定不准确时最多「少删」一个文件，绝不会误删其他会话的图片。
      */
     private fun cleanupImagesOf(removed: ChatSession) {
         if (removed.messages.none { it.images.isNotEmpty() }) return
         // 先取快照：IO 期间用户还可能切会话、继续删，用副本判断「还有没有人引用」
-        val remaining = sessions.filter { it.workspaceId == removed.workspaceId }
+        val remaining = sessions.filter { it.storageId == removed.storageId }
         scope.launch {
             withContext(Dispatchers.IO) {
                 runCatching {
-                    // 目录也在这里取：dirOf 会按需建目录，不该占着主线程删会话
-                    val space = workspaces.firstOrNull { it.id == removed.workspaceId }
-                        ?: WorkSpaceStore.defaultSpace(appContext)
-                    UploadStore.cleanSessionImages(removed, remaining, rootOf(space))
+                    UploadStore.cleanSessionImages(removed, remaining, rootOfStorage(removed.storageId))
                 }.onFailure { FileLog.log("upload", "删除会话后清理图片失败：" + it) }
             }
         }
@@ -314,17 +401,47 @@ class SessionController(
         FileLog.log("session", (if (pinned) "置顶" else "取消置顶") + "会话 " + id)
     }
 
-    /** 归档会话；归档的是当前会话时，直接进一个空对话。 */
+    /**
+     * 归档前的特例说明，供确认弹窗使用；列表为空表示常规归档（只需一句轻提示）。
+     *
+     * 两种特例：① 该会话是某内置目录的最后一个引用，后续删除会话时目录将进回收站；
+     * ② 有定时任务以该会话为目标，归档会把这些任务自动停用并解绑。
+     */
+    fun archiveNotes(id: String): List<String> {
+        val target = sessions.firstOrNull { it.id == id } ?: return emptyList()
+        val notes = ArrayList<String>(2)
+        val storage = StorageStore.find(appContext, target.storageId)
+        if (storage != null && storage.kind == StorageKind.PRIVATE) {
+            val refs = StorageStore.refs(workspaces, sessions, storage.id)
+            if (refs.total == 1) {
+                notes += "该内置目录已无其他会话引用，后续若删除此会话，目录将移入回收站。"
+            }
+        }
+        if (ScheduleBridge.affectsSession(id)) {
+            notes += "该会话绑定的定时任务已自动停用并解绑，若需启用，请重新配置该定时任务。"
+        }
+        return notes
+    }
+
+    /**
+     * 归档会话；归档的是当前会话时，直接进入一个空对话。
+     *
+     * 归档会解除定时任务的绑定并停用该任务（单向，恢复会话不会自动重绑）：
+     * 任务继续指向一条已归档的会话，只会在后台静默往不可见的记录里写内容。
+     */
     fun archiveSession(id: String) {
         if (isStreaming()) return
         val target = sessions.firstOrNull { it.id == id } ?: return
-        // 先确保当前会话消息已经落到 sessions，否则后面 newSession 会把当前对话冲掉
+        // 先确保当前会话消息已经落到 sessions，否则后面新建会话会把当前对话冲掉
         persistCurrent()
+        // 解绑与停用放在改写之前：ScheduleBridge 需要读到「归档前」的会话状态
+        ScheduleBridge.detachSession(id)
         sessions = sessions.map {
             if (it.id == id) it.copy(archived = true, updatedAt = System.currentTimeMillis()) else it
         }
-        // 归档是可逆的：计划与目标一律不清，取消归档回来还要原样在那儿（只有真删才清，见 deleteSession）
+        // 归档是可逆的：计划与目标一律不清，恢复回来还要原样在那儿（只有真删才清，见 deleteSession）
         persistAll()
+        promoteBlankIfAlone(target.workspaceId)
         if (id == currentSessionId) {
             // 当前会话被归档：清空 messages 并落一条新的空会话
             newSession()
@@ -332,19 +449,69 @@ class SessionController(
         FileLog.log("session", "归档会话 " + target.id + "，当前=" + currentSessionId)
     }
 
-    /** 从归档恢复。 */
-    fun unarchiveSession(id: String) {
-        if (isStreaming()) return
+    /**
+     * 从归档恢复。
+     *
+     * 原工作区已删除时归入「未分类」，存储单元保持不变（附件与产出物仍在原目录）；
+     * 返回 true 表示发生了这一降级，界面据此提示一句。
+     */
+    fun unarchiveSession(id: String): Boolean {
+        if (isStreaming()) return false
+        val target = sessions.firstOrNull { it.id == id } ?: return false
+        val exists = target.workspaceId != null && workspaces.any { it.id == target.workspaceId }
+        val workspaceId = if (exists) target.workspaceId else null
         sessions = sessions.map {
-            if (it.id == id) it.copy(archived = false, updatedAt = System.currentTimeMillis()) else it
+            if (it.id == id) {
+                it.copy(archived = false, workspaceId = workspaceId, updatedAt = System.currentTimeMillis())
+            } else {
+                it
+            }
         }
         persistAll()
-        FileLog.log("session", "恢复会话 " + id)
+        FileLog.log("session", "恢复会话 " + id + "，归属=" + (workspaceId ?: "未分类"))
+        return !exists && target.workspaceId != null
     }
 
-    /** 当前工作区里没归档的会话（sessions 已按 updatedAt 倒序，直接就能用）。 */
+    /**
+     * 把会话移到目标工作区。
+     *
+     * 分组与运行根同时改：工作区决定目录，会话的运行根必须跟随，否则两者会指向不同位置。
+     * 返回需要补充的提示（原内置目录已无剩余引用时移入回收站），没有则返回 null。
+     */
+    fun moveSession(id: String, workspaceId: String): String? {
+        if (isStreaming()) {
+            reportError("正在生成回复，无法移动会话")
+            return null
+        }
+        val target = sessions.firstOrNull { it.id == id } ?: return null
+        val space = workspaces.firstOrNull { it.id == workspaceId } ?: return null
+        if (target.workspaceId == workspaceId && target.storageId == space.storageId) return null
+        draftPort?.flush()
+        persistCurrent()
+        val oldStorage = target.storageId
+        val oldWorkspace = target.workspaceId
+        sessions = sessions.map {
+            if (it.id == id) {
+                it.copy(workspaceId = workspaceId, storageId = space.storageId, updatedAt = System.currentTimeMillis())
+            } else {
+                it
+            }
+        }
+        if (id == currentSessionId) currentWorkspaceId = workspaceId
+        persistAll()
+        promoteBlankIfAlone(oldWorkspace)
+        val outcome = reclaimStorage(oldStorage, null)
+        FileLog.log("session", "移动会话 " + id + " → 工作区 " + space.name)
+        return if (outcome.result == StorageReclaimer.Result.TRASHED) {
+            "已移动。原内置目录已无剩余引用，已移入回收站。"
+        } else {
+            null
+        }
+    }
+
+    /** 当前工作区里未归档且可见的会话（sessions 已按 updatedAt 倒序，直接就能用）。 */
     fun sessionsInCurrentWorkspace(): List<ChatSession> =
-        sessions.filter { !it.archived && it.workspaceId == currentWorkspaceId }
+        sessions.filter { !it.archived && it.listed && it.workspaceId == currentWorkspaceId }
 
     /** 当前工作区里已归档的会话（侧边栏折叠区用）。 */
     fun archivedInCurrentWorkspace(): List<ChatSession> =
@@ -357,6 +524,7 @@ class SessionController(
         if (isStreaming()) return
         // 目标工作区不存在（例如刚被删除）则不切换，避免停留在空分组
         if (id != null && workspaces.none { it.id == id }) return
+        draftPort?.flush()
         persistCurrent()
         currentWorkspaceId = id
         openRecentIn(id)
@@ -365,7 +533,7 @@ class SessionController(
     }
 
     /**
-     * 改工作区显示名：只动名字，目录名与会话归属都不变（见 [WorkSpaceStore.rename]）。
+     * 改工作区显示名：只动名字，存储单元与会话归属都不变（见 [WorkSpaceStore.rename]）。
      * 名字空白 / 工作区不存在返回 false，界面据此提示一句就行。
      */
     fun renameWorkspace(id: String, name: String): Boolean {
@@ -376,38 +544,125 @@ class SessionController(
     }
 
     /**
-     * 新建工作区：名字空白返回 false；建目录 + 插进列表 + 切过去（切换会顺便建一条空会话）。
+     * 新建工作区：名字空白返回 false。
      *
-     * [rootPath] / [treeUri] 都空 = 沿用应用私有目录（老行为）；给了用户目录就指向它，
-     * 不在私有目录再建同名目录。目录不可用时返回 false，界面自己提示。
+     * [rootPath] / [treeUri] 都空 = 建一个内置目录（`workspaces/<dirName>`）；给了用户目录就指向它，
+     * 不在私有目录另建同名目录。目录不可用时返回 false，界面自己提示。
      */
-    fun createWorkspace(name: String, rootPath: String? = null, treeUri: String? = null): Boolean {
+    fun createWorkspace(
+        name: String,
+        rootPath: String? = null,
+        treeUri: String? = null,
+        /** 是否顺带切过去并开一条可见的空白会话；由「更改工作区」创建时不切，随后直接移入目标会话。 */
+        openBlank: Boolean = true
+    ): Boolean {
         if (isStreaming()) return false
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return false
+        draftPort?.flush()
         persistCurrent()
-        val space = if (rootPath == null && treeUri == null) {
-            WorkSpaceStore.create(appContext, trimmed)
+
+        val storage = if (rootPath == null && treeUri == null) {
+            StorageStore.createPrivate(appContext, trimmed)
         } else {
-            WorkSpaceStore.createWithRoot(appContext, trimmed, rootPath, treeUri) ?: return false
+            StorageStore.createExternal(appContext, rootPath, treeUri) ?: return false
         }
+        val space = WorkSpaceStore.newRecord(trimmed, storage.id)
+        val storages = StorageStore.loadStorages(appContext)
+        val nextStorages = if (storages.any { it.id == storage.id }) storages else storages + storage
         workspaces = workspaces + space
-        WorkSpaceStore.save(appContext, workspaces)
-        currentWorkspaceId = space.id
-        // 新工作区里一条会话都没有：openRecentIn 会给它建一条空会话
-        openRecentIn(space.id)
+        StorageStore.saveRegistry(
+            appContext,
+            StorageStore.Registry(workspaces, nextStorages)
+        )
+        if (openBlank) {
+            currentWorkspaceId = space.id
+            // 新工作区里一条会话都没有：openRecentIn 会给它建一条可见的空白会话
+            openRecentIn(space.id)
+        }
         persistAll()
         FileLog.log(
             "workspace",
-            "新建工作区 " + trimmed + "（" + space.id + "）root=" + (rootPath ?: space.rootPath ?: "私有目录") +
-                " tree=" + (treeUri ?: "无")
+            "新建工作区 " + trimmed + "（" + space.id + "）存储单元=" + storage.id + "（" + storage.kind.wire + "）"
         )
         return true
     }
 
     /**
-     * 删除工作区：默认工作区不删；目录软删除（rename 进 .trash，留快照）；
-     * 该工作区下所有会话（含归档）解绑到「未分类」；删的是当前工作区就切到未分类。
+     * 在同一弹窗内「新建工作区 + 移入会话」，一次提交。
+     *
+     * 与先建再移的区别：不预先切到一个空工作区，避免新建后留下一串多余的空白会话。
+     */
+    fun createWorkspaceAndMove(
+        sessionId: String,
+        name: String,
+        rootPath: String?,
+        treeUri: String?
+    ): Boolean {
+        if (isStreaming()) return false
+        val before = workspaces.map { it.id }.toSet()
+        if (!createWorkspace(name, rootPath, treeUri, openBlank = false)) return false
+        val created = workspaces.firstOrNull { it.id !in before } ?: return false
+        moveSession(sessionId, created.id)
+        switchWorkspace(created.id)
+        switchSession(sessionId)
+        persistAll()
+        FileLog.log("workspace", "新建工作区 " + created.name + " 并移入会话 " + sessionId)
+        return true
+    }
+
+    /**
+     * 该目录是否已由某个工作区映射；返回占用者名称，未占用返回 null。
+     *
+     * 「更改工作区」弹窗里新建工作区时用它做前置校验：同一目录不允许对应两个工作区，
+     * 但允许复用「没有工作区、仅被会话引用」的存储单元。
+     */
+    fun workspaceUsingDir(rootPath: String?, treeUri: String?): String? {
+        val path = rootPath?.trim()?.takeIf { it.isNotEmpty() }
+        val tree = treeUri?.trim()?.takeIf { it.isNotEmpty() }
+        if (path == null && tree == null) return null
+        val storage = StorageStore.loadStorages(appContext).firstOrNull { item ->
+            when {
+                tree != null -> item.treeUri == tree
+                path != null -> item.rootPath?.let {
+                    StorageStore.canonicalPath(File(it)) == StorageStore.canonicalPath(File(path))
+                } ?: false
+                else -> false
+            }
+        } ?: return null
+        return workspaces.firstOrNull { it.storageId == storage.id }?.name
+    }
+
+    /**
+     * 删除工作区的确认文案：按「有会话 / 无会话且目录非空 / 无会话且目录为空」三选一。
+     *
+     * 恒定说明「只解除映射、不删文件」，差异只在引用归零后目录的去向。
+     */
+    fun deleteWorkspacePrompt(id: String): String {
+        val space = workspaces.firstOrNull { it.id == id } ?: return ""
+        val storage = StorageStore.find(appContext, space.storageId)
+        val sessionCount = sessions.count { it.workspaceId == id }
+        if (sessionCount > 0) {
+            return "此操作仅解除工作区映射，不会删除物理文件。其下会话将移至「未分类」。"
+        }
+        if (storage == null || storage.kind == StorageKind.EXTERNAL || storage.kind == StorageKind.DEFAULT) {
+            return "此操作仅解除工作区映射，不会删除物理文件。"
+        }
+        val dir = StorageStore.rootFile(appContext, storage)
+        val empty = dir == null || !dir.exists() || StorageStore.scan(dir).files == 0
+        return if (empty) {
+            "此工作区没有关联会话，其内置目录为空，将直接移除，不占用回收站。"
+        } else {
+            "此操作仅解除工作区映射，不会删除目录中的文件。该内置目录将移入回收站并保留 30 天。"
+        }
+    }
+
+    /**
+     * 删除工作区：默认工作区不删。
+     *
+     * 语义是**解除映射**：记录移除、其下会话转「未分类」，`storageId` 保持不变（文件仍在原目录）；
+     * 其下的空白会话直接删除——它从未转正，转过去只会成为不可见的残留并撑住目录引用。
+     * 最后按引用归零判定存储单元是否回收。
      */
     fun deleteWorkspace(id: String) {
         if (isStreaming()) return
@@ -416,24 +671,32 @@ class SessionController(
             return
         }
         val space = workspaces.firstOrNull { it.id == id } ?: return
+        draftPort?.flush()
         persistCurrent()
-        // 只 rename 目录、绝不真删：删除先留快照。
-        val moved = WorkSpaceStore.softDelete(appContext, space)
-        if (!moved) {
-            // 目录没挪走也照样解绑：目录还完整留在磁盘上，会话不能跟着工作区一起消失
-            FileLog.log("workspace", "工作区 " + space.name + " 的目录软删除失败，仍把会话解绑到未分类")
+
+        val blanks = sessions.filter { it.workspaceId == id && it.blank }
+        val blankIds = blanks.map { it.id }.toSet()
+        sessions = sessions.mapNotNull { session ->
+            when {
+                session.workspaceId != id -> session
+                session.blank -> null
+                else -> session.copy(workspaceId = null)
+            }
         }
-        // 该工作区下所有会话（含归档）解绑到「未分类」。
-        // 计划与目标不清：会话只是换了归属，数据没被删（清只在 deleteSession 里做）
-        sessions = sessions.map { if (it.workspaceId == id) it.copy(workspaceId = null) else it }
+        if (blankIds.isNotEmpty()) {
+            blankIds.forEach { clearSessionDocs(it) }
+            draftPort?.forget(blankIds)
+        }
         workspaces = workspaces.filter { it.id != id }
         WorkSpaceStore.save(appContext, workspaces)
-        if (currentWorkspaceId == id) {
-            // 删除的是当前工作区：切换至未分类，载入未分类中最近的一条（刚解绑的会话即在此）
+        if (currentWorkspaceId == id || currentSessionId in blankIds) {
+            // 删除的是当前工作区，或当前会话正是被一并删除的空白会话：
+            // 一律切到未分类并载入其最近一条（刚解绑的会话即在此），避免当前会话指向已删除的记录
             currentWorkspaceId = null
             openRecentIn(null)
         }
         persistAll()
+        reclaimStorage(space.storageId, space.name)
         FileLog.log(
             "workspace",
             "删除工作区 " + space.name + "（" + id + "），剩 " + workspaces.size +
@@ -441,32 +704,79 @@ class SessionController(
         )
     }
 
+    /** 更改储存路径的确认文案：按原目录类型三选一，恒定说明「只改映射、不移动文件」。 */
+    fun changeStoragePrompt(id: String): String {
+        val space = workspaces.firstOrNull { it.id == id } ?: return ""
+        val storage = StorageStore.find(appContext, space.storageId)
+        if (storage == null || storage.kind != StorageKind.PRIVATE) {
+            return "此操作仅更改应用内的目录映射，不会移动或删除原目录文件。"
+        }
+        val dir = StorageStore.rootFile(appContext, storage)
+        val empty = dir == null || !dir.exists() || StorageStore.scan(dir).files == 0
+        return if (empty) {
+            "此操作仅更改应用内的目录映射。原内置目录为空，将直接移除。"
+        } else {
+            "此操作仅更改应用内的目录映射。原内置目录将移入回收站并保留 30 天。"
+        }
+    }
+
     /**
-     * 载入某个工作区（null = 未分类）里 updatedAt 最新且未归档的会话；一条都没有就新建一条属于它的空会话。
-     * 只动 currentSessionId 和 messages，工作区选中态由调用方先改好。
+     * 更改工作区的储存路径。
+     *
+     * 工作区与其下**全部会话**的 `storageId` 一起改：会话的运行根必须与分组一致，
+     * 否则工具的相对路径会解析到旧目录。原存储单元随之归零并按规则回收。
+     */
+    fun changeWorkspaceStorage(id: String, rootPath: String?, treeUri: String?): Boolean {
+        if (isStreaming()) {
+            reportError("有会话正在运行，无法更改储存路径")
+            return false
+        }
+        val space = workspaces.firstOrNull { it.id == id } ?: return false
+        if (space.isDefault) return false
+        draftPort?.flush()
+        persistCurrent()
+        val oldStorage = space.storageId
+        val storage = if (rootPath == null && treeUri == null) {
+            StorageStore.createPrivate(appContext, space.name)
+        } else {
+            StorageStore.createExternal(appContext, rootPath, treeUri) ?: return false
+        }
+        if (storage.id == oldStorage) return true
+        val storages = StorageStore.loadStorages(appContext)
+        val nextStorages = if (storages.any { it.id == storage.id }) storages else storages + storage
+        workspaces = workspaces.map { if (it.id == id) it.copy(storageId = storage.id) else it }
+        sessions = sessions.map { if (it.workspaceId == id) it.copy(storageId = storage.id) else it }
+        StorageStore.saveRegistry(appContext, StorageStore.Registry(workspaces, nextStorages))
+        persistAll()
+        reclaimStorage(oldStorage, space.name)
+        FileLog.log("workspace", "工作区 " + space.name + " 改储存路径 → " + storage.id)
+        return true
+    }
+
+    /**
+     * 载入某个工作区（null = 未分类）里 updatedAt 最新且未归档的会话；
+     * 一条都没有就新建一条属于它的**可见**空白会话。
      */
     private fun openRecentIn(workspaceId: String?) {
-        val target = sessions
-            .filter { !it.archived && it.workspaceId == workspaceId }
-            .maxByOrNull { it.updatedAt }
+        val pool = sessions.filter { !it.archived && it.workspaceId == workspaceId }
         clearToolOutcomes()
+        // 空白会话只在「没有任何正式会话」时才有资格作为当前会话
+        val target = pool.filter { !it.blank }.maxByOrNull { it.updatedAt } ?: pool.maxByOrNull { it.updatedAt }
         if (target != null) {
-            currentSessionId = target.id
-            persistOpenedSession(target.id)
-            messages.clear()
-            messages.addAll(target.messages)
-            resetStats()
-            reloadTodos()
+            // 只剩一条隐藏的空白会话：把它提升为显示（不另建），否则界面上会出现空分组
+            val promoted = if (target.blank && !target.listed && pool.size == 1) {
+                val next = target.copy(listed = true)
+                sessions = sessions.map { if (it.id == next.id) next else it }
+                next
+            } else {
+                target
+            }
+            open(promoted)
             return
         }
-        val fresh = SessionStore.newSession().copy(workspaceId = workspaceId)
+        val fresh = newSessionFor(workspaceId, blank = true, listed = true)
         sessions = listOf(fresh) + sessions
-        currentSessionId = fresh.id
-        persistOpenedSession(fresh.id)
-        messages.clear()
-        messages.addAll(fresh.messages)
-        resetStats()
-        reloadTodos()
+        open(fresh)
     }
 
     /** 侧边栏/顶栏显示的当前会话名，没起标题就是「新会话」。 */
@@ -487,7 +797,7 @@ class SessionController(
         for (session in sessions) {
             if (session.id == id) {
                 found = true
-                // copy 只改 messages/updatedAt：archived、title 原样保留，归档状态不会被消息落盘冲掉
+                // copy 只改 messages/updatedAt：archived、title、storageId 原样保留，归档状态不会被消息落盘冲掉
                 val changed = snapshot != session.messages
                 updated.add(session.copy(messages = snapshot, updatedAt = if (changed) now else session.updatedAt))
             } else {
@@ -502,7 +812,8 @@ class SessionController(
                     title = "",
                     messages = snapshot,
                     updatedAt = now,
-                    workspaceId = currentWorkspaceId
+                    workspaceId = currentWorkspaceId,
+                    storageId = storageIdFor(currentWorkspaceId)
                 )
             )
         }
@@ -531,10 +842,10 @@ class SessionController(
      * 退到后台 / 按返回键时落盘。
      *
      * **按返回键永远不杀后台**：主页按返回只是退到桌面。
-     * 但系统仍可能在后台回收进程，所以退后台这一刻要把会话写进去。
-     * 空会话不写（避免每次切后台都产生一条空记录）。
+     * 但系统仍可能在后台回收进程，所以退后台这一刻要把会话与草稿一起写进去。
      */
     fun persistForBackground(reason: String) {
+        draftPort?.flush()
         if (messages.isEmpty()) return
         runCatching { persistCheckpoint(reason) }
     }
@@ -595,6 +906,21 @@ class SessionController(
         FileLog.log("session", "当前会话同步盘上新增消息，共 " + messages.size + " 条")
     }
 
+    /**
+     * 从磁盘重读工作区表（助手工具新增或删除工作区之后调用）。
+     *
+     * 当前工作区若已被删除，退回第一个；其余状态不动，避免用户正在进行的对话被打断。
+     */
+    fun reloadWorkspaces() {
+        if (persistenceBlocked()) return
+        val next = StorageStore.loadWorkspaces(appContext)
+        workspaces = next
+        val current = currentWorkspaceId
+        if (current != null && next.none { it.id == current }) {
+            currentWorkspaceId = next.firstOrNull()?.id
+        }
+    }
+
     /** 从磁盘重读会话列表：以磁盘为准，只有当前会话的消息取内存里还没落盘的那份。 */
     fun reloadSessionsFromDisk() {
         if (persistenceBlocked()) return
@@ -651,6 +977,62 @@ class SessionController(
     }
 
     /**
+     * 首轮消息发出后转正：空白标记清除、隐藏的会话进入列表。
+     *
+     * 由发送流程在追加用户消息时调用；重复调用无副作用。
+     */
+    internal fun markSessionStarted(id: String = currentSessionId) {
+        if (id.isEmpty()) return
+        val current = sessions.firstOrNull { it.id == id } ?: return
+        if (!current.blank && current.listed) return
+        sessions = sessions.map {
+            if (it.id == id) it.copy(blank = false, listed = true) else it
+        }
+        persistAll()
+    }
+
+    /** 清空当前会话的草稿（发送成功后调用）。 */
+    fun clearCurrentDraft() {
+        if (currentSessionId.isEmpty()) return
+        draftPort?.forget(listOf(currentSessionId))
+    }
+
+    /** 当前会话的权限档：会话字段优先，缺失时取全局默认。 */
+    fun sessionPermission(): PermissionLevel {
+        val current = sessions.firstOrNull { it.id == currentSessionId } ?: return currentPermission()
+        return com.zmf.agent.core.model.permissionLevelOfWire(current.permissionPreset) ?: currentPermission()
+    }
+
+    /** 当前会话的思考强度（`off` 表示关闭思考）。 */
+    fun sessionEffort(): String {
+        val current = sessions.firstOrNull { it.id == currentSessionId } ?: return currentEffort()
+        return current.reasoningEffort.takeIf { it.isNotEmpty() } ?: currentEffort()
+    }
+
+    /** 只改当前会话的权限档，不触碰全局默认。 */
+    fun setSessionPermission(level: PermissionLevel) {
+        val id = currentSessionId
+        if (id.isEmpty()) return
+        if (sessionPermission() == level) return
+        sessions = sessions.map { if (it.id == id) it.copy(permissionPreset = level.wireName()) else it }
+        persistCurrent()
+        persistAll()
+        FileLog.log("permission", "会话 " + id + " 权限改为 " + level.displayNameCn())
+    }
+
+    /** 只改当前会话的思考强度，不触碰全局默认。 */
+    fun setSessionEffort(effort: String) {
+        val id = currentSessionId
+        if (id.isEmpty()) return
+        val value = effort.trim().lowercase()
+        if (value.isEmpty() || sessionEffort() == value) return
+        sessions = sessions.map { if (it.id == id) it.copy(reasoningEffort = value) else it }
+        persistCurrent()
+        persistAll()
+        FileLog.log("session", "会话 " + id + " 思考强度改为 " + value)
+    }
+
+    /**
      * 会话不属于当前对话时，将其名下的计划与目标一并清除。
      *
      * 不清会留下孤儿记录：plans.json / goals.json 按 sessionId 存，会话都删了，
@@ -662,38 +1044,43 @@ class SessionController(
         GoalStore.clear(appContext, sessionId)
     }
 
-    /** 当前工作区目录：未分类（或找不到）时回落到默认工作区，和 send / attachFile 完全同一口径。 */
-    fun currentWorkspaceRoot(): File =
-        rootOf(
-            workspaces.firstOrNull { it.id == currentWorkspaceId }
-                ?: WorkSpaceStore.defaultSpace(appContext)
-        )
-
-    /**
-     * 工作区根目录：优先用户在「自定义」里选的目录（`rootPath`）。
-     *
-     * 选了却读不到（授权失效、目录被删、路径不可写）就退回私有目录，但要记一条日志，
-     * 避免工具静默写入其他位置，而用户误认为已写入所选文件夹。
-     * （只有 SAF 授权、没有可读绝对路径的工作区目前仍走私有目录，URI 分支待接。）
-     */
-    fun rootOf(space: WorkSpace): File {
-        val userRoot = WorkSpaceStore.resolveRoot(appContext, space)
-        if (userRoot != null) return userRoot
-        if (!space.rootPath.isNullOrBlank()) {
-            FileLog.log("workspace", "工作区 " + space.id + " 的自定义目录不可用：" + space.rootPath)
-        }
-        return WorkSpaceStore.dirOf(appContext, space)
+    /** 当前会话的运行根：以会话自己的存储单元为准，未分类或找不到时回落到默认目录。 */
+    fun currentWorkspaceRoot(): File {
+        val current = sessions.firstOrNull { it.id == currentSessionId }
+        val storageId = current?.storageId?.takeIf { it.isNotEmpty() } ?: storageIdFor(currentWorkspaceId)
+        return rootOfStorage(storageId)
     }
 
+    /** 工作区根目录：按该工作区映射的存储单元解析，读不到时退回默认工作区目录并记日志。 */
+    fun rootOf(space: WorkSpace): File = rootOfStorage(space.storageId)
+
+    /** 存储单元根目录；不可用时退回默认目录（工具不能没有根，否则相对路径无从解析）。 */
+    fun rootOfStorage(storageId: String): File {
+        val storage = StorageStore.find(appContext, storageId)
+        if (storage == null) {
+            FileLog.log("workspace", "存储单元不存在（" + storageId + "），退回默认目录")
+            return PathGate.workspaceRoot(appContext)
+        }
+        val root = StorageStore.ensureRoot(appContext, storage)
+        if (root != null) return root
+        FileLog.log("workspace", "存储单元 " + storageId + " 的目录不可用，退回默认目录")
+        return PathGate.workspaceRoot(appContext)
+    }
+
+    /** 工作区对应的存储单元；不存在返回 null。 */
+    fun storageOf(space: WorkSpace): Storage? = StorageStore.find(appContext, space.storageId)
+
     /**
-     * 可能把附件写进当前工作区目录的会话。
+     * 可能把附件写进当前存储目录的会话。
      *
-     * 除本工作区外还要带上「未分类」的会话：它们新建时落在默认工作区，之后可能跟着当前工作区漂走，
+     * 除当前工作区外还要带上「未分类」的会话：它们新建时落在默认目录，之后可能跟着当前工作区漂走，
      * 路径却仍写在会话里。多算几条引用只会少删，不会误删。
      * 输入框上方还排着的附件/图片同样算引用：文件已经在磁盘上，只是还没发出去。
      */
     fun sessionsOfCurrentWorkspace(): List<ChatSession> {
-        val base = sessions.filter { it.workspaceId == currentWorkspaceId || it.workspaceId == null }
+        val storageId = sessions.firstOrNull { it.id == currentSessionId }?.storageId
+            ?.takeIf { it.isNotEmpty() } ?: storageIdFor(currentWorkspaceId)
+        val base = sessions.filter { it.storageId == storageId || it.workspaceId == null }
         val pending = pendingUploadPaths()
         if (pending.isEmpty()) return base
         return base + ChatSession(
@@ -701,4 +1088,56 @@ class SessionController(
             messages = listOf(ChatMessage(role = "user", images = pending))
         )
     }
+
+    // ---- 内部 ----
+
+    /** 新建一条会话并带上当前默认偏好的快照。 */
+    private fun newSessionFor(workspaceId: String?, blank: Boolean, listed: Boolean): ChatSession =
+        SessionStore.newSession(
+            storageId = storageIdFor(workspaceId),
+            blank = blank,
+            listed = listed,
+            permissionPreset = currentPermission().wireName(),
+            reasoningEffort = currentEffort()
+        ).copy(workspaceId = workspaceId)
+
+    /** 工作区的运行根存储单元；未分类与异常一律指向默认存储单元。 */
+    private fun storageIdFor(workspaceId: String?): String =
+        workspaces.firstOrNull { it.id == workspaceId }
+            ?.storageId
+            ?.takeIf { it.isNotEmpty() }
+            ?: StorageStore.DEFAULT_ID
+
+    /**
+     * 工作区变空时把隐藏的空白会话提升为显示。
+     *
+     * 与「另建一条」的区别：草稿与消息都留在原会话里，用户看不到任何多余的空会话。
+     */
+    private fun promoteBlankIfAlone(workspaceId: String?) {
+        if (workspaceId == null) return
+        val pool = sessions.filter { !it.archived && it.workspaceId == workspaceId }
+        if (pool.any { !it.blank && it.listed }) return
+        val blank = pool.firstOrNull { it.blank && !it.listed } ?: return
+        sessions = sessions.map { if (it.id == blank.id) it.copy(listed = true) else it }
+        persistAll()
+    }
+
+    /** 引用归零后的回收；返回结果供界面决定是否补一句提示。 */
+    private fun reclaimStorage(storageId: String, workspaceName: String?): StorageReclaimer.Outcome {
+        if (storageId.isEmpty()) return StorageReclaimer.Outcome(StorageReclaimer.Result.NONE)
+        return StorageReclaimer.reclaim(
+            appContext,
+            storageId,
+            workspaceName,
+            workspaces = workspaces,
+            sessions = sessions
+        )
+    }
+}
+
+/** 权限档的中文名，供日志使用（界面文案在 capability 的 displayName 里）。 */
+private fun PermissionLevel.displayNameCn(): String = when (this) {
+    PermissionLevel.READ_ONLY -> "只读"
+    PermissionLevel.WORKSPACE -> "工作区"
+    PermissionLevel.FULL -> "完全"
 }

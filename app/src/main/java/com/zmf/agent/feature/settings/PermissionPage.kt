@@ -6,7 +6,6 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
@@ -45,6 +44,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.infra.system.AndroidPermissions
 import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.uikit.common.saltRowClickable
+import com.zmf.agent.uikit.common.NoticeCenter
 
 /**
  * 「权限管理」页（设置下的二级页）：将手机端实际制约功能的几项权限集中为一张清单。
@@ -164,9 +164,9 @@ fun PermissionPage(onBack: () -> Unit) {
                     detail = if (status.allFiles) "" else "未授权",
                     granted = status.allFiles,
                     onClick = {
-                        // 低版本没有这项权限，无法跳转时用 Toast 说明，避免用户误认为按钮失效
+                        // 低版本没有这项权限，无法跳转时给一条说明，避免用户误认为按钮失效
                         if (!AndroidPermissions.openAllFilesSettings(context)) {
-                            Toast.makeText(context, "当前系统没有整盘文件访问开关", Toast.LENGTH_SHORT).show()
+                            NoticeCenter.error("系统无此开关")
                         }
                     }
                 )
@@ -204,7 +204,7 @@ fun PermissionPage(onBack: () -> Unit) {
                     granted = status.exactAlarm,
                     onClick = {
                         if (!AndroidPermissions.openExactAlarmSettings(context)) {
-                            Toast.makeText(context, "当前系统没有精确闹钟开关", Toast.LENGTH_SHORT).show()
+                            NoticeCenter.error("系统无此开关")
                         }
                     }
                 )
@@ -332,5 +332,5 @@ private fun openShizuku(context: Context): Boolean {
 
 /** 没有 Activity 就弹不了权限框：给一句提示，不要静默什么都不做。 */
 private fun toastNoActivity(context: Context) {
-    Toast.makeText(context, "当前页面无法申请权限，请回到 App 内重试", Toast.LENGTH_SHORT).show()
+    NoticeCenter.error("请回应用内重试")
 }

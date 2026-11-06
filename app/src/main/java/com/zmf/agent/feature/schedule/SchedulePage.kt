@@ -1,5 +1,6 @@
 package com.zmf.agent.feature.schedule
 
+import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -42,6 +43,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.infra.system.AndroidPermissions
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.SessionStore
+import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.feature.schedule.ScheduleRunner
 import com.zmf.agent.feature.schedule.ScheduleStore
@@ -68,6 +70,8 @@ import com.zmf.agent.uikit.common.saltFieldColors
 fun SchedulePage(onBack: () -> Unit) {
     val context = LocalContext.current
     var tasks by remember { mutableStateOf(ScheduleStore.load(context)) }
+    // 归属工作区只在表单里选择，进入页面时读一次即可
+    val workspaces = remember { WorkSpaceStore.load(context) }
     var creating by remember { mutableStateOf(false) }
     // 当前展开编辑的任务（null 表示全部折叠）。同一时刻仅展开一条：两条表单同时显示容易导致误改。
     var editingId by remember { mutableStateOf<String?>(null) }
@@ -83,6 +87,18 @@ fun SchedulePage(onBack: () -> Unit) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val onSurface = MaterialTheme.colorScheme.onSurface
+
+    /**
+     * 通知被关闭时的引导。
+     *
+     * 应用 targetSdk 为 28，系统不会为它弹出通知运行时授权框；未授权时定时任务的结果通知
+     * 会被系统静默丢弃，用户到点后什么都看不到。因此在启用任务这一步直接跳到通知设置页。
+     */
+    fun ensureNotificationEnabled() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !permissions.notification) {
+            AndroidPermissions.openNotificationSettings(context)
+        }
+    }
 
     Surface(
         // 页面铺满且不透明；最外层拦截点击，避免穿透到下层聊天界面
@@ -130,6 +146,7 @@ fun SchedulePage(onBack: () -> Unit) {
                     expanded = editingId == task.id,
                     onToggle = { on ->
                         // 开关控制是否排期：arm 启用时计算下一次并设置闹钟，停用时将 nextAt 归零并取消闹钟
+                        if (on) ensureNotificationEnabled()
                         ScheduleRunner.arm(context, task.copy(enabled = on))
                         tasks = ScheduleStore.load(context)
                     },
@@ -143,9 +160,11 @@ fun SchedulePage(onBack: () -> Unit) {
                 if (editingId == task.id) {
                     TaskForm(
                         initial = task,
+                        workspaces = workspaces,
                         onCancel = { editingId = null },
                         onSave = { draft ->
                             // arm 会按新规则重新计算 nextAt 并重排闹钟；id 相同时覆盖原任务
+                            if (draft.enabled) ensureNotificationEnabled()
                             ScheduleRunner.arm(context, draft)
                             tasks = ScheduleStore.load(context)
                             editingId = null
@@ -159,9 +178,11 @@ fun SchedulePage(onBack: () -> Unit) {
             if (creating) {
                 TaskForm(
                     initial = null,
+                    workspaces = workspaces,
                     onCancel = { creating = false },
                     onSave = { draft ->
                         // arm 中统一计算 nextAt、持久化并设置闹钟，页面仅负责提供完整原始字段
+                        if (draft.enabled) ensureNotificationEnabled()
                         ScheduleRunner.arm(context, draft)
                         tasks = ScheduleStore.load(context)
                         creating = false
@@ -287,6 +308,7 @@ private fun ScheduleRow(
 @Composable
 private fun TaskForm(
     initial: ScheduleTask?,
+    workspaces: List<WorkSpace>,
     onCancel: () -> Unit,
     onSave: (ScheduleTask) -> Unit
 ) {
@@ -307,6 +329,11 @@ private fun TaskForm(
     var targetNew by remember(initial) { mutableStateOf(initial?.targetSessionId == null) }
     var pickedSessionId by remember(initial) { mutableStateOf(initial?.targetSessionId) }
     var showPicker by remember { mutableStateOf(false) }
+    var showWorkspacePicker by remember { mutableStateOf(false) }
+    // 归属工作区：null（默认工作区）在界面上显示为「默认工作区」，保存时再折回 null
+    var workspaceId by remember(initial) {
+        mutableStateOf(initial?.workspaceId?.takeIf { it.isNotEmpty() } ?: WorkSpaceStore.DEFAULT_ID)
+    }
     var hint by remember { mutableStateOf("") }
     // 弹窗与当前选择共用该数据：仅在进入表单时读取一次，避免每次重组都读取文件
     val sessions = remember { SessionStore.load(context).sortedByDescending { it.updatedAt } }
@@ -343,6 +370,8 @@ private fun TaskForm(
                 atMillis = if (kind == ScheduleStore.KIND_ONCE) at else 0L,
                 prompt = taskPrompt,
                 targetSessionId = if (targetNew) null else pickedSessionId,
+                // 默认工作区以 null 落盘，与旧任务迁移后的形态一致
+                workspaceId = workspaceId.takeIf { it != WorkSpaceStore.DEFAULT_ID },
                 // 开关与上次执行时间不属于表单：编辑时原样保留，避免仅修改标题导致任务停用
                 enabled = initial?.enabled ?: true,
                 lastRunAt = initial?.lastRunAt ?: 0L
@@ -420,19 +449,50 @@ private fun TaskForm(
             )
 
             Text("结果存到", fontSize = 12.sp, color = onSurface.copy(alpha = 0.55f))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ScheduleChip("新会话", targetNew) { targetNew = true }
-                ScheduleChip("选择会话", !targetNew) {
-                    targetNew = false
-                    showPicker = true
+            val boundId = initial?.targetSessionId
+            if (boundId != null) {
+                // 任务已绑定会话：只显示「指定会话」与该会话名称，不再提供「新会话」，
+                // 否则用户会以为改一下就能换回新建，而解绑不会自动发生
+                Text(
+                    text = "指定会话 · " + (sessions.firstOrNull { it.id == boundId }
+                        ?.title?.ifBlank { "新会话" } ?: "已解绑"),
+                    fontSize = 12.sp,
+                    color = onSurface.copy(alpha = 0.75f)
+                )
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ScheduleChip("新会话", targetNew) { targetNew = true }
+                    ScheduleChip("选择会话", !targetNew) {
+                        targetNew = false
+                        showPicker = true
+                    }
                 }
+                Text(
+                    text = sessions.firstOrNull { it.id == pickedSessionId }
+                        ?.title?.ifBlank { "新会话" } ?: "未选择会话",
+                    fontSize = 11.sp,
+                    color = onSurface.copy(alpha = 0.35f)
+                )
             }
-            Text(
-                text = sessions.firstOrNull { it.id == pickedSessionId }
-                    ?.title?.ifBlank { "新会话" } ?: "未选择会话",
-                fontSize = 11.sp,
-                color = onSurface.copy(alpha = 0.35f)
-            )
+
+            // 归属工作区：决定后台执行时的运行根，新建的结果会话也归入该工作区
+            Text("归属工作区", fontSize = 12.sp, color = onSurface.copy(alpha = 0.55f))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = workspaces.firstOrNull { it.id == workspaceId }?.name ?: "默认工作区",
+                    modifier = Modifier.weight(1f),
+                    fontSize = 12.sp,
+                    color = onSurface.copy(alpha = 0.75f)
+                )
+                Text(
+                    text = "选择",
+                    modifier = Modifier
+                        .saltRowClickable(RoundedCornerShape(8.dp)) { showWorkspacePicker = true }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    fontSize = 12.sp,
+                    color = Palette.Neutral
+                )
+            }
 
             if (hint.isNotEmpty()) {
                 Text(text = hint, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
@@ -473,6 +533,53 @@ private fun TaskForm(
             onDismiss = { showPicker = false }
         )
     }
+
+    if (showWorkspacePicker) {
+        WorkspacePickerDialog(
+            workspaces = workspaces,
+            onPick = { id ->
+                workspaceId = id
+                showWorkspacePicker = false
+            },
+            onDismiss = { showWorkspacePicker = false }
+        )
+    }
+}
+
+/** 「归属工作区」弹窗：默认工作区排在最前，点击任意一行即确定。 */
+@Composable
+private fun WorkspacePickerDialog(
+    workspaces: List<WorkSpace>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("归属工作区") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                if (workspaces.isEmpty()) {
+                    Text("还没有工作区", fontSize = 12.sp, color = onSurface.copy(alpha = 0.45f))
+                }
+                for (space in workspaces) {
+                    Text(
+                        text = space.name,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .saltRowClickable(RoundedCornerShape(10.dp)) { onPick(space.id) }
+                            .padding(vertical = 10.dp),
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        color = onSurface
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
 
 /** 「选择会话」弹窗：按 updatedAt 降序列出全部会话，点击任意一行即确定目标会话。 */

@@ -149,16 +149,17 @@ fun DataSettingsPage(
                     )
                 }
                 DataCard {
+                    // 行序按使用频率排列：日志用于排查、回收站用于找回，归档会话最少进入
+                    DataRow(title = "日志", onClick = onLogs)
+                    DataDivider()
                     DataRow(
                         title = "回收站",
                         value = trashSummary ?: "统计中…",
                         onClick = onTrash
                     )
                     DataDivider()
-                    DataRow(title = "日志", onClick = onLogs)
-                    DataDivider()
                     DataRow(
-                        title = "已归档的会话",
+                        title = "已归档会话",
                         value = archivedCount.toString() + " 个",
                         onClick = onArchive
                     )

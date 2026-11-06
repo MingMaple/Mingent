@@ -40,8 +40,21 @@ object TrashStore {
 
     private const val TAG = "trash"
 
-    /** 保留期：7 天。超期条目由 [sweep] 自动清掉。 */
+    /** 保留期：普通条目 7 天。超期条目由 [sweep] 自动清掉。 */
     const val RETENTION_MS = 7L * 24L * 60L * 60L * 1000L
+
+    /** 保留期：内置工作区目录 30 天。目录一旦被删，其中的附件与产出物不可再生，给更长的反悔窗口。 */
+    const val WORKSPACE_RETENTION_MS = 30L * 24L * 60L * 60L * 1000L
+
+    /** 普通条目：由文件工具删除的文件或目录。旧记录没有该字段，读取时按此值处理。 */
+    const val KIND_FILE = "file"
+
+    /** 内置工作区目录：由引用归零触发的整目录回收，恢复时同时重建工作区。 */
+    const val KIND_WORKSPACE = "workspace"
+
+    /** 内置目录条目在池内的分桶名与工具名：与普通条目分开，便于排查时区分来源。 */
+    private const val WORKSPACE_BUCKET = "workspaces"
+    private const val WORKSPACE_TOOL = "workspace"
 
     /** 单池上限：512 MB。超限按时间 FIFO 淘汰。 */
     const val POOL_LIMIT_BYTES = 512L * 1024L * 1024L
@@ -76,10 +89,27 @@ object TrashStore {
         val dirs: Int,
         val time: Long,
         val volume: String,
-        val tool: String
+        val tool: String,
+        /** [KIND_FILE] 或 [KIND_WORKSPACE]。 */
+        val kind: String = KIND_FILE,
+        /** 内置目录条目对应的原工作区名称；普通条目为空串。 */
+        val name: String = ""
     ) {
         val payload: File get() = File(dir, PAYLOAD_NAME)
         val total: Int get() = files + dirs
+
+        /** 内置目录条目。 */
+        val isWorkspace: Boolean get() = kind == KIND_WORKSPACE
+
+        /** 该条目适用的保留期。 */
+        val retentionMs: Long get() = if (isWorkspace) WORKSPACE_RETENTION_MS else RETENTION_MS
+
+        /** 剩余的保留天数（不足一天按 1 天计，已超期为 0）。 */
+        fun remainingDays(now: Long = System.currentTimeMillis()): Int {
+            val left = retentionMs - (now - time)
+            if (left <= 0L) return 0
+            return ((left + 24L * 60L * 60L * 1000L - 1) / (24L * 60L * 60L * 1000L)).toInt()
+        }
     }
 
     /** 恢复/清空的结论：成功与否 + 给用户看的一句话。 */
@@ -153,6 +183,18 @@ object TrashStore {
     }
 
     /**
+     * 将一个内置工作区目录整体回收进回收站。
+     *
+     * 与文件删除的区别：条目带 [KIND_WORKSPACE] 标记、保留 30 天、不参与 512 MB 的 FIFO 淘汰，
+     * 恢复时由上层据此重建工作区。没有同卷池或 rename 失败时返回 null，
+     * 调用方必须保留原目录（不得改为「先删后记账」）。
+     */
+    fun moveWorkspaceInto(context: Context, dir: File, workspaceName: String): Entry? {
+        val pool = poolFor(context, dir) ?: return null
+        return moveIntoPool(pool, dir, WORKSPACE_BUCKET, WORKSPACE_TOOL, KIND_WORKSPACE, workspaceName)
+    }
+
+    /**
      * SAF 目录没有 rename 可用，只能「复制进池再删原物」。
      *
      * [copy] 负责把原条目写到池里的 payload 路径；返回 null 表示超限/失败（调用方按不可恢复处理）。
@@ -184,13 +226,20 @@ object TrashStore {
     }
 
     /** 把 [target] rename 进指定池根；写不了 meta 或跨卷 rename 失败时返回 null，原目标不动。 */
-    internal fun moveIntoPool(poolRoot: File, target: File, sessionId: String, tool: String): Entry? =
+    internal fun moveIntoPool(
+        poolRoot: File,
+        target: File,
+        sessionId: String,
+        tool: String,
+        kind: String = KIND_FILE,
+        name: String = ""
+    ): Entry? =
         synchronized(lock) {
             val stats = scan(target)
             val entryDir = reserve(poolRoot, sessionId) ?: return null
             val payload = File(entryDir, PAYLOAD_NAME)
             // 先写元数据再搬：搬完发现写不了 meta，就等于「删掉了但没记账」，回收站会漏项
-            val meta = metaJson(target.absolutePath, target.absolutePath, stats, sessionId, tool, poolRoot)
+            val meta = metaJson(target.absolutePath, target.absolutePath, stats, sessionId, tool, poolRoot, kind, name)
             if (!writeMeta(entryDir, meta)) {
                 entryDir.deleteRecursively()
                 return null
@@ -219,7 +268,9 @@ object TrashStore {
         stats: Stats,
         sessionId: String,
         tool: String,
-        poolRoot: File
+        poolRoot: File,
+        kind: String = KIND_FILE,
+        name: String = ""
     ): JSONObject = JSONObject().apply {
         put("version", 1)
         put("originalPath", originalPath)
@@ -232,6 +283,9 @@ object TrashStore {
         put("sessionId", sessionId)
         put("tool", tool)
         put("volume", poolRoot.parentFile?.absolutePath ?: poolRoot.absolutePath)
+        // 旧条目没有这两项：读取时分别回落为普通条目与空名称，不影响既有恢复流程
+        if (kind != KIND_FILE) put("kind", kind)
+        if (name.isNotEmpty()) put("name", name)
     }
 
     private fun writeMeta(entryDir: File, meta: JSONObject): Boolean =
@@ -248,7 +302,10 @@ object TrashStore {
         dirs = meta.optInt("dirs", 0),
         time = meta.optLong("time", 0L),
         volume = meta.optString("volume"),
-        tool = meta.optString("tool")
+        tool = meta.optString("tool"),
+        // 旧条目没有 kind / name：按普通条目处理
+        kind = meta.optString("kind", KIND_FILE).ifBlank { KIND_FILE },
+        name = meta.optString("name", "")
     )
 
     /** 有界统计：不跟随软链接；达到上限时标记 truncated，不为获取精确数字而遍历完整目录树。 */
@@ -333,6 +390,63 @@ object TrashStore {
         Outcome(true, "已恢复到 " + target.absolutePath)
     }
 
+    /**
+     * 把条目内容原样搬到指定位置（内置目录恢复用）。
+     *
+     * 目标位置已存在同名条目时拒绝覆盖：恢复是用户可见的补救动作，
+     * 静默覆盖会把已有数据一并毁掉。
+     */
+    fun restoreTo(entry: Entry, target: File): Outcome = synchronized(lock) {
+        val payload = entry.payload
+        if (!payload.exists() && !PathGate.isSymlink(payload)) {
+            return Outcome(false, "回收站里已经没有这条记录了")
+        }
+        if (target.exists() || PathGate.isSymlink(target)) {
+            return Outcome(false, "目标位置已经有同名条目，请先改名或删除它")
+        }
+        val parent = target.parentFile
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            return Outcome(false, "建不了目标目录：" + parent.absolutePath)
+        }
+        if (!payload.renameTo(target)) {
+            return Outcome(false, "恢复失败（目标所在卷可能已卸载或被改名）")
+        }
+        entry.dir.deleteRecursively()
+        cleanEmptyBuckets(entry.dir.parentFile)
+        Outcome(true, "已恢复到 " + target.absolutePath)
+    }
+
+    /**
+     * 把条目内容复制到 [dest]（导出用）；源目录仍留在回收站。
+     *
+     * 目标已存在时拒绝：导出是补救动作，覆盖会毁掉用户已有的同名目录。
+     */
+    fun exportTo(entry: Entry, dest: File): Boolean = synchronized(lock) {
+        val source = entry.payload
+        if (!source.exists() || dest.exists()) return false
+        runCatching {
+            if (source.isDirectory) copyTree(source, dest) else {
+                dest.parentFile?.let { if (!it.exists()) it.mkdirs() }
+                source.copyTo(dest, overwrite = false)
+                true
+            }
+        }.getOrDefault(false)
+    }
+
+    /** 递归复制目录树；任一步失败返回 false。 */
+    private fun copyTree(source: File, dest: File): Boolean {
+        if (source.isDirectory) {
+            if (!dest.exists() && !dest.mkdirs()) return false
+            val children = source.listFiles().orEmpty()
+            for (child in children) {
+                if (!copyTree(child, File(dest, child.name))) return false
+            }
+            return true
+        }
+        dest.parentFile?.let { if (!it.exists() && !it.mkdirs()) return false }
+        return runCatching { source.copyTo(dest, overwrite = false) }.isSuccess
+    }
+
     /** 永久删除一条记录（调用方是用户手势，不经 Agent）。 */
     fun deleteEntry(context: Context, entry: Entry): Boolean = synchronized(lock) {
         val ok = SafeDelete.delete(entry.payload).existed
@@ -358,7 +472,9 @@ object TrashStore {
     }
 
     /**
-     * 启动/后台淘汰：先按 7 天清过期，再按单池 512 MB FIFO 清最旧。
+     * 启动/后台淘汰：先按条目各自的保留期清过期（普通 7 天、内置目录 30 天），
+     * 再按单池 512 MB FIFO 清最旧——**内置目录不参与容量淘汰**，
+     * 否则一个大目录会把同一池里的普通条目全部挤掉。
      *
      * 返回清掉的条数，调用方只用来写日志。
      */
@@ -370,17 +486,20 @@ object TrashStore {
         for (pool in poolRoots) {
             val list = entriesIn(pool).sortedBy { it.time }
             var total = 0L
+            val survivors = ArrayList<Entry>(list.size)
             for (entry in list) {
-                if (now - entry.time > RETENTION_MS) {
+                if (now - entry.time > entry.retentionMs) {
                     if (deleteEntryFiles(entry)) removed++
                 } else {
-                    total += entry.bytes
+                    survivors += entry
+                    // 内置目录不参与容量统计，也就不可能因容量被淘汰
+                    if (!entry.isWorkspace) total += entry.bytes
                 }
             }
             var index = 0
-            val rest = list.filter { now - it.time <= RETENTION_MS }
-            while (total > POOL_LIMIT_BYTES && index < rest.size) {
-                val entry = rest[index++]
+            val candidates = survivors.filter { !it.isWorkspace }
+            while (total > POOL_LIMIT_BYTES && index < candidates.size) {
+                val entry = candidates[index++]
                 if (deleteEntryFiles(entry)) {
                     total -= entry.bytes
                     removed++

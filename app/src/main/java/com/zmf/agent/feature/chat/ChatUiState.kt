@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import com.zmf.agent.capability.prompt.PromptStore
 import com.zmf.agent.infra.api.BalanceResult
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +35,12 @@ internal data class ImageMenuTarget(
  *
  * 一并传入而非仅传一张：详情中需支持左右切换查看，仅给一张则无法切换。
  */
-internal data class ViewerTarget(val paths: List<String>, val startIndex: Int)
+internal data class ViewerTarget(
+    val paths: List<String>,
+    val startIndex: Int,
+    /** 被点开缩略图在根坐标系中的矩形；用于「缩略图 → 全屏」的起止动画，未知时为 null。 */
+    val origin: Rect? = null
+)
 
 /** 选择文本页要展示的内容。 */
 internal data class SelectionTarget(
@@ -44,10 +50,11 @@ internal data class SelectionTarget(
 )
 
 /**
- * 独立全屏页面：抽屉直接进的一级页（设置 / 工作区 / 会话列表），以及设置首页下的各功能页。
+ * 独立全屏页面：抽屉直接进的一级页（设置 / 工作区），以及设置首页下的各功能页。
+ * 会话列表页已删除：搜索与归档筛选都在抽屉内完成。
  */
 internal enum class AppPage {
-    SETTINGS, WORKSPACE, SETTINGS_DATA, SESSIONS,
+    SETTINGS, WORKSPACE, SETTINGS_DATA,
     MODEL, PERMISSION, PACKAGE, LOGS, SCHEDULE, SUBAGENT, ARCHIVE, TRASH,
     // 设置首页（SETTINGS）→ 通用设置（GENERAL）/ 模型（MODEL）/ 长期记忆（MEMORY）/
     // 上下文洞察（CONTEXT_HUB）/ 上下文配置（CONTEXT_CONFIG）/ 包管理（PACKAGE）/ 数据（SETTINGS_DATA）；
@@ -89,6 +96,15 @@ internal class ChatUiState(context: Context) {
 
     /** 抽屉里的「＋ 新建工作区」：抽屉没有输入框，弹一个极简输入框。 */
     val showCreateWorkspace: MutableState<Boolean> = mutableStateOf(false)
+
+    /** 会话「⋯」→「更改工作区」：目标会话 id；null 表示弹窗关闭。 */
+    val movingSessionId: MutableState<String?> = mutableStateOf(null)
+
+    /** 工作区菜单 →「更改储存路径」：目标工作区 id；null 表示选择流程关闭。 */
+    val storageWorkspaceId: MutableState<String?> = mutableStateOf(null)
+
+    /** 归档命中特例时的待确认会话 id；null 表示没有待确认的归档。 */
+    val pendingArchiveId: MutableState<String?> = mutableStateOf(null)
 
     /** 包管理与会话列表两页的内容区为 HorizontalPager，仅停在第一页时抽屉方可拦截向右的位移。 */
     val pagerAtFirstPage: MutableState<Boolean> = mutableStateOf(true)

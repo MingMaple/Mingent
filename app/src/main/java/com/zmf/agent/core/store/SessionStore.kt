@@ -4,6 +4,7 @@ import android.content.Context
 import com.zmf.agent.core.AppPaths
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
+import com.zmf.agent.core.model.ORIGIN_USER
 import com.zmf.agent.core.model.ToolCall
 import org.json.JSONArray
 import org.json.JSONObject
@@ -41,6 +42,13 @@ data class ChatSession(
     val requests: Int = 0,
     /** 该会话历史累计步数（每次回复结束时把本次步数加进来一次）。 */
     val steps: Int = 0,
+    /**
+     * 后台执行（定时任务）累计的工具调用次数。
+     *
+     * 交互式的工具次数可以直接数消息里的 tool 条，但定时任务只把最终问答写回会话，
+     * 工具中间态不落消息；不单独记一份，会话卡片的「工具执行」就会「有耗时、0 次」。
+     */
+    val toolCalls: Int = 0,
     /**
      * 本会话累计的模型耗时 / 工具耗时（毫秒），每次回复结束时各累加一次。
      * 旧版本落盘无这两个键，读取为 0；值为 0 时不写回，旧文件不会被增大。
@@ -96,8 +104,38 @@ data class ChatSession(
     /** 生成阶段细分：模型思考 / 正文 / 工具参数三段的累计毫秒（旧文件读取为 0）。 */
     val reasoningMillis: Long = 0,
     val textMillis: Long = 0,
-    val toolArgMillis: Long = 0
-)
+    val toolArgMillis: Long = 0,
+    /**
+     * 运行根所在的存储单元 id。
+     *
+     * 会话不再保存目录路径，也不保存 cwd：分组（[workspaceId]）与运行根彻底分开，
+     * 因此把会话移到别的工作区仍可指向原目录，工作区改路径也不会留下两份路径。
+     * 旧文件无此键，读取为空串，由迁移按所属工作区补齐；补不齐时按默认存储单元处理。
+     */
+    val storageId: String = "",
+    /** 是否尚未发出首轮消息。旧数据缺省为 false。 */
+    val blank: Boolean = false,
+    /** 是否出现在会话列表。工作区为空时自动创建的空白会话为 true，用户手动新建的隐藏，首轮消息后恒为 true。 */
+    val listed: Boolean = true,
+    /** 创建时快照的权限档（`read-only` / `workspace-write` / `danger-full-access`）。空串表示尚未写入。 */
+    val permissionPreset: String = "",
+    /** 创建时快照的思考强度（`off` / `low` / `high` / `max`）。空串表示尚未写入；`off` 即不发送思考参数。 */
+    val reasoningEffort: String = ""
+) {
+    /**
+     * 是否已「唤醒」：至少产生过一条正文，或确实发生过一次请求。
+     *
+     * 不能只看 [blank]：旧版本落盘没有这个键，默认 false，于是历史里会留下
+     * 「0 消息、0 轮」的空壳会话。这类会话与新建未发言一样，不该出现在洞察统计里，
+     * 也不该提供会话菜单。用「有没有非空正文」判断对旧数据同样成立；
+     * 少数只保留用量不含消息的会话（如导入后裁剪）再用 requests / tokens 兜底。
+     */
+    val awakened: Boolean
+        get() = !blank && (
+            messages.any { it.content.isNotBlank() } ||
+                requests > 0 || promptTokens > 0 || completionTokens > 0
+            )
+}
 
 /**
  * 会话累计的计费构成：八段（七段上下文 + 输出）。
@@ -149,6 +187,7 @@ data class InheritedUsage(
     val completionTokens: Int = 0,
     val requests: Int = 0,
     val steps: Int = 0,
+    val toolCalls: Int = 0,
     val modelMillis: Long = 0,
     val toolMillis: Long = 0,
     val lastTurnModelMillis: Long = 0,
@@ -166,10 +205,81 @@ data class InheritedUsage(
     /** 全 0 表示并非从其他会话分叉而来：落盘时不写入整个对象。 */
     val isEmpty: Boolean
         get() = promptTokens == 0 && completionTokens == 0 && requests == 0 && steps == 0 &&
-            modelMillis == 0L && toolMillis == 0L && lastTurnModelMillis == 0L &&
+            toolCalls == 0 && modelMillis == 0L && toolMillis == 0L && lastTurnModelMillis == 0L &&
             lastTurnCompletionTokens == 0 && ttftMillis == 0L && ttftCount == 0 &&
             genMillis == 0L && genTokens == 0 && reasoningMillis == 0L &&
             textMillis == 0L && toolArgMillis == 0L && messages == 0
+}
+
+/**
+ * 一次执行要在会话记录上累加的用量与耗时。
+ *
+ * 定时任务在后台跑完一轮后，既要把问答写进消息，也要把这一轮的账记到会话上：
+ * 会话级「Token 统计」「耗时统计」与状态行读的都是这些字段，缺一项就会显示成 0。
+ */
+data class SessionUsageDelta(
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0,
+    /** 成功的模型请求次数。 */
+    val requests: Int = 0,
+    /** 本次回复的步数（跑过的最大轮次）。 */
+    val steps: Int = 0,
+    /** 本次回复实际执行的工具调用次数。 */
+    val toolCalls: Int = 0,
+    val cacheHitTokens: Int = 0,
+    val cacheMissTokens: Int = 0,
+    val composition: SessionComposition = SessionComposition(),
+    val modelMillis: Long = 0,
+    val toolMillis: Long = 0,
+    val lastTurnModelMillis: Long = 0,
+    val lastTurnCompletionTokens: Int = 0,
+    val ttftMillis: Long = 0,
+    val ttftCount: Int = 0,
+    val genMillis: Long = 0,
+    val genTokens: Int = 0,
+    val reasoningMillis: Long = 0,
+    val textMillis: Long = 0,
+    val toolArgMillis: Long = 0
+) {
+    /** 全 0 表示没有可累加的内容：此时按原样写回，不碰这些字段。 */
+    val isEmpty: Boolean
+        get() = promptTokens == 0 && completionTokens == 0 && requests == 0 && steps == 0 &&
+            toolCalls == 0 && cacheHitTokens == 0 && cacheMissTokens == 0 && composition.isEmpty &&
+            modelMillis == 0L && toolMillis == 0L && lastTurnModelMillis == 0L &&
+            lastTurnCompletionTokens == 0 && ttftMillis == 0L && ttftCount == 0 &&
+            genMillis == 0L && genTokens == 0 && reasoningMillis == 0L &&
+            textMillis == 0L && toolArgMillis == 0L
+}
+
+/**
+ * 把一份用量并入会话，返回新副本（不改消息与标题）。
+ *
+ * 逐字段相加而不是整体替换：会话上的累计值会同时被聊天页与定时任务推进，
+ * 任何一方整份覆盖都会抹掉另一方的记录。
+ */
+fun ChatSession.foldUsage(delta: SessionUsageDelta): ChatSession {
+    if (delta.isEmpty) return this
+    return copy(
+        promptTokens = promptTokens + delta.promptTokens,
+        completionTokens = completionTokens + delta.completionTokens,
+        requests = requests + delta.requests,
+        steps = steps + delta.steps,
+        toolCalls = toolCalls + delta.toolCalls,
+        cacheHitTokens = cacheHitTokens + delta.cacheHitTokens,
+        cacheMissTokens = cacheMissTokens + delta.cacheMissTokens,
+        composition = composition + delta.composition,
+        modelMillis = modelMillis + delta.modelMillis,
+        toolMillis = toolMillis + delta.toolMillis,
+        lastTurnModelMillis = delta.lastTurnModelMillis,
+        lastTurnCompletionTokens = delta.lastTurnCompletionTokens,
+        ttftMillis = ttftMillis + delta.ttftMillis,
+        ttftCount = ttftCount + delta.ttftCount,
+        genMillis = genMillis + delta.genMillis,
+        genTokens = genTokens + delta.genTokens,
+        reasoningMillis = reasoningMillis + delta.reasoningMillis,
+        textMillis = textMillis + delta.textMillis,
+        toolArgMillis = toolArgMillis + delta.toolArgMillis
+    )
 }
 
 /**
@@ -200,10 +310,16 @@ object SessionStore {
     private const val KEY_ARCHIVED = "archived"
     private const val KEY_PINNED = "pinned"
     private const val KEY_WORKSPACE_ID = "workspaceId"
+    private const val KEY_STORAGE_ID = "storageId"
+    private const val KEY_BLANK = "blank"
+    private const val KEY_LISTED = "listed"
+    private const val KEY_PERMISSION = "permissionPreset"
+    private const val KEY_EFFORT = "reasoningEffort"
     private const val KEY_PROMPT_TOKENS = "promptTokens"
     private const val KEY_COMPLETION_TOKENS = "completionTokens"
     private const val KEY_REQUESTS = "requests"
     private const val KEY_STEPS = "steps"
+    private const val KEY_TOOL_CALL_COUNT = "toolCallCount"
     private const val KEY_MODEL_MILLIS = "modelMillis"
     private const val KEY_TOOL_MILLIS = "toolMillis"
     private const val KEY_LAST_TURN_MODEL_MILLIS = "lastTurnModelMillis"
@@ -247,6 +363,8 @@ object SessionStore {
     private const val KEY_MSG_SNAPSHOT = "runtimeSnapshot"
     // 这条 user 消息是不是 App 代发的：高危确认只认真实用户输入（见 ChatMessage.programmatic）
     private const val KEY_MSG_PROGRAMMATIC = "programmatic"
+    // 唤醒来源：用户 / 定时任务；只影响后台统计口径（见 ChatMessage.origin）
+    private const val KEY_MSG_ORIGIN = "origin"
 
     private const val MINUTE = 60_000L
     private const val HOUR = 60L * MINUTE
@@ -319,16 +437,40 @@ object SessionStore {
      * 后台追加的是新消息，不存在与界面争用同一份快照的问题。
      */
     @Synchronized
-    fun appendMessages(context: Context, sessionId: String, added: List<ChatMessage>): Boolean {
+    fun appendMessages(
+        context: Context,
+        sessionId: String,
+        added: List<ChatMessage>,
+        usage: SessionUsageDelta = SessionUsageDelta()
+    ): Boolean {
         val all = load(context)
         val index = all.indexOfFirst { it.id == sessionId }
         if (index < 0) return false
         val old = all[index]
         val merged = all.toMutableList()
-        merged[index] = old.copy(
+        merged[index] = old.foldUsage(usage).copy(
             messages = old.messages + added,
             updatedAt = System.currentTimeMillis()
         )
+        save(context, merged)
+        return true
+    }
+
+    /**
+     * 只把用量并入会话，不动消息、不动 `updatedAt`。
+     *
+     * 用于「花了钱但没有产出」的执行（例如定时任务本轮请求失败）：会话卡片上的
+     * Token / 耗时应当反映真实消耗，但没有新消息，不能把会话顶到列表最前。
+     * id 不存在时返回 false。
+     */
+    @Synchronized
+    fun addUsage(context: Context, sessionId: String, usage: SessionUsageDelta): Boolean {
+        if (usage.isEmpty) return false
+        val all = load(context)
+        val index = all.indexOfFirst { it.id == sessionId }
+        if (index < 0) return false
+        val merged = all.toMutableList()
+        merged[index] = all[index].foldUsage(usage)
         save(context, merged)
         return true
     }
@@ -372,7 +514,13 @@ object SessionStore {
         val other = if (winner === a) b else a
         return winner.copy(
             title = winner.title.ifBlank { other.title },
-            workspaceId = winner.workspaceId ?: other.workspaceId
+            workspaceId = winner.workspaceId ?: other.workspaceId,
+            storageId = winner.storageId.ifEmpty { other.storageId },
+            // 空白态取合取、可见性取析取：任一方已发出首轮消息即视为已转正，任一方已显示即保持显示
+            blank = winner.blank && other.blank,
+            listed = winner.listed || other.listed,
+            permissionPreset = winner.permissionPreset.ifEmpty { other.permissionPreset },
+            reasoningEffort = winner.reasoningEffort.ifEmpty { other.reasoningEffort }
         )
     }
 
@@ -383,8 +531,19 @@ object SessionStore {
         return true
     }
 
-    /** 新建一条空会话。id 使用毫秒时间戳（同一毫秒内连续创建时自增，避免重复）。 */
-    fun newSession(): ChatSession {
+    /**
+     * 新建一条空会话。id 使用毫秒时间戳（同一毫秒内连续创建时自增，避免重复）。
+     *
+     * [storageId] / [permissionPreset] / [reasoningEffort] 由创建方按创建时的默认值快照传入；
+     * [blank] 与 [listed] 由创建来源决定（见设计稿的空白会话表），默认值对应「已转正且可见」。
+     */
+    fun newSession(
+        storageId: String = "",
+        blank: Boolean = false,
+        listed: Boolean = true,
+        permissionPreset: String = "",
+        reasoningEffort: String = ""
+    ): ChatSession {
         val now = System.currentTimeMillis()
         val id = if (now > lastIssuedId) now else lastIssuedId + 1
         lastIssuedId = id
@@ -392,7 +551,12 @@ object SessionStore {
             id = id.toString(),
             title = "",
             messages = emptyList(),
-            updatedAt = now
+            updatedAt = now,
+            storageId = storageId,
+            blank = blank,
+            listed = listed,
+            permissionPreset = permissionPreset,
+            reasoningEffort = reasoningEffort
         )
     }
 
@@ -408,7 +572,12 @@ object SessionStore {
      * 请求视图会从错误位置开始发送原文。
      */
     fun forked(base: ChatSession, messages: List<ChatMessage>): ChatSession =
-        newSession().copy(
+        newSession(
+            // 分叉沿用父会话的运行根与偏好：分支内容的附件路径相对同一目录，换目录会导致引用失效
+            storageId = base.storageId,
+            permissionPreset = base.permissionPreset,
+            reasoningEffort = base.reasoningEffort
+        ).copy(
             title = "分支 · " + base.title.ifBlank { "新会话" },
             messages = messages,
             workspaceId = base.workspaceId,
@@ -416,6 +585,7 @@ object SessionStore {
             completionTokens = base.completionTokens,
             requests = base.requests,
             steps = base.steps,
+            toolCalls = base.toolCalls,
             modelMillis = base.modelMillis,
             toolMillis = base.toolMillis,
             lastTurnModelMillis = base.lastTurnModelMillis,
@@ -431,6 +601,7 @@ object SessionStore {
                 completionTokens = base.completionTokens,
                 requests = base.requests,
                 steps = base.steps,
+                toolCalls = base.toolCalls,
                 modelMillis = base.modelMillis,
                 toolMillis = base.toolMillis,
                 lastTurnModelMillis = base.lastTurnModelMillis,
@@ -470,11 +641,18 @@ object SessionStore {
         if (session.pinned) obj.put(KEY_PINNED, true)
         // 未分类（null）时不写入该键：读取时 has() 为 false 即 null，文件也更小
         session.workspaceId?.takeIf { it.isNotEmpty() }?.let { obj.put(KEY_WORKSPACE_ID, it) }
+        // 以下五项同样「与缺省值不同才写入」，旧文件不会因升级而增大
+        session.storageId.takeIf { it.isNotEmpty() }?.let { obj.put(KEY_STORAGE_ID, it) }
+        if (session.blank) obj.put(KEY_BLANK, true)
+        if (!session.listed) obj.put(KEY_LISTED, false)
+        session.permissionPreset.takeIf { it.isNotEmpty() }?.let { obj.put(KEY_PERMISSION, it) }
+        session.reasoningEffort.takeIf { it.isNotEmpty() }?.let { obj.put(KEY_EFFORT, it) }
         // 计数为 0 时不写入：与 archived 一致，仅在存在数值时写入键，旧文件不会因升级而增大
         if (session.promptTokens != 0) obj.put(KEY_PROMPT_TOKENS, session.promptTokens)
         if (session.completionTokens != 0) obj.put(KEY_COMPLETION_TOKENS, session.completionTokens)
         if (session.requests != 0) obj.put(KEY_REQUESTS, session.requests)
         if (session.steps != 0) obj.put(KEY_STEPS, session.steps)
+        if (session.toolCalls != 0) obj.put(KEY_TOOL_CALL_COUNT, session.toolCalls)
         // 耗时同理：未执行时不额外写入任何字节
         if (session.modelMillis != 0L) obj.put(KEY_MODEL_MILLIS, session.modelMillis)
         if (session.toolMillis != 0L) obj.put(KEY_TOOL_MILLIS, session.toolMillis)
@@ -517,6 +695,7 @@ object SessionStore {
         obj.put(KEY_COMPLETION_TOKENS, usage.completionTokens)
         obj.put(KEY_REQUESTS, usage.requests)
         obj.put(KEY_STEPS, usage.steps)
+        obj.put(KEY_TOOL_CALL_COUNT, usage.toolCalls)
         obj.put(KEY_MODEL_MILLIS, usage.modelMillis)
         obj.put(KEY_TOOL_MILLIS, usage.toolMillis)
         obj.put(KEY_LAST_TURN_MODEL_MILLIS, usage.lastTurnModelMillis)
@@ -538,6 +717,7 @@ object SessionStore {
         completionTokens = obj.optInt(KEY_COMPLETION_TOKENS, 0),
         requests = obj.optInt(KEY_REQUESTS, 0),
         steps = obj.optInt(KEY_STEPS, 0),
+        toolCalls = obj.optInt(KEY_TOOL_CALL_COUNT, 0),
         modelMillis = obj.optLong(KEY_MODEL_MILLIS, 0L),
         toolMillis = obj.optLong(KEY_TOOL_MILLIS, 0L),
         lastTurnModelMillis = obj.optLong(KEY_LAST_TURN_MODEL_MILLIS, 0L),
@@ -619,6 +799,8 @@ object SessionStore {
         if (message.runtimeSnapshot.isNotEmpty()) obj.put(KEY_MSG_SNAPSHOT, message.runtimeSnapshot)
         // 仅写入 true：旧版本无此键，读取为 false 表示用户手动输入
         if (message.programmatic) obj.put(KEY_MSG_PROGRAMMATIC, true)
+        // 仅写入非默认来源：旧版本无此键，读取为「用户手动发送」
+        if (message.origin != ORIGIN_USER) obj.put(KEY_MSG_ORIGIN, message.origin)
         obj.put(KEY_CREATED_AT, message.createdAt)
         return obj
     }
@@ -700,11 +882,18 @@ object SessionStore {
                     pinned = obj.optBoolean(KEY_PINNED, false),
                     // 旧文件无 workspaceId，无此键即为 null（未分类）
                     workspaceId = obj.stringOrNull(KEY_WORKSPACE_ID),
+                    // 旧文件无这五项：存储单元留空由迁移补齐，空白与可见性取缺省值，权限与强度留空
+                    storageId = obj.optString(KEY_STORAGE_ID, ""),
+                    blank = obj.optBoolean(KEY_BLANK, false),
+                    listed = obj.optBoolean(KEY_LISTED, true),
+                    permissionPreset = obj.optString(KEY_PERMISSION, ""),
+                    reasoningEffort = obj.optString(KEY_EFFORT, ""),
                     // 旧文件无这些计数，由 optInt 默认值处理，读取为 0
                     promptTokens = obj.optInt(KEY_PROMPT_TOKENS, 0),
                     completionTokens = obj.optInt(KEY_COMPLETION_TOKENS, 0),
                     requests = obj.optInt(KEY_REQUESTS, 0),
                     steps = obj.optInt(KEY_STEPS, 0),
+                    toolCalls = obj.optInt(KEY_TOOL_CALL_COUNT, 0),
                     // 旧文件无耗时，由 optLong 默认值处理：读取为 0
                     modelMillis = obj.optLong(KEY_MODEL_MILLIS, 0L),
                     toolMillis = obj.optLong(KEY_TOOL_MILLIS, 0L),
@@ -779,6 +968,8 @@ object SessionStore {
             runtimeSnapshot = obj.optString(KEY_MSG_SNAPSHOT, ""),
             // 旧会话无此键：false 表示用户手动输入
             programmatic = obj.optBoolean(KEY_MSG_PROGRAMMATIC, false),
+            // 旧会话无此键：默认「用户手动发送」，统计口径与旧版本一致
+            origin = obj.optString(KEY_MSG_ORIGIN, ORIGIN_USER),
             createdAt = obj.optLong(KEY_CREATED_AT, System.currentTimeMillis())
         )
     }
@@ -803,4 +994,27 @@ object SessionStore {
         val value = optString(key, "")
         return if (value.isEmpty() || value == "null") null else value
     }
+}
+
+/**
+ * 会话级发送锁：同一会话的普通回合与定时回合串行执行。
+ *
+ * 界面回合与后台定时回合都会整份覆盖写会话，两者同时跑会互相覆盖消息。
+ * 聊天页开工前占住当前会话，定时任务在目标会话已被占用时跳过本轮；
+ * 锁只存在于进程内，进程被杀后自然释放。
+ */
+object SessionBusy {
+
+    private val held = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** 尝试占用；已被占用返回 false。 */
+    fun tryAcquire(sessionId: String): Boolean = held.add(sessionId)
+
+    /** 释放占用；未占用时无副作用。 */
+    fun release(sessionId: String) {
+        held.remove(sessionId)
+    }
+
+    /** 只读检查，用于在产生副作用之前先拒绝这次发送。 */
+    fun isBusy(sessionId: String): Boolean = sessionId in held
 }

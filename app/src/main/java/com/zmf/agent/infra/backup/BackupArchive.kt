@@ -97,7 +97,10 @@ object BackupArchive {
     private val DATA_FILES =
         listOf(
             "sessions.json",
+            // 工作区与存储单元同在一份文件里；缺它则换机后所有会话失去运行根
             "workspaces.json",
+            // 未发送的输入内容：不随会话文件走，需单独打包
+            "drafts.json",
             "stats.json",
             "mcp.json",
             "providers.json",
@@ -853,7 +856,8 @@ object BackupArchive {
     /** 数据段在报告里显示的名字。 */
     private fun dataLabel(fileName: String): String = when (fileName) {
         "sessions.json" -> "会话数据 sessions.json"
-        "workspaces.json" -> "工作区列表 workspaces.json"
+        "workspaces.json" -> "工作区与存储单元 workspaces.json"
+        "drafts.json" -> "未发送的草稿 drafts.json"
         "stats.json" -> "用量统计 stats.json"
         "providers.json" -> "模型提供商与密钥 providers.json"
         "goals.json" -> "长期目标 goals.json"

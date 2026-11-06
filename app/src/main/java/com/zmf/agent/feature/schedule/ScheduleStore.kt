@@ -31,14 +31,29 @@ data class ScheduleTask(
     val atMillis: Long = 0L,
     /** 每次触发发给模型的指令。 */
     val prompt: String = "",
-    /** 结果追加到哪条会话；null 表示每次新建一条（不会写入用户正在使用的会话）。 */
+    /** 结果追加到哪条会话；null 表示首次触发时新建一条（之后固定在该会话中发送）。 */
     val targetSessionId: String? = null,
+    /**
+     * 归属工作区；null 表示默认工作区。
+     *
+     * 任务在后台执行时需要知道用哪个目录当运行根：早期实现按目标会话所属工作区取，
+     * 会话被移到别处后目录会跟着变，因此改为任务自身记录归属，旧任务迁移为默认工作区。
+     */
+    val workspaceId: String? = null,
     /** 停用后不设置闹钟，已错过的触发也不补执行。 */
     val enabled: Boolean = true,
     /** 上次触发时刻，0 表示尚未执行。 */
     val lastRunAt: Long = 0L,
     /** 下一次触发时刻，0 表示不排期（已停用、一次性任务已执行完或时刻格式错误）。 */
-    val nextAt: Long = 0L
+    val nextAt: Long = 0L,
+    /**
+     * 是否改用闹钟式排期。
+     *
+     * 本机一旦发现本任务的触发时间被系统大幅推迟（见 [ScheduleRunner] 的迟到判定），
+     * 就置为 true，此后改用 `setAlarmClock` 排期：系统不会把它推迟，代价是状态栏出现闹钟图标。
+     * 正常机型永远不会被置位，也就不会出现该图标。
+     */
+    val clockAlarm: Boolean = false
 )
 
 /**
@@ -84,9 +99,11 @@ object ScheduleStore {
     private const val KEY_AT_MILLIS = "atMillis"
     private const val KEY_PROMPT = "prompt"
     private const val KEY_TARGET_SESSION_ID = "targetSessionId"
+    private const val KEY_WORKSPACE_ID = "workspaceId"
     private const val KEY_ENABLED = "enabled"
     private const val KEY_LAST_RUN_AT = "lastRunAt"
     private const val KEY_NEXT_AT = "nextAt"
+    private const val KEY_CLOCK_ALARM = "clockAlarm"
 
     /** 上一次生成的 id，保证同一毫秒内连续两次保存不会产生重复 id。 */
     @Volatile
@@ -227,9 +244,12 @@ object ScheduleStore {
         obj.put(KEY_PROMPT, task.prompt)
         // null 时不写入该 key：读取时 has() 为 false 即为 null，文件也更小（与 SessionStore.workspaceId 相同）
         task.targetSessionId?.takeIf { it.isNotEmpty() }?.let { obj.put(KEY_TARGET_SESSION_ID, it) }
+        // null（默认工作区）时不写入该键，旧任务读取为 null 即落在默认工作区
+        task.workspaceId?.takeIf { it.isNotEmpty() }?.let { obj.put(KEY_WORKSPACE_ID, it) }
         obj.put(KEY_ENABLED, task.enabled)
         obj.put(KEY_LAST_RUN_AT, task.lastRunAt)
         obj.put(KEY_NEXT_AT, task.nextAt)
+        if (task.clockAlarm) obj.put(KEY_CLOCK_ALARM, true)
         return obj
     }
 
@@ -251,9 +271,12 @@ object ScheduleStore {
                     atMillis = obj.optLong(KEY_AT_MILLIS, 0L),
                     prompt = obj.optString(KEY_PROMPT, ""),
                     targetSessionId = obj.stringOrNull(KEY_TARGET_SESSION_ID),
+                    // 旧任务没有该键：读取为 null，即默认工作区
+                    workspaceId = obj.stringOrNull(KEY_WORKSPACE_ID),
                     enabled = obj.optBoolean(KEY_ENABLED, true),
                     lastRunAt = obj.optLong(KEY_LAST_RUN_AT, 0L),
-                    nextAt = obj.optLong(KEY_NEXT_AT, 0L)
+                    nextAt = obj.optLong(KEY_NEXT_AT, 0L),
+                    clockAlarm = obj.optBoolean(KEY_CLOCK_ALARM, false)
                 )
             )
         }

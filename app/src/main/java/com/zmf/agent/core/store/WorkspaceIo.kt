@@ -411,20 +411,20 @@ class UnavailableWorkspaceIo(private val reason: String) : WorkspaceIo {
 private val IO_CACHE = ConcurrentHashMap<String, WorkspaceIo>()
 
 /**
- * 工具层入口：按 ToolContext 里那个「工作区根」反查工作区，决定用哪种实现。
+ * 工具层入口：按 ToolContext 里那个「工作区根」反查存储单元，决定用哪种实现。
  *
- * 反查靠 [WorkSpaceStore.findByRoot]（不调 dirOf，没有 mkdirs 副作用）：
- * ChatViewModel 传进来的 workspaceRoot 就是 dirOf / 用户目录，所以能对上。
+ * 反查靠 [StorageStore.findByPath]（只做路径比较，没有 mkdirs 副作用）：
+ * ChatViewModel 传进来的根就是该会话所属存储单元的根，所以能对上。
  */
 fun workspaceIoForRoot(context: Context, root: File): WorkspaceIo {
     val key = runCatching { root.canonicalPath }.getOrNull() ?: root.absolutePath
     IO_CACHE[key]?.let { return it }
-    val space = runCatching { WorkSpaceStore.findByRoot(context, root) }.getOrNull()
-    val io = if (space == null) {
+    val storage = runCatching { StorageStore.findByPath(context, root) }.getOrNull()
+    val io = if (storage == null) {
         FileWorkspaceIo(root)
     } else {
-        WorkSpaceStore.workspaceIoFor(context, space) ?: UnavailableWorkspaceIo(
-            "工作区「" + space.name + "」的目录已经不可用（目录被移动/删除，或系统授权失效），请重新选一次目录"
+        StorageStore.ioFor(context, storage) ?: UnavailableWorkspaceIo(
+            "该会话的存储目录已经不可用（目录被移动或删除，或系统授权失效），请到设置里重新选择一次目录"
         )
     }
     IO_CACHE[key] = io

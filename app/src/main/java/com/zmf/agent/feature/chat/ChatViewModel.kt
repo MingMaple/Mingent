@@ -1,4 +1,11 @@
 package com.zmf.agent.feature.chat
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import androidx.compose.ui.text.TextRange
+import com.zmf.agent.core.store.StorageMigration
+import com.zmf.agent.core.store.DraftStore
+import com.zmf.agent.core.model.wireName
+import com.zmf.agent.core.model.SessionPreference
 import com.zmf.agent.core.model.BusySendMode
 import com.zmf.agent.core.llm.ApiDefaults
 
@@ -98,6 +105,9 @@ internal const val PLAN_DETAIL_MARKER = "【计划原文·仅供模型执行】"
  * 由 Compose 的 remember 持有实例，由 rememberCoroutineScope 驱动循环。
  * 所有可变字段都是 Compose 快照状态，UI 读它们就会自动重组。
  */
+/** 草稿写入的防抖窗口：500 毫秒内的连续输入只写一次。 */
+private const val DRAFT_DEBOUNCE_MS = 500L
+
 class ChatViewModel(context: Context) : AgentUi {
 
     /**
@@ -204,7 +214,10 @@ class ChatViewModel(context: Context) : AgentUi {
         reloadTodos = { reloadTodos() },
         resetStats = { resetStats() },
         reportError = { lastError = it },
-        persistenceBlocked = { needsRestart }
+        persistenceBlocked = { needsRestart },
+        // 新建会话时把「此刻的全局默认值」快照进会话字段；此后的修改只影响之后新建的会话
+        currentPermission = { PermissionStore.load(appContext) },
+        currentEffort = { globalEffortWire() }
     )
 
     /** 全部会话，按 updatedAt 降序（第一个就是最近用过的）；侧边栏直接用。 */
@@ -219,12 +232,13 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 当前工作区 id；null 表示「未分类」（不属于任何工作区的会话都挂在这里）。 */
     val currentWorkspaceId: String? get() = sessionStore.currentWorkspaceId
 
-    var thinkingEnabled by mutableStateOf(ApiConfig.loadThinkingEnabled(appContext))
-        private set
+    /** 当前会话是否开启思考：会话字段为 `off` 即为关闭。 */
+    val thinkingEnabled: Boolean get() = sessionStore.sessionEffort() != SessionPreference.EFFORT_OFF
 
-    /** 思考强度：low / high / max。长按「思考」chip 可改。 */
-    var thinkingEffort by mutableStateOf(ApiConfig.loadThinkingEffort(appContext))
-        private set
+    /** 当前会话的思考强度（low / high / max）；关闭思考时回落到全局默认，仅供面板高亮。 */
+    val thinkingEffort: String
+        get() = sessionStore.sessionEffort().takeUnless { it == SessionPreference.EFFORT_OFF }
+            ?: globalEffortWire()
 
     var lastError by mutableStateOf<String?>(null)
         private set
@@ -252,8 +266,13 @@ class ChatViewModel(context: Context) : AgentUi {
      */
     val stats: UsageStats get() = context.stats
 
-    var permissionLevel by mutableStateOf(PermissionStore.load(appContext))
-        private set
+    /**
+     * 当前会话的权限档。
+     *
+     * 会话创建时快照全局默认值，此后各会话独立；此处的修改只写会话字段，不回写全局，
+     * 因此设置页改档只影响之后新建的会话。旧会话未写入该字段时回落到全局默认。
+     */
+    val permissionLevel: PermissionLevel get() = sessionStore.sessionPermission()
 
     /** 可用 Skill 的名字+描述缓存（给系统提示词的 Skill 段用；装/删 Skill 后调 refreshSkillCatalog）。 */
     private var skillCatalog: List<Pair<String, String>> = emptyList()
@@ -459,6 +478,17 @@ class ChatViewModel(context: Context) : AgentUi {
             .onFailure { FileLog.log("sandbox-reg", "回归自检异常：" + (it.message ?: it.javaClass.simpleName)) }
         // 全局总账先读回来：stats.json 坏掉 / 缺字段时里面自己回落到 0，不会影响会话表
         UsageLedger.load(appContext)
+        // 旧数据迁移：把「工作区自带目录」升级为「工作区 + 存储单元」，并给旧会话补上
+        // 权限与强度的快照。幂等、失败不覆盖原文件；必须先于读会话表，否则界面会先看到一批缺 storageId 的会话
+        runCatching {
+            StorageMigration.migrate(
+                appContext,
+                PermissionStore.load(appContext).wireName(),
+                globalEffortWire()
+            )
+        }.onFailure { FileLog.log("migrate", "旧数据迁移失败：" + it) }
+        // 草稿端口必须先装好：下面的 loadInitial 会回填当前会话的草稿
+        installDraftPort()
         // 工作区表与会话表读回来，决定当前会话并载入它的消息（见 SessionController.loadInitial）
         sessionStore.loadInitial()
         // 费用总账一次性回填：按现存会话自身的消息逐轮计算费用（分叉克隆段不计），此后删除会话不影响全局费用
@@ -513,17 +543,72 @@ class ChatViewModel(context: Context) : AgentUi {
         resetStats()
     }
 
-    /** 推理开关的唯一写法：改状态并立即落盘，下一次请求就按新值走。 */
+    /**
+     * 推理开关的唯一写法：只改当前会话的强度字段，下一次请求就按新值走。
+     *
+     * 关闭即写入 `off`（请求中不发送思考参数）；重新打开时回到全局默认强度。
+     */
     fun toggleThinking() {
-        thinkingEnabled = !thinkingEnabled
-        ApiConfig.saveThinkingEnabled(appContext, thinkingEnabled)
+        val next = if (thinkingEnabled) {
+            SessionPreference.EFFORT_OFF
+        } else {
+            globalEffortWire()
+        }
+        sessionStore.setSessionEffort(next)
     }
 
-    /** 注意：名字不能叫 setThinkingEffort，会和 thinkingEffort 的属性 setter 撞 JVM 签名。 */
+    /** 选择思考强度；只写当前会话字段，不触碰全局默认。 */
     fun chooseThinkingEffort(effort: String) {
-        if (effort == thinkingEffort) return
-        thinkingEffort = effort
-        ApiConfig.saveThinkingEffort(appContext, effort)
+        sessionStore.setSessionEffort(effort)
+    }
+
+    /** 全局默认思考强度（设置页维护）：关闭思考时也以它作为「重新打开」的目标值。 */
+    private fun globalEffortWire(): String =
+        if (!ApiConfig.loadThinkingEnabled(appContext)) {
+            SessionPreference.EFFORT_OFF
+        } else {
+            SessionPreference.effortOrNull(ApiConfig.loadThinkingEffort(appContext))
+                ?: SessionPreference.EFFORT_DEFAULT
+        }
+
+    /** 草稿写入的防抖任务：连续输入只保留最后一次。 */
+    private var draftSaveJob: Job? = null
+
+    /**
+     * 装上草稿端口：输入内容按会话存取。
+     *
+     * 职责划分：日常输入由 [updateInput] 防抖写入；切换会话、退到后台、会话被删除这三类时机
+     * 由 [SessionController] 主动调用端口，保证「切走再回来内容还在」。
+     */
+    private fun installDraftPort() {
+        sessionStore.draftPort = object : SessionController.DraftPort {
+            override fun flush() {
+                draftSaveJob?.cancel()
+                val id = currentSessionId
+                if (id.isEmpty()) return
+                DraftStore.put(appContext, id, composer.inputText.text)
+            }
+
+            override fun restore(sessionId: String) {
+                draftSaveJob?.cancel()
+                val text = DraftStore.text(appContext, sessionId)
+                composer.inputText = TextFieldValue(text, selection = TextRange(text.length))
+            }
+
+            override fun forget(sessionIds: Collection<String>) {
+                DraftStore.remove(appContext, sessionIds)
+            }
+        }
+    }
+
+    /**
+     * 盘上数据被后台改过之后整体读回（小窗、定时任务、助手工具共用）。
+     *
+     * 会话与工作区一起刷新：助手工具可以新建或删除工作区，只刷会话会让分组停留在旧状态。
+     */
+    fun reloadFromDisk() {
+        sessionStore.reloadWorkspaces()
+        sessionStore.reloadSessionsFromDisk()
     }
 
     // ---- 上下文摘要（滚动压缩） ----
@@ -628,12 +713,11 @@ class ChatViewModel(context: Context) : AgentUi {
         FileLog.log("skill", "可用 Skill " + skillCatalog.size + " 个")
     }
 
-    /** 切换权限档：落盘并写一条审计记录；档位没变时不做任何事。 */
+    /** 切换当前会话的权限档：只写会话字段并记一条审计；档位没变时不做任何事。 */
     fun setPermission(level: PermissionLevel) {
         if (level == permissionLevel) return
         val from = permissionLevel
-        permissionLevel = level
-        PermissionStore.save(appContext, level)
+        sessionStore.setSessionPermission(level)
         FileLog.log("permission", "权限档切到 " + level.displayName())
         // 档位切换改的是「Agent 能碰多远」，属于安全相关状态变更：审计日志必须留一条
         AuditLog.record(
@@ -689,7 +773,16 @@ class ChatViewModel(context: Context) : AgentUi {
     fun clearGoal() = planGoal.clearGoal()
 
     /** 把输入框的内容（含光标位置）同步进状态；不触发任何发送或落盘。 */
-    fun updateInput(text: TextFieldValue) = composer.updateInput(text)
+    fun updateInput(text: TextFieldValue) {
+        composer.updateInput(text)
+        // 防抖写入：连续输入只保留最后一次，避免每个按键都写一次文件
+        draftSaveJob?.cancel()
+        draftSaveJob = summaryScope.launch {
+            delay(DRAFT_DEBOUNCE_MS)
+            val id = currentSessionId
+            if (id.isNotEmpty()) DraftStore.put(appContext, id, text.text)
+        }
+    }
 
     /** 清掉顶栏的错误提示，只改界面状态。 */
     fun clearError() {
@@ -749,7 +842,8 @@ class ChatViewModel(context: Context) : AgentUi {
     // ---- 工作区目录（实现见 SessionController.kt，这里只留调用口）----
 
     /** 当前工作区目录：未分类（或找不到）时回落到默认工作区，和 send / attachFile 完全同一口径。 */
-    private fun currentWorkspaceRoot(): File = sessionStore.currentWorkspaceRoot()
+    /** 当前会话的运行根：图片解码、附件落盘与工具调用共用同一口径。 */
+    fun currentWorkspaceRoot(): File = sessionStore.currentWorkspaceRoot()
 
     /** 工作区根目录：优先用户自定义目录，读不到就退回私有目录（见 SessionController.rootOf）。 */
     private fun rootOf(space: WorkSpace): File = sessionStore.rootOf(space)
@@ -858,8 +952,17 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 分叉会话：把当前历史复制成一条新会话，父会话原样不动。 */
     fun forkSession(atIndex: Int? = null) = sessionStore.forkSession(atIndex)
 
-    /** 删除会话：删的是当前会话就在当前工作区里挑下一条，一个都不剩就新建一条空的。 */
+    /** 删除会话（仅限已归档）：删的是当前会话就在当前工作区里挑下一条，一个都不剩就新建一条空的。 */
     fun deleteSession(id: String) = sessionStore.deleteSession(id)
+
+    /** 删除已归档会话时确认文案的追加段；null 表示无需追加。 */
+    fun deleteSessionExtraNote(id: String): String? = sessionStore.deleteSessionExtraNote(id)
+
+    /** 归档前的特例说明（内置目录仅剩此引用、定时任务被解绑）；空列表表示常规归档。 */
+    fun archiveNotes(id: String): List<String> = sessionStore.archiveNotes(id)
+
+    /** 把会话移到目标工作区；返回需要补充的提示，没有则 null。 */
+    fun moveSession(id: String, workspaceId: String): String? = sessionStore.moveSession(id, workspaceId)
 
     /** 重命名会话；标题 trim 后为空就退回「新会话」的空标题。 */
     fun renameSession(id: String, title: String) = sessionStore.renameSession(id, title)
@@ -870,8 +973,20 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 归档会话；归档的是当前会话时，直接进一个空对话。 */
     fun archiveSession(id: String) = sessionStore.archiveSession(id)
 
-    /** 从归档恢复。 */
-    fun unarchiveSession(id: String) = sessionStore.unarchiveSession(id)
+    /**
+     * 归档入口的统一处理。
+     *
+     * 常规归档直接执行并返回空列表（界面只给一行轻提示）；
+     * 命中特例（内置目录仅剩此引用、定时任务被停用解绑）时先不执行，返回说明由界面合并成一个确认弹窗。
+     */
+    fun requestArchive(id: String): List<String> {
+        val notes = sessionStore.archiveNotes(id)
+        if (notes.isEmpty()) sessionStore.archiveSession(id)
+        return notes
+    }
+
+    /** 从归档恢复；返回 true 表示原工作区已删除、会话归入了「未分类」。 */
+    fun unarchiveSession(id: String): Boolean = sessionStore.unarchiveSession(id)
 
     /** 当前工作区里没归档的会话（已按 updatedAt 倒序）。 */
     fun sessionsInCurrentWorkspace(): List<ChatSession> = sessionStore.sessionsInCurrentWorkspace()
@@ -889,8 +1004,26 @@ class ChatViewModel(context: Context) : AgentUi {
     fun createWorkspace(name: String, rootPath: String? = null, treeUri: String? = null): Boolean =
         sessionStore.createWorkspace(name, rootPath, treeUri)
 
-    /** 删除工作区：默认工作区不删；目录软删除，会话解绑到未分类。 */
+    /** 删除工作区的确认文案：按有会话 / 目录空 / 目录非空三选一。 */
+    fun deleteWorkspacePrompt(id: String): String = sessionStore.deleteWorkspacePrompt(id)
+
+    /** 删除工作区：默认工作区不删；只解除映射，会话转「未分类」，内置目录按引用归零回收。 */
     fun deleteWorkspace(id: String) = sessionStore.deleteWorkspace(id)
+
+    /** 更改储存路径的确认文案：按原目录类型三选一。 */
+    fun changeStoragePrompt(id: String): String = sessionStore.changeStoragePrompt(id)
+
+    /** 更改工作区的储存路径；返回 false 表示目录不可用或当前有会话在运行。 */
+    fun changeWorkspaceStorage(id: String, rootPath: String?, treeUri: String?): Boolean =
+        sessionStore.changeWorkspaceStorage(id, rootPath, treeUri)
+
+    /** 同一弹窗内新建工作区并移入会话，一次提交。 */
+    fun createWorkspaceAndMove(sessionId: String, name: String, rootPath: String?, treeUri: String?): Boolean =
+        sessionStore.createWorkspaceAndMove(sessionId, name, rootPath, treeUri)
+
+    /** 该目录已被哪个工作区映射；null 表示未占用。 */
+    fun workspaceUsingDir(rootPath: String?, treeUri: String?): String? =
+        sessionStore.workspaceUsingDir(rootPath, treeUri)
 
     /** 侧边栏/顶栏显示的当前会话名，没起标题就是「新会话」。 */
     fun currentTitle(): String = sessionStore.currentTitle()

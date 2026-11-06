@@ -858,6 +858,25 @@ class AgentLoop(
 }
 
 /**
+ * 一次回合的产出边界：本轮跑了几轮、新增了哪些消息、最终答复是哪一条。
+ *
+ * 普通发送与定时任务共用这一口径。答复只从 [added] 里取，历史消息不参与：
+ * 请求失败、本轮没有产出正文时返回空串，调用方据此判为失败，而不是把上一轮的答复当成本轮结果。
+ */
+data class TurnOutcome(
+    val rounds: Int,
+    val added: List<ChatMessage>
+) {
+    /** 本轮新增消息里的最后一条有正文的 assistant；没有则为空串。 */
+    val reply: String
+        get() = added
+            .lastOrNull { it.role == "assistant" && it.content.isNotBlank() }
+            ?.content
+            .orEmpty()
+            .trim()
+}
+
+/**
  * 伪工具标记过滤。
  *
  * 标记可能被拆分到两个 delta 中（例如「...<|DS」+「ML|>...」），因此尾部可能是标记前缀的

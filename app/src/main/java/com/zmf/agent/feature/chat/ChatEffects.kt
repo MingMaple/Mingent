@@ -172,8 +172,6 @@ internal fun ChatBackHandlers(
     var page by ui.page
     var drawerOpen by ui.drawerOpen
     var subAgentPanelOpen by ui.subAgentPanelOpen
-    var viewer by ui.viewer
-    var turnUsage by ui.turnUsage
     var imageMenuVisible by ui.imageMenuVisible
     var selectionVisible by ui.selectionVisible
     var trashRefreshKey by ui.trashRefreshKey
@@ -207,7 +205,6 @@ internal fun ChatBackHandlers(
         if (!BrowserHolder.goBack()) page = null
     }
     BackHandler(enabled = page == AppPage.WORKSPACE) { page = null }
-    BackHandler(enabled = page == AppPage.SESSIONS) { page = null }
     BackHandler(enabled = page == AppPage.SUBAGENT) { page = null }
     // 结构：设置首页 → 通用设置 / 模型 / 长期记忆 / 上下文洞察 / 上下文配置 / 包管理 / 数据，
     // 通用设置 → 权限、定时任务；数据 → 日志、归档。
@@ -235,9 +232,9 @@ internal fun ChatBackHandlers(
     BackHandler(enabled = page == AppPage.SETTINGS_DATA) { page = AppPage.SETTINGS }
     BackHandler(enabled = page == AppPage.SETTINGS) { page = null }
     BackHandler(enabled = subAgentPanelOpen) { subAgentPanelOpen = false }
-    BackHandler(enabled = viewer != null) { viewer = null }
+    // 图片查看器的返回键由 ImageViewer 自身接管：此处置空会跳过「缩回缩略图」的退场动画
     BackHandler(enabled = drawerOpen) { drawerOpen = false }
-    BackHandler(enabled = turnUsage != null) { turnUsage = null }
+    // 「本轮用量」的返回键由 SaltPopover 自行接管：置空会让面板瞬间消失，跳过退场动画
     BackHandler(enabled = imageMenuVisible) { imageMenuVisible = false }
     BackHandler(enabled = selectionVisible) { selectionVisible = false }
 }

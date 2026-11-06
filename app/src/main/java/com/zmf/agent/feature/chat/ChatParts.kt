@@ -15,7 +15,6 @@ import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
-import android.widget.Toast
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -78,8 +77,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -115,6 +116,7 @@ import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
+import com.zmf.agent.uikit.layout.LocalUiWindow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -126,11 +128,19 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import com.zmf.agent.uikit.markdown.MarkdownText
+import com.zmf.agent.uikit.common.NoticeCenter
 
 @Composable
 internal fun ChatTopBar(
     viewModel: ChatViewModel,
     onMenuClick: () -> Unit,
+    /** 覆盖式抽屉才需要菜单按钮；横屏常驻抽屉时隐藏，把宽度留给入口与状态点。 */
+    menuVisible: Boolean = true,
+    /** 横屏高度紧凑时收紧纵向内距，触摸目标不缩小。 */
+    compact: Boolean = false,
+    /** 轨迹以右侧辅窗格存在时才提供顶栏入口（该模式下没有整屏左滑手势）。 */
+    traceAvailable: Boolean = false,
+    onTraceClick: () -> Unit = {},
     /** 子智能体总数：0 时右上角不出现胶囊（跑完也留着，方便回看对话）。 */
     subAgentCount: Int,
     /** 其中正在运行的数量，只用来决定指示灯颜色。 */
@@ -153,15 +163,20 @@ internal fun ChatTopBar(
         else -> UiColors.success
     }
     Row(
-        modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 12.dp, vertical = if (compact) 6.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = "☰",
-            modifier = Modifier.clickable(onClick = onMenuClick).padding(horizontal = 8.dp, vertical = 4.dp),
-            fontSize = 20.sp,
-            color = MaterialTheme.colorScheme.onBackground
-        )
+        if (menuVisible) {
+            Text(
+                text = "☰",
+                modifier = Modifier.clickable(onClick = onMenuClick).padding(horizontal = 8.dp, vertical = 4.dp),
+                fontSize = 20.sp,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
         // 中间不放置「Agent」标题：两侧 Spacer 支撑，☰ 在左、状态点在右
         Spacer(Modifier.weight(1f))
         Spacer(Modifier.weight(1f))
@@ -205,6 +220,11 @@ internal fun ChatTopBar(
         // 等于在教用户「这里点不开」，不如让位给状态点
         if (plans.isNotEmpty()) {
             PlanGlyph(onClick = onPlanClick)
+            Spacer(Modifier.width(10.dp))
+        }
+        // 轨迹辅窗格模式没有整屏左滑手势，入口放在顶栏；覆盖式与整屏滑入模式不出现
+        if (traceAvailable) {
+            TraceGlyph(onClick = onTraceClick)
             Spacer(Modifier.width(10.dp))
         }
         Box(
@@ -309,6 +329,54 @@ internal fun BrowserGlyph(onClick: () -> Unit) {
             )
             // 工具栏左侧的小圆点（标签页示意），不可多绘：该尺寸仅能容纳一颗
             drawCircle(color = color, radius = 1.dp.toPx(), center = Offset(w * 0.2f, barY * 0.52f))
+        }
+    }
+}
+
+/**
+ * 右上角的「轨迹」入口：一条竖线串三颗圆点，表示一轮里的时间线。
+ *
+ * 与计划、网页两枚图标同一套线宽与颜色；仅在轨迹以右侧辅窗格展示时出现。
+ */
+@Composable
+internal fun TraceGlyph(onClick: () -> Unit) {
+    val color = Palette.Neutral
+    Box(
+        modifier = Modifier
+            .size(26.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(17.dp)) {
+            val w = size.width
+            val h = size.height
+            val stroke = 1.5.dp.toPx()
+            val x = w * 0.32f
+            drawLine(
+                color = color,
+                start = Offset(x, h * 0.12f),
+                end = Offset(x, h * 0.88f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
+            )
+            for (index in 0 until 3) {
+                drawCircle(
+                    color = color,
+                    radius = 1.6.dp.toPx(),
+                    center = Offset(x, h * (0.18f + index * 0.32f))
+                )
+                drawLine(
+                    color = color.copy(alpha = 0.75f),
+                    start = Offset(x + 3.dp.toPx(), h * (0.18f + index * 0.32f)),
+                    end = Offset(w - 0.5.dp.toPx(), h * (0.18f + index * 0.32f)),
+                    strokeWidth = stroke
+                )
+            }
         }
     }
 }
@@ -889,7 +957,7 @@ internal fun UserRow(
     onCopy: (String) -> Unit,
     onSelectText: (String) -> Unit,
     onRollback: () -> Unit,
-    onImageClick: (List<String>, Int) -> Unit,
+    onImageClick: (List<String>, Int, Rect?) -> Unit,
     onImageLongPress: (String, Offset) -> Unit
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -915,7 +983,7 @@ internal fun UserRow(
 
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Column(
-            modifier = Modifier.widthIn(max = 340.dp),
+            modifier = Modifier.widthIn(max = LocalUiWindow.current.userBubbleMaxWidth),
             horizontalAlignment = Alignment.End
         ) {
             if (files.isNotEmpty() || images.isNotEmpty()) {
@@ -936,7 +1004,7 @@ internal fun UserRow(
                         SentImageThumb(
                             relPath = rel,
                             root = imageRoot,
-                            onTap = { onImageClick(images, index) },
+                            onTap = { rect -> onImageClick(images, index, rect) },
                             onLongPress = { anchor -> onImageLongPress(rel, anchor) }
                         )
                     }
@@ -1111,7 +1179,8 @@ internal fun FileGlyph(tint: Color) {
 internal fun SentImageThumb(
     relPath: String,
     root: File,
-    onTap: () -> Unit,
+    /** 回调带上缩略图在根坐标系中的矩形，供查看器做开关动画。 */
+    onTap: (Rect) -> Unit,
     onLongPress: (Offset) -> Unit
 ) {
     val bitmap = remember(relPath) {
@@ -1122,6 +1191,7 @@ internal fun SentImageThumb(
     val currentTap by rememberUpdatedState(onTap)
     val currentLongPress by rememberUpdatedState(onLongPress)
     var origin by remember { mutableStateOf(Offset.Zero) }
+    val sidePx = with(LocalDensity.current) { SentThumbSide.toPx() }
     Box(
         modifier = Modifier
             .size(SentThumbSide)
@@ -1131,7 +1201,7 @@ internal fun SentImageThumb(
             .pointerInput(relPath) {
                 // 锚点算成屏幕坐标（origin + 本节点内的落点），菜单才会弹在被按住的那一张旁边
                 pressOrTap(
-                    onTap = { currentTap() },
+                    onTap = { currentTap(Rect(origin, Size(sidePx, sidePx))) },
                     onLongPress = { local -> currentLongPress(origin + local) }
                 )
             },
@@ -1403,7 +1473,7 @@ internal fun findActivity(context: Context): Activity? {
 internal fun saveImageFromChat(context: Context, scope: CoroutineScope, root: File, relPath: String) {
     scope.launch {
         val ok = withContext(Dispatchers.IO) { saveImageToDownload(context, root, relPath) }
-        Toast.makeText(context, if (ok) "已保存" else "保存失败", Toast.LENGTH_SHORT).show()
+        if (ok) NoticeCenter.success("已保存到「下载」") else NoticeCenter.error("保存失败，下载目录不可写")
     }
 }
 
@@ -1497,7 +1567,7 @@ internal fun copyToClipboard(context: Context, text: String) {
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     manager?.setPrimaryClip(ClipData.newPlainText("消息", text))
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-        Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+        NoticeCenter.info("已复制")
     }
 }
 

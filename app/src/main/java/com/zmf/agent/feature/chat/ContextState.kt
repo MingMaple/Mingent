@@ -1101,16 +1101,16 @@ class ContextState(
         }
 
     /**
-     * 洞察页的轮次：只数分叉边界之后、用户亲手输入的 user 消息。
+     * 洞察页的轮次：只数分叉边界之后的 user 消息。
      *
-     * 比 [statusRounds] 多两道过滤：分叉克隆的历史不算、App 代发（programmatic）不算，
-     * 与 DSH 的 humanInputs 口径一致。
+     * 统计口径与正常任务一致：真人输入与定时系统唤醒都算一轮，唤醒来源不同而已；
+     * App 其他代发（计划页按钮、后台任务结算）不算。分叉克隆的历史不计入。
      */
     val insightRounds: Int
         get() {
             val inherited = sessions().firstOrNull { it.id == currentSessionId() }
                 ?.inheritedUsage?.messages ?: 0
-            return messages.drop(inherited).count { it.role == "user" && !it.programmatic }
+            return messages.drop(inherited).count { it.countsAsRound }
         }
 
     // ---- 洞察页数据装配（页面只读，不做业务判断） ----
@@ -1157,21 +1157,11 @@ class ContextState(
         var cacheHit = 0
         var cacheMiss = 0
         var toolCalls = 0
-        var replies = 0
-        var rounds = 0
-        var firstAt = 0L
-        var lastAt = 0L
         var hasOwnUsage = false
         for (message in own) {
-            if (message.createdAt > 0L) {
-                if (firstAt == 0L) firstAt = message.createdAt
-                lastAt = message.createdAt
-            }
             when (message.role) {
-                "user" -> if (!message.programmatic) rounds++
                 "tool" -> toolCalls++
                 "assistant" -> {
-                    if (message.content.isNotBlank()) replies++
                     if (message.usageModel.isNotBlank() &&
                         (message.promptTokens > 0 || message.completionTokens > 0)
                     ) {
@@ -1196,7 +1186,8 @@ class ContextState(
         val toolArg = (session.toolArgMillis - inherited.toolArgMillis).coerceAtLeast(0L)
         // 老会话只有 genMillis（思考+正文合在一起）：把「新细分没有覆盖到」的那部分补进模型回复，
         // 避免整段旧生成时间归入「其他开销」
-        val genLegacy = (session.genMillis - inherited.genMillis).coerceAtLeast(0L)
+        val genMs = (session.genMillis - inherited.genMillis).coerceAtLeast(0L)
+        val genLegacy = genMs
         val detailedGen = reasoning + textRaw + toolArg
         val text = textRaw + (genLegacy - detailedGen).coerceAtLeast(0L)
         val toolMs = (session.toolMillis - inherited.toolMillis).coerceAtLeast(0L)
@@ -1204,31 +1195,25 @@ class ContextState(
         // 不使用消息首末差值：该跨度包含数日闲置时间，会使耗时环几乎全部归入「其他」
         val modelMs = (session.modelMillis - inherited.modelMillis).coerceAtLeast(0L)
         val active = modelMs + toolMs
-        val speed = if (hasOwnUsage && session.lastTurnModelMillis > 0 &&
-            session.lastTurnCompletionTokens > 0
-        ) {
-            (session.lastTurnCompletionTokens * 1000L / session.lastTurnModelMillis).toInt()
+        // 输出速度：与状态行、全局卡片同一口径——分母只算「第一个字到最后一个字」。
+        // 早前这里用的是上一轮模型总耗时（含等首字），2 个字的回复会算出 1 tok/s 这种噪声值
+        val genOwn = (session.genTokens - inherited.genTokens).coerceAtLeast(0)
+        val speed = if (hasOwnUsage && genMs > 0 && genOwn > 0) {
+            (genOwn * 1000L / genMs).toInt()
         } else {
             null
         }
-        val cost = UsageCost.session(session).takeIf { it.hasValue }
-        val modelLabel = own.lastOrNull { it.role == "assistant" && it.usageModel.isNotBlank() }
-            ?.usageModel ?: if (isCurrent) usageModel() else ""
         val window = ApiDefaults.CONTEXT_WINDOW
         return InsightSessionView(
             sessionId = sessionId,
             title = if (isCurrent) "当前上下文" else session.title.ifBlank { "新会话" },
             isCurrent = isCurrent,
-            modelLabel = modelLabel,
             window = window,
             estimatedTokens = estimated,
             ratio = if (window > 0) estimated.toFloat() / window else 0f,
             parts = parts,
             tokenComposition = session.composition.takeIf { !it.isEmpty },
             cacheRate = cacheRate,
-            promptTokens = (session.promptTokens - inherited.promptTokens).coerceAtLeast(0),
-            completionTokens = (session.completionTokens - inherited.completionTokens)
-                .coerceAtLeast(0),
             requests = (session.requests - inherited.requests).coerceAtLeast(0),
             activeMillis = active,
             ttftMillis = ttft,
@@ -1237,11 +1222,8 @@ class ContextState(
             toolArgMillis = toolArg,
             toolMillis = toolMs,
             outputSpeed = speed,
-            rounds = rounds,
-            steps = (session.steps - inherited.steps).coerceAtLeast(0),
-            replies = replies,
-            toolCalls = toolCalls,
-            costCny = cost?.cny
+            // 后台执行只写最终问答，工具中间态不落消息：那部分次数记在会话字段上，两处相加才是全量
+            toolCalls = toolCalls + (session.toolCalls - inherited.toolCalls).coerceAtLeast(0)
         )
     }
 
@@ -1252,6 +1234,10 @@ class ContextState(
      * 那样做会得到两套互不相干的数字（`total` 含 v1 时代累计，`days` 只有 v2 起的明细），
      * 表现就是「全部 6.1M / 近 30 天 23K」。历史遗留（`total − Σdays`）作为差额项，
      * 只有范围覆盖到首次使用日时才计入，并摊进折线图最早那几档。
+     *
+     * **与 dsh 的一处有意差异**：dsh 的全局是「现存各会话之和」，会话被删除后从全局消失；
+     * 本应用以账本为准，已删除会话消耗的 token、时长与费用仍计入历史。这是设计选择：
+     * 花费真实发生过，不因删除会话而消失。不要为了与 dsh 对齐把这里改成按会话求和。
      */
     fun globalInsight(range: InsightRange): InsightGlobalView {
         UsageLedger.load(appContext)
@@ -1275,7 +1261,6 @@ class ContextState(
         val text = usage.textMs
         val toolArg = usage.toolArgMs
         val toolExec = usage.toolMs
-        val active = usage.activeMs
         val toolCalls = usage.toolCalls
         val hit = usage.cacheHit
         val miss = usage.cacheMiss
@@ -1286,13 +1271,19 @@ class ContextState(
         val genTokens = usage.genTokens
         val costCny = usage.costCny
         val cacheRate = if (hit + miss > 0) hit.toFloat() / (hit + miss) else null
-        val other = (active - ttft - reasoning - text - toolArg - toolExec).coerceAtLeast(0L)
+        // 与 dsh 同口径：timing.wallMs 是各会话「模型流 + 工具执行」之和，全局即各会话相加。
+        // 不使用逐轮的墙钟差值：那里面含重试等待与工具间的空闲，会把「其他开销」撑成主体
+        val activeWork = usage.modelMs + usage.toolMs
+        val other = (activeWork - ttft - reasoning - text - toolArg - toolExec).coerceAtLeast(0L)
         val speed = if (genMs > 0 && genTokens > 0) {
             (genTokens * 1000L / genMs).toInt()
         } else {
             null
         }
-        val all = sessions().toList()
+        // 未唤醒的空壳会话不进入统计：它们从未产生请求，计入会话数会把
+        // 「新建但没说话」的空壳算成一次使用，列表与计数都会失真。
+        // 不能只看 blank：旧数据没有该键，历史里仍会留下 0 消息的「新会话」。
+        val all = sessions().filter { it.awakened }
         val rows = all.map { session -> globalRow(session, fromMs, now) }
             .sortedByDescending { it.updatedAt }
         val series = usageSeries(ledger, range, now)
@@ -1300,7 +1291,7 @@ class ContextState(
             range = range,
             sessions = all.size,
             archived = all.count { it.archived },
-            activeSessions = rows.count { it.rounds > 0 || it.tokens > 0 },
+            usageSessions = rows.count { it.tokens > 0 },
             totalTokens = tokens,
             rounds = rounds,
             costCny = costCny.takeIf { it > 0.0 },
@@ -1308,7 +1299,7 @@ class ContextState(
             cacheRate = cacheRate,
             toolCalls = toolCalls,
             toolMillis = toolExec,
-            activeMillis = active,
+            activeMillis = activeWork,
             requests = requests,
             series = series,
             composition = composition.takeIf { !it.isEmpty },
@@ -1319,7 +1310,7 @@ class ContextState(
                 toolArg = toolArg,
                 toolExec = toolExec,
                 other = other,
-                active = active
+                active = activeWork
             ),
             outputSpeed = speed,
             rows = rows
@@ -1471,7 +1462,8 @@ class ContextState(
         for (message in own) {
             if (message.createdAt < fromMs || message.createdAt > toMs) continue
             when (message.role) {
-                "user" -> if (!message.programmatic) rounds++
+                // 轮次与正常任务同口径：真人输入与定时任务唤醒都算，其他 App 代发不算
+                "user" -> if (message.countsAsRound) rounds++
                 "assistant" -> {
                     tokens += message.promptTokens.toLong() + message.completionTokens
                     if (message.usageCacheReported) {

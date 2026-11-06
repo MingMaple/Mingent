@@ -3,7 +3,6 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 
 import android.content.Context
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -69,6 +69,7 @@ import com.zmf.agent.capability.skill.SkillStore
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.components.salt.SaltSwitch
+import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
@@ -77,6 +78,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.zmf.agent.uikit.common.saltFieldColors
+import com.zmf.agent.uikit.common.NoticeCenter
 
 /**
  * 「包管理」页：插件（MCP 服务）与 Skill 两个 tab，左右滑动切换。
@@ -908,13 +910,15 @@ private fun PackageDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            modifier = Modifier.fillMaxWidth(0.9f),
+            modifier = Modifier
+                .widthIn(max = LocalUiWindow.current.dialogMaxWidth)
+                .fillMaxWidth(0.92f),
             shape = RoundedCornerShape(28.dp),
             color = MaterialTheme.colorScheme.surface
         ) {
             Column(
                 modifier = Modifier
-                    .heightIn(max = 560.dp)
+                    .heightIn(max = LocalUiWindow.current.dialogMaxHeight)
                     .padding(horizontal = 20.dp, vertical = 18.dp)
             ) {
                 Text(
@@ -1023,5 +1027,5 @@ private fun describeError(error: Throwable?): String =
     error?.message ?: error?.javaClass?.simpleName ?: "未知错误"
 
 private fun toast(context: Context, text: String) {
-    Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+    NoticeCenter.info(text)
 }

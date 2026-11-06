@@ -8,21 +8,16 @@ import com.zmf.agent.uikit.icons.unitPath
 import com.zmf.agent.uikit.icons.unitStroke
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -68,6 +63,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.TextRange
@@ -258,59 +254,27 @@ fun ChatComposer(
         // 当前该显示哪一张面板：斜杠过滤优先复用「＋」那张
         val activePanel = if (commandPanelOpen) ComposerPanelKind.PLUS else panel
         ComposerPanelOverlay(onDismiss = closePanel) {
-            // **只有一套动效**：弹出＝NONE → 某张面板，互切＝A → B，
-            // 在 AnimatedContent 眼里都是「换内容」，走同一个 transitionSpec。
-            // 外圈此前还套有一层 AnimatedVisibility 单独控制开合（slide + fade + scale），
-            // 同一件事两套参数，且那层的 alpha 会把卡片的 14dp 阴影一起压掉（阴影看起来「最后才出现」），一并去掉。
-                // 面板之间换内容：AnimatedContent + SizeTransform，**尺寸跟着内容一起动**。
-                // 此前使用 Crossfade：其仅做淡入淡出，两块内容尺寸不同时，外层高度需等待旧内容退场
-                // 才会突然变化一次：「长浮窗与短浮窗相互切换时跳动」即由此突变导致。
-                AnimatedContent(
-                    targetState = activePanel,
-                    transitionSpec = {
-                        // 切换面板时从「＋」切至其他面板，仍会出现「先弹至过高再落回」。
-                        // 病根是旧面板按自身整高（＝「＋」那一长列）留在场里淡出，尺寸又贴在底部对齐，
-                        // 于是新面板已经落位、旧面板的顶边还在上面：读起来就是「弹过头」。
-                        // 现在：旧内容 80ms 内退干净（不给它机会「挂在上面」），新内容原地从 0.94 长到 1
-                        // （围绕自身底边，向上生长，单调不过冲），高度跟着 tween 走，全程没有弹簧。
-                        // 旧面板不只是淡出：围绕自身底边缩到 0.55 再消失，「高的那张挂在上面」
-                        // 之所以像「弹过头」，是因为它原地淡出时顶边一直停在很高的位置；
-                        // 让它可见地塌下去，才读得出「这张关了、另一张接着开」。
-                        // 面板**不做 alpha 淡入淡出**：只要节点带 alpha，
-                        // Android 就不给它画 elevation 阴影：阴影要等 alpha 到 1 才「啪」地出现，
-                        // 结果就是「面板固定下来那一瞬间阴影才出来」。
-                        // 卡片始终不透明，所以阴影从第一帧就在，并随 elevation 0→8dp 一起加深。
-                        //
-                        // **入场只剩缩放、不含任何向下位移**。
-                        // 此处此前为 slideInVertically { it / 5 }：位移量按「面板自身高度」计算，
-                        // 于是越高的面板往下探得越深：加号面板那 500dp 的高度差就是 100dp，
-                        // 第一帧整张卡已经沉到输入条下方，再往上长出来，读起来就是
-                        // 「面板从输入框里往外跳、加号那张嵌得最深、甚至越过输入框下缘」。
-                        // 面板是贴在输入条上沿（8dp 间隙）的，任何向下位移都会钻进输入条，
-                        // 因此此处改为仅缩放：**围绕自身底边**从 0.92 增至 1，底边始终不动，
-                        // 视觉上是「从输入条上沿往上展开」，与用量弹层那套（纯缩放）同源。
-                        val enter = scaleIn(
-                            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-                            initialScale = 0.92f,
-                            transformOrigin = TransformOrigin(0.5f, 1f)
-                        )
-                        val exit = scaleOut(
-                            animationSpec = tween(durationMillis = 150, easing = FastOutLinearInEasing),
-                            targetScale = 0.55f,
-                            transformOrigin = TransformOrigin(0.5f, 1f)
-                        )
-                        // 六张面板（含底部那两枚胶囊的会话统计 / Token 用量）全走这一条，没有第二套逻辑
-                        (enter togetherWith exit)
-                            .using(
-                                SizeTransform(clip = false) { _, _ ->
-                                    tween(durationMillis = 200, easing = FastOutSlowInEasing)
-                                }
-                            )
-                    },
-                    contentAlignment = Alignment.BottomCenter,
-                    label = "composerPanel"
-                ) { kind ->
-                    when (kind) {
+            // **只有一套动效**，与「本轮用量」弹层完全一致：出现时围绕底边从 0.90 弹到 1，
+            // 关闭时整块立即摘除；面板互切同样是旧的直接消失、新的从头播一遍。
+            // 缩放施加在卡片**外层**的 graphicsLayer 上（与 SaltPopover 相同）：卡片连同阴影
+            // 先按原尺寸画好，再由外层整体缩放。若把缩放落到卡片自身节点上，阴影会在动画期间
+            // 按矩形包围盒重绘——出现时又深又硬，落定后才变回那圈浅影。
+            if (activePanel != ComposerPanelKind.NONE) {
+                // 换面板时从 0.90 重新弹起：animateFloatAsState 的动画实例会跨面板复用，
+                // 直接改目标值会先往 0.90 回缩一段再弹起，因此用 Animatable 显式重播。
+                val scale = remember { Animatable(0.90f) }
+                LaunchedEffect(activePanel) {
+                    scale.snapTo(0.90f)
+                    scale.animateTo(1f, Motion.softSpring())
+                }
+                Box(
+                    modifier = Modifier.graphicsLayer {
+                        scaleX = scale.value
+                        scaleY = scale.value
+                        transformOrigin = TransformOrigin(0.5f, 1f)
+                    }
+                ) {
+                    when (activePanel) {
                         ComposerPanelKind.NONE -> Unit
                         ComposerPanelKind.PLUS -> ComposerCommandPanel(
                             skills = skills,
@@ -369,6 +333,7 @@ fun ChatComposer(
                         )
                     }
                 }
+            }
         }
 
         Column(
@@ -469,6 +434,9 @@ fun ChatComposer(
                     modifier = Modifier
                         .size(32.dp)
                         .clip(CircleShape)
+                        // 面板展开时给底色：DSH 的触发按钮在 aria-expanded 时同样吃 interactive-bg-hover，
+                        // 让「这个按钮正开着」不必只靠面板本身表达
+                        .background(if (panel == ComposerPanelKind.MODEL) UiColors.rowSelected else Color.Transparent)
                         .clickable {
                             panel = if (panel == ComposerPanelKind.MODEL) {
                                 ComposerPanelKind.NONE
@@ -485,6 +453,7 @@ fun ChatComposer(
                     modifier = Modifier
                         .size(32.dp)
                         .clip(CircleShape)
+                        .background(if (panel == ComposerPanelKind.CONTEXT) UiColors.rowSelected else Color.Transparent)
                         .clickable {
                             panel = if (panel == ComposerPanelKind.CONTEXT) {
                                 ComposerPanelKind.NONE
@@ -499,8 +468,10 @@ fun ChatComposer(
                         // 圆环和浮窗两处报的必须是同一个数
                         percent = contextPercent(usage),
                         iconSize = 22.dp,
-                        trackTint = onSurface.copy(alpha = 0.12f),
-                        progressTint = accent
+                        // 环的深浅照 DSH：底槽取 border-l3，进度弧取 label-tertiary。
+                        // 该环不使用强调蓝：蓝在本工程只表示主操作与选中，用量水位不属于这两类
+                        trackTint = UiColors.meterRingTrack,
+                        progressTint = UiColors.meterTertiary
                     )
                 }
                 if (isStreaming) {
@@ -708,7 +679,7 @@ private fun ComposerModelPanel(
     LaunchedEffect(Unit) { risen = true }
     val panelShadow by animateDpAsState(
         targetValue = if (risen) 14.dp else 0.dp,
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
         label = "modelPanelShadow"
     )
     Surface(
@@ -838,7 +809,7 @@ private fun ComposerPanelOverlay(
             // ① 卡片 14dp 的柔和阴影被裁在矩形内 → 24dp 圆角之外、矩形之内的四角漏出一块方形黑影；
             // ② 高度动画期间内容被逐帧裁开 → 换面板时「与旧面板等高的下半截先出来，
             //    高出的上半截再向上伸长」，读起来就是两段式。
-            // 高度交给内层 AnimatedContent 的 SizeTransform 独自负责；本层只负责停靠，
+            // 高度由内层 AnimatedContent 直接取目标面板的尺寸，不做过渡；本层只负责停靠，
             // 内容贴底对齐，所以容器高度怎么变都不会带动内容位移。
             contentAlignment = Alignment.BottomCenter
         ) {

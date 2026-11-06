@@ -252,4 +252,75 @@ object DshIcons {
                 "C11.475 9.25 11.05 8.825 11.05 8.3C11.05 7.775 11.475 7.35 12 7.35Z"
         )
     }.build()
+
+    // ── 回收站与归档页的条目图标：与上面同一套 24 网格、1.8 线宽，仅描边。
+
+    /** 文件：右上角折角的一张纸，正文两条横线。 */
+    val File: ImageVector = saltIcon24().apply {
+        strokePath(
+            "M6.8 3.8H13.2L18.2 8.8V19.2C18.2 19.9 17.7 20.4 17.0 20.4H6.8" +
+                "C6.1 20.4 5.6 19.9 5.6 19.2V5.0C5.6 4.3 6.1 3.8 6.8 3.8Z",
+            width = ICON_STROKE
+        )
+        strokePath("M13.2 3.9V8.9H18.1", width = ICON_STROKE)
+        strokePath("M8.6 13.0H15.2", width = ICON_STROKE)
+        strokePath("M8.6 16.2H13.4", width = ICON_STROKE)
+    }.build()
+
+    /** 目录：带页签的文件夹，页签左起、折角在右上。 */
+    val Folder: ImageVector = saltIcon24().apply {
+        strokePath(
+            "M3.8 7.4C3.8 6.4 4.6 5.6 5.6 5.6H9.4L11.4 7.8H18.4C19.4 7.8 20.2 8.6 20.2 9.6V17.2" +
+                "C20.2 18.2 19.4 19.0 18.4 19.0H5.6C4.6 19.0 3.8 18.2 3.8 17.2V7.4Z",
+            width = ICON_STROKE
+        )
+    }.build()
+
+    /** 回收站：带盖的桶，盖上一道提手、桶内两条竖线。 */
+    val Trash: ImageVector = saltIcon24().apply {
+        strokePath("M4.8 7.2H19.2", width = ICON_STROKE)
+        strokePath("M9.6 4.0H14.4", width = ICON_STROKE)
+        strokePath(
+            "M6.9 7.2V18.8C6.9 19.6 7.5 20.2 8.3 20.2H15.7C16.5 20.2 17.1 19.6 17.1 18.8V7.2",
+            width = ICON_STROKE
+        )
+        strokePath("M10.4 10.6V16.6", width = ICON_STROKE)
+        strokePath("M13.6 10.6V16.6", width = ICON_STROKE)
+    }.build()
+
+    /** 成功：圆圈内一个对勾，用于提示条的状态位。 */
+    val Check: ImageVector = saltIcon24().apply {
+        strokePath(
+            "M12 3.4C16.75 3.4 20.6 7.25 20.6 12C20.6 16.75 16.75 20.6 12 20.6" +
+                "C7.25 20.6 3.4 16.75 3.4 12C3.4 7.25 7.25 3.4 12 3.4Z",
+            width = ICON_STROKE
+        )
+        strokePath("M8.2 12.2L10.9 14.9L15.9 9.6", width = ICON_STROKE)
+    }.build()
+
+    /** 失败：圆圈内一个感叹号，用于提示条的状态位。 */
+    val Alert: ImageVector = saltIcon24().apply {
+        strokePath(
+            "M12 3.4C16.75 3.4 20.6 7.25 20.6 12C20.6 16.75 16.75 20.6 12 20.6" +
+                "C7.25 20.6 3.4 16.75 3.4 12C3.4 7.25 7.25 3.4 12 3.4Z",
+            width = ICON_STROKE
+        )
+        strokePath("M12 7.6V13.2", width = ICON_STROKE)
+        fillPath(
+            "M12 15.4C12.55 15.4 13 15.85 13 16.4C13 16.95 12.55 17.4 12 17.4" +
+                "C11.45 17.4 11 16.95 11 16.4C11 15.85 11.45 15.4 12 15.4Z"
+        )
+    }.build()
+
+    /** 归档：一只带槽的收纳盒，槽口一道横线，表示「放进去、不占用主列表」。 */
+    val Archive: ImageVector = saltIcon24().apply {
+        strokePath(
+            "M4.2 9.0C4.2 8.2 4.8 7.6 5.6 7.6H18.4C19.2 7.6 19.8 8.2 19.8 9.0V17.6" +
+                "C19.8 18.8 18.8 19.8 17.6 19.8H6.4C5.2 19.8 4.2 18.8 4.2 17.6V9.0Z",
+            width = ICON_STROKE
+        )
+        strokePath("M4.2 12.2H9.0", width = ICON_STROKE)
+        strokePath("M15.0 12.2H19.8", width = ICON_STROKE)
+        strokePath("M9.0 12.2C9.0 13.7 10.3 14.9 12.0 14.9C13.7 14.9 15.0 13.7 15.0 12.2", width = ICON_STROKE)
+    }.build()
 }

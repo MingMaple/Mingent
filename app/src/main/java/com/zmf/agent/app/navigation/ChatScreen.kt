@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.capability.subagent.SubAgentRegistry
@@ -167,11 +168,9 @@ fun ChatScreen(
 
     // 图片路径均相对于工作区：气泡图片网格与输入框缩略图均从该根目录解码，
     // 规则与发送时一致，未分类会话使用默认工作区。按工作区与选中状态缓存，避免逐帧读取目录。
-    val imageRoot = remember(viewModel.workspaceList, viewModel.currentWorkspaceId) {
-        val space = viewModel.workspaceList.firstOrNull { it.id == viewModel.currentWorkspaceId }
-            ?: WorkSpaceStore.defaultSpace(context)
-        // 与 ChatViewModel.rootOf 规则一致：优先使用用户选择的自定义目录
-        WorkSpaceStore.resolveRoot(context, space) ?: WorkSpaceStore.dirOf(context, space)
+    val imageRoot = remember(viewModel.workspaceList, viewModel.currentWorkspaceId, viewModel.currentSessionId) {
+        // 与发送时完全同一口径：取当前会话所属存储单元的根，分组变化不会让解码目录漂移
+        viewModel.currentWorkspaceRoot()
     }
 
     val density = LocalDensity.current
@@ -182,7 +181,11 @@ fun ChatScreen(
     // Android 11 起系统按动画逐帧上报 ime inset：直接跟随该值，输入框上移与键盘上滑属于同一段运动，
     // 不滞后也不提前。更早的系统仅在结束时提供一次终值，相当于瞬移，因此改用 tween 过渡；
     // 两条路径互斥，同时启用会先由 tween 驱动，随后被真实值修正。
-    val imePad = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+    // 抽屉展开时，键盘由抽屉内的搜索框持有：主页输入区不应再计入这份 IME 高度，
+    // 否则抽屉内的搜索框弹出键盘时，背后的主页输入框会随之上移（adjustNothing 与全局 IME inset 的联动结果）。
+    val imePad = if (ui.drawerOpen.value) {
+        0.dp
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         imeBottomDp
     } else {
         animateDpAsState(
@@ -214,9 +217,24 @@ fun ChatScreen(
      */
     fun openFilePicker() {
         launchPicker {
-            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            // 微信等应用用的是 GET_CONTENT：系统文稿页在这一动作下会把「文件管理、录音机、媒体」
+            // 等来源一并列进侧边栏；OPEN_DOCUMENT 的挑选模式只显示声明了可长期访问的源，
+            // 这些系统来源会缺席。我们取到 URI 后立即复制，不依赖长期授权，因此改用 GET_CONTENT。
+            val intent = Intent(Intent.ACTION_GET_CONTENT)
                 .addCategory(Intent.CATEGORY_OPENABLE)
                 .setType("*/*")
+                // 只给 */* 时，仅声明了具体类型的来源会被筛掉；补一份常见大类。
+                .putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    arrayOf(
+                        "image/*", "video/*", "audio/*", "text/*", "font/*",
+                        "application/*", "application/pdf", "application/zip",
+                        "application/octet-stream"
+                    )
+                )
+                // 部分系统来源被标记为「高级设备」，默认不进入侧边栏。
+                // 该键未公开为 DocumentsContract 常量，文稿页内部按此字符串读取。
+                .putExtra("android.provider.extra.SHOW_ADVANCED", true)
             pickerInitialDir(context, viewModel.currentSessionId)?.let { dir ->
                 intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, dir)
             }

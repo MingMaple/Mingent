@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zmf.agent.uikit.layout.LocalUiWindow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import java.io.File
@@ -77,6 +78,7 @@ internal fun ColumnScope.ChatMessageList(
     fun longPressAllowed(): Boolean = !listState.isScrollInProgress
 
     val density = LocalDensity.current
+    val window = LocalUiWindow.current
     val bottomTolerancePx = with(density) { 200.dp.toPx() }.toInt()
     // 新消息 / 工具返回 / 流式正文各变化一项：四项合成跟随的触发键，仅在键变化时滚动
     val followKey = listOf(
@@ -157,7 +159,12 @@ internal fun ColumnScope.ChatMessageList(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
+                        // 横屏高度紧凑时只收纵向内距：左右保持 16dp，气泡宽度不受影响
+                        contentPadding = if (window.compactChrome) {
+                            PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                        } else {
+                            PaddingValues(16.dp)
+                        },
                         // 内容不足一屏时贴底（Bottom）：新消息应从底部向上增长，而非悬于半空。
                         // 内容超过一屏后 Bottom 对齐无法生效，滚动行为与原先的 spacedBy 完全一致。
                         verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom)
@@ -209,7 +216,9 @@ internal fun ColumnScope.ChatMessageList(
                                         selectionVisible = true
                                     },
                                     onRollback = { rollbackUserIndex = item.index },
-                                    onImageClick = { paths, index -> viewer = ViewerTarget(paths, index) },
+                                    onImageClick = { paths, index, origin ->
+                                        viewer = ViewerTarget(paths, index, origin)
+                                    },
                                     onImageLongPress = { rel, anchor ->
                                         // 与 openMenu 相同：惯性尚未停止时的按住操作不视为长按
                                         if (longPressAllowed()) {

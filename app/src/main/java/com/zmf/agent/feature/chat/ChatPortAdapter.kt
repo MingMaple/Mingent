@@ -20,7 +20,8 @@ class ChatPortAdapter(private val viewModel: ChatViewModel) : ChatPort {
 
     override fun title(): String = viewModel.currentTitle()
 
-    override fun reloadSessions() = viewModel.reloadSessionsFromDisk()
+    // 盘上数据可能被助手工具改过（新建工作区、移动会话），会话与工作区一起刷新
+    override fun reloadSessions() = viewModel.reloadFromDisk()
 
     /**
      * 小窗会话切换列表：只列未归档，按最近更新排序。
@@ -32,7 +33,7 @@ class ChatPortAdapter(private val viewModel: ChatViewModel) : ChatPort {
         val current = viewModel.currentSessionId
         return viewModel.sessionList
             .asSequence()
-            .filter { !it.archived }
+            .filter { !it.archived && it.listed }
             .sortedByDescending { it.updatedAt }
             .map {
                 ChatPortSession(

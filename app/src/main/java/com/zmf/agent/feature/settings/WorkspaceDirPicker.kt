@@ -5,7 +5,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
@@ -48,6 +47,7 @@ import com.zmf.agent.uikit.icons.FolderIcon
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
+import com.zmf.agent.uikit.common.NoticeCenter
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -116,7 +116,7 @@ fun WorkspaceDirPicker(
             )
         }
         val ok = runCatching { treePicker.launch(intent) }.isSuccess
-        if (!ok) Toast.makeText(context, "此设备未提供目录选择器", Toast.LENGTH_SHORT).show()
+        if (!ok) NoticeCenter.error("系统无目录选择器，可改填路径")
     }
 
     val ready = probe as? DirProbe.Ready

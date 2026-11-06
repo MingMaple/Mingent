@@ -65,7 +65,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalConfiguration
+import com.zmf.agent.uikit.layout.LocalUiWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -111,6 +111,8 @@ fun TracePage(
     sessionTitle: String,
     messages: List<ChatMessage>,
     onBack: () -> Unit,
+    /** 右侧辅窗格模式没有整屏右滑返回，因此提供标题前的关闭按钮；整屏滑入模式保持无按钮。 */
+    closeButton: Boolean = false,
     // 图片缩略图的解码根：ChatMessage.images 存的是工作区相对路径，解析口径与主页一致
     // （主页那份 imageRoot 在 ChatScreen 里算好后一起传进来）。传 null 只是不画缩略图，不会导致崩溃。
     imageRoot: File? = null
@@ -139,9 +141,10 @@ fun TracePage(
     // 轮、条目、块三张表是同一次遍历的产物，所以一起缓存：分开缓存会各自失效、互相错位
     val entries = trace.entries
     val events = trace.events
-    // 展开卡片最多占屏高 45%（含标题行）：其余空间留给时间线本身，否则展开一条后将无法看到上下文
-    val maxDetailHeight = (LocalConfiguration.current.screenHeightDp.dp * DetailMaxScreenRatio - DetailCardChrome)
-        .coerceAtLeast(ThinkingDetailMaxHeight)
+    // 展开卡片最多占当前窗格高度的 42%（含标题行）：其余空间留给时间线本身，否则展开一条后将无法看到上下文。
+    // 按窗格高度而不是屏幕高度计算：横屏、分屏与右侧辅窗格下，屏幕尺寸与实际可用高度并不相同。
+    val maxDetailHeight = (LocalUiWindow.current.paneHeightDp * DetailMaxScreenRatio - DetailCardChrome)
+        .coerceAtLeast(DetailMinHeight)
 
     // 首次组合后直接停在最新一轮：老会话几十轮，从第一轮开始看等于每次都得自己拖到底
     var jumpedToLatest by remember { mutableStateOf(false) }
@@ -180,10 +183,24 @@ fun TracePage(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (closeButton) {
+                    Text(
+                        text = "‹",
+                        modifier = Modifier
+                            .clickable(onClick = onBack)
+                            .padding(start = 12.dp, end = 2.dp, top = 10.dp, bottom = 10.dp),
+                        fontSize = 22.sp,
+                        color = onSurface.copy(alpha = 0.6f)
+                    )
+                }
                 Text(
                     text = "轨迹",
                     // 箭头去掉后标题自己撑起这块留白，右缘与下面列表的 16dp 内容边对齐
-                    modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 14.dp),
+                    modifier = Modifier.padding(
+                        start = if (closeButton) 4.dp else 16.dp,
+                        top = 14.dp,
+                        bottom = 14.dp
+                    ),
                     fontSize = 17.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onBackground
@@ -316,16 +333,20 @@ private val ThinkingDetailMaxHeight = 180.dp
 private val TraceCopySlot = 46.dp
 
 /**
- * 展开卡片**整张卡**（含标题行）占屏高的上限。
+ * 展开卡片**整张卡**（含标题行）占当前窗格高度的上限。
  *
  * 旧值 0.55 只卡正文，卡片实际高 = 正文上限 + 标题行与内距（约 54dp）：
  * 在 878dp 的可视高上量到整卡 537dp（占满屏 59%，用户看到的就是「一屏大半」）。
- * 现在按整张卡算，把标题那截固定高扣掉，0.45 落到 395dp 上下（约满屏 43%）。
+ * 现在按整张卡算，把标题那截固定高扣掉，0.42 落到 315dp 上下（约满屏 36%）。
+ * 横屏窗格只有 360–430dp 高时，这一比例能保证时间线仍留出大半空间，因此下限取 140dp。
  */
-private const val DetailMaxScreenRatio = 0.45f
+private const val DetailMaxScreenRatio = 0.42f
 
 /** 展开卡里正文以外的固定高度：标题行约 18dp + 6dp 间隔 + 卡片上下内距 20dp + 卡片外距 10dp。 */
 private val DetailCardChrome = 54.dp
+
+/** 展开卡正文的绝对下限：低于该值无法读出内容，因此横屏极矮窗格不再继续压缩。 */
+private val DetailMinHeight = 140.dp
 
 /** 摘要字数：正文 40 字、结果预览 42 字、工具参数 36 字，都是一行放得下的量。 */
 private const val HeadLimit = 40

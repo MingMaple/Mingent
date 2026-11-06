@@ -90,7 +90,7 @@ class UbuntuDocumentsProvider : DocumentsProvider() {
         
         val row = result.newRow()
         row.add(DocumentsContract.Root.COLUMN_ROOT_ID, ROOT_ID)
-        row.add(DocumentsContract.Root.COLUMN_MIME_TYPES, "*/*")
+        row.add(DocumentsContract.Root.COLUMN_MIME_TYPES, "audio/*")
         row.add(
             DocumentsContract.Root.COLUMN_FLAGS,
             DocumentsContract.Root.FLAG_SUPPORTS_CREATE or
