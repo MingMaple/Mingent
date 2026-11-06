@@ -4,6 +4,7 @@ import com.zmf.agent.core.llm.ApiDefaults
 import android.content.Context
 import com.zmf.agent.core.AppPaths
 import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.core.security.SecureStore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -91,22 +92,16 @@ object ProviderStore {
     /**
      * 读全部 provider；结果保证非空。
      *
-     * 首次运行（文件不存在）时由旧的单 provider 配置迁移出一条 id="deepseek"，
-     * 保留用户已填写的 Key、端点与模型；文件损坏时回落至同一份默认值并同时修复文件
-     * （损坏文件无法读出内容，保留只会导致每次启动均失败一次）。
+     * providers.json 以 AndroidKeyStore 保管的密钥加密落盘。读到旧版明文时只保留
+     * 名称、端点与模型等非敏感字段，Key 一律清空并由用户重新填写——密钥不做迁移，
+     * 避免旧明文在升级后继续以可备份的形式留在磁盘上。
      */
     fun load(context: Context): List<ProviderConfig> {
         cache?.let { return it }
         val file = storeFile(context)
         if (!file.exists()) return migrate(context)
-        val text = if (file.length() == 0L) {
-            ""
-        } else {
-            runCatching { file.readText(Charsets.UTF_8) }.getOrElse { e ->
-                FileLog.log(TAG, "读取提供商配置失败：" + e)
-                ""
-            }
-        }
+        val text = SecureStore.read(file)
+        if (text == null) return adoptLegacy(context, file)
         if (text.isBlank()) return repair(context)
         val parsed = runCatching { parse(text) }.getOrElse { e ->
             FileLog.log(TAG, "providers.json 解析失败：" + e)
@@ -117,7 +112,7 @@ object ProviderStore {
         return parsed
     }
 
-    /** 整体覆盖写（.tmp + rename）；失败只记日志，界面表现为本次改动未生效，不会崩溃。 */
+    /** 整体覆盖写（密文，.tmp + rename）；失败只记日志，界面表现为本次改动未生效，不会崩溃。 */
     fun save(context: Context, list: List<ProviderConfig>) {
         // 空列表意味着 App 无任何可用模型，直接拒绝：宁可保留磁盘上的旧配置
         if (list.isEmpty()) {
@@ -128,15 +123,9 @@ object ProviderStore {
             val array = JSONArray()
             for (cfg in list) array.put(cfg.toJson())
             val json = JSONObject().put(KEY_PROVIDERS, array).toString()
-
-            val file = storeFile(context)
-            file.parentFile?.mkdirs()
-            val temp = File(file.parentFile, FILE_NAME + ".tmp")
-            temp.writeText(json, Charsets.UTF_8)
-            if (!temp.renameTo(file)) {
-                // rename 失败（个别文件系统）时退化为直接覆盖，确保内容写入
-                file.writeText(json, Charsets.UTF_8)
-                temp.delete()
+            if (!SecureStore.write(storeFile(context), json)) {
+                cache = null
+                return
             }
             cache = list
         } catch (e: Exception) {
@@ -271,14 +260,36 @@ object ProviderStore {
 
     /** 首次运行：用旧的单 provider 配置建一条内置 DeepSeek 并落盘。 */
     private fun migrate(context: Context): List<ProviderConfig> {
+        clearLegacyKey(context)
         val list = defaultsFromLegacy(context)
-        FileLog.log(
-            TAG,
-            "首次读取提供商：用旧配置建了内置 DeepSeek（Key 长度 " + list[0].apiKey.length + "）"
-        )
+        FileLog.log(TAG, "首次读取提供商：用旧配置建了内置 DeepSeek（Key 需重新填写）")
         save(context, list)
         select(context, list[0].id)
         return list
+    }
+
+    /**
+     * 读到旧版明文或无法解密的文件：保留 provider 条目与非敏感字段，清空 Key 后改写为密文。
+     * 无法解密（例如换机恢复）时直接按默认配置重建。
+     */
+    private fun adoptLegacy(context: Context, file: File): List<ProviderConfig> {
+        val raw = runCatching { file.readText(Charsets.UTF_8) }.getOrNull()
+        val legacy = raw?.takeIf { it.trimStart().startsWith("{") }
+            ?.let { text -> runCatching { parse(text) }.getOrNull() }
+            ?.map { it.copy(apiKey = "") }
+            ?.takeIf { it.isNotEmpty() }
+        clearLegacyKey(context)
+        runCatching { file.delete() }
+        FileLog.log(TAG, "提供商配置已升级为加密存储：旧 Key 按安全策略清空，需在设置页重新填写")
+        val list = legacy ?: defaultsFromLegacy(context).map { it.copy(apiKey = "") }
+        save(context, list)
+        cache = list
+        return list
+    }
+
+    /** 旧版单 provider 的 Key 不再迁移：读到即删除，避免明文继续留在 SharedPreferences 中。 */
+    private fun clearLegacyKey(context: Context) {
+        prefs(context).edit().remove(LEGACY_KEY_API_KEY).apply()
     }
 
     /** 文件损坏：回落至由旧配置生成的默认值并重写，后续启动无需再进入该分支。 */
@@ -297,8 +308,8 @@ object ProviderStore {
      */
     private fun defaultsFromLegacy(context: Context): List<ProviderConfig> {
         val p = prefs(context)
-        val key = p.getString(LEGACY_KEY_API_KEY, null)?.trim().orEmpty()
-            .ifEmpty { ApiDefaults.DEFAULT_API_KEY }
+        // Key 不做迁移：旧版本可能已把明文留在 pref 中，统一清空并由用户重新填写
+        clearLegacyKey(context)
         val base = p.getString(LEGACY_KEY_BASE_URL, null)?.trim()?.trimEnd('/').orEmpty()
             .ifEmpty { ApiDefaults.BASE_URL }
         val model = p.getString(LEGACY_KEY_MODEL, null)?.trim().orEmpty().ifEmpty { ApiDefaults.MODEL }
@@ -313,7 +324,7 @@ object ProviderStore {
                 id = DEEPSEEK_ID,
                 name = "DeepSeek",
                 baseUrl = base,
-                apiKey = key,
+                apiKey = "",
                 models = models,
                 builtIn = true
             )

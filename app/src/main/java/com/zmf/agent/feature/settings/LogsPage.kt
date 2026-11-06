@@ -227,7 +227,14 @@ private fun copyAll(context: Context, lines: List<String>) {
         return
     }
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-    manager.setPrimaryClip(ClipData.newPlainText("日志", lines.asReversed().joinToString("\n")))
+    val clip = ClipData.newPlainText("日志", lines.asReversed().joinToString("\n"))
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        // 日志里可能含文件路径、命令与请求摘要：按敏感内容标记，交由系统决定是否展示预览
+        clip.description.extras = android.os.PersistableBundle().apply {
+            putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+    }
+    manager.setPrimaryClip(clip)
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
         logsToast(context, "已复制 " + lines.size + " 行")
     }

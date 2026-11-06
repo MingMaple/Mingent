@@ -103,7 +103,6 @@ object BackupArchive {
             "drafts.json",
             "stats.json",
             "mcp.json",
-            "providers.json",
             "goals.json",
             // 摘要/压缩事件：只读记录，用于换机后排查上下文被压缩的原因
             "context_events.json"
