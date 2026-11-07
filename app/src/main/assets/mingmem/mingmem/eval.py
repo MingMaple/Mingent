@@ -4,7 +4,7 @@
     python -X utf8 -m mingmem.eval [--gate] [--verbose]
 
 指标：recall@5 / mrr@5 / redundancy@5 / leak_count / section_fill /
-current_rate / negative_pass / avg_hits（定义见 evalset/README.md）。
+current_rate / negative_pass / avg_hits（定义见评测集自身的指标说明）。
 真实数据根只读：语料在本进程用 tempfile 建的临时根里重建，跑完即删。
 """
 import argparse

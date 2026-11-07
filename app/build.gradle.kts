@@ -149,7 +149,7 @@ dependencies {
 // 把「谁不许依赖谁」从文档约定变成构建失败：
 //   gradle :app:checkArchitecture
 //
-// 规则来源：_Docs/模块化.md §2 依赖矩阵。只检查新层
+// 规则来源：项目分层与依赖矩阵约定。只检查新层
 // （core / uikit / infra / capability / feature / app），不属于任何层的包跳过。
 //
 // 白名单为空：跨 feature 依赖经由 app/navigation 装配，共享件放在 uikit，
@@ -157,7 +157,7 @@ dependencies {
 // ---------------------------------------------------------------
 val checkArchitecture by tasks.registering {
     group = "verification"
-    description = "检查包依赖方向，违反即构建失败（见 _Docs/模块化.md §2）"
+    description = "检查包依赖方向，违反即构建失败（依据项目分层与依赖矩阵约定）"
     doLast {
         val srcRoot = file("src/main/java")
         val packageRe = Regex("""^\s*package\s+([\w.]+)""", RegexOption.MULTILINE)

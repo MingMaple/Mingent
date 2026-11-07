@@ -69,7 +69,7 @@ object ProviderStore {
     private const val LEGACY_KEY_BASE_URL = "api_base_url"
     private const val LEGACY_KEY_MODEL = "model"
 
-    /** 内置 DeepSeek 的固定 id：仅它允许回落至源码中的默认 Key 与官方端点。 */
+    /** 内置 DeepSeek 的固定 id：仅它的端点允许回落至默认值。 */
     const val DEEPSEEK_ID = "deepseek"
 
     const val OPENAI_ID = "openai"

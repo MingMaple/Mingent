@@ -132,6 +132,91 @@ Mingent 的内置终端（PRoot + Ubuntu 24 环境）来自 Operit AI 项目，�
 
 ---
 
+## 八、终端 SSH / FTP 服务端依赖（BSD 式许可 / Apache-2.0 / Bouncy Castle 许可）
+
+`terminal/` 模块内实现 SSH 与 FTP 服务端，供外部客户端接入应用内终端环境。下列组件均经 Maven 依赖引入，
+版本取自 `terminal/build.gradle.kts`，本仓库未修改其源码，也未重新打包其类文件。
+
+### 8.1 JSch（BSD 式许可）
+
+| 项 | 内容 |
+|---|---|
+| 组件 | `com.jcraft:jsch:0.1.55` |
+| 上游项目 | JSch（[www.jcraft.com/jsch](https://www.jcraft.com/jsch/)） |
+| 版权 | Copyright (c) 2002-2015 Atsuhiko Yamanaka, JCraft, Inc. |
+| 许可证 | BSD 式许可（三条款 BSD 变体，第三条为不得以作者名义为衍生作品背书；0.0.x 系列曾以 LGPL 发布，之后改用本许可）。原文见 https://www.jcraft.com/jsch/LICENSE.txt |
+| 用途 | SFTP 文件传输与 SSH 会话客户端 |
+| 是否修改 | 否 |
+
+### 8.2 Apache MINA SSHD（Apache-2.0）
+
+| 项 | 内容 |
+|---|---|
+| 组件 | `org.apache.sshd:sshd-core:2.10.0`、`org.apache.sshd:sshd-sftp:2.10.0` |
+| 上游项目 | Apache MINA SSHD（[mina.apache.org/sshd](https://mina.apache.org/sshd/)） |
+| 版权 | The Apache Software Foundation |
+| 许可证 | Apache License 2.0（全文：[www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)） |
+| 用途 | 应用内 SSH 服务端与 SFTP 子系统 |
+| 是否修改 | 否；构建时排除其传递依赖 `bcprov-jdk15to18`，改用 8.4 所列的 `bcprov-jdk18on`，未修改组件源码 |
+
+### 8.3 Apache FtpServer（Apache-2.0）
+
+| 项 | 内容 |
+|---|---|
+| 组件 | `org.apache.ftpserver:ftpserver-core:1.2.0`、`org.apache.ftpserver:ftplet-api:1.2.0` |
+| 上游项目 | Apache FtpServer（[mina.apache.org/ftpserver](https://mina.apache.org/ftpserver/)） |
+| 版权 | The Apache Software Foundation |
+| 许可证 | Apache License 2.0（全文同上） |
+| 用途 | 应用内 FTP 服务端 |
+| 是否修改 | 否；构建时排除其传递依赖 `bcprov-jdk15to18`，未修改组件源码 |
+
+### 8.4 Bouncy Castle（Bouncy Castle 许可）
+
+| 项 | 内容 |
+|---|---|
+| 组件 | `org.bouncycastle:bcprov-jdk18on:1.78` |
+| 上游项目 | Bouncy Castle（[www.bouncycastle.org](https://www.bouncycastle.org/)） |
+| 版权 | The Legion of the Bouncy Castle Inc. |
+| 许可证 | Bouncy Castle Licence，MIT 式许可（原文：[www.bouncycastle.org/licence.html](https://www.bouncycastle.org/licence.html)） |
+| 用途 | 为 Apache MINA SSHD 提供 Android 上可用的密码学实现，以规避 JMX 相关问题；并以 `jdk18on` 构件替代 FtpServer 与 SSHD 传递依赖中的 `bcprov-jdk15to18`，故上述两处依赖均对该传递依赖作了排除 |
+| 是否修改 | 否 |
+
+---
+
+## 九、内置字体（SIL OFL-1.1）
+
+`terminal` 模块内置一款等宽字体，用于终端字符与 Nerd Font 图标字形的渲染，由 `CanvasTerminalView`
+作为默认字体加载。该字体为 JetBrains Mono NL 经 Nerd Fonts 补丁生成，其名称与版本取自字体文件自身的 name 表，版权行与许可全文取自上游项目的许可文件。
+
+| 项 | 内容 |
+|---|---|
+| 文件 | `terminal/src/main/res/font/jetbrains_mono_nerd_font_regular.ttf`（2,203,372 B） |
+| 字体名 | JetBrainsMonoNL NF（上游 JetBrains Mono NL 2.304，经 Nerd Fonts 3.2.1 补丁） |
+| 版权（上游字体） | Copyright 2020 The JetBrains Mono NL Project Authors（https://github.com/JetBrains/JetBrainsMonoNL） |
+| 版权（补丁项目） | Copyright (c) 2014 Ryan L McIntyre（https://github.com/ryanoasis/nerd-fonts） |
+| 许可证 | SIL Open Font License 1.1（全文：[terminal/OFL-JetBrainsMonoNerdFont.txt](terminal/OFL-JetBrainsMonoNerdFont.txt)） |
+| 用途 | 作为终端默认等宽字体渲染文本与图标字形；使用者可在终端设置中指定其他字体文件替代 |
+| 是否修改 | 否，字体文件原样内置，未改名、未重新生成 |
+
+按 OFL-1.1 的要求，字体名称与版权声明保持原样；JetBrains Mono 为 JetBrains s.r.o. 的商标。
+
+---
+
+## 十、测试依赖（EPL-1.0）
+
+以下依赖仅用于单元测试，不进入发布 APK。版本取自 `app/build.gradle.kts`。
+
+| 项 | 内容 |
+|---|---|
+| 组件 | `junit:junit:4.13.2`（`app` 模块的 `testImplementation`） |
+| 上游项目 | JUnit 4（[github.com/junit-team/junit4](https://github.com/junit-team/junit4)） |
+| 版权 | JUnit 项目贡献者（JUnit contributors） |
+| 许可证 | Eclipse Public License 1.0（全文：[www.eclipse.org/legal/epl-v10.html](https://www.eclipse.org/legal/epl-v10.html)） |
+| 用途 | 本地单元测试 |
+| 是否修改 | 否 |
+
+---
+
 ## 附：如何报告许可问题
 
 若您认为本仓库包含应标注而未标注的第三方内容，请提交 Issue 或联系仓库所有者，

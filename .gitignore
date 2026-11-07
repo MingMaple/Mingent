@@ -4,15 +4,23 @@ signing/*
 !signing/README.md
 *.jks
 *.keystore
+*.p12
+*.pem
 keystore.properties
 # 本机配置
 local.properties
+.env*
 # 构建产物与缓存
 .gradle/
 .kotlin/
 build/
 */build/
 dist/
+# 安装包、符号表与原生构建缓存
+*.apk
+*.aab
+*.hprof
+.externalNativeBuild
 # IDE
 .idea/
 *.iml
@@ -22,6 +30,7 @@ PLAN.md
 .skills/
 # 杂项
 _temp/
+_Temp/
 *.bak
 *.log
 .DS_Store

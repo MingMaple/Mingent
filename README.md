@@ -2,10 +2,12 @@
 
 **Mingent** 是一个运行在 Android 上的本地 AI Agent 客户端。填写模型 API Key 后，它可调用工具完成文件读写、命令执行、联网检索等操作；会话记录、密钥、记忆与附件均保存在本机应用私有目录内。
 
+当前版本 **1.2.6**（versionCode 172），支持 Android 8.0（API 26）及以上；内置终端与记忆内核目前只支持 arm64 设备，详见[已知限制](#已知限制)。
+
 ## 能力
 
 - **模型接入**：支持 DeepSeek 与任意 OpenAI 兼容接口，可同时配置多个提供商，同一厂商可并存多份独立配置。
-- **工具调用**：文件读写、内置终端命令、联网搜索、MCP 服务与 Skill，共 15 个内置工具。
+- **工具调用**：文件读写、内置终端命令、联网搜索、MCP 服务与 Skill，共 35 个内置工具。
 - **权限控制**：只读 / 工作区 / 完全三档，路径判定在工具内部完成；删除操作另设一层安全链路——工作区外与通配删除要求**一次一码**授权，默认先进入回收站，关键目录永久拒绝，全过程写入审计日志。
 - **任务编排**：长会话自动摘要与上下文压缩；任务可拆成待办或计划，计划须由用户在专门页面授权后执行；支持定时任务（按计划时刻锚定，周期不漂移）。
 - **长期记忆**：独立内核 `mingmem`，跨会话保存用户偏好与项目约定，按工作区隔离，可随备份导出。详见下节。
@@ -13,6 +15,18 @@
 - **内置终端**：以 PRoot 运行 Ubuntu 24.04（arm64），与 Agent 共用同一环境。
 - **数据迁移**：会话、工作区、终端环境与设置可整体导出与导入；记忆数据需在导出时选中「包含记忆数据」，一并写入备份包（内核程序不纳入打包），导入时整体替换。
 - **悬浮窗**：可在任意界面唤起对话。
+
+## 界面
+
+<table>
+<tr>
+<td align="center"><img src="docs/images/chat.png" width="230" alt="主页"><br>主页</td>
+<td align="center"><img src="docs/images/trace.png" width="230" alt="轨迹页"><br>轨迹页</td>
+<td align="center"><img src="docs/images/drawer.png" width="230" alt="抽屉"><br>抽屉</td>
+</tr>
+</table>
+
+> 三张图是按现行界面绘制的示意图，会话名、消息正文与路径均为占位内容，不含任何真实数据。
 
 ## 长期记忆：mingmem
 
@@ -43,6 +57,21 @@ export MINGMEM_DATA=/data/user/0/io.github.mingmaple.mingent/files/mingmem/_Data
 python3 -X utf8 -m mingmem status --json
 python3 -X utf8 -m mingmem recall --query 检索词 --json
 ```
+
+## 安装
+
+应用不通过应用商店分发，安装包由本仓库自行构建并签名。
+
+1. 到 [Releases](https://github.com/MingMaple/Mingent/releases) 下载最新的 `Mingent-<版本>.apk`。
+2. 在手机上直接点击安装，或经数据线安装：
+
+   ```bash
+   adb install -r Mingent-1.2.6.apk
+   ```
+
+3. 打开应用，进入「设置 → 模型」，填写服务商与 API Key。
+
+安装包为自签名，系统会提示「未知来源应用」，允许后即可安装。覆盖安装前请确认新包的 `versionCode` 更高，否则系统会直接拒绝；卸载会连同会话、密钥与终端根文件系统一并清除，升级请用覆盖安装。
 
 ## 构建
 
@@ -106,6 +135,12 @@ Mingent 的内置终端直接采用了 Operit AI 的 PRoot Ubuntu 环境实现�
 记忆内核 `mingmem`、Agent 内核与全部界面代码为 Mingent 原创部分，随本仓库以 MIT 授权。
 
 各第三方组件的版本、许可证与适用范围见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+## 参与
+
+- 缺陷与功能建议请提 [Issue](https://github.com/MingMaple/Mingent/issues)，并附机型、Android 版本与复现步骤。
+- 本项目由个人维护，响应时间不承诺；改动面较大的提交请先开 Issue 讨论方向，以免做完之后被退回。
+- 分层边界由 `:app:checkArchitecture` 在构建期强制，越界即构建失败。
 
 ## 许可证
 

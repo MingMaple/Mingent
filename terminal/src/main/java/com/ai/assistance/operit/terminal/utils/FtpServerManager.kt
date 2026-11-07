@@ -7,6 +7,8 @@
  * 同样以 LGPL-3.0 提供。
  */
 
+// Mingent 修改说明：本文件相对上游仅修改两处，FTP 凭据改为每次启动随机生成，监听地址固定为本机回环地址。
+
 package com.ai.assistance.operit.terminal.utils
 
 import android.content.Context
@@ -25,6 +27,7 @@ import org.apache.ftpserver.usermanager.impl.WritePermission
 import org.apache.ftpserver.DataConnectionConfigurationFactory
 import java.io.File
 import java.net.NetworkInterface
+import java.security.SecureRandom
 import java.util.*
 
 class FtpServerManager private constructor(private val context: Context) {
@@ -32,8 +35,11 @@ class FtpServerManager private constructor(private val context: Context) {
     companion object {
         private const val TAG = "FtpServerManager"
         private const val FTP_PORT = 2127
-        private const val FTP_USERNAME = "ubuntu"
-        private const val FTP_PASSWORD = "ubuntu123"
+        private const val FTP_BIND_ADDRESS = "127.0.0.1"
+        private const val USERNAME_LENGTH = 8
+        private const val PASSWORD_LENGTH = 16
+        private const val CREDENTIAL_ALPHABET =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
         
         @Volatile
         private var instance: FtpServerManager? = null
@@ -46,6 +52,15 @@ class FtpServerManager private constructor(private val context: Context) {
     }
     
     private var ftpServer: FtpServer? = null
+    private val secureRandom = SecureRandom()
+
+    // 运行时生成的随机凭据，仅在服务运行期间持有
+    @Volatile
+    private var ftpUsername: String? = null
+
+    @Volatile
+    private var ftpPassword: String? = null
+
     private val filesDir = context.filesDir
     private val usrDir = File(filesDir, "usr")
     
@@ -70,11 +85,20 @@ class FtpServerManager private constructor(private val context: Context) {
                 return@withContext false
             }
             
+            // 每次启动重新生成随机凭据，避免使用固定账号口令
+            val username = generateRandomCredential(USERNAME_LENGTH)
+            val password = generateRandomCredential(PASSWORD_LENGTH)
+            ftpUsername = username
+            ftpPassword = password
+
             val serverFactory = FtpServerFactory()
             val listenerFactory = ListenerFactory()
             
             // 设置监听端口
             listenerFactory.port = FTP_PORT
+
+            // 仅监听本机回环地址，避免服务暴露到外部网络
+            listenerFactory.serverAddress = FTP_BIND_ADDRESS
 
             // 配置被动模式
             val dataConnectionConfigFactory = DataConnectionConfigurationFactory()
@@ -91,8 +115,8 @@ class FtpServerManager private constructor(private val context: Context) {
             
             // 创建用户
             val user = BaseUser().apply {
-                name = FTP_USERNAME
-                password = FTP_PASSWORD
+                name = username
+                this.password = password
                 homeDirectory = ubuntuRootPath
                 authorities = listOf<Authority>(WritePermission())
             }
@@ -105,9 +129,7 @@ class FtpServerManager private constructor(private val context: Context) {
             ftpServer?.start()
             
             Log.i(TAG, "FTP服务器已启动")
-            Log.i(TAG, "服务器地址: ${getLocalIpAddress()}:$FTP_PORT")
-            Log.i(TAG, "用户名: $FTP_USERNAME")
-            Log.i(TAG, "密码: $FTP_PASSWORD")
+            Log.i(TAG, "监听端口: $FTP_PORT")
             Log.i(TAG, "根目录: $ubuntuRootPath")
             
             true
@@ -120,12 +142,16 @@ class FtpServerManager private constructor(private val context: Context) {
     suspend fun stopFtpServer(): Boolean = withContext(Dispatchers.IO) {
         try {
             ftpServer?.stop()
-            ftpServer = null
             Log.i(TAG, "FTP服务器已停止")
             true
         } catch (e: Exception) {
             Log.e(TAG, "停止FTP服务器失败", e)
             false
+        } finally {
+            ftpServer = null
+            // 清空本次运行的凭据，下次启动重新生成
+            ftpUsername = null
+            ftpPassword = null
         }
     }
     
@@ -137,16 +163,24 @@ class FtpServerManager private constructor(private val context: Context) {
         return if (isFtpServerRunning()) {
             context.getString(
                 com.ai.assistance.operit.terminal.R.string.ftp_server_running_info,
-                getLocalIpAddress(),
+                FTP_BIND_ADDRESS,
                 FTP_PORT.toString(),
-                FTP_USERNAME,
-                FTP_PASSWORD
+                ftpUsername ?: "",
+                ftpPassword ?: ""
             )
         } else {
             context.getString(com.ai.assistance.operit.terminal.R.string.ftp_server_not_running)
         }
     }
     
+    private fun generateRandomCredential(length: Int): String {
+        val builder = StringBuilder(length)
+        repeat(length) {
+            builder.append(CREDENTIAL_ALPHABET[secureRandom.nextInt(CREDENTIAL_ALPHABET.length)])
+        }
+        return builder.toString()
+    }
+
     private fun getLocalIpAddress(): String {
         return "127.0.0.1"
     }

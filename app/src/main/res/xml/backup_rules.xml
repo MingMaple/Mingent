@@ -6,6 +6,6 @@
     <exclude domain="file" path="tmp" />
     <exclude domain="file" path="bin" />
     <exclude domain="file" path="ubuntu-noble-aarch64-pd-v4.18.0.tar.xz" />
-    <!-- providers.json 含各家服务的 API Key 明文，不随系统备份外流；会话由应用内导出功能自行迁移。 -->
+    <!-- providers.json 由 AndroidKeyStore 保管的密钥以 AES-256-GCM 加密，备份离开本机无法解密，仍不随系统备份外流；会话由应用内导出功能自行迁移。 -->
     <exclude domain="file" path="appdata/providers.json" />
 </full-backup-content>
