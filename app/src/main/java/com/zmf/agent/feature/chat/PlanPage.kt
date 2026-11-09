@@ -1,5 +1,6 @@
 package com.zmf.agent.feature.chat
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -18,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -51,6 +54,8 @@ fun PlanPage(
     onBack: () -> Unit,
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
+    // 每份计划的滚动位置各自保存：交叉淡化结束后旧正文被回收，切回来仍能接在原处
+    val holder = rememberSaveableStateHolder()
     // 选中项兜底取最后一份（最新）：selectedId 理论上由父会话维护，
     // 但列表刚被其他位置刷新或选中项刚被删除时，显示最新一份优于空白页。
     val current = plans.firstOrNull { it.id == selectedId } ?: plans.lastOrNull()
@@ -104,67 +109,80 @@ fun PlanPage(
                 Spacer(Modifier.height(10.dp))
 
                 if (current != null) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 20.dp)
-                    ) {
-                        Text(
-                            text = current.title,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = onSurface
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        current.steps.forEachIndexed { index, step ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                Text(
-                                    text = (index + 1).toString(),
-                                    modifier = Modifier.width(24.dp),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = UiColors.subText
-                                )
-                                Text(
-                                    text = step,
-                                    modifier = Modifier.weight(1f),
-                                    fontSize = 14.sp,
-                                    lineHeight = 20.sp,
-                                    color = onSurface
-                                )
+                    // 正文交叉淡化：与预览页同一套过渡，切条目时下方不再硬切
+                    AnimatedContent(
+                        targetState = current,
+                        transitionSpec = { tabContentTransform() },
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        label = "plan-body"
+                    ) { plan ->
+                        // 每份计划的滚动位置各自保存：切回来仍在原处
+                        holder.SaveableStateProvider(plan.id) {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                        .verticalScroll(rememberScrollState())
+                                        .padding(horizontal = 20.dp)
+                                ) {
+                                    Text(
+                                        text = plan.title,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = onSurface
+                                    )
+                                    Spacer(Modifier.height(10.dp))
+                                    plan.steps.forEachIndexed { index, step ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = (index + 1).toString(),
+                                                modifier = Modifier.width(24.dp),
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = UiColors.subText
+                                            )
+                                            Text(
+                                                text = step,
+                                                modifier = Modifier.weight(1f),
+                                                fontSize = 14.sp,
+                                                lineHeight = 20.sp,
+                                                color = onSurface
+                                            )
+                                        }
+                                    }
+                                    if (plan.note.isNotBlank()) {
+                                        Spacer(Modifier.height(10.dp))
+                                        Text(
+                                            text = plan.note,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            fontSize = 12.sp,
+                                            lineHeight = 18.sp,
+                                            color = UiColors.subText
+                                        )
+                                    }
+                                    Spacer(Modifier.height(16.dp))
+                                }
+
+                                // 按钮变灰时说明原因：仅置灰而不说明，易被误认为故障
+                                val hint = statusHint(plan.status)
+                                if (hint.isNotEmpty()) {
+                                    Text(
+                                        text = hint,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 20.dp, vertical = 2.dp),
+                                        fontSize = 12.sp,
+                                        lineHeight = 17.sp,
+                                        color = UiColors.subText
+                                    )
+                                }
                             }
                         }
-                        if (current.note.isNotBlank()) {
-                            Spacer(Modifier.height(10.dp))
-                            Text(
-                                text = current.note,
-                                modifier = Modifier.fillMaxWidth(),
-                                fontSize = 12.sp,
-                                lineHeight = 18.sp,
-                                color = UiColors.subText
-                            )
-                        }
-                        Spacer(Modifier.height(16.dp))
-                    }
-
-                    // 按钮变灰时说明原因：仅置灰而不说明，易被误认为故障
-                    val hint = statusHint(current.status)
-                    if (hint.isNotEmpty()) {
-                        Text(
-                            text = hint,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 2.dp),
-                            fontSize = 12.sp,
-                            lineHeight = 17.sp,
-                            color = UiColors.subText
-                        )
                     }
 
                     // 底部固定：步骤再长也不会将按钮推出屏幕；导航栏 padding 保留在此，滚动区不占用

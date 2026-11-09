@@ -50,11 +50,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 冷启动：通知携带的会话 id 位于启动 Intent 中（空字符串视为未携带）
+        // 冷启动：通知携带的是一次性令牌，兑换成功才切会话；伪造或已用过的令牌会得到 null
         notificationSessionId = sessionIdFrom(intent)
-        // 读取后立即移除：Activity 因配置变化重建时会复用同一 Intent，残留 extra 会再次切换
-        // 已处理的通知会话，覆盖用户后续选择
-        intent?.removeExtra(Notifier.EXTRA_SESSION_ID)
+        // 读取后立即移除：Activity 因配置变化重建时会复用同一 Intent，残留 extra 会再次发起兑换
+        // （令牌已作废，重建时兑换只会得到 null，但仍移除，避免无意义的沙箱读写）
+        intent?.removeExtra(Notifier.EXTRA_SESSION_TOKEN)
         installCrashHandler()
         enableEdgeToEdge()
         hideStatusBar()
@@ -125,13 +125,13 @@ class MainActivity : ComponentActivity() {
         window.setBackgroundDrawable(ColorDrawable(color.toArgb()))
     }
 
-    /** 点击通知（应用已在后台或前台）：仅切换会话 id，不重建界面。 */
+    /** 点击通知（应用已在后台或前台）：兑换令牌后切换会话，不重建界面。 */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         sessionIdFrom(intent)?.let { notificationSessionId = it }
-        // 同样移除会话 id，避免重建时再次消费
-        intent.removeExtra(Notifier.EXTRA_SESSION_ID)
+        // 同样移除令牌，避免重建时再次兑换
+        intent.removeExtra(Notifier.EXTRA_SESSION_TOKEN)
     }
 
     /**
@@ -180,9 +180,9 @@ class MainActivity : ComponentActivity() {
         runCatching { com.zmf.agent.core.log.FileLog.flush(300L) }
     }
 
-    /** 读取通知携带的会话 id；不存在或为空字符串时返回 null。 */
+    /** 用通知携带的一次性令牌换取会话 id；令牌缺失、伪造或已用过时返回 null。 */
     private fun sessionIdFrom(intent: Intent?): String? =
-        intent?.getStringExtra(Notifier.EXTRA_SESSION_ID)?.takeIf { it.isNotBlank() }
+        Notifier.consumeSessionToken(this, intent?.getStringExtra(Notifier.EXTRA_SESSION_TOKEN))
 
     /**
      * 崩溃日志写入。

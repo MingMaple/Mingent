@@ -264,7 +264,11 @@ fun FloatingChatWindow(
                                     .onSizeChanged { messageAreaSize = it },
                                 contentPadding = PaddingValues(vertical = 6.dp)
                             ) {
-                                items(visible.size, key = { visibleOffset + it }) { index ->
+                                items(
+                                    count = visible.size,
+                                    key = { visibleOffset + it },
+                                    contentType = { index -> visible[index].role }
+                                ) { index ->
                                     MessageBubble(
                                         message = visible[index],
                                         foldAt = foldAt,

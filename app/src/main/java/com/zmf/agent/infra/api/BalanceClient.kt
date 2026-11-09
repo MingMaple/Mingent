@@ -71,7 +71,7 @@ object BalanceClient {
         val key = apiKey.trim()
         val trimmedBase = baseUrl.trim().trimEnd('/')
         if (key.isEmpty() || trimmedBase.isEmpty()) {
-            return BalanceResult(ok = false, error = "还没有配置 API 密钥或端点")
+            return BalanceResult(ok = false, error = "还没有配置 API 密钥或端点，请在设置 → 模型里填写。")
         }
         val endpoint = trimmedBase + PATH_BALANCE
 
@@ -83,7 +83,7 @@ object BalanceClient {
         } catch (e: Exception) {
             val reason = e.message?.take(MAX_ERROR_CHARS) ?: e.javaClass.simpleName
             FileLog.log(TAG, "余额查询失败：" + e.javaClass.simpleName + " / " + reason)
-            BalanceResult(ok = false, error = "余额查询失败：" + reason)
+            BalanceResult(ok = false, error = "余额查询失败，请检查网络连接与端点配置后重试。")
         }
     }
 
@@ -99,7 +99,7 @@ object BalanceClient {
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 FileLog.log(TAG, "余额查询 HTTP " + response.code + "：" + body.take(MAX_ERROR_CHARS))
-                return BalanceResult(ok = false, error = "HTTP " + response.code + "：" + briefError(response.message, body))
+                return BalanceResult(ok = false, error = httpErrorText(response.code))
             }
             return parse(body)
         }
@@ -107,11 +107,13 @@ object BalanceClient {
 
     /** 解析 {"is_available":true,"balance_infos":[{currency,total_balance,granted_balance,topped_up_balance}]}。 */
     private fun parse(body: String): BalanceResult {
-        if (body.isBlank()) return BalanceResult(ok = false, error = "余额接口返回空响应")
+        if (body.isBlank()) {
+            return BalanceResult(ok = false, error = "余额接口没有返回内容，请检查端点地址是否正确。")
+        }
         val root = try {
             JSONObject(body)
         } catch (e: Exception) {
-            return BalanceResult(ok = false, error = "余额接口返回的不是合法 JSON：" + body.take(MAX_ERROR_CHARS))
+            return BalanceResult(ok = false, error = "余额接口返回的内容无法识别，请检查端点地址是否正确。")
         }
 
         val infos = ArrayList<BalanceInfo>()
@@ -152,19 +154,12 @@ object BalanceClient {
         return if (value == "null") "" else value
     }
 
-    /** 错误提示：优先用服务端给的 JSON 里的 message，没有就用 HTTP 短语，都截断到 [MAX_ERROR_CHARS]。 */
-    private fun briefError(message: String, body: String): String {
-        if (body.isNotBlank()) {
-            val detail = runCatching {
-                val obj = JSONObject(body)
-                val error = obj.optJSONObject("error")
-                // OpenAI 兼容错误格式为 {"error":{"message":...}}，DeepSeek 采用相同格式
-                error?.optString("message", "")?.takeIf { it.isNotBlank() }
-                    ?: obj.optString("message", "").takeIf { it.isNotBlank() }
-            }.getOrNull()
-            if (!detail.isNullOrBlank()) return detail.take(MAX_ERROR_CHARS)
-            return body.trim().take(MAX_ERROR_CHARS)
-        }
-        return message.ifBlank { "未知错误" }
+    /** 状态码 → 用户可执行的提示；服务端正文只写日志，避免把技术细节显示在设置页。 */
+    private fun httpErrorText(code: Int): String = when (code) {
+        401, 403 -> "API 密钥无效或没有权限，请在设置 → 模型里检查密钥。"
+        404 -> "余额接口不存在，请检查端点地址是否填写正确。"
+        429 -> "请求过于频繁，请稍后再试。"
+        in 500..599 -> "余额服务暂时不可用，请稍后再试。"
+        else -> "余额查询失败，请检查端点与网络后重试。"
     }
 }

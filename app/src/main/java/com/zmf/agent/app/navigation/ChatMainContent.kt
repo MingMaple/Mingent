@@ -35,6 +35,7 @@ import com.zmf.agent.feature.chat.ChatSubAgentPanel
 import com.zmf.agent.feature.chat.ChatTopBar
 import com.zmf.agent.feature.chat.ChatUiState
 import com.zmf.agent.feature.chat.ChatViewModel
+import com.zmf.agent.feature.chat.PreviewTabs
 import com.zmf.agent.feature.chat.TracePage
 import com.zmf.agent.uikit.components.salt.SaltFullPane
 import com.zmf.agent.uikit.layout.LocalUiWindow
@@ -221,6 +222,9 @@ private fun ChatColumn(
     var subAgentPanelOpen by ui.subAgentPanelOpen
     val subAgentRunning = subAgentEntries.count { it.state == SubAgentRegistry.RUNNING }
     val window = LocalUiWindow.current
+    // 已打开的预览标签数：为 0 时顶栏不出现入口（与计划、网页同一口径）。
+    // 读快照状态列表的 size 即建立订阅，标签增删会自动重组，无需额外状态。
+    val previewCount = PreviewTabs.count
 
     Surface(
         modifier = Modifier
@@ -260,7 +264,9 @@ private fun ChatColumn(
                             page = AppPage.PLAN
                         },
                         browserOpen = BrowserState.alive,
-                        onBrowserClick = { page = AppPage.BROWSER }
+                        onBrowserClick = { page = AppPage.BROWSER },
+                        previewCount = previewCount,
+                        onPreviewClick = { page = AppPage.PREVIEW }
                     )
                 }
 

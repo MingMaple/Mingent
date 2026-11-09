@@ -65,7 +65,7 @@ class TerminalTool : Tool {
         }
 
         // 第二道：越界与危险命令黑名单（仅使用用户或模型提供的原始 command 判定，不得拼接 cwd 后再判定；
-        //（cwd 属于执行细节，拼接后会使「cd /sdcard」这类写法被当作命令本身越界而误拦）
+        // cwd 属于执行细节，拼接后会使「cd /sdcard」这类写法被当作命令本身越界而误拦）
         val decision = ToolPolicy.checkTerminal(ctx.permission, raw)
         if (!decision.allowed) {
             return ToolResult.Error(decision.reason ?: ToolPolicy.deniedText(ctx.permission, "终端"))

@@ -155,12 +155,13 @@ fun MemoryPage(
                 }
             }
             if (state.error.isNotEmpty()) {
-                // 内核原文照抄，不翻译不截断：可能是 python3 缺失、库缺失、退出码 2 的 stderr
+                // 内核原文含命令名与退出码，只放进详情弹窗；此处给可执行的说明
                 Text(
-                    text = state.error,
+                    text = "记忆服务运行失败，请稍后重试；点击可查看错误详情。",
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 6.dp),
+                        .padding(horizontal = 20.dp, vertical = 6.dp)
+                        .saltCardRow { detail = state.error },
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -491,9 +492,9 @@ private fun VectorCard(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val idleNote = if (enabled) {
-        "已启用稠密检索，开启时已自动安装 onnxruntime 与 numpy；依赖缺失时自动降级为 BM25 + 图扩散。"
+        "已启用语义检索；开启时会自动准备运行环境，准备失败时回退到关键词检索。"
     } else {
-        "当前使用 BM25 + 图扩散检索；开启后自动安装 onnxruntime 与 numpy。"
+        "当前使用关键词检索；开启后会先准备运行环境，再启用语义检索。"
     }
     MemoryCard(title = "向量模型") {
         // 整行可点（Salt Player 的口径）：点行与点开关都能切换，

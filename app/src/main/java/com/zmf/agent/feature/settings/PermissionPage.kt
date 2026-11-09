@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -275,7 +275,7 @@ private fun PermissionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(56.dp)
+            .heightIn(min = 56.dp)
             .saltCardRow(enabled = !granted, onClick = onClick)
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -332,5 +332,5 @@ private fun openShizuku(context: Context): Boolean {
 
 /** 没有 Activity 就弹不了权限框：给一句提示，不要静默什么都不做。 */
 private fun toastNoActivity(context: Context) {
-    NoticeCenter.error("请回应用内重试")
+    NoticeCenter.error("授权需要在应用内完成，请回到应用主界面后重试")
 }

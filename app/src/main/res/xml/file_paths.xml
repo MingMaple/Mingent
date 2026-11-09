@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 预览页导出用的共享路径：只放缓存副本与工作区，不暴露应用数据目录 -->
+<paths>
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
+    <external-files-path name="external" path="." />
+</paths>

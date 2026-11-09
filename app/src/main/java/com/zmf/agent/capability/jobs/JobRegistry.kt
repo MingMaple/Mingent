@@ -21,6 +21,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
  */
 object JobRegistry {
 
+    /** 结算通知的固定抬头：界面据此把通知与用户发言区分开（旧数据没有 origin 标记也认得出）。 */
+    const val NOTICE_PREFIX = "你之前启动的后台任务已经结束："
+
     /** 单个任务的内存输出环上限：超出时丢弃最旧内容，防止单个高频输出命令耗尽内存。 */
     private const val MAX_RING_BYTES = 256 * 1024
 
@@ -232,7 +235,7 @@ object JobRegistry {
      */
     fun notificationText(entries: List<Entry>): String {
         val sb = StringBuilder()
-        sb.append("你之前启动的后台任务已经结束：\n")
+        sb.append(NOTICE_PREFIX).append('\n')
         for (e in entries) {
             sb.append("- ").append(e.id)
             if (e.label.isNotBlank()) sb.append("（").append(e.label).append("）")

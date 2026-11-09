@@ -1,10 +1,12 @@
 package com.zmf.agent.infra.llm
 
+import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.Dispatchers
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -38,7 +40,7 @@ class DeepSeekProvider(
         // 直接拼接 "/chat/completions" 请求只会抛出底层异常，用户无法判断需修改何处
         val base = baseUrl.trim().trimEnd('/')
         if (base.isEmpty()) {
-            emit(LlmEvent.Failed(-1, "当前提供商没有填写 Base URL，请到设置里补上"))
+            emit(LlmEvent.Failed(-1, "当前提供商还没有填写接口地址，请在设置 → 模型里补上"))
             return@flow
         }
 
@@ -59,7 +61,7 @@ class DeepSeekProvider(
                 .post(buildRequestJson(request).toString().toRequestBody(JSON))
                 .build()
         } catch (e: Exception) {
-            emit(LlmEvent.Failed(-1, "请求地址无效：" + (e.message ?: e.javaClass.simpleName)))
+            emit(LlmEvent.Failed(-1, "接口地址无效，请在设置 → 模型里检查地址是否以 https:// 开头"))
             return@flow
         }
 
@@ -73,7 +75,7 @@ class DeepSeekProvider(
                 }
                 val source = response.body?.source()
                 if (source == null) {
-                    emit(LlmEvent.Failed(-1, "响应体为空"))
+                    emit(LlmEvent.Failed(-1, "服务端没有返回内容，请稍后重试"))
                     return@use
                 }
                 var finishReason: String? = null
@@ -188,8 +190,12 @@ class DeepSeekProvider(
                     )
                 )
             }
+        } catch (e: CancellationException) {
+            // 取消是协程的正常结束路径，转成失败事件会掩盖取消语义
+            throw e
         } catch (e: Exception) {
-            emit(LlmEvent.Failed(-1, e.message ?: e.javaClass.simpleName))
+            FileLog.log("llm", "请求失败：" + e.javaClass.simpleName + " / " + (e.message ?: ""))
+            emit(LlmEvent.Failed(-1, "请求失败，请检查网络连接后重试"))
         }
     }.flowOn(Dispatchers.IO)
 

@@ -70,7 +70,9 @@ import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -104,8 +106,15 @@ fun ContextInsightPage(
     var viewedId by remember { mutableStateOf(initialSessionId) }
     var range by remember { mutableStateOf(InsightPageMemory.range) }
     var tab by remember { mutableIntStateOf(0) }
-    val global = remember(range) { loadGlobal(range) }
-    val session = remember(viewedId) { loadSession(viewedId) }
+    // 全局与会话视图都要读盘聚合，放到后台执行；加载完成前不渲染对应区块
+    var global by remember { mutableStateOf<InsightGlobalView?>(null) }
+    var session by remember { mutableStateOf<InsightSessionView?>(null) }
+    LaunchedEffect(range) {
+        global = withContext(Dispatchers.IO) { loadGlobal(range) }
+    }
+    LaunchedEffect(viewedId) {
+        session = withContext(Dispatchers.IO) { loadSession(viewedId) }
+    }
 
     // 洞察页锁定设计字号（fontScale = 1）：系统字体调大时版式保持不变，
     // 避免窄屏或大字号下标签被挤成竖排、按钮被撑满整行。系统字号仍作用于其它页面。
@@ -150,29 +159,33 @@ fun ContextInsightPage(
                         .padding(start = 16.dp, end = 16.dp, bottom = 28.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    SessionModule(
-                        session = session,
-                        tab = tab,
-                        onTab = { tab = it },
-                        onBackToCurrent = {
-                            viewedId = currentSessionId
-                            scope.launch { scroll.animateScrollTo(0) }
-                        }
-                    )
+                    session?.let { loadedSession ->
+                        SessionModule(
+                            session = loadedSession,
+                            tab = tab,
+                            onTab = { tab = it },
+                            onBackToCurrent = {
+                                viewedId = currentSessionId
+                                scope.launch { scroll.animateScrollTo(0) }
+                            }
+                        )
+                    }
 
-                    GlobalSection(
-                        global = global,
-                        range = range,
-                        onRange = {
-                            range = it
-                            InsightPageMemory.range = it
-                        },
-                        onPickSession = { row ->
-                            viewedId = row.id
-                            scope.launch { scroll.animateScrollTo(0) }
-                        },
-                        workspaces = workspaces
-                    )
+                    global?.let { loadedGlobal ->
+                        GlobalSection(
+                            global = loadedGlobal,
+                            range = range,
+                            onRange = {
+                                range = it
+                                InsightPageMemory.range = it
+                            },
+                            onPickSession = { row ->
+                                viewedId = row.id
+                                scope.launch { scroll.animateScrollTo(0) }
+                            },
+                            workspaces = workspaces
+                        )
+                    }
                 }
             }
         }

@@ -84,8 +84,7 @@ class BackupController(private val appContext: Context) {
                     )
                 },
                 onFailure = { e ->
-                    backupNotice = "导出失败：" + (e.message ?: e.javaClass.simpleName) +
-                        "\n半截文件已删除，可以重新导出一次。"
+                    backupNotice = "导出失败，半截文件已删除。请确认目标位置可写、空间足够后重新导出一次。"
                     FileLog.log("backup", "导出失败：" + e)
                 }
             )
@@ -120,7 +119,8 @@ class BackupController(private val appContext: Context) {
             result.fold(
                 onSuccess = { manifest -> pendingManifest = manifest },
                 onFailure = { e ->
-                    backupNotice = "无法识别这个备份：" + (e.message ?: e.javaClass.simpleName)
+                    backupNotice = "无法识别这个备份。请确认文件是本应用导出的备份包，或换一个文件再试。"
+                    FileLog.log("backup", "识别备份失败：" + e)
                 }
             )
         }
@@ -160,7 +160,7 @@ class BackupController(private val appContext: Context) {
                 },
                 onFailure = { e ->
                     // 导入失败也显示在数据页那一行（报告对话框之外仍可看到前一句）
-                    backupNotice = "导入失败：" + (e.message ?: e.javaClass.simpleName)
+                    backupNotice = "导入失败，请重试；如仍失败，请换一份备份文件。"
                     FileLog.log("backup", "导入失败：" + e)
                 }
             )

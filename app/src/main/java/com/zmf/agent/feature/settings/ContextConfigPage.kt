@@ -9,10 +9,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,7 +57,9 @@ import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -283,25 +286,31 @@ fun ContextConfigPage(
             // 只列「已配置 Key」的提供商：列一个没 Key 的模型等于给用户一个必然失败的选项。
             // 自定义提供商的模型列表可能为空，此时用它上次使用的模型名（也是请求真正会发的那个）。
             val context = LocalContext.current
-            val summaryOptions = remember {
-                val currentId = ProviderStore.currentId(context)
-                ProviderStore.load(context)
-                    .filter { it.apiKey.isNotBlank() }
-                    .flatMap { provider ->
-                        val models = provider.models.ifEmpty {
-                            listOf(
-                                ProviderStore.modelOf(context, provider.id)
-                                    .ifBlank { ApiDefaults.MODEL }
-                            )
+            // 读取提供商配置会访问磁盘，放到后台执行，避免首帧阻塞
+            var summaryOptions by remember { mutableStateOf<List<SummaryOption>>(emptyList()) }
+            var providersLoaded by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                summaryOptions = withContext(Dispatchers.IO) {
+                    val currentId = ProviderStore.currentId(context)
+                    ProviderStore.load(context)
+                        .filter { it.apiKey.isNotBlank() }
+                        .flatMap { provider ->
+                            val models = provider.models.ifEmpty {
+                                listOf(
+                                    ProviderStore.modelOf(context, provider.id)
+                                        .ifBlank { ApiDefaults.MODEL }
+                                )
+                            }
+                            models.map { model ->
+                                SummaryOption(
+                                    value = provider.id + SUMMARY_MODEL_SEPARATOR + model,
+                                    label = provider.name + " · " + model,
+                                    legacyMatch = provider.id == currentId && model == policy.summaryModel
+                                )
+                            }
                         }
-                        models.map { model ->
-                            SummaryOption(
-                                value = provider.id + SUMMARY_MODEL_SEPARATOR + model,
-                                label = provider.name + " · " + model,
-                                legacyMatch = provider.id == currentId && model == policy.summaryModel
-                            )
-                        }
-                    }
+                }
+                providersLoaded = true
             }
             // 固定档收进「切换模型」里折叠：默认只显示一行当前选中项，
             // 点开后才列出全部可选模型，选择后自动收起，避免一长串模型把「立即压缩」推出屏幕
@@ -334,7 +343,7 @@ fun ContextConfigPage(
                     )
                 }
             }
-            if (summaryOptions.isEmpty()) {
+            if (providersLoaded && summaryOptions.isEmpty()) {
                 Text(
                     text = "没有已配置 Key 的提供商，摘要只能跟随当前模型。",
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -807,8 +816,8 @@ private fun ContextTokenField(
         onValueChange = onValueChange,
         enabled = enabled,
         modifier = Modifier
-            .width(78.dp)
-            .height(32.dp)
+            .widthIn(min = 78.dp)
+            .heightIn(min = 32.dp)
             .onFocusChanged { state ->
                 // 失焦提交：数字已输入完毕却直接点击其它位置的情况比回车更常见
                 if (!state.isFocused && focused) {

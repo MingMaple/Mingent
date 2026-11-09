@@ -195,9 +195,7 @@ fun SaltPopover(
     onDismiss: () -> Unit,
     content: @Composable () -> Unit
 ) {
-    val configuration = LocalConfiguration.current
     val density = LocalDensity.current
-    val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
     val widthPx = with(density) { widthDp.toPx() }
     val edge = with(density) { 12.dp.toPx() }
     val gap = with(density) { 8.dp.toPx() }

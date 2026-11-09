@@ -113,7 +113,9 @@ class ComposerState(
                 },
                 onFailure = { e ->
                     val message = e.message ?: e.javaClass.simpleName
-                    withContext(Dispatchers.Main) { reportError("上传失败：" + message) }
+                    withContext(Dispatchers.Main) {
+                        reportError("上传失败，请重试；如仍失败，请换一个文件。")
+                    }
                     FileLog.log("upload", (if (isImage) "图片上传失败：" else "附件上传失败：") + message)
                 }
             )

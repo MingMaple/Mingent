@@ -22,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +36,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zmf.agent.capability.tools.ToolCategory
+import com.zmf.agent.capability.tools.toolCategoryOf
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.uikit.common.BoundedScrollColumn
@@ -140,6 +143,230 @@ internal fun TurnProcessSummary(
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
         )
         Spacer(Modifier.weight(1f))
+    }
+}
+
+/**
+ * 过程组：连续的一段思考与工具调用。
+ *
+ * 分界照 DSH 的规则：出现组外正文即封闭当前组，本段结束（或整轮结束）封闭最后一组。
+ * 组在界面上的形态是「一行组头 + 可展开的成员」，与 DSH 的 process group 一致。
+ */
+internal data class ProcessGroup(
+    /** 组首成员的片段键：组头的展开状态按它记忆，流式新增成员不会错位。 */
+    val key: String,
+    val members: List<TurnSegment>
+)
+
+/** 运行中的渲染块：一组过程，或一段组外正文。 */
+internal sealed interface TurnBlock {
+    data class Group(val group: ProcessGroup) : TurnBlock
+    data class Text(val body: TurnSegment.Body) : TurnBlock
+}
+
+/** 片段在列表里的稳定键：流式新增片段时，后续节点的展开状态不会错配。 */
+internal fun segmentKey(segment: TurnSegment): String = when (segment) {
+    is TurnSegment.Think -> "t" + segment.messageIndex
+    is TurnSegment.Body -> "b" + segment.messageIndex
+    is TurnSegment.Call -> "c" + segment.call.id
+}
+
+/**
+ * 把一轮的过程片段切成「组 / 组外正文」交替的序列。
+ *
+ * 只作用于运行中与整轮展开态：整轮折叠时全部收成一行汇总，不按组显示。
+ */
+internal fun buildTurnBlocks(segments: List<TurnSegment>): List<TurnBlock> {
+    val out = ArrayList<TurnBlock>()
+    val members = ArrayList<TurnSegment>()
+    fun flush() {
+        if (members.isEmpty()) return
+        out.add(TurnBlock.Group(ProcessGroup(segmentKey(members.first()), members.toList())))
+        members.clear()
+    }
+    for (segment in segments) {
+        if (segment is TurnSegment.Body) {
+            flush()
+            out.add(TurnBlock.Text(segment))
+        } else {
+            members.add(segment)
+        }
+    }
+    flush()
+    return out
+}
+
+/** 工具分类对应的「正在做什么」：运行中的组头用这一句代替计数。 */
+private fun runningLabel(category: ToolCategory): String =
+    when (category) {
+        ToolCategory.COMMAND -> "正在运行命令"
+        ToolCategory.FILES -> "正在读写文件"
+        ToolCategory.SEARCH -> "正在搜索"
+        ToolCategory.WEB -> "正在访问网页"
+        ToolCategory.AGENT -> "正在协调子智能体"
+        ToolCategory.OTHER -> "正在调用工具"
+    }
+
+/** 组头文案：运行中说明正在做什么；已封闭的组按类别给出计数。 */
+private fun groupLabel(group: ProcessGroup, running: Boolean, all: List<ChatMessage>): String {
+    val tail = group.members.lastOrNull()
+    if (running) {
+        return when {
+            tail is TurnSegment.Call && toolResultOf(all, tail.call) == null ->
+                runningLabel(toolCategoryOf(tail.call.name))
+            tail is TurnSegment.Think -> "思考中…"
+            group.members.isEmpty() -> "过程"
+            else -> "处理中…"
+        }
+    }
+    val parts = ArrayList<String>(2)
+    val think = group.members.count { it is TurnSegment.Think }
+    if (think > 0) parts += "思考 " + think + " 段"
+    val counts = LinkedHashMap<ToolCategory, Int>()
+    group.members.filterIsInstance<TurnSegment.Call>().forEach { call ->
+        val category = toolCategoryOf(call.call.name)
+        counts[category] = (counts[category] ?: 0) + 1
+    }
+    for ((category, count) in counts) parts += category.label + " " + count
+    return if (parts.isEmpty()) "过程" else parts.joinToString(" · ")
+}
+
+/** 过程组头：一行计数（或运行中的活动文本），点击展开或收起该组。 */
+@Composable
+internal fun ProcessGroupHeader(
+    group: ProcessGroup,
+    running: Boolean,
+    expanded: Boolean,
+    all: List<ChatMessage>,
+    onToggle: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .saltRowClickable(RoundedCornerShape(8.dp), onClick = onToggle)
+            .padding(top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Chevron(
+            expanded = expanded,
+            size = ChevronSize.SMALL,
+            kind = ChevronKind.RIGHT_DOWN,
+            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = groupLabel(group, running, all),
+            fontSize = 12.sp,
+            color = if (running) {
+                UiColors.accentFg
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+            }
+        )
+        Spacer(Modifier.weight(1f))
+    }
+}
+
+/** 运行中的一组：组头 + 展开时的成员片段。封闭后自动收起（用户手动展开的除外）。 */
+@Composable
+private fun ProcessGroupBlock(
+    group: ProcessGroup,
+    running: Boolean,
+    all: List<ChatMessage>,
+    lastMessageIndex: Int?,
+    toolOutcomes: Map<String, Boolean>,
+    thinkColor: Color,
+    bubbleColor: Color,
+    cardColor: Color
+) {
+    var expanded by rememberSaveable(group.key) { mutableStateOf(running) }
+    // 组一封闭就收起：这正是「正文出现后工具折叠起来」的那一步
+    LaunchedEffect(running) { if (!running) expanded = false }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        ProcessGroupHeader(group, running, expanded, all) { expanded = !expanded }
+        if (expanded) {
+            TurnStream(
+                segments = group.members,
+                all = all,
+                streaming = running,
+                lastMessageIndex = lastMessageIndex,
+                toolOutcomes = toolOutcomes,
+                thinkColor = thinkColor,
+                bubbleColor = bubbleColor,
+                cardColor = cardColor
+            )
+        }
+    }
+}
+
+/**
+ * 运行中的一轮：过程组按组折叠，组外正文照常显示。
+ *
+ * 与整轮折叠的分工：这里只在流式期间使用（组头给出计数与当前活动）；
+ * 本轮一结束，整轮统一收成一行汇总，只留最终回复。
+ */
+@Composable
+internal fun TurnLiveStream(
+    blocks: List<TurnBlock>,
+    all: List<ChatMessage>,
+    lastMessageIndex: Int?,
+    toolOutcomes: Map<String, Boolean>,
+    thinkColor: Color,
+    bubbleColor: Color,
+    cardColor: Color
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        blocks.forEachIndexed { index, block ->
+            when (block) {
+                is TurnBlock.Group -> key(block.group.key) {
+                    ProcessGroupBlock(
+                        group = block.group,
+                        // 只有最后一组可能在跑：后面的正文一出现，前面这组就该收起
+                        running = index == blocks.lastIndex,
+                        all = all,
+                        lastMessageIndex = lastMessageIndex,
+                        toolOutcomes = toolOutcomes,
+                        thinkColor = thinkColor,
+                        bubbleColor = bubbleColor,
+                        cardColor = cardColor
+                    )
+                }
+
+                is TurnBlock.Text -> key("b" + block.body.messageIndex) {
+                    TurnStream(
+                        segments = listOf(block.body),
+                        all = all,
+                        streaming = true,
+                        lastMessageIndex = lastMessageIndex,
+                        toolOutcomes = toolOutcomes,
+                        thinkColor = thinkColor,
+                        bubbleColor = bubbleColor,
+                        cardColor = cardColor
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 触发行：这一轮不是用户发言触发，而是后台任务结算等通知，只说明来源。
+ *
+ * 与 DSH 一致：通知不画成用户气泡，回合上方留一行小字（「后台任务状态更新 · 这条通知触发了本轮回复」）。
+ */
+@Composable
+internal fun TurnTriggerLine(trigger: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = trigger + " · 这条通知触发了本轮回复",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+        )
     }
 }
 

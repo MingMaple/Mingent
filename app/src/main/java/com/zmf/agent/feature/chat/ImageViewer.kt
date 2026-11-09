@@ -85,9 +85,10 @@ fun ImageViewer(
         mutableStateOf(startIndex.coerceIn(0, (paths.size - 1).coerceAtLeast(0)))
     }
     val currentPath = paths.getOrNull(index)
-    // 文件头只读取尺寸，用于入场矩形与宽高比；像素数据在 IO 线程按视口能力采样解码，避免整幅原图进入内存。
-    val aspect = (remember(currentPath) {
-        currentPath?.let { path ->
+    // 文件头只读取尺寸，用于入场矩形与宽高比；同样放到 IO 线程，避免首次显示时在主线程读盘
+    val aspect by produceState(1f, currentPath) {
+        val path = currentPath ?: return@produceState
+        value = withContext(Dispatchers.IO) {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             runCatching { BitmapFactory.decodeFile(File(root, path).absolutePath, bounds) }
             if (bounds.outWidth > 0 && bounds.outHeight > 0) {
@@ -96,7 +97,7 @@ fun ImageViewer(
                 1f
             }
         }
-    }) ?: 1f
+    }
     var decodeDone by remember(currentPath) { mutableStateOf(false) }
     val bitmap by produceState<Bitmap?>(null, currentPath) {
         value = null

@@ -63,7 +63,19 @@ class ShizukuTool : Tool {
         return if (result.ok) {
             ToolResult.Ok("exit=" + result.exitCode + "\n" + result.output.ifEmpty { "(无输出)" })
         } else {
-            ToolResult.Error("exit=" + result.exitCode + "\n" + result.output.ifEmpty { "(无输出)" })
+            // 失败结果不会被 SpillStore 落盘，必须在这里截断，否则一次 dumpsys 报错就能占满上下文
+            val output = if (result.output.length > MAX_ERROR_CHARS) {
+                result.output.take(MAX_ERROR_CHARS) +
+                    "\n…（已截断，原输出 " + result.output.length + " 字符）"
+            } else {
+                result.output
+            }
+            ToolResult.Error("exit=" + result.exitCode + "\n" + output.ifEmpty { "(无输出)" })
         }
+    }
+
+    private companion object {
+        /** 失败输出回给模型的上限：保留开头足以定位原因，超出部分直接省略。 */
+        const val MAX_ERROR_CHARS = 12_000
     }
 }

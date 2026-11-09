@@ -146,8 +146,7 @@ class ReadFileTool : Tool {
             append("文件：").append(target.display).append('\n')
             append("第 ").append(startLine).append("-").append(endLine).append(" 行 / 共 ").append(total).append(" 行\n")
             if (truncated) {
-                append("(Showing lines ").append(startLine).append("-").append(endLine).append(" of ").append(total)
-                append(". Use offset=").append(endLine + 1).append(" to continue.)")
+                append("（还有后续内容：用 offset=").append(endLine + 1).append(" 继续读取）")
             } else {
                 append("(已到文件末尾)")
             }
@@ -255,11 +254,32 @@ class WriteFileTool : Tool {
         val oldSize = if (existed) target.size() else 0L
         // 覆盖前先统计原有行数：写入成功后在回执中给出「原 N 行 → 新 M 行」，
         // 多数情况下模型无需再调用 read_file 确认（提示词本身已要求不为确认而重读）。
+        // 流式计数，避免把整份旧文件读进内存：覆盖的目标可能远大于新内容。
         val oldLines = if (existed) {
             runCatching {
-                target.openReader().use { reader -> reader.readText() }
-                    .trimEnd('\n')
-                    .let { text -> if (text.isEmpty()) 0 else text.count { c -> c == '\n' } + 1 }
+                // 旧文件过大时不再为了一句「原 N 行」把它整份读一遍，回执里省略行数
+                if (oldSize > MAX_LINE_COUNT_BYTES) return@runCatching -1
+                target.openReader().use { reader ->
+                    val buffer = CharArray(8192)
+                    var chars = 0L
+                    var newlines = 0L
+                    var trailingNewlines = 0L
+                    while (true) {
+                        val n = reader.read(buffer)
+                        if (n < 0) break
+                        for (i in 0 until n) {
+                            chars++
+                            if (buffer[i] == '\n') {
+                                newlines++
+                                trailingNewlines++
+                            } else {
+                                trailingNewlines = 0
+                            }
+                        }
+                    }
+                    // 与 read_file 的口径一致：结尾换行不算多一行，只有换行的文件算 0 行
+                    if (chars == trailingNewlines) 0 else (newlines - trailingNewlines + 1).toInt()
+                }
             }.getOrDefault(-1)
         } else {
             0
@@ -283,6 +303,8 @@ class WriteFileTool : Tool {
 
     private companion object {
         const val MAX_FILE_CHARS = 1_000_000
+        /** 统计旧文件行数的体积上限：超过就省略「原 N 行」，不为此整份读取。 */
+        const val MAX_LINE_COUNT_BYTES = 32L * 1024L * 1024L
     }
 }
 

@@ -6,6 +6,13 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.nio.file.FileVisitResult
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -68,6 +75,9 @@ interface WorkspaceIo {
 
     /** 流式读（按行截断的大文件用这个）；不存在或打不开抛异常。 */
     fun openReader(rel: String): BufferedReader
+
+    /** 原始字节流（预览 PDF / 图片 / docx 用）；不存在或打不开抛异常。 */
+    fun openStream(rel: String): InputStream
 
     /** 整篇写文本（UTF-8），父目录不存在自动创建。 */
     fun writeText(rel: String, text: String)
@@ -133,6 +143,8 @@ class FileWorkspaceIo(val root: File) : WorkspaceIo {
     override fun openReader(rel: String): BufferedReader =
         target(rel).bufferedReader(Charsets.UTF_8)
 
+    override fun openStream(rel: String): InputStream = target(rel).inputStream()
+
     override fun writeText(rel: String, text: String) {
         val file = target(rel)
         file.parentFile?.let { if (!it.exists()) it.mkdirs() }
@@ -148,7 +160,7 @@ class FileWorkspaceIo(val root: File) : WorkspaceIo {
         val file = target(rel)
         // 根目录永不删除：delete("") 传入时按失败处理，避免删除整个工作区
         if (file == root) return false
-        return if (file.isDirectory) file.deleteRecursively() else file.delete()
+        return deleteTreeSafely(file)
     }
 
     override fun relativePathOf(file: File): String? = relativeUnder(root, file)
@@ -267,6 +279,12 @@ class SafWorkspaceIo internal constructor(
         val input = located.first.openInputStream(located.second)
             ?: throw IOException("打不开这个文件：" + displayPath(rel))
         return input.bufferedReader(Charsets.UTF_8)
+    }
+
+    override fun openStream(rel: String): InputStream {
+        val located = locate(rel) ?: throw FileNotFoundException("文件不存在：" + displayPath(rel))
+        return located.first.openInputStream(located.second)
+            ?: throw IOException("打不开这个文件：" + displayPath(rel))
     }
 
     override fun writeText(rel: String, text: String) {
@@ -394,6 +412,8 @@ class UnavailableWorkspaceIo(private val reason: String) : WorkspaceIo {
 
     override fun openReader(rel: String): BufferedReader = fail()
 
+    override fun openStream(rel: String): InputStream = fail()
+
     override fun writeText(rel: String, text: String) = fail()
 
     override fun mkdirs(rel: String): Boolean = false
@@ -455,6 +475,30 @@ internal fun cleanRel(raw: String): String {
         throw IllegalArgumentException("相对路径不能含 ..（越出工作区）")
     }
     return text
+}
+
+/**
+ * 递归删除但不跟随软链接：工作区里可能存在指向外部目录的链接，
+ * 跟随删除会波及工作区之外的数据，因此只删除链接本身。
+ */
+private fun deleteTreeSafely(file: File): Boolean {
+    if (!Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)) return false
+    return try {
+        Files.walkFileTree(file.toPath(), object : SimpleFileVisitor<Path>() {
+            override fun visitFile(path: Path, attrs: BasicFileAttributes): FileVisitResult {
+                Files.deleteIfExists(path)
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
+                Files.deleteIfExists(dir)
+                return FileVisitResult.CONTINUE
+            }
+        })
+        !Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)
+    } catch (e: IOException) {
+        false
+    }
 }
 
 /** [file] 在 [root] 之下的相对路径（/ 分隔）；不在下面返回 null。 */

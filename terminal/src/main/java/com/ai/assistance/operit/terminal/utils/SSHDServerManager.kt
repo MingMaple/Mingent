@@ -79,6 +79,11 @@ class SSHDServerManager private constructor(private val context: Context) {
                 Log.w(TAG, "SSHD服务器已在运行")
                 return@withContext true
             }
+
+            if (sshConfig.localSshPassword.isBlank()) {
+                Log.e(TAG, "本地SSH密码为空，拒绝启动SSHD服务器")
+                return@withContext false
+            }
             
             // 确保 .ssh 目录存在
             val sshDir = File(context.filesDir, ".ssh")
@@ -91,6 +96,8 @@ class SSHDServerManager private constructor(private val context: Context) {
             
             // 配置端口
             server.port = sshConfig.localSshPort
+            // 只监听回环地址：反向隧道在设备本机终止，无需把 SFTP 暴露到局域网/热点
+            server.host = "127.0.0.1"
             Log.d(TAG, "Setting SSHD port to: ${sshConfig.localSshPort}")
             
             // 配置主机密钥（自动生成并保存）

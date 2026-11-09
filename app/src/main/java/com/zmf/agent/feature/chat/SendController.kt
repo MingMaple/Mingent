@@ -168,9 +168,9 @@ class SendController(
             reportError("正在生成回复，附件等本轮结束后再发送")
             return
         }
-        // 插话会把正在回填的工具调用截成半轮（见 steerAppendable），那个窗口里退成排队：
-        // 消息一条都不丢，只是晚一点发
-        if (busyMode == BusySendMode.STEER && steerAppendable()) {
+        // 排队模式只入队；插话模式一定插话：末尾正在等工具结果时暂缓到下一轮开始前补入，
+        // 不再静默退成排队（那样点一下等于没点，用户看到的只是「无响应」）
+        if (busyMode == BusySendMode.STEER) {
             steerNow(trimmed)
         } else {
             enqueue(trimmed)
@@ -211,36 +211,55 @@ class SendController(
     }
 
     /**
-     * 立即发送队列里的某一条：先从队列取出来，再按 [busyMode] 走一遍繁忙逻辑。
+     * 立即插话发送队列里的某一条（行尾那个 ↑）。
      *
-     * 本轮已经结束 → 直接发出去；还在跑 → 排队模式重新排到队尾、插话模式立刻插进历史。
+     * 语义照 DSH 的「插话发送」：不随「繁忙时发送行为」走，点了就是现在插进这一轮；
+     * 本轮已经结束则直接按普通消息发出去；运行中立刻追加进历史，界面上马上可见。
      */
     fun sendQueuedNow(id: Long, scope: CoroutineScope) {
         val index = pendingQueue.indexOfFirst { it.id == id }
         if (index < 0) return
         val item = pendingQueue.removeAt(index)
-        FileLog.log("queue", "立即发送队列消息 " + item.id + "：" + item.text.take(80))
-        sendWhileBusy(item.text, scope)
+        FileLog.log("queue", "插话发送队列消息 " + item.id + "：" + item.text.take(80))
+        if (!isStreaming) {
+            send(item.text, scope)
+            return
+        }
+        steerNow(item.text)
     }
 
     /**
-     * 插话能不能安全地追加到历史末尾。
+     * 长按发送键：把队列里的消息全部插话发送（对应 DSH 的 Ctrl/Cmd+Enter）。
      *
-     * 末尾是一条带 tool_calls 的 assistant 时，它还在等工具结果回填：这时插一条 user 进去，
-     * 工具结果就会挂在 user 后面，发请求前的那道清洗只能把整轮工具调用丢掉（不丢就是 400）。
-     * 这个窗口里退成排队更划算：晚几秒发，但不丢任何一条工具结果。
+     * 空闲时「插话」没有意义，按顺序正常发送：第一条开跑，其余回到队列等待本轮结束。
      */
-    private fun steerAppendable(): Boolean {
-        val last = messages.lastOrNull() ?: return true
-        return last.role != "assistant" || last.toolCalls.isEmpty()
+    fun steerAllQueued(scope: CoroutineScope) {
+        if (pendingQueue.isEmpty()) return
+        val items = pendingQueue.toList()
+        pendingQueue.clear()
+        FileLog.log("queue", "插话发送全部排队消息 " + items.size + " 条")
+        if (!isStreaming) {
+            pendingQueue.addAll(items.drop(1))
+            send(items.first().text, scope)
+            return
+        }
+        for (item in items) steerNow(item.text)
     }
 
-    /** 插话：往历史末尾追加一条 user 消息。界面上立刻可见，本轮后续请求也能看到它。 */
+    /**
+     * 插话：立刻追加一条 user 消息，界面上马上可见，本轮后续请求也能读到它。
+     *
+     * 与 DSH 的语义一致（`steer` = 投递到「下一步」，`followup` = 留到下一轮）：
+     * 不打断当前思考或工具执行，等它做完、下一次请求时模型自然读到这条插话。
+     * 工具结果由 [AgentLoop] 插在所属 assistant 之后，因此中间夹一条 user 也不会破坏请求结构。
+     */
     private fun steerNow(text: String) {
-        messages.add(ChatMessage(role = "user", content = foldBlankRuns(text)))
+        val folded = foldBlankRuns(text).trim()
+        if (folded.isEmpty()) return
+        messages.add(ChatMessage(role = "user", content = folded))
         steerPending = true
         // 单独一个分类：插话出了问题（被当成重复提问、模型答了两遍）只能靠这行日志回溯
-        FileLog.log("steer", "插话（流式中追加用户消息）：" + text.take(80))
+        FileLog.log("steer", "插话（流式中追加用户消息）：" + folded.take(80))
     }
 
     /** 排队：本轮结束后由 [continueAfterTurn] 自动发出去。 */
@@ -464,7 +483,9 @@ class SendController(
                 FileLog.log("loop", "被用户停止")
                 throw e
             } catch (e: Exception) {
-                reportError("运行异常：" + (e.message ?: e.javaClass.simpleName))
+                // 界面上只说结果与下一步，具体原因留在日志里
+                reportError("本轮回复中断，请重试一次。")
+                FileLog.log("chat", "运行异常：" + (e.message ?: e.javaClass.simpleName))
                 FileLog.log("error", "运行异常：" + e)
             } finally {
                 isStreaming = false

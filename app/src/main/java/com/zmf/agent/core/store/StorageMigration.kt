@@ -42,7 +42,7 @@ object StorageMigration {
     fun migrate(context: Context, permissionWire: String, effortWire: String): Boolean {
         // 一次性标记：迁移成功后不再解析会话文件，避免每次冷启动都多读一份可能很大的 JSON。
         // 导入旧备份后标记仍为 true，由 SessionController.loadInitial 的缺键兜底补齐，不影响正确性
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (prefs.getBoolean(KEY_DONE, false)) return false
 
         val workspaceFile = AppPaths.dataFile(context, WORKSPACE_FILE)
@@ -62,6 +62,10 @@ object StorageMigration {
             val root = runCatching { JSONObject(workspaceText) }.getOrNull()
             if (root != null && needsStorageDerivation(root)) {
                 backupDir = backupOnce(context, backupDir, workspaceFile, sessionFile)
+                if (backupDir == null) {
+                    FileLog.log(TAG, "迁移前备份不可用，本次不写盘，下次启动重试")
+                    return false
+                }
                 if (deriveStorages(context, root)) {
                     wrote = write(workspaceFile, root.toString()) || wrote
                 }
@@ -75,6 +79,10 @@ object StorageMigration {
                 val byWorkspace = StorageStore.loadWorkspaces(context).associate { it.id to it.storageId }
                 if (fillSessions(root, storages, byWorkspace, permissionWire, effortWire)) {
                     backupDir = backupOnce(context, backupDir, workspaceFile, sessionFile)
+                    if (backupDir == null) {
+                        FileLog.log(TAG, "迁移前备份不可用，本次不写盘，下次启动重试")
+                        return false
+                    }
                     wrote = write(sessionFile, root.toString()) || wrote
                 }
             }
@@ -200,7 +208,7 @@ object StorageMigration {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val dir = File(AppPaths.dataDir(appContext), "migration-backup-" + stamp)
         if (!dir.exists() && !dir.mkdirs()) {
-            FileLog.log(TAG, "备份目录创建失败，迁移继续（原文件仍有主副本）")
+            FileLog.log(TAG, "备份目录创建失败，本次不写盘（下次启动重试）")
             return null
         }
         for (file in files) {

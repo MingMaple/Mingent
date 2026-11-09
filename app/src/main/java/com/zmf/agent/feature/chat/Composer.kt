@@ -22,7 +22,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -151,6 +153,7 @@ private enum class ComposerPanelKind { NONE, PLUS, PERMISSION, CONTEXT, MODEL, S
  * 面板开关只认三件事：点对应标签、点/划面板与输入条以外、返回键；键盘开合与焦点变化一律不动它。
  * 开关状态仍然全在这里 remember，父层只通过 [ComposerPanelHost] 拿「开着没」和「关掉」。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatComposer(
     value: TextFieldValue,
@@ -170,6 +173,12 @@ fun ChatComposer(
     onPlus: () -> Unit,
     onMention: () -> Unit,
     onSend: () -> Unit,
+    /**
+     * 长按发送键：插话发送全部排队消息（对应 DSH 的 Ctrl/Cmd+Enter）。
+     *
+     * 与短按互补：短按按「繁忙时发送行为」投递当前草稿，长按则把队列整体插进正在跑的这一轮。
+     */
+    onSteerAll: () -> Unit,
     onStop: () -> Unit,
     onPermissionPick: (PermissionLevel) -> Unit,
     onComposerCommand: (ComposerCommand) -> Unit,
@@ -198,8 +207,9 @@ fun ChatComposer(
     val accent = UiColors.accentFg
     val accentFill = UiColors.accentFill
     val onAccent = UiColors.onAccent
-    // 只挂附件不写字也是有效发送：曾经只按文本判，图片/文件就永远发不出去
-    val canSend = value.text.isNotBlank() || hasAttachment
+    // 只挂附件不写字也是有效发送：曾经只按文本判，图片/文件就永远发不出去。
+    // 草稿为空但队列非空时同样可用：此时发送键的语义是「发送（插话）排队消息」，与占位提示一致
+    val canSend = value.text.isNotBlank() || hasAttachment || queue.isNotEmpty()
     // 被编辑的消息已删除或发送后，描边随之消失，不会残留无效编辑态
     val editingId = editingQueueId?.takeIf { id -> queue.any { it.id == id } }
 
@@ -502,7 +512,12 @@ fun ChatComposer(
                         .clip(CircleShape)
                         // 不可发时整块压到 40%：DSH 的发送键禁用态就是 opacity .4
                         .background(if (canSend) accentFill else accentFill.copy(alpha = 0.40f))
-                        .clickable(enabled = canSend, onClick = onSend),
+                        // 短按投递草稿；长按把排队消息整体插话发送（DSH 的互补手势）
+                        .combinedClickable(
+                            enabled = canSend,
+                            onClick = onSend,
+                            onLongClick = onSteerAll
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     // 忙时的发送键保留自己的身份：排队 / 插话，不跟停止键混用同一个图标
@@ -742,7 +757,8 @@ private fun ModelPickRow(title: String, value: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(44.dp)
+            // 最小高度固定，字号放大时随内容增高，避免大字体下文字被裁
+            .heightIn(min = 44.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -819,7 +835,7 @@ private fun ComposerPanelOverlay(
 }
 
 /**
- * 一条排队消息：左边空心圆、中间单行文本、右边三个 36dp 热区（编辑 / 删除 / 立即发送）。
+ * 一条排队消息：左边空心圆、中间单行文本、右边三个 36dp 热区（编辑 / 删除 / 插话发送）。
  * 正在编辑的那条描一圈 accent，因为用户改完回头看，需要知道改的是哪一条。
  */
 @Composable
@@ -839,7 +855,7 @@ private fun QueuedRow(
             .clip(shape)
             .background(onSurface.copy(alpha = 0.06f))
             .then(if (editing) Modifier.border(1.dp, UiColors.accentFg, shape) else Modifier)
-            .height(40.dp)
+            .heightIn(min = 40.dp)
             .padding(start = 12.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -881,7 +897,7 @@ private fun PermissionChip(label: String, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Row(
         modifier = Modifier
-            .height(28.dp)
+            .heightIn(min = 28.dp)
             .clip(RoundedCornerShape(9.dp))
             .background(onSurface.copy(alpha = 0.06f))
             .clickable(onClick = onClick)

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -171,8 +173,10 @@ internal fun UsageLineChart(
         fontSize = 10.sp,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
     )
-    Canvas(modifier.fillMaxWidth().height(height + 18.dp)) {
-        val labelBand = 18.dp.toPx()
+    // 标签区随字号缩放，避免大字体下轴标签被画布下边缘裁掉（1x 时为 18dp）
+    val labelBandDp = with(LocalDensity.current) { labelStyle.fontSize.toDp() } + 8.dp
+    Canvas(modifier.fillMaxWidth().height(height + labelBandDp)) {
+        val labelBand = labelBandDp.toPx()
         val width = size.width
         val high = size.height - labelBand
         // 左右各留出半个点的位置：否则首末点的圆会被画布边缘切掉一半
@@ -268,7 +272,7 @@ internal fun LegendRow(
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Row(
-        modifier = modifier.fillMaxWidth().height(24.dp),
+        modifier = modifier.fillMaxWidth().heightIn(min = 24.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(

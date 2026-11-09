@@ -115,9 +115,7 @@ object TrashStore {
     /** 恢复/清空的结论：成功与否 + 给用户看的一句话。 */
     data class Outcome(val ok: Boolean, val message: String)
 
-    // =========================================================================
     // 卷池
-    // =========================================================================
 
     /** 全部可用的池根（`<externalFilesDir>/.trash`），按系统给的卷顺序。 */
     fun pools(context: Context): List<File> {
@@ -172,9 +170,7 @@ object TrashStore {
         return runCatching { Os.stat(existing.absolutePath).st_dev }.getOrNull()
     }
 
-    // =========================================================================
     // 移入 / 复制
-    // =========================================================================
 
     /** 将 [target] 整体 rename 进同卷池；没有同卷池或 rename 失败时返回 null（原目标未被修改）。 */
     fun moveInto(context: Context, target: File, sessionId: String, tool: String): Entry? {
@@ -346,9 +342,7 @@ object TrashStore {
         return Stats(bytes, files, dirs)
     }
 
-    // =========================================================================
     // 列举 / 恢复 / 清空 / 淘汰
-    // =========================================================================
 
     /** 全部池里的条目，按时间倒序；界面读一次就够，不在调用方缓存。 */
     fun entries(context: Context): List<Entry> = synchronized(lock) {

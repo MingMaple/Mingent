@@ -13,6 +13,9 @@ const val ORIGIN_USER = "user"
 /** 唤醒来源：定时任务在后台代发。 */
 const val ORIGIN_SCHEDULE = "schedule"
 
+/** 唤醒来源：后台任务结算通知。只给模型读，界面不渲染成用户气泡。 */
+const val ORIGIN_JOB = "job"
+
 /**
  * 会话里的一条消息，user / assistant / tool / system 四种角色共用。
  *
@@ -26,6 +29,13 @@ data class ChatMessage(
     val toolCalls: List<ToolCall> = emptyList(),
     val toolCallId: String? = null,
     val toolName: String? = null,
+    /**
+     * 这条工具结果是否成功；null = 未记录（非工具消息、旧版本落盘、或结果未知）。
+     *
+     * 存在的理由：产物卡要判断「这个文件真的写成功了吗」。若改为匹配工具回执文案，
+     * 回执措辞一改，卡片就会静默消失，且不会有任何编译期提示。
+     */
+    val toolOk: Boolean? = null,
     /**
      * 这条消息附带的图片：**工作区相对路径**（如 uploads/img-1700000000000-1.jpg），随会话持久化。
      *
@@ -88,10 +98,11 @@ data class ChatMessage(
      */
     val programmatic: Boolean = false,
     /**
-     * 唤醒来源：[ORIGIN_USER]（用户手动发送）或 [ORIGIN_SCHEDULE]（定时任务）。
+     * 唤醒来源：[ORIGIN_USER]（用户手动发送）、[ORIGIN_SCHEDULE]（定时任务）或
+     * [ORIGIN_JOB]（后台任务结算）。
      *
-     * 只影响后台统计口径：定时任务与普通任务一样计入轮次，
-     * 但 [programmatic] 仍为 true——无人值守时不构成高危操作授权。
+     * 只影响后台统计口径：定时任务与普通任务一样计入轮次，后台任务结算不计；
+     * 两者都会置 [programmatic] = true——无人值守时不构成高危操作授权。
      */
     val origin: String = ORIGIN_USER,
     /**

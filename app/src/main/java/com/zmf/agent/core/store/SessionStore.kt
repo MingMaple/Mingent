@@ -345,6 +345,8 @@ object SessionStore {
     private const val KEY_TOOL_CALLS = "toolCalls"
     private const val KEY_TOOL_CALL_ID = "toolCallId"
     private const val KEY_TOOL_NAME = "toolName"
+    // 工具结果成败：产物卡据此判断文件是否真的写入成功，不依赖回执文案
+    private const val KEY_TOOL_OK = "toolOk"
     private const val KEY_IMAGES = "images"
     private const val KEY_CREATED_AT = "createdAt"
     // 单条消息自身的用量（气泡中的「用量 X tok」）：与会话级 promptTokens 含义不同，
@@ -386,12 +388,24 @@ object SessionStore {
         if (!file.exists() || file.length() == 0L) return emptyList()
         return try {
             val text = file.readText(Charsets.UTF_8)
-            if (text.isBlank()) emptyList() else parse(text)
+            if (text.isBlank()) emptyList() else parse(text).map { healBlank(it) }
         } catch (e: Exception) {
             FileLog.log(TAG, "读取会话失败，从空列表开始：" + e)
             emptyList()
         }
     }
+
+    /**
+     * 空白会话指「还没发出第一条消息的空壳」。若它已经带了消息（目前只可能是定时任务写入的），
+     * 就不再是空白态，必须转正并列入侧边栏；否则结果与通知都在，用户却在工作区里找不到这条会话
+     * （2026-11-09 06:57 新闻早报：消息写入成功，会话仍是 blank 且未列出）。
+     */
+    private fun healBlank(session: ChatSession): ChatSession =
+        if (session.blank && session.messages.isNotEmpty()) {
+            session.copy(blank = false, listed = true)
+        } else {
+            session
+        }
 
     /** 整体覆盖写；失败只记日志。先写 .tmp 再 rename，避免写入中断后残留损坏文件。 */
     @Synchronized
@@ -509,7 +523,6 @@ object SessionStore {
             a.updatedAt >= b.updatedAt -> a
             else -> b
         }
-        if (winner !== a && winner !== b) return winner
         // 标题、工作区等元信息取有值的一方：避免合并时将后台生成的标题置为空值
         val other = if (winner === a) b else a
         return winner.copy(
@@ -780,6 +793,8 @@ object SessionStore {
         if (!callId.isNullOrEmpty()) obj.put(KEY_TOOL_CALL_ID, callId)
         val callName = message.toolName
         if (!callName.isNullOrEmpty()) obj.put(KEY_TOOL_NAME, callName)
+        // 只在有结论时写入：null（未记录）不落盘，读回仍是 null
+        message.toolOk?.let { obj.put(KEY_TOOL_OK, it) }
         // 图片仅写入工作区相对路径；imageDataUrls 为请求期临时数据，一律不落盘
         if (message.images.isNotEmpty()) {
             val images = JSONArray()
@@ -810,7 +825,7 @@ object SessionStore {
      *
      * 必要性：落盘检查点会在**执行有副作用的工具之前**写入一份会话，若进程在工具执行中终止，
      * 磁盘上会存在「assistant 含 tool_calls，但后续无对应 tool 消息」的记录。若不补齐：
-     * ① 界面会残留无结果的工具气泡；② 请求视图的 [sanitized] 会丢弃**整轮**内容，
+     * ① 界面会残留无结果的工具气泡；② 请求视图的 sanitized() 会丢弃**整轮**内容，
      * 模型无法得知该调用发生过，可能误判为未执行而重复执行，或误判为已完成而不作验证。
      *
      * 补齐文案的语义为**不自动重试**：要求先核实副作用是否已经发生。
@@ -949,6 +964,8 @@ object SessionStore {
             toolCalls = calls,
             toolCallId = obj.stringOrNull(KEY_TOOL_CALL_ID),
             toolName = obj.stringOrNull(KEY_TOOL_NAME),
+            // 键不存在表示未记录（旧会话）：既不当成功也不当失败
+            toolOk = if (obj.has(KEY_TOOL_OK)) obj.optBoolean(KEY_TOOL_OK, false) else null,
             // 旧版本落盘无 images，stringList 返回空列表，旧会话可正常打开
             images = obj.stringList(KEY_IMAGES),
             promptTokens = obj.optInt(KEY_MSG_PROMPT, 0),

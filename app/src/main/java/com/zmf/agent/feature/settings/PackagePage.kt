@@ -276,7 +276,7 @@ private fun McpTab(registry: ToolRegistry, onChanged: () -> Unit) {
     ) {
         // 顶部右侧的小按钮：只重连，不动配置
         Row(
-            modifier = Modifier.fillMaxWidth().height(36.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Spacer(Modifier.weight(1f))
@@ -432,7 +432,7 @@ private fun McpRow(
         McpManager.ServerState.DISABLED -> "未启用"
         McpManager.ServerState.CONNECTING -> "连接中"
         McpManager.ServerState.READY -> "就绪 · " + status.toolCount + " 个工具"
-        McpManager.ServerState.FAILED -> "失败：" + status.message.orEmpty()
+        McpManager.ServerState.FAILED -> "连接失败，请检查地址与网络后重试"
     }
 
     Row(
@@ -686,7 +686,7 @@ private fun SkillTab(onChanged: () -> Unit) {
                 // onSuccess / onFailure 的 lambda 不在挂起上下文中，文件读取需在此处分别处理
                 val count = result.getOrNull()
                 if (count == null) {
-                    toast(context, "导入失败：" + describeError(result.exceptionOrNull()))
+                    toast(context, "导入失败：压缩包无法读取或格式不符，请换一个文件后重试")
                 } else {
                     skills = readSkills(context)
                     onChanged()
@@ -735,7 +735,7 @@ private fun SkillTab(onChanged: () -> Unit) {
                                         if (ok) onChanged()
                                         toast(
                                             context,
-                                            if (ok) "已删除「" + entry.name + "」" else "删除失败"
+                                            if (ok) "已删除「" + entry.name + "」" else "删除失败，请稍后重试"
                                         )
                                     }
                                 }
@@ -789,7 +789,7 @@ private fun SkillTab(onChanged: () -> Unit) {
                     }
                     val entry = result.getOrNull()
                     if (entry == null) {
-                        toast(context, "创建失败：" + describeError(result.exceptionOrNull()))
+                        toast(context, "创建失败：名称可能重复或含有不支持的字符，请修改后重试")
                     } else {
                         skills = readSkills(context)
                         onChanged()
@@ -1021,10 +1021,6 @@ private fun headersToText(headers: Map<String, String>?): String {
     if (headers.isNullOrEmpty()) return ""
     return headers.entries.joinToString("\n") { entry -> entry.key + ": " + entry.value }
 }
-
-/** 把异常折成一句能看的话：优先 message，没有就退回类名。 */
-private fun describeError(error: Throwable?): String =
-    error?.message ?: error?.javaClass?.simpleName ?: "未知错误"
 
 private fun toast(context: Context, text: String) {
     NoticeCenter.info(text)

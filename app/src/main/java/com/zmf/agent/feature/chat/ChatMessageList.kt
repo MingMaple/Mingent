@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -35,6 +36,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.layout.LocalUiWindow
+import com.zmf.agent.uikit.markdown.FileLinkRouter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import java.io.File
@@ -74,6 +76,24 @@ internal fun ColumnScope.ChatMessageList(
     )
     val forkWithReload: (() -> Unit) -> Unit = { action -> ui.forkWithReload(scope, action) }
 
+    // 本会话产出的文件：卡片、正文里的产物链接、预览页列表三处共用同一份推导结果。
+    // 不套 remember：messages 是就地变异的快照列表，拿它当键永远不会失效，结果会停在首次组合时的空表。
+    val producedFiles = ProducedFiles.of(viewModel.messages, imageRoot)
+    // 行内代码里的产物路径按这一份集合解析；换会话或新写出文件时重挂一次
+    DisposableEffect(producedFiles) {
+        FileLinkRouter.attach { token -> ProducedFiles.match(producedFiles, token)?.path }
+        FileLinkRouter.open = { path ->
+            PreviewTabs.open(path)
+            ui.page.value = AppPage.PREVIEW
+            true
+        }
+        onDispose { FileLinkRouter.attach(null) }
+    }
+    val openPreview: (String) -> Unit = { path ->
+        PreviewTabs.open(path)
+        ui.page.value = AppPage.PREVIEW
+    }
+
     // 长按小窗仅在列表未滑动时弹出。
     fun longPressAllowed(): Boolean = !listState.isScrollInProgress
 
@@ -95,6 +115,16 @@ internal fun ColumnScope.ChatMessageList(
     // 角色序列仅在追加或回滚时变化，均与条数绑定，因此按条数记忆，token 级重组无需重扫。
     val lastAssistantIndex = remember(viewModel.currentSessionId, viewModel.messages.size) {
         viewModel.messages.indexOfLast { it.role == "assistant" }
+    }
+
+    // 最后一条「用户亲手发送」的提问下标。
+    //
+    // 插话会立刻在末尾追加一条 user 消息：被它插在后面的那一轮，从用户视角已经结束
+    // （没有最终输出，只有过程），过程区应当立刻折叠成计数行，而不是把一整排工具卡摊在表面。
+    // 只认非代发消息：后台任务结算注入的是 programmatic = true，那不算用户开口，
+    // 它注入时本轮仍在继续，不触发折叠。
+    val lastUserIndex = remember(viewModel.currentSessionId, viewModel.messages.size) {
+        viewModel.messages.indexOfLast { it.role == "user" && !it.programmatic }
     }
 
     // 键盘弹起时视口会先变矮：此时再判断「是否停在底部」，原本贴底的位置已被顶开，
@@ -246,12 +276,20 @@ internal fun ColumnScope.ChatMessageList(
                                 is ChatItem.AssistantItem -> AssistantRow(
                                     all = viewModel.messages,
                                     indices = item.indices,
-                                    // 「本轮尚未结束」= 正在流式，或本轮结束后已排入下一回合（续跑）。
-                                    // 若仅判断 isStreaming，收尾落盘的数百毫秒内过程区会先折叠、
+                                    // 后台任务结算通知触发的回合：只留一行来源说明，不画用户气泡
+                                    trigger = item.trigger,
+                                    // 「本轮尚未结束」= 正在流式（或本轮结束后已排入续跑），且本条就是最后一条助手消息，
+                                    // 并且它之后没有出现新的用户提问。
+                                    // 前两条照旧：若仅判断 isStreaming，收尾落盘的数百毫秒内过程区会先折叠、
                                     // 下一段内容到达后又展开，用户观察到的即为「偶发折叠」。
+                                    // 第三条专为插话：插话另起一轮后，被截断的那一轮已经没有最终输出，
+                                    // 立刻折叠，只留计数行（展开仍可查看整段过程）。
                                     streaming = (viewModel.isStreaming || viewModel.chainPending) &&
-                                        item.indices.lastOrNull() == lastAssistantIndex,
+                                        item.indices.lastOrNull() == lastAssistantIndex &&
+                                        (item.indices.lastOrNull() ?: -1) > lastUserIndex,
                                     toolOutcomes = viewModel.toolOutcomes,
+                                    root = imageRoot,
+                                    onOpenFile = openPreview,
                                     onCopy = { text -> copyToClipboard(context, text) },
                                     onSelectText = { text, reasoning ->
                                         selectionTarget = SelectionTarget(

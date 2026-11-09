@@ -73,6 +73,7 @@ object ScheduleBridge {
     @Volatile
     private var bound: Port? = null
 
+    /** 绑定定时任务域的实现；传 null 表示注销。 */
     fun install(port: Port?) {
         bound = port
         FileLog.log("schedule", if (port == null) "定时任务桥已注销" else "定时任务桥已绑定")

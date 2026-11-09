@@ -50,7 +50,7 @@ class McpToolAdapter(
         /** 模型 API 对工具名的长度上限是 64。 */
         const val MAX_NAME_CHARS = 64
 
-        /** 尾部哈希长度；前缀按「前 51 位」的规格再缩减 1 位，使 51+2+12 不超过 64。 */
+        /** 尾部哈希长度；前缀取「64 位上限 − 2 个分隔符 − 12 位哈希 = 50 位」。 */
         const val HASH_CHARS = 12
         const val PREFIX_CHARS = MAX_NAME_CHARS - 2 - HASH_CHARS
 

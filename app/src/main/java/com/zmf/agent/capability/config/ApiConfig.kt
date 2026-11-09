@@ -77,7 +77,7 @@ object ApiConfig {
         return if (saved.isNullOrBlank()) ApiDefaults.SEARCH_BASE_URL else saved.trimEnd('/')
     }
 
-    /** 写回检索端点；保存空串即恢复使用 [SEARCH_BASE_URL]。 */
+    /** 写回检索端点；保存空串即恢复使用 [ApiDefaults.SEARCH_BASE_URL]。 */
     fun saveSearchBaseUrl(context: Context, url: String) {
         val clean = url.trim().trimEnd('/')
         prefs(context).edit().putString(KEY_SEARCH_BASE_URL, clean).apply()

@@ -1,5 +1,10 @@
 package com.zmf.agent.feature.chat
 
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -194,5 +199,14 @@ private fun TabChip(
     }
 }
 
-/** 一枚条目在横滑内容里的位置（像素）。 */
+/** 条目在横滑内容里的位置（像素）。 */
 private class TabBounds(val x: Float, val width: Float)
+
+/**
+ * 正文区的过渡：计划页与预览页共用同一时长与做法。
+ *
+ * 切条目时上方结构不变，只有正文换内容；硬切会让整页像被刷新，故交叉淡化。
+ * 两页正文都铺满剩余高度，尺寸不变，因此不需要额外的尺寸动画。
+ */
+internal fun tabContentTransform(): ContentTransform =
+    fadeIn(tween(180)) togetherWith fadeOut(tween(180))

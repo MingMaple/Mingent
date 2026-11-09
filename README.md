@@ -2,12 +2,13 @@
 
 **Mingent** 是一个运行在 Android 上的本地 AI Agent 客户端。填写模型 API Key 后，它可调用工具完成文件读写、命令执行、联网检索等操作；会话记录、密钥、记忆与附件均保存在本机应用私有目录内。
 
-当前版本 **1.2.6**（versionCode 172），支持 Android 8.0（API 26）及以上；内置终端与记忆内核目前只支持 arm64 设备，详见[已知限制](#已知限制)。
+当前版本 **1.3.0**（versionCode 173），支持 Android 8.0（API 26）及以上；内置终端与记忆内核目前只支持 arm64 设备，详见[已知限制](#已知限制)。
 
 ## 能力
 
 - **模型接入**：支持 DeepSeek 与任意 OpenAI 兼容接口，可同时配置多个提供商，同一厂商可并存多份独立配置。
-- **工具调用**：文件读写、内置终端命令、联网搜索、MCP 服务与 Skill，共 35 个内置工具。
+- **工具调用**：文件读写、内置终端命令、联网搜索、MCP 服务与 Skill，共 36 个内置工具。
+- **产物预览**：助手写出的文件在回复末尾以卡片列出，正文中的路径可直接点击打开；预览页按标签管理已打开的文件，支持 Markdown、代码、纯文本、PDF、图片与 docx，导出入口固定在右上角。
 - **权限控制**：只读 / 工作区 / 完全三档，路径判定在工具内部完成；删除操作另设一层安全链路——工作区外与通配删除要求**一次一码**授权，默认先进入回收站，关键目录永久拒绝，全过程写入审计日志。
 - **任务编排**：长会话自动摘要与上下文压缩；任务可拆成待办或计划，计划须由用户在专门页面授权后执行；支持定时任务（按计划时刻锚定，周期不漂移）。
 - **长期记忆**：独立内核 `mingmem`，跨会话保存用户偏好与项目约定，按工作区隔离，可随备份导出。详见下节。
@@ -22,11 +23,14 @@
 <tr>
 <td align="center"><img src="docs/images/chat.png" width="230" alt="主页"><br>主页</td>
 <td align="center"><img src="docs/images/trace.png" width="230" alt="轨迹页"><br>轨迹页</td>
+</tr>
+<tr>
 <td align="center"><img src="docs/images/drawer.png" width="230" alt="抽屉"><br>抽屉</td>
+<td align="center"><img src="docs/images/preview.png" width="230" alt="预览页"><br>预览页</td>
 </tr>
 </table>
 
-> 三张图是按现行界面绘制的示意图，会话名、消息正文与路径均为占位内容，不含任何真实数据。
+> 四张图是按现行界面绘制的示意图，会话名、消息正文、文件名与路径均为占位内容，不含任何真实数据。
 
 ## 长期记忆：mingmem
 
@@ -66,7 +70,7 @@ python3 -X utf8 -m mingmem recall --query 检索词 --json
 2. 在手机上直接点击安装，或经数据线安装：
 
    ```bash
-   adb install -r Mingent-1.2.6.apk
+   adb install -r Mingent-1.3.0.apk
    ```
 
 3. 打开应用，进入「设置 → 模型」，填写服务商与 API Key。
@@ -111,6 +115,7 @@ gradlew.bat :app:assembleRelease
 ## 已知限制
 
 - **内置终端与记忆内核仅支持 arm64 设备**。APK 本身是通用包（含 arm64-v8a / armeabi-v7a / x86 / x86_64），但 PRoot 实现与 Ubuntu 根文件系统均为 arm64 预编译，其他架构可以安装，但仅有界面与网络类功能可用。
+- 应用内预览有体积上限：docx 8 MB、图片 24 MB、PDF 40 MB，超过时提示用其他应用打开。
 - 定时任务的实际触发时间比计划晚 19–33 秒（`targetSdk 28` 下系统将精确闹钟降级为窗口闹钟），周期本身不漂移。
 
 ## 致谢
@@ -128,6 +133,9 @@ Mingent 的内置终端直接采用了 Operit AI 的 PRoot Ubuntu 环境实现�
 
 **BAAI / FlagEmbedding**（[github.com/FlagOpen/FlagEmbedding](https://github.com/FlagOpen/FlagEmbedding)）
 稠密检索内置的 `bge-small-zh-v1.5` 模型权重以其 MIT 授权原样内置，未作修改。
+
+**mammoth.js**（[github.com/mwilliamson/mammoth.js](https://github.com/mwilliamson/mammoth.js)）
+应用内 docx 预览用它把文档转换为可读 HTML，以其 BSD 2-Clause 授权原样内置，未作修改，许可全文见 [LICENSE-mammoth.txt](app/src/main/assets/docx/LICENSE-mammoth.txt)。
 
 **DeepSeek Harness**（[github.com/deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)）与 **dsh-context**（[github.com/bowenliang123/dsh-context](https://github.com/bowenliang123/dsh-context)）
 两者在 Agent 循环、上下文滚动压缩与工具分层等方面提供了设计与实现思路的参考。本仓库未包含两者的代码。

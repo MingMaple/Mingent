@@ -63,6 +63,7 @@ data class ScheduleTask(
  * 无需引入数据库），写入失败只记录日志不抛出；先写 .tmp 再 rename，避免写入过程中被终止而留下不完整文件。
  *
  * 闹钟本身不在此处管理：本对象只负责数据与下次触发时刻，设置闹钟由 [ScheduleRunner] 完成。
+ * 所有读写都在调用线程同步完成并整份重写文件，调用方须在 IO 线程执行。
  */
 object ScheduleStore {
 

@@ -74,7 +74,11 @@ fun DataSettingsPage(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // 终端环境是否就绪；异常时在页面上提示，避免用户进入终端后才发现问题
-    var terminalInstalled by remember { mutableStateOf(TerminalEnv.isInstalled(context)) }
+    // 存在性检查要访问磁盘，放到后台执行；null 表示仍在检测
+    var terminalInstalled by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(Unit) {
+        terminalInstalled = withContext(Dispatchers.IO) { TerminalEnv.isInstalled(context) }
+    }
     var confirmReinstall by remember { mutableStateOf(false) }
     var reinstallNote by remember { mutableStateOf<String?>(null) }
     // 回收站条数与占用：进入页面时在 IO 线程统计一次（条目受 512 MB 上限约束，扫描开销小）
@@ -139,7 +143,11 @@ fun DataSettingsPage(
                 DataCard {
                     DataRow(
                         title = "终端环境（Ubuntu）",
-                        value = if (terminalInstalled) "已安装" else "异常"
+                        value = when (terminalInstalled) {
+                            null -> "检测中…"
+                            true -> "已安装"
+                            false -> "异常"
+                        }
                     )
                     DataDivider()
                     DataRow(
@@ -191,7 +199,9 @@ fun DataSettingsPage(
                     confirmReinstall = false
                     scope.launch {
                         val freed = withContext(Dispatchers.IO) { TerminalEnv.reinstall(context) }
-                        terminalInstalled = TerminalEnv.isInstalled(context)
+                        terminalInstalled = withContext(Dispatchers.IO) {
+                            TerminalEnv.isInstalled(context)
+                        }
                         reinstallNote = if (freed > 0L) {
                             "旧环境已清除（释放 " + (freed / 1024 / 1024) + " MB）。打开终端后将自动重新解压。"
                         } else {

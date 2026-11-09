@@ -40,7 +40,7 @@ object PromptOrders {
     const val SKILLS = 3100
     const val USER_EXTRA = 3200
 
-    // ---- 易变层（进尾部运行时快照，只有 build() 估算时才按这个顺序拼）----
+    // ---- 易变层（进尾部运行时快照）：编号为对齐稳定层预留，拼接顺序由 PromptBuilder.build() 固定 ----
     const val PERMISSION = 9100
     const val PLAN = 9200
     const val SUMMARY = 9900

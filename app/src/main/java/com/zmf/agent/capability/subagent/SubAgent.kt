@@ -7,12 +7,10 @@ import com.zmf.agent.capability.loop.AgentUi
 import com.zmf.agent.capability.prompt.PromptInput
 import com.zmf.agent.infra.llm.LlmProvider
 import com.zmf.agent.infra.llm.UsageBuckets
-import com.zmf.agent.core.AppForeground
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.core.model.ToolCall
-import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
@@ -69,9 +67,9 @@ object SubAgentRunner {
 
     private const val TAG = "subagent"
 
-    /** 并发闸拒绝的文案：TaskTool 与 send_message 都按它报「名额满了」。 */
+    /** 并发闸拒绝的文案：新建与续聊共用，调用方原样交回模型。 */
     private val LIMIT_TEXT =
-        "subagent limit reached (active child limit: " + MAX_ACTIVE + "); wait for an existing child to finish"
+        "同时运行的子智能体已达上限（" + MAX_ACTIVE + " 个），请等现有子智能体结束后再试"
 
     /** 并发限制：使用 tryAcquire，无法获取时不排队，直接失败。 */
     private val semaphore = Semaphore(MAX_ACTIVE)
@@ -133,17 +131,14 @@ object SubAgentRunner {
             if (answer.startsWith(FAIL_PREFIX)) {
                 val reason = answer.removePrefix(FAIL_PREFIX)
                 SubAgentRegistry.fail(id, reason)
-                notifyResult(context, false, reason, sessionId)
                 return SubAgentOutcome(id, answer, false)
             }
             SubAgentRegistry.finish(id, answer)
-            notifyResult(context, true, answer, sessionId)
             return SubAgentOutcome(id, answer, true)
         } catch (e: TimeoutCancellationException) {
             val reason = "超时（超过 " + (TIMEOUT_MS / 60000) + " 分钟仍未完成）"
             FileLog.log(TAG, "子智能体超时（" + TIMEOUT_MS / 60000 + " 分钟）：「" + description.take(60) + "」")
             SubAgentRegistry.fail(id, reason)
-            notifyResult(context, false, reason, sessionId)
             return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
         } catch (e: CancellationException) {
             // 用户点击停止：取消必须透传，不得作为「子智能体失败」吞没
@@ -153,7 +148,6 @@ object SubAgentRunner {
             val reason = e.message ?: e.javaClass.simpleName
             FileLog.log(TAG, "子智能体异常：" + reason)
             SubAgentRegistry.fail(id, reason)
-            notifyResult(context, false, reason, sessionId)
             return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
         } finally {
             semaphore.release()
@@ -286,7 +280,6 @@ object SubAgentRunner {
                 val reason = "没有产出任何结论"
                 FileLog.log(TAG, "续聊没有产出结论：" + id)
                 SubAgentRegistry.fail(id, reason)
-                notifyResult(context, false, reason, sessionId)
                 return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
             }
             val result = truncate(answer)
@@ -295,13 +288,11 @@ object SubAgentRunner {
                 listOf(SubAgentTurn(role = "user", text = text), SubAgentTurn(role = "assistant", text = result))
             )
             SubAgentRegistry.finish(id, result)
-            notifyResult(context, true, result, sessionId)
             return SubAgentOutcome(id, result, true)
         } catch (e: TimeoutCancellationException) {
             val reason = "超时（超过 " + (TIMEOUT_MS / 60000) + " 分钟仍未完成）"
             FileLog.log(TAG, "续聊超时：" + id)
             SubAgentRegistry.fail(id, reason)
-            notifyResult(context, false, reason, sessionId)
             return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
         } catch (e: CancellationException) {
             SubAgentRegistry.fail(id, "已取消")
@@ -310,7 +301,6 @@ object SubAgentRunner {
             val reason = e.message ?: e.javaClass.simpleName
             FileLog.log(TAG, "续聊异常：" + reason)
             SubAgentRegistry.fail(id, reason)
-            notifyResult(context, false, reason, sessionId)
             return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
         } finally {
             semaphore.release()
@@ -335,17 +325,6 @@ object SubAgentRunner {
             }
         }
         return turns
-    }
-
-    /** 仅当用户不在前台时发送通知：用户正在查看屏幕，无需系统再次提醒。 */
-    private fun notifyResult(context: Context, ok: Boolean, text: String, sessionId: String) {
-        if (AppForeground.isForeground) return
-        Notifier.notifySubagent(
-            context,
-            if (ok) "子智能体完成" else "子智能体失败",
-            text.trim().take(200),
-            sessionId
-        )
     }
 
     /** 超长结论截断，明确注明「已截断」，避免父会话误认为取得全文。 */

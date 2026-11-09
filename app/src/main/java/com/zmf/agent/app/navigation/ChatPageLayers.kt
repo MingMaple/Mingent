@@ -48,6 +48,7 @@ import com.zmf.agent.feature.chat.AppPage
 import com.zmf.agent.feature.chat.ChatUiState
 import com.zmf.agent.feature.chat.ChatViewModel
 import com.zmf.agent.feature.chat.PlanPage
+import com.zmf.agent.feature.chat.PreviewPage
 import com.zmf.agent.feature.chat.SubAgentPage
 import com.zmf.agent.uikit.common.NoticeCenter
 import com.zmf.agent.uikit.common.NoticeTone
@@ -379,6 +380,14 @@ internal fun ChatPageLayers(
             modifier = Modifier.fillMaxSize()
         ) {
             BrowserPage(onBack = { page = null })
+        }
+
+        // 产物预览：与计划、浏览同层次的一页。卡片、正文里的产物路径、顶栏图标都进这里
+        PageSlide(visible = page == AppPage.PREVIEW) {
+            PreviewPage(
+                io = viewModel.currentStorageIo(),
+                onBack = { page = null }
+            )
         }
 
         // 包管理：MCP 服务与 Skill 两个标签页（设置下的二级页）

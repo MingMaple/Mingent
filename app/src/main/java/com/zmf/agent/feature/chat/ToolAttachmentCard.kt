@@ -1,6 +1,5 @@
 package com.zmf.agent.feature.chat
 
-import com.zmf.agent.uikit.common.decodeSampledBitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,7 +17,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -101,10 +99,10 @@ internal fun ToolAttachmentRow(
 @Composable
 private fun AttachmentThumb(relPath: String, root: File?) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val bitmap = remember(relPath, root) {
-        val file = if (root != null) File(root, relPath) else File(relPath)
-        decodeSampledBitmap(file.absolutePath, THUMB_EDGE_PX)
-    }
+    val bitmap = rememberThumbnail(
+        if (root != null) File(root, relPath) else File(relPath),
+        THUMB_EDGE_PX
+    )
     Box(
         modifier = Modifier
             .size(ThumbSide)

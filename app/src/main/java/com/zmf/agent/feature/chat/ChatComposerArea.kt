@@ -217,6 +217,8 @@ internal fun ChatComposerArea(
                         },
                         onDeleteQueued = { queued -> viewModel.deleteQueued(queued.id) },
                         onSendQueued = { queued -> viewModel.sendQueuedNow(queued.id, scope) },
+                        // 长按发送键：把队列整体插话发送（DSH 的 Ctrl/Cmd+Enter）
+                        onSteerAll = { viewModel.steerAllQueued(scope) },
                         onPlus = {},
                         // 本项目没有 @ 会话/文件 的补全列表，「@」暂时等同「选择文件」
                         onMention = { onPickFile() },
@@ -230,6 +232,10 @@ internal fun ChatComposerArea(
                                 // 空闲 = 直接发送；流式中按「繁忙时发送行为」排队或插话（与停止不同）
                                 viewModel.sendWhileBusy(text, scope)
                                 viewModel.updateInput(TextFieldValue(""))
+                            } else if (viewModel.pendingQueue.isNotEmpty()) {
+                                // 草稿为空而队列非空：发送键此时就是「发送排队消息」，
+                                // 与输入框的占位提示一致（此前这一下什么都不做，点了像没反应）
+                                viewModel.sendQueuedNow(viewModel.pendingQueue.first().id, scope)
                             }
                         },
                         onStop = { viewModel.stop() },

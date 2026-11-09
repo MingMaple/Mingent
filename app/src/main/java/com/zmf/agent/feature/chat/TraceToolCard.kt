@@ -1,11 +1,8 @@
 package com.zmf.agent.feature.chat
 import com.zmf.agent.uikit.icons.DshIcons
 
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,8 +28,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,9 +41,6 @@ import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.delay
 import java.io.File
-import org.json.JSONArray
-import org.json.JSONObject
-import kotlin.math.abs
 import com.zmf.agent.uikit.markdown.MarkdownCodeBlock
 import com.zmf.agent.uikit.markdown.copyCode
 import com.zmf.agent.uikit.components.CopyRevealHost
@@ -77,20 +69,11 @@ import com.zmf.agent.uikit.components.rememberCopyBlockKey
 private val CopySlot = 46.dp
 
 
-/** 参数摘要的字符上限：路径 / 命令这类长串都截到这个长度。 */
-private const val ARG_SUMMARY_LIMIT = 40
-
 /** 「已复制」提示的停留时间。 */
 private const val COPIED_TIP_MS = 1200L
 
 /** 参数区 / 输出区的内部滚动上限：更长就在块内竖滑。 */
 private val BlockBodyMaxHeight = 240.dp
-
-/** 摘要优先取这些字段：一眼能读懂的「在干什么」。 */
-private val ARG_SUMMARY_KEYS = listOf(
-    "path", "file_path", "filePath", "command", "cmd", "query", "url",
-    "description", "prompt", "goal", "pattern", "name"
-)
 
 /**
  * 轨迹页专用的工具卡（从主页那份派生，但默认展开、只服务详情页）。
@@ -349,63 +332,6 @@ fun TraceToolCard(
 }
 
 /* ------------------------------ 内部实现 ------------------------------ */
-
-/**
- * 横向行滑至尽头后，将剩余横向位移就地消费，不让外层抽屉 / 轨迹页接手。
- *
- * 为什么不用 nestedScroll：horizontalScroll 到边界时既不消费、也不将余量交给
- * onPostScroll，所以 onPostScroll 根本收不到；再往外推就是「把抽屉拉出来」。
- *
- * 为什么走 Initial 阶段逐帧判定：到边界后子节点本身已不消费，待 Main 阶段处理时
- * 外层可能已经接走；这里只问「贴没贴到这一侧 + 方向是不是往外」，贴住了就 consume，
- * 行内还有余量时一律不碰（滑动仍归 horizontalScroll），竖向为主的位移也不碰，
- * 所以竖着滑消息列表不受影响。
- *
- * 实现在本文件（从 ChatScreen 的 private 实现里挪出）；同包另有 [blockHorizontalAtEdge] 供代码块与 TabStrip 复用。
- */
-private fun Modifier.traceCardHorizontalAtEdge(state: ScrollState): Modifier = pointerInput(state) {
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        // 累计位移判定方向：仅看单帧时，慢速拖动一帧仅数像素，无法判定横向
-        var dx = 0f
-        var dy = 0f
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
-            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-            dx += change.position.x - change.previousPosition.x
-            dy += change.position.y - change.previousPosition.y
-            val atStart = state.value == 0 && dx > 0
-            val atEnd = state.value >= state.maxValue && dx < 0
-            if (change.pressed && (atStart || atEnd) && abs(dx) > abs(dy)) change.consume()
-            if (!change.pressed) break
-        }
-    }
-}
-
-/**
- * 参数摘要（与 ToolBlock.kt 里那份实现同口径）：取 path / command 这类字段，
- * 取不到就压成一行，统一截到 [ARG_SUMMARY_LIMIT]。
- */
-private fun toolArgSummary(arguments: String): String {
-    if (arguments.isBlank()) return ""
-    val json = runCatching { JSONObject(arguments) }.getOrNull()
-    val picked = json?.let { obj ->
-        ARG_SUMMARY_KEYS.firstNotNullOfOrNull { key ->
-            val value = obj.opt(key) ?: return@firstNotNullOfOrNull null
-            if (value === JSONObject.NULL || value is JSONObject || value is JSONArray) {
-                return@firstNotNullOfOrNull null
-            }
-            value.toString().takeIf { it.isNotBlank() }
-        }
-    }
-    val flat = (picked ?: arguments)
-        .replace('\n', ' ')
-        .replace('\r', ' ')
-        .split(' ')
-        .filter { it.isNotEmpty() }
-        .joinToString(" ")
-    return if (flat.length > ARG_SUMMARY_LIMIT) flat.take(ARG_SUMMARY_LIMIT) + "…" else flat
-}
 
 /** 默认的复制内容：工具名 + 有哪段带哪段，按「标签换行正文」拼，粘到外面还能读。 */
 private fun buildToolCopyText(

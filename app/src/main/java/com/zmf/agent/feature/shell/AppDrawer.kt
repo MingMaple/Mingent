@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -113,7 +114,9 @@ import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.core.prefs.ArchivedFilter
 import com.zmf.agent.core.prefs.DrawerPrefs
 import com.zmf.agent.core.prefs.ThemeMode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /** 工作区展开后先只显示这么多条会话。 */
 private const val SESSION_PREVIEW = 5
@@ -317,9 +320,15 @@ fun AppDrawerContent(
     val searchFocus = remember { FocusRequester() }
     val searchActive = searchOpen && query.isNotBlank()
     // 正文按会话预先小写化并拼接一次，逐字输入时只做 contains，避免每敲一个字都遍历全部消息并重建字符串
-    val contentIndex = remember(sessions) {
-        sessions.associate { session ->
-            session.id to session.messages.joinToString("\n") { it.content }.lowercase()
+    // 全部会话的正文可能很长，拼接与转换放到后台线程，避免消息更新时卡住抽屉的绘制
+    var contentIndex by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // 用会话数与消息数做键：快照列表的 equals 对自身恒为真，直接作为键不会在内容变化时重启
+    val sessionsKey = sessions.size to sessions.sumOf { it.messages.size }
+    LaunchedEffect(sessionsKey) {
+        contentIndex = withContext(Dispatchers.IO) {
+            sessions.associate { session ->
+                session.id to session.messages.joinToString("\n") { it.content }.lowercase()
+            }
         }
     }
     val searchOutcome = remember(sessions, workspaces, query, archivedFilter, currentSessionId, contentIndex) {
@@ -338,8 +347,9 @@ fun AppDrawerContent(
             filterMenuOpen = false
         }
     }
-    // 分组只在数据变化时重算：置顶的排前面，其余按 updatedAt 倒序；
-    // 始终保留「未分类」分组，否则不属于任何工作区的历史会话将无处显示
+    // 分组只在数据变化时重算：置顶的排前面，其余按 updatedAt 倒序。
+    // 「未分类」是派生分组，只在其下有可见会话时成组：空桶不占一行（与 DSH 的未分组一致）；
+    // 工作区是实体，空工作区仍保留标题行，作为继续新建会话的锚点。
     val known = remember(workspaces) { workspaces.map { it.id }.toSet() }
     // 当前会话也参与分组：尚未转正的空白会话只因「它是当前会话」才可见，切换后必须随之消失；
     // 归档会话按三档筛选显示，「仅显示已归档」时空分组不出现（与 DSH 一致）
@@ -352,7 +362,8 @@ fun AppDrawerContent(
         for (space in workspaces) {
             list.add(WorkspaceGroup(space, buckets[space.id].orEmpty().sortedWith(order)))
         }
-        list.add(WorkspaceGroup(null, buckets[null].orEmpty().sortedWith(order)))
+        val stray = buckets[null].orEmpty().sortedWith(order)
+        if (stray.isNotEmpty()) list.add(WorkspaceGroup(null, stray))
         if (archivedFilter == ArchivedFilter.ONLY) list.filter { it.sessions.isNotEmpty() } else list
     }
 
@@ -607,7 +618,7 @@ fun AppDrawerContent(
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .height(30.dp)
+                        .heightIn(min = 30.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .border(0.5.dp, onSurface.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
                         .padding(start = 2.dp, end = 2.dp),
@@ -839,7 +850,7 @@ fun AppDrawerContent(
                 sessionMenu = null
                 onChangeWorkspace(session)
             }
-            MenuRow(text = "复制 Session ID") {
+            MenuRow(text = "复制会话 ID") {
                 sessionMenu = null
                 onCopySessionId(session.id)
             }
@@ -1016,7 +1027,7 @@ private fun WorkspaceSection(
         Box(
             modifier = Modifier
                 .weight(1f)
-                .height(TREE_CONTENT_HEIGHT),
+                .heightIn(min = TREE_CONTENT_HEIGHT),
             contentAlignment = Alignment.CenterStart
         ) {
             Text(

@@ -1,8 +1,8 @@
 package com.zmf.agent.infra.llm
-import com.zmf.agent.core.llm.ApiDefaults
 
 import android.content.Context
 import com.zmf.agent.core.AppPaths
+import com.zmf.agent.core.llm.ApiDefaults
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.security.SecureStore
 import org.json.JSONArray
@@ -113,6 +113,7 @@ object ProviderStore {
     }
 
     /** 整体覆盖写（密文，.tmp + rename）；失败只记日志，界面表现为本次改动未生效，不会崩溃。 */
+    @Synchronized
     fun save(context: Context, list: List<ProviderConfig>) {
         // 空列表意味着 App 无任何可用模型，直接拒绝：宁可保留磁盘上的旧配置
         if (list.isEmpty()) {

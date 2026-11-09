@@ -9,10 +9,12 @@ import com.zmf.agent.capability.prompt.PromptInput
 import com.zmf.agent.infra.llm.ChatRequest
 import com.zmf.agent.infra.llm.LlmEvent
 import com.zmf.agent.infra.llm.LlmProvider
+import com.zmf.agent.infra.llm.ToolSpec
 import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.capability.tools.displayName
 import com.zmf.agent.core.model.ChatMessage
+import com.zmf.agent.core.model.ORIGIN_JOB
 import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
@@ -172,6 +174,16 @@ class AgentLoop(
          */
         const val PLAN_MODE_ON_NOTICE = "用户把模式切到了「计划模式」"
         const val PLAN_MODE_OFF_NOTICE = "用户关掉了「计划模式」，回到普通模式"
+
+        /**
+         * 达到工具轮数上限后追加的代发指令。
+         *
+         * 后台执行没有人可以追问，此刻直接收尾会让整轮没有正文；要求模型基于已获信息作答，
+         * 再由调用方以空工具表重发一次，即可保证无人值守路径一定有产出。
+         */
+        const val WRAP_UP_PROMPT =
+            "本轮工具调用次数已达上限。请直接基于上文已经获取到的信息给出最终答复，" +
+                "不要再调用任何工具；若信息确实不足，请在答复中说明缺少哪部分信息。"
     }
 
     /** 上一次请求的前缀指纹（system 长度 / 摘要 + 工具表摘要）：变化时记录一行 [cache] 日志。 */
@@ -233,7 +245,14 @@ class AgentLoop(
          * 由 App 以 user 角色代发，必须标记为 true：否则模型可将授权码写入计划，
          * 用户点击按钮即形成一次伪造授权。
          */
-        userTextProgrammatic: Boolean = false
+        userTextProgrammatic: Boolean = false,
+        /**
+         * 本轮是否无人值守（定时任务等后台执行方）。
+         *
+         * 为 true 时，达到工具轮数上限不直接报错收尾，而是追加代发指令、以空工具表再请求一次，
+         * 保证后台路径仍产出正文；聊天页保持 false，行为与原来一致。
+         */
+        unattended: Boolean = false
     ): Int {
         if (userText != null) {
             messages.add(
@@ -258,6 +277,19 @@ class AgentLoop(
         var textMillis = 0L
         var toolArgMillis = 0L
         var toolCalls = 0
+        /** 把最近一次请求的耗时与输出侧账目并入本轮累计（正常轮、溢出重发、收尾各一次）。 */
+        fun accrue() {
+            modelMillis += lastStreamMillis
+            if (lastTtftMillis > 0) {
+                ttftMillis += lastTtftMillis
+                ttftCount++
+            }
+            genMillis += lastGenMillis
+            genTokens += lastRequestOutputTokens
+            reasoningMillis += lastReasoningMillis
+            textMillis += lastTextMillis
+            toolArgMillis += lastToolArgMillis
+        }
         try {
             while (round < maxRounds) {
                 round++
@@ -270,7 +302,9 @@ class AgentLoop(
                         ChatMessage(
                             role = "user",
                             content = JobRegistry.notificationText(finished),
-                            programmatic = true
+                            programmatic = true,
+                            // 只给模型读：界面按「后台任务状态更新」的触发行展示，不画成用户气泡
+                            origin = ORIGIN_JOB
                         )
                     )
                     FileLog.log(
@@ -283,16 +317,7 @@ class AgentLoop(
                 messages.add(ChatMessage(role = "assistant", content = ""))
                 var completed =
                     streamOnce(messages, assistantIndex, thinking, thinkingEffort, toolContext, ui, onCheckpoint)
-                modelMillis += lastStreamMillis
-                if (lastTtftMillis > 0) {
-                    ttftMillis += lastTtftMillis
-                    ttftCount++
-                }
-                genMillis += lastGenMillis
-                genTokens += lastRequestOutputTokens
-                reasoningMillis += lastReasoningMillis
-                textMillis += lastTextMillis
-                toolArgMillis += lastToolArgMillis
+                accrue()
 
                 // 溢出恢复：只提供一次机会。
                 // 为什么不是「重试到成功」：溢出说明发送内容过多，压缩一次仍不足时应让用户知晓，
@@ -309,16 +334,7 @@ class AgentLoop(
                         messages.add(ChatMessage(role = "assistant", content = ""))
                         completed =
                             streamOnce(messages, assistantIndex, thinking, thinkingEffort, toolContext, ui, onCheckpoint)
-                        modelMillis += lastStreamMillis
-                        if (lastTtftMillis > 0) {
-                            ttftMillis += lastTtftMillis
-                            ttftCount++
-                        }
-                        genMillis += lastGenMillis
-                        genTokens += lastRequestOutputTokens
-                        reasoningMillis += lastReasoningMillis
-                        textMillis += lastTextMillis
-                        toolArgMillis += lastToolArgMillis
+                        accrue()
                     }
                 }
                 if (!completed) {
@@ -332,6 +348,10 @@ class AgentLoop(
 
                 // 本轮产出计划后立即结束：计划已落地，不再请求下一轮
                 var producedPlan = false
+                // 工具结果必须紧跟所属的 assistant(tool_calls)：插话可能已经追加在本轮末尾，
+                // 结果按顺序插在 assistant 之后，插话自然留在最后——下一次请求先读工具结果、再读插话，
+                // 与 DSH 的「插话投递到下一步」一致，且不会把工具调用与结果拆开（拆开就是 400）。
+                var toolInsertAt = assistantIndex + 1
                 for (call in calls) {
                     ui.onToolStarted(call)
                     toolCalls++
@@ -360,11 +380,13 @@ class AgentLoop(
                     )
                     ui.onToolFinished(call, result)
                     messages.add(
+                        toolInsertAt++,
                         ChatMessage(
                             role = "tool",
                             content = result.text,
                             toolCallId = call.id,
-                            toolName = call.name
+                            toolName = call.name,
+                            toolOk = result.ok
                         )
                     )
                 }
@@ -374,6 +396,35 @@ class AgentLoop(
                     FileLog.log("plan", "write_plan 已产出计划，结束本轮")
                     return round
                 }
+            }
+            if (unattended) {
+                // 无人值守收尾：后台执行没有人可以追问，直接报错会让整轮没有任何答复，
+                // 定时任务据此判为失败并连发失败通知（2026-11-07 新闻任务实测）。
+                // 先追加一条代发指令，再以空工具表请求一次：模型此时无法调用工具，只能依据已获信息作答。
+                FileLog.log("loop", "达到工具轮数上限 " + maxRounds + "，改为无工具收尾")
+                round++
+                ui.onRound(round)
+                messages.add(
+                    ChatMessage(role = "user", content = WRAP_UP_PROMPT, programmatic = true)
+                )
+                val wrapIndex = messages.size
+                messages.add(ChatMessage(role = "assistant", content = ""))
+                val wrapped = streamOnce(
+                    messages = messages,
+                    index = wrapIndex,
+                    thinking = thinking,
+                    thinkingEffort = thinkingEffort,
+                    toolContext = toolContext,
+                    ui = ui,
+                    onCheckpoint = onCheckpoint,
+                    tools = emptyList()
+                )
+                accrue()
+                // 收尾请求本身失败时仍要留一句原因：调用方据此区分「未产出答复」与「请求失败」
+                if (!wrapped && lastFailure.isNotEmpty()) {
+                    ui.onError("达到工具轮数上限后收尾失败：" + lastFailure)
+                }
+                return round
             }
             ui.onError("本轮已连续调用 " + maxRounds + " 次工具，先停下等你确认下一步。")
             return round
@@ -459,7 +510,9 @@ class AgentLoop(
         thinkingEffort: String?,
         toolContext: ToolContext,
         ui: AgentUi,
-        onCheckpoint: (suspend (String) -> Unit)? = null
+        onCheckpoint: (suspend (String) -> Unit)? = null,
+        /** 本次请求下发的工具表；null = 使用注册表当前快照，空表 = 声明「本轮不能调用工具」。 */
+        tools: List<ToolSpec>? = null
     ): Boolean {
         // 先清零：请求拼装阶段就抛异常时，调用方读到的应该是「这一轮没等到模型」，
         // 而不是上一轮留下的旧耗时
@@ -614,7 +667,7 @@ class AgentLoop(
         }
         // 工具表与系统提示词使用同一个 planMode 来源，避免「提示词声明处于计划模式、工具表却提供写工具」
         // 工具表恒定（不按档位 / 计划模式裁剪）：进出模式或切换档位不改变请求前缀，缓存不会整体失效
-        val specs = registry.specs()
+        val specs = tools ?: registry.specs()
         // 记一行「本轮到底下发了哪些工具」：档位、计划模式、工具名。
          // 为何记录此行：模型曾两次声称「只有只读工具、没有 write_file」，而工具表实际包含该工具；
         // 日志仅记录档位、不记录工具表时，此类争议只能依靠推理定案；记录此行即可一次查清。

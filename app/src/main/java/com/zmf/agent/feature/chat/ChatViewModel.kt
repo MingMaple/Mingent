@@ -44,6 +44,7 @@ import com.zmf.agent.core.store.InsightSessionView
 import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.Todo
 import com.zmf.agent.core.store.UsageLedger
+import com.zmf.agent.core.store.WorkspaceIo
 import com.zmf.agent.capability.subagent.SubAgentDeps
 import com.zmf.agent.capability.subagent.SubAgentRunner
 import com.zmf.agent.core.store.WorkSpace
@@ -946,8 +947,11 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 把某条排队消息移出队列。 */
     fun deleteQueued(id: Long) = sender.deleteQueued(id)
 
-    /** 立即发送队列里的某一条。 */
+    /** 插话发送队列里的某一条：运行中立刻插入这一轮，空闲时直接发出。 */
     fun sendQueuedNow(id: Long, scope: CoroutineScope) = sender.sendQueuedNow(id, scope)
+
+    /** 长按发送键：把队列里的消息全部插话发送（空闲时按顺序正常发送）。 */
+    fun steerAllQueued(scope: CoroutineScope) = sender.steerAllQueued(scope)
 
     /**
      * 发一条消息：只做校验与拼 prompt，真正开跑交给 [SendController]。
@@ -990,8 +994,14 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 删除已归档会话时确认文案的追加段；null 表示无需追加。 */
     fun deleteSessionExtraNote(id: String): String? = sessionStore.deleteSessionExtraNote(id)
 
-    /** 归档前的特例说明（内置目录仅剩此引用、定时任务被解绑）；空列表表示常规归档。 */
+    /** 归档前的特例说明（定时任务被解绑）；空列表表示常规归档。 */
     fun archiveNotes(id: String): List<String> = sessionStore.archiveNotes(id)
+
+    /** 当前会话的存储根：产物推导按它把相对路径解析成绝对路径。 */
+    fun currentStorageRoot(): File = sessionStore.currentStorageRoot()
+
+    /** 当前会话的读取入口（兼容系统授权目录）。 */
+    fun currentStorageIo(): WorkspaceIo = sessionStore.currentStorageIo()
 
     /** 把会话移到目标工作区；返回需要补充的提示，没有则 null。 */
     fun moveSession(id: String, workspaceId: String): String? = sessionStore.moveSession(id, workspaceId)

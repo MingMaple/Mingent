@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -145,6 +146,8 @@ fun SaltDrawer(
     val scope = rememberCoroutineScope()
     val panelPx = with(LocalDensity.current) { panelWidth.toPx() }
     var progress by remember { mutableFloatStateOf(if (open) 1f else 0f) }
+    // 关闭状态下的点按层仅在越过阈值时增删；经 derivedStateOf 收敛，避免跟手拖动期间逐帧重组
+    val scrimVisible by remember { derivedStateOf { progress > 0.02f } }
 
     val settleSlot = remember { SettleSlot() }
     val swipe = remember { LeftSwipeState() }
@@ -435,7 +438,7 @@ fun SaltDrawer(
         }
 
         // 打开时点击右侧空白区域收起（不做压黑，仅设置点击区域）
-        if (progress > 0.02f) {
+        if (scrimVisible) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()

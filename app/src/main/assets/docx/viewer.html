@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <style>
+        /* 配色由 App 侧注入：同一份 HTML 在深色与浅色下都跟随主题 */
+        :root {
+            --bg: __BG__;
+            --fg: __FG__;
+            --sub: __SUB__;
+            --stroke: __STROKE__;
+            --code: __CODE__;
+        }
+
+        html, body { margin: 0; padding: 0; background: var(--bg); }
+
+        body {
+            padding: 14px 16px 28px;
+            font-family: -apple-system, "Noto Sans SC", "PingFang SC", sans-serif;
+            font-size: 15px;
+            line-height: 1.66;
+            color: var(--fg);
+            -webkit-text-size-adjust: 100%;
+            overflow-wrap: break-word;
+            word-break: break-word;
+        }
+
+        h1, h2, h3, h4, h5, h6 { font-weight: 600; line-height: 1.35; margin: 22px 0 8px; }
+        h1 { font-size: 21px; }
+        h2 { font-size: 19px; }
+        h3 { font-size: 17px; }
+        h4, h5, h6 { font-size: 15px; }
+        p { margin: 0 0 12px; }
+        ul, ol { margin: 0 0 12px; padding-left: 22px; }
+        li { margin: 3px 0; }
+        blockquote {
+            margin: 0 0 12px;
+            padding: 2px 0 2px 12px;
+            border-left: 3px solid var(--stroke);
+            color: var(--sub);
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 0 0 14px;
+            font-size: 0.93em;
+            display: block;
+            overflow-x: auto;
+        }
+        td, th { border: 1px solid var(--stroke); padding: 6px 8px; text-align: left; vertical-align: top; }
+        th { font-weight: 600; }
+        img { max-width: 100%; height: auto; border-radius: 6px; }
+        code {
+            font-family: ui-monospace, Menlo, monospace;
+            font-size: 0.92em;
+            background: var(--code);
+            padding: 1px 4px;
+            border-radius: 4px;
+        }
+        a { color: inherit; text-decoration: underline; }
+        .hint { color: var(--sub); font-size: 13px; }
+    </style>
+</head>
+<body>
+<div id="out" class="hint">正在解析文档…</div>
+<script>window.DOCX_BASE64 = "__DOCX_BASE64__";</script>
+<script src="mammoth.browser.min.js"></script>
+<script>
+    (function () {
+        function fail(message) {
+            var out = document.getElementById("out");
+            out.className = "hint";
+            out.textContent = message;
+        }
+
+        try {
+            var raw = atob(window.DOCX_BASE64 || "");
+            var bytes = new Uint8Array(raw.length);
+            for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+            mammoth.convertToHtml({ arrayBuffer: bytes.buffer }, {
+                // Word 的「标题 / 副标题」样式不按 Heading 命名，单独映射一次
+                styleMap: [
+                    "p[style-name='Title'] => h1:fresh",
+                    "p[style-name='Subtitle'] => h3:fresh",
+                    "p[style-name='标题'] => h1:fresh",
+                    "p[style-name='副标题'] => h3:fresh"
+                ]
+            }).then(function (result) {
+                var out = document.getElementById("out");
+                out.className = "";
+                out.innerHTML = result.value || '<p class="hint">这份文档没有可显示的文字。</p>';
+            }).catch(function (error) {
+                fail("文档解析失败：" + (error && error.message ? error.message : error));
+            });
+        } catch (error) {
+            fail("文档解析失败：" + (error && error.message ? error.message : error));
+        }
+    })();
+</script>
+</body>
+</html>

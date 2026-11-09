@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
-import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.log.FileLog
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -70,7 +69,7 @@ object UploadStore {
             part = temp
 
             val input = context.contentResolver.openInputStream(uri)
-                ?: throw IOException("打不开这个文件")
+                ?: throw UploadFailure("无法读取所选文件，请重新选择。")
             var size = 0L
             input.use { source ->
                 temp.outputStream().use { sink ->
@@ -80,13 +79,13 @@ object UploadStore {
                         if (read < 0) break
                         // 边写边计字节：超过上限立刻中止，不把整个大文件落完再判断
                         size += read
-                        if (size > MAX_BYTES) throw IOException("文件超过 50MB")
+                        if (size > MAX_BYTES) throw UploadFailure("文件超过 50MB，请选择更小的文件。")
                         sink.write(buffer, 0, read)
                     }
                     sink.flush()
                 }
             }
-            if (!temp.renameTo(target)) throw IOException("重命名失败：" + target.name)
+            if (!temp.renameTo(target)) throw UploadFailure("保存上传文件失败，请稍后重试。")
             part = null
 
             val relPath = DIR + "/" + name
@@ -96,7 +95,9 @@ object UploadStore {
             // 任一步骤失败仅删除本次写入的 .part，不删除目录中已有文件
             part?.delete()
             FileLog.log(TAG, "导入失败（" + uri + "）：" + (e.message ?: e.javaClass.simpleName))
-            Result.failure(e)
+            val failure = e as? UploadFailure
+                ?: UploadFailure("保存文件失败，请检查存储空间与文件访问权限后重试。", e)
+            Result.failure(failure)
         }
     }
 
@@ -119,7 +120,7 @@ object UploadStore {
             part = temp
 
             temp.writeBytes(jpeg)
-            if (!temp.renameTo(target)) throw IOException("重命名失败：" + target.name)
+            if (!temp.renameTo(target)) throw UploadFailure("保存图片失败，请稍后重试。")
             part = null
 
             val relPath = DIR + "/" + name
@@ -129,7 +130,9 @@ object UploadStore {
             // 与 [import] 一致：仅删除本次写入的 .part，不删除目录中已有文件
             part?.delete()
             FileLog.log(TAG, "图片导入失败（" + uri + "）：" + (e.message ?: e.javaClass.simpleName))
-            Result.failure(e)
+            val failure = e as? UploadFailure
+                ?: UploadFailure("保存图片失败，请检查存储空间后重试。", e)
+            Result.failure(failure)
         }
     }
 
@@ -269,19 +272,21 @@ object UploadStore {
     private fun encodeJpeg(context: Context, uri: Uri): ByteArray {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         openImage(context, uri).use { BitmapFactory.decodeStream(it, null, bounds) }
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IOException("这不是能解码的图片")
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            throw UploadFailure("无法解码这张图片，请换一张常见格式的图片。")
+        }
 
         val options = BitmapFactory.Options().apply {
             inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight)
         }
         val bitmap = openImage(context, uri).use { BitmapFactory.decodeStream(it, null, options) }
-            ?: throw IOException("图片解码失败")
+            ?: throw UploadFailure("无法解码这张图片，请换一张图片重试。")
         try {
             var last = ByteArray(0)
             for (quality in IMAGE_QUALITIES) {
                 val out = ByteArrayOutputStream()
                 if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)) {
-                    throw IOException("图片编码失败")
+                    throw UploadFailure("压缩这张图片失败，请换一张图片重试。")
                 }
                 last = out.toByteArray()
                 if (last.size <= MAX_IMAGE_BYTES) return last
@@ -297,7 +302,7 @@ object UploadStore {
 
     /** 每次都重新开流：[encodeJpeg] 要读两遍，ContentResolver 给的流不能复用。 */
     private fun openImage(context: Context, uri: Uri): InputStream =
-        context.contentResolver.openInputStream(uri) ?: throw IOException("打不开这张图片")
+        context.contentResolver.openInputStream(uri) ?: throw UploadFailure("无法读取这张图片，请重新选择。")
 
     /**
      * 采样率：BitmapFactory 的 inSampleSize 是 2 的幂，所以只能按 2 倍递减，
@@ -349,6 +354,9 @@ object UploadStore {
         if (name.length > MAX_NAME) name = name.substring(name.length - MAX_NAME)
         return name.ifEmpty { FALLBACK_NAME }
     }
+
+    /** 可直接展示给用户的失败原因；其他异常统一包装，避免把系统错误串显示在界面上。 */
+    private class UploadFailure(message: String, cause: Throwable? = null) : IOException(message, cause)
 
     /** 目录内重名时增加序号，保留扩展名：base-1.ext、base-2.ext…… */
     private fun uniqueName(dir: File, name: String): String {

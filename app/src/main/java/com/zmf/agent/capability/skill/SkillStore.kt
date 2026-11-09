@@ -90,25 +90,35 @@ object SkillStore {
 
     /**
      * 从 zip 导入：zip 中可以包含一个技能目录（含 SKILL.md），也可以直接为 SKILL.md。
-     * 所有条目均执行 ZipSlip 校验，越界时整包失败（不遗留不完整文件）。
+     * 所有条目均执行 ZipSlip 校验，越界时整包失败；失败路径会删除临时目录。
      */
-    fun importZip(context: Context, uri: Uri): Result<Int> = runCatching {
-        val root = root(context)
-        val staging = File(root, ".import_" + System.currentTimeMillis())
-        if (!staging.mkdirs()) error("建临时目录失败")
+    fun importZip(context: Context, uri: Uri): Result<Int> {
+        val staging = File(root(context), ".import_" + System.currentTimeMillis())
+        return runCatching { importInto(context, uri, staging) }.onFailure {
+            staging.deleteRecursively()
+            FileLog.log(TAG, "导入失败：" + (it.message ?: it.javaClass.simpleName))
+        }
+    }
+
+    /** [importZip] 的实现：条目解到 [staging]，确认 SKILL.md 后再移入 skills/。 */
+    private fun importInto(context: Context, uri: Uri, staging: File): Int {
+        val root = staging.parentFile ?: error("无法定位技能目录，请重新导入")
+        if (!staging.mkdirs()) error("无法创建临时目录，请检查存储空间后重试")
         var entries = 0
         context.contentResolver.openInputStream(uri)?.use { input ->
             ZipInputStream(input.buffered()).use { zip ->
                 var entry = zip.nextEntry
                 while (entry != null) {
-                    if (++entries > MAX_ZIP_ENTRIES) error("zip 条目太多（上限 " + MAX_ZIP_ENTRIES + "）")
+                    if (++entries > MAX_ZIP_ENTRIES) error("压缩包内文件过多，已取消导入")
                     val rawName = entry.name.replace('\\', '/')
                     if (rawName.startsWith("__MACOSX/") || rawName.contains("..")) {
                         zip.closeEntry(); entry = zip.nextEntry; continue
                     }
                     val target = File(staging, rawName)
-                    if (!target.canonicalPath.startsWith(staging.canonicalPath)) {
-                        error("zip 里有越界路径：" + rawName)
+                    val stagingPath = staging.canonicalPath
+                    val targetPath = target.canonicalPath
+                    if (targetPath != stagingPath && !targetPath.startsWith(stagingPath + File.separator)) {
+                        error("压缩包含越界路径，已取消导入")
                     }
                     if (entry.isDirectory) {
                         target.mkdirs()
@@ -120,11 +130,11 @@ object SkillStore {
                     entry = zip.nextEntry
                 }
             }
-        } ?: error("打不开这个文件")
+        } ?: error("无法读取所选文件，请重新选择")
         // 定位 SKILL.md，将其所在目录整体移入 skills/
         val skillFile = staging.walkTopDown().firstOrNull {
             it.isFile && it.name.equals(SKILL_FILE, true)
-        } ?: error("zip 里没有 SKILL.md")
+        } ?: error("压缩包里没有 SKILL.md，请把包含 SKILL.md 的技能目录重新打包")
         val skillDir = skillFile.parentFile ?: staging
         val id = sanitizeId(skillDir.name)
         val dest = File(root, id)
@@ -140,16 +150,14 @@ object SkillStore {
             staging.deleteRecursively()
         }
         FileLog.log(TAG, "导入技能 " + id + "（" + entries + " 个条目）")
-        list(context).size
-    }.onFailure {
-        FileLog.log(TAG, "导入失败：" + (it.message ?: it.javaClass.simpleName))
+        return list(context).size
     }
 
     /** 直接从文本建一个技能（用户在 UI 里粘贴内容时用）。 */
     fun importText(context: Context, name: String, description: String, body: String): Result<SkillEntry> =
         runCatching {
             val id = sanitizeId(name)
-            require(id.isNotEmpty()) { "名字不合法" }
+            require(id.isNotEmpty()) { "名称不能为空，请换一个名称" }
             val dir = File(root(context), id)
             dir.mkdirs()
             File(dir, SKILL_FILE).writeText(buildMarkdown(name, description, body))

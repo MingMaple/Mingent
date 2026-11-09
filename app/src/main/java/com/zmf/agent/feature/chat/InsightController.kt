@@ -79,7 +79,7 @@ class InsightController(
                     FileLog.log("log", "日志导出成功：" + count + " 个文件 → " + uri)
                 },
                 onFailure = { e ->
-                    logExportStatus = "导出日志失败：" + (e.message ?: e.javaClass.simpleName)
+                    logExportStatus = "导出日志失败，请确认目标位置可写后重试。"
                     FileLog.log("log", "日志导出失败：" + e)
                 }
             )
@@ -164,8 +164,9 @@ class InsightController(
                 if (generation != vectorGeneration) return@launch
                 val runtime = check.getOrNull()
                 if (runtime == null) {
-                    memoryVectorStatus = "依赖检测失败：" + (check.exceptionOrNull()?.message ?: "未知原因")
+                    memoryVectorStatus = "无法检测运行依赖，请检查网络连接后重试。"
                     memoryVectorFailed = true
+                    FileLog.log("memory", "依赖检测失败：" + (check.exceptionOrNull() ?: "未知原因"))
                     return@launch
                 }
                 if (runtime.ready) {
@@ -176,8 +177,9 @@ class InsightController(
                 val install = withContext(Dispatchers.IO) { MemoryKernel.installDenseRuntime(appContext) }
                 if (generation != vectorGeneration) return@launch
                 if (install.isFailure) {
-                    memoryVectorStatus = install.exceptionOrNull()?.message ?: "依赖安装失败"
+                    memoryVectorStatus = "依赖安装失败，请检查网络连接后重试。"
                     memoryVectorFailed = true
+                    FileLog.log("memory", "依赖安装失败：" + (install.exceptionOrNull() ?: "未知原因"))
                     return@launch
                 }
                 val recheck = withContext(Dispatchers.IO) { MemoryKernel.checkDenseRuntime(appContext) }
@@ -187,9 +189,12 @@ class InsightController(
                     memoryVectorStatus = "依赖正常：" + ready.detail
                     memoryVectorFailed = false
                 } else {
-                    memoryVectorStatus = "依赖安装未通过检测：" +
-                        (ready?.detail ?: recheck.exceptionOrNull()?.message ?: "未知原因")
+                    memoryVectorStatus = "依赖安装后仍未通过检测，请稍后重试。"
                     memoryVectorFailed = true
+                    FileLog.log(
+                        "memory",
+                        "依赖复检未通过：" + (ready?.detail ?: recheck.exceptionOrNull() ?: "未知原因")
+                    )
                 }
             } finally {
                 if (generation == vectorGeneration) memoryVectorBusy = false
@@ -226,9 +231,13 @@ class InsightController(
             val msg = if (timedOut) {
                 "记忆操作超时（" + (MEMORY_ACTION_TIMEOUT_MS / 1000) + " 秒未返回），已恢复可用，可重试一次"
             } else {
-                "记忆操作失败：" + (reason?.message ?: reason?.javaClass?.simpleName ?: "未知原因")
+                "记忆操作失败，已恢复可用，可重试一次"
             }
-            FileLog.log("memory", msg + "（耗时 " + elapsed + " 毫秒）")
+            FileLog.log(
+                "memory",
+                msg + "（耗时 " + elapsed + " 毫秒）" +
+                    (reason?.let { "：" + (it.message ?: it.javaClass.simpleName) } ?: "")
+            )
             memoryState = memoryState.copy(busy = false, error = msg)
         }
     }

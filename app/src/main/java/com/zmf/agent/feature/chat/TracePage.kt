@@ -78,7 +78,6 @@ import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.uikit.common.BoundedScrollColumn
 import com.zmf.agent.uikit.common.blockTapsOnly
-import com.zmf.agent.uikit.common.decodeSampledBitmap
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.isDarkSurface
@@ -906,9 +905,7 @@ private fun TraceThumbRow(paths: List<String>, root: File, onTap: (Int) -> Unit)
 /** 一张缩略图：固定边长、圆角裁切、crop 填充；文件读不出来就退成一块底色加「图片」两个字。 */
 @Composable
 private fun TraceImageThumb(relPath: String, root: File, onTap: () -> Unit) {
-    val bitmap = remember(relPath, root) {
-        decodeSampledBitmap(File(root, relPath).absolutePath, THUMB_EDGE_PX)
-    }
+    val bitmap = rememberThumbnail(File(root, relPath), THUMB_EDGE_PX)
     val onSurface = MaterialTheme.colorScheme.onSurface
     Box(
         modifier = Modifier

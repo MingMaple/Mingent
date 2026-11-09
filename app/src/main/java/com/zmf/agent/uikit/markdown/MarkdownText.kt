@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -30,8 +32,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -40,7 +46,9 @@ import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -72,6 +80,7 @@ import kotlinx.coroutines.delay
  *  - 标题 # / ## / ###
  *  - 无序列表 "- " "* "（渲染成圆点前缀 + 缩进）
  *  - 有序列表 "1. "（保留原序号）
+ *  - 表格：管道语法（表头 + 分隔行 + 数据行），整表超宽时横向滑动
  *  - 分隔线 --- / *** / ___
  *  - 其余按普通段落
  *
@@ -234,6 +243,25 @@ private fun MarkdownBlock(
         )
         // 空行：仅在用户气泡中出现（见 keepBlankLines），一段留白对应一个换行
         MdBlock.Blank -> Spacer(Modifier.height(8.dp))
+        is MdBlock.Table -> MarkdownTable(block, fontSize, color, codeBackground)
+        is MdBlock.Quote -> Row(
+            // 竖线要跟着文字高度走：先取整行的最小固有高度，竖线再按它填满
+            modifier = Modifier
+                .height(IntrinsicSize.Min)
+                .fillMaxWidth()
+                .padding(vertical = 2.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(2.dp)
+                    .fillMaxHeight()
+                    .background(color.copy(alpha = 0.22f))
+            )
+            Spacer(Modifier.width(10.dp))
+            Box(modifier = Modifier.weight(1f)) {
+                MarkdownParagraph(block.content, fontSize, color, codeBackground)
+            }
+        }
         MdBlock.Divider -> Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -328,9 +356,184 @@ private fun MarkdownListItem(
 }
 
 /**
+ * 表格最小列宽：内容再短也留出可读宽度，避免单字列挤成一竖。
+ */
+private val TableMinColumn = 48.dp
+
+/** 表格最大列宽：超过即在该宽度内换行，整表超宽由横向滑动承担，不把正文压成细条。 */
+private val TableMaxColumn = 220.dp
+
+/** 单元格内边距：横向留列间呼吸，纵向与正文行距相称。 */
+private val TableCellPaddingX = 10.dp
+private val TableCellPaddingY = 6.dp
+
+/** 右缘渐隐带宽度：与代码预览页同一取值，提示整表还能继续横向滑动。 */
+private val TableFadeWidth = 24.dp
+
+/**
+ * 表格：表头加粗、其下一条分隔线，数据行之间以更淡的横线区分。
+ *
+ * 列宽按单元格实测内容逐列取最大值（限在 [TableMinColumn] 与 [TableMaxColumn] 之间），
+ * 整表超出可用宽度时横向滑动，不压缩列宽；横向滑到边界后余量就地消费，
+ * 不把抽屉或轨迹页拉出来（与代码块同一口径）。
+ * 单元格内容仍走一遍行内解析：粗体、行内代码与链接在表内照常生效。
+ */
+@Composable
+private fun MarkdownTable(
+    block: MdBlock.Table,
+    fontSize: TextUnit,
+    color: Color,
+    codeBackground: Color
+) {
+    // 表内多为键值短句，字号比正文小一档，否则列宽会被轻易撑满
+    val cellSize = fontSize * 0.92f
+    val cellLine = cellSize * 1.45f
+    val linkColor = UiColors.accentFg
+    val density = LocalDensity.current
+    val measurer = rememberTextMeasurer()
+    val headerStyle = remember(cellSize, cellLine) {
+        TextStyle(fontSize = cellSize, lineHeight = cellLine, fontWeight = FontWeight.SemiBold)
+    }
+    val bodyStyle = remember(cellSize, cellLine) {
+        TextStyle(fontSize = cellSize, lineHeight = cellLine)
+    }
+    val headerCells = remember(block, cellSize, codeBackground, linkColor) {
+        block.header.map { inlineAnnotatedCached(it, cellSize, codeBackground, linkColor) }
+    }
+    val bodyCells = remember(block, cellSize, codeBackground, linkColor) {
+        block.rows.map { row -> row.map { inlineAnnotatedCached(it, cellSize, codeBackground, linkColor) } }
+    }
+    val minWidthPx = with(density) { TableMinColumn.roundToPx() }
+    val maxWidthPx = with(density) { TableMaxColumn.roundToPx() }
+    // 逐列取单行实测宽度的最大值：超过上限的单元格按上限换行，不会无限拉宽整表
+    val columnPx = remember(headerCells, bodyCells, cellSize) {
+        val widths = IntArray(block.header.size) { minWidthPx }
+        fun grow(index: Int, text: AnnotatedString, style: TextStyle) {
+            val measured = measurer.measure(
+                text = text,
+                style = style,
+                maxLines = 1,
+                constraints = Constraints(maxWidth = maxWidthPx)
+            ).size.width
+            if (measured > widths[index]) widths[index] = measured
+        }
+        headerCells.forEachIndexed { index, text -> grow(index, text, headerStyle) }
+        bodyCells.forEach { row -> row.forEachIndexed { index, text -> grow(index, text, bodyStyle) } }
+        widths
+    }
+    val columnDp = remember(columnPx) {
+        columnPx.map { with(density) { it.toDp() } + TableCellPaddingX * 2 }
+    }
+    val tableWidth = columnDp.fold(0.dp) { sum, width -> sum + width }
+    val hScroll = rememberScrollState()
+    // 整表超宽才需要右缘渐隐；不超宽时连离屏图层都不建
+    val scrollable = hScroll.maxValue > 0
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(codeBackground)
+    ) {
+        Column(
+            modifier = Modifier
+                .then(Modifier.blockHorizontalAtEdge(hScroll))
+                .then(
+                    if (scrollable) {
+                        Modifier
+                            // 表格底色只有约 7% 不透明度，普通半透明遮罩盖不暗正文；
+                            // 只好离屏合成后用 DstIn 把右缘像素的 alpha 直接抹掉，
+                            // 露出表格自身的底色，形成真正的渐隐
+                            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                            .drawWithContent {
+                                drawContent()
+                                // 滚到末尾后不再遮挡最后一列
+                                if (hScroll.value < hScroll.maxValue) {
+                                    val fade = TableFadeWidth.toPx()
+                                    drawRect(
+                                        brush = Brush.horizontalGradient(
+                                            colors = listOf(Color.Black, Color.Transparent),
+                                            startX = size.width - fade,
+                                            endX = size.width
+                                        ),
+                                        blendMode = BlendMode.DstIn
+                                    )
+                                }
+                            }
+                    } else {
+                        Modifier
+                    }
+                )
+                .horizontalScroll(hScroll)
+        ) {
+            Row(modifier = Modifier.width(tableWidth)) {
+                headerCells.forEachIndexed { index, text ->
+                    TableCell(text, columnDp[index], block.aligns[index], headerStyle, color)
+                }
+            }
+            TableRule(color, tableWidth, strong = true)
+            bodyCells.forEachIndexed { rowIndex, cells ->
+                Row(modifier = Modifier.width(tableWidth)) {
+                    cells.forEachIndexed { index, text ->
+                        TableCell(text, columnDp[index], block.aligns[index], bodyStyle, color)
+                    }
+                }
+                if (rowIndex != bodyCells.lastIndex) TableRule(color, tableWidth, strong = false)
+            }
+        }
+    }
+}
+
+/**
+ * 一个单元格：宽度含内边距，文字按列对齐方式摆放。
+ * 单元格自身不画背景与边框，分隔靠 [TableRule]，整表才保持单色极简。
+ */
+@Composable
+private fun TableCell(
+    text: AnnotatedString,
+    width: Dp,
+    align: MdAlign,
+    style: TextStyle,
+    color: Color
+) {
+    Box(
+        modifier = Modifier
+            .width(width)
+            .padding(horizontal = TableCellPaddingX, vertical = TableCellPaddingY)
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.fillMaxWidth(),
+            style = style,
+            color = color,
+            textAlign = when (align) {
+                MdAlign.START -> TextAlign.Start
+                MdAlign.CENTER -> TextAlign.Center
+                MdAlign.END -> TextAlign.End
+            }
+        )
+    }
+}
+
+/**
+ * 表格横线：表头下一条略深，数据行之间更淡。
+ *
+ * 宽度取整表宽度而非 `fillMaxWidth`：横向滚动区内宽度不受限，
+ * 撑满父级在这里量不出来，会退化成 0 宽而整条消失。
+ */
+@Composable
+private fun TableRule(color: Color, width: Dp, strong: Boolean) {
+    Box(
+        modifier = Modifier
+            .width(width)
+            .height(1.dp)
+            .background(color.copy(alpha = if (strong) 0.18f else 0.08f))
+    )
+}
+
+/**
  * 围栏代码块：顶部一条工具条（语言 /「缩进」/「复制」），下面是行号列 + 代码体。
  *
- * 默认**单行横滑**（不折行，长行通过横向滑动阅读），点击「缩进」后改为完整换行；
+ * 默认**单行横滑**（不折行，长行通过横向滑动阅读），点击「换行」后改为完整换行；
  * 行号等宽右对齐、半透明灰，宽度按总行数取 2–3 位。
  *
  * 「复制」与「缩进」并列于工具条右端，但仅在**触摸过该区块**后出现（全局唯一，触摸其他区块会转移）。
@@ -476,7 +679,7 @@ internal fun MarkdownCodeBlock(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "缩进",
+                        text = if (wrapMode) "不换行" else "换行",
                         fontSize = 11.sp,
                         // 开启态用同色提高不透明度表示，不刷成 AccentBlue（#0078FF）：
                         // 主题是单色的，饱和蓝在整屏里是唯一的杂色；「已开启」的强调与
@@ -806,6 +1009,12 @@ private fun collectInline(
                 spans.add(PendingSpan(base.merge(codeStyle), start, sb.length))
                 // 记录该段为行内代码：其中的网址供用户手动复制，后续不建立链接
                 codeRanges.add(intArrayOf(start, sb.length))
+                // 行内代码若正好是本轮产出的文件路径，就地变成可点链接（对齐 DSH：
+                // 只认精确路径或唯一 basename，歧义时保持不可点）
+                if (links.size < MAX_LINKS) {
+                    val token = s.substring(i + 1, close).trim()
+                    FileLinkRouter.urlFor(token)?.let { url -> links.add(PendingLink(url, start, sb.length)) }
+                }
                 i = close + 1
             } else {
                 sb.append(ch)
@@ -906,20 +1115,109 @@ private fun findEmphasisClose(s: String, from: Int, ch: Char, delimLen: Int): In
 
 /* ------------------------------- 块级解析 ------------------------------- */
 
+/** 表格列的对齐方式，来自分隔行里的冒号位置。 */
+private enum class MdAlign { START, CENTER, END }
+
 private sealed interface MdBlock {
     data class Paragraph(val content: String) : MdBlock
     data class Heading(val level: Int, val content: String) : MdBlock
     data class ListItem(val marker: String, val content: String, val indent: Int) : MdBlock
     data class Code(val code: String, val lang: String) : MdBlock
+    /** 表格：表头、逐列对齐、数据行；数据行的单元格数已按表头补齐或截断。 */
+    data class Table(
+        val header: List<String>,
+        val aligns: List<MdAlign>,
+        val rows: List<List<String>>
+    ) : MdBlock
     /** 空行留白：仅在 [MarkdownText] 的 keepBlankLines 开启时产生。 */
     data object Blank : MdBlock
     data object Divider : MdBlock
+    /** 引用块：连续的「>」行合成一段，左侧加一条竖线。 */
+    data class Quote(val content: String) : MdBlock
 }
 
 private val BULLET_REGEX = Regex("^(\\s*)[-*+]\\s+(.*)$")
 private val ORDERED_REGEX = Regex("^(\\s*)(\\d{1,3})[.)]\\s+(.*)$")
 private val HEADING_REGEX = Regex("^(#{1,3})\\s+(.*)$")
 private val DIVIDER_REGEX = Regex("^([-*_])\\1{2,}$")
+
+/** 单张表最多认这么多数据行：病态输入不至于一次建出上万行节点。 */
+private const val MAX_TABLE_ROWS = 200
+
+/** 该行是否是表格行：跳过转义后仍含至少一个竖线。 */
+private fun isTableRow(line: String): Boolean {
+    val text = line.trim()
+    if (text.isEmpty()) return false
+    var index = 0
+    while (index < text.length) {
+        val ch = text[index]
+        // 转义对整体跳过两格，`\|` 不算分隔符
+        if (ch == '\\') {
+            index += 2
+            continue
+        }
+        if (ch == '|') return true
+        index++
+    }
+    return false
+}
+
+/** 围栏起止行：表格不得把紧随其后的代码块吞进数据行。 */
+private fun isFenceLine(line: String): Boolean {
+    val text = line.trim()
+    return text.startsWith("```") || text.startsWith("~~~")
+}
+
+/** 按未转义的竖线切分单元格；首尾竖线不产生空列，`\|` 还原成字面竖线。 */
+private fun splitTableRow(line: String): List<String> {
+    var text = line.trim()
+    if (text.startsWith("|")) text = text.substring(1)
+    if (text.endsWith("|") && !text.endsWith("\\|")) text = text.dropLast(1)
+    val cells = ArrayList<String>(4)
+    val cell = StringBuilder()
+    var index = 0
+    while (index < text.length) {
+        val ch = text[index]
+        if (ch == '\\' && index + 1 < text.length && text[index + 1] == '|') {
+            cell.append('|')
+            index += 2
+            continue
+        }
+        if (ch == '|') {
+            cells.add(cell.toString().trim())
+            cell.setLength(0)
+            index++
+            continue
+        }
+        cell.append(ch)
+        index++
+    }
+    cells.add(cell.toString().trim())
+    return cells
+}
+
+/** 解析分隔行：每个单元格只能由冒号与连字符组成，否则返回 null，整块退回段落。 */
+private fun parseTableAligns(cells: List<String>): List<MdAlign>? {
+    if (cells.isEmpty()) return null
+    val aligns = ArrayList<MdAlign>(cells.size)
+    for (raw in cells) {
+        var text = raw.trim()
+        val left = text.startsWith(":")
+        // 单个冒号（":"）不是分隔符：左侧冒号已被剥离后必须仍有连字符
+        val right = text.endsWith(":") && text.length > 1
+        if (left) text = text.substring(1)
+        if (right) text = text.dropLast(1)
+        if (text.isEmpty() || text.any { it != '-' }) return null
+        aligns.add(
+            when {
+                left && right -> MdAlign.CENTER
+                right -> MdAlign.END
+                else -> MdAlign.START
+            }
+        )
+    }
+    return aligns
+}
 
 /**
  * 进程级缓存：列表滚出屏幕后 Composable 会被回收，remember 无法保留解析结果。
@@ -946,8 +1244,9 @@ private fun inlineAnnotatedCached(
     linkColor: Color
 ): AnnotatedString {
     // 链接色必须进 key：否则浅色解析出的蓝会被深色直接命中，深色下链接仍是那支暗蓝
+    // 产物代次同样进 key：同一段文字在不同会话里是否可点并不相同
     val key = content.length.toString() + "|" + fontSize.value + "|" + codeBackground.value +
-        "|" + linkColor.value + "|" + content
+        "|" + linkColor.value + "|" + FileLinkRouter.generation + "|" + content
     inlineCache.get(key)?.let { return it }
     val built = inlineAnnotated(content, fontSize, codeBackground, linkColor)
     inlineCache.put(key, built)
@@ -1021,7 +1320,30 @@ private fun parseMarkdown(source: String, keepBlankLines: Boolean = false): List
             continue
         }
 
-        // 5. 无序列表
+        // 5. 表格：表头行 + 对齐分隔行 + 连续数据行。
+        // 识别条件是「下一行能解析成等列数的分隔行」，正文里孤立的竖线不会被误判；
+        // 流式输出时只写了一半（表头已出、分隔行未出）的那一瞬仍按段落显示，补齐即转为表格。
+        if (isTableRow(raw)) {
+            val header = splitTableRow(raw)
+            val aligns = if (i + 1 < lines.size) parseTableAligns(splitTableRow(lines[i + 1])) else null
+            if (aligns != null && aligns.size == header.size) {
+                val rows = ArrayList<List<String>>(8)
+                var j = i + 2
+                while (j < lines.size && rows.size < MAX_TABLE_ROWS &&
+                    isTableRow(lines[j]) && !isFenceLine(lines[j])
+                ) {
+                    val cells = splitTableRow(lines[j])
+                    // 列数以表头为准：多余列丢弃、缺列补空，渲染层不必再处理参差
+                    rows.add(List(header.size) { index -> cells.getOrElse(index) { "" } })
+                    j++
+                }
+                blocks.add(MdBlock.Table(header, aligns, rows))
+                i = j
+                continue
+            }
+        }
+
+        // 6. 无序列表
         val bullet = BULLET_REGEX.matchEntire(raw)
         if (bullet != null) {
             blocks.add(
@@ -1035,7 +1357,7 @@ private fun parseMarkdown(source: String, keepBlankLines: Boolean = false): List
             continue
         }
 
-        // 6. 有序列表：保留原序号
+        // 7. 有序列表：保留原序号
         val ordered = ORDERED_REGEX.matchEntire(raw)
         if (ordered != null) {
             blocks.add(
@@ -1049,7 +1371,21 @@ private fun parseMarkdown(source: String, keepBlankLines: Boolean = false): List
             continue
         }
 
-        // 7. 普通段落
+        // 8. 引用块：连续的「>」行合成一段，去掉标记后按段落渲染
+        if (trimmed.startsWith(">")) {
+            val body = StringBuilder()
+            var j = i
+            while (j < lines.size && lines[j].trim().startsWith(">")) {
+                if (body.isNotEmpty()) body.append('\n')
+                body.append(lines[j].trim().removePrefix(">").removePrefix(" ").trimEnd())
+                j++
+            }
+            blocks.add(MdBlock.Quote(body.toString().trim()))
+            i = j
+            continue
+        }
+
+        // 9. 普通段落
         blocks.add(MdBlock.Paragraph(trimmed))
         i++
     }

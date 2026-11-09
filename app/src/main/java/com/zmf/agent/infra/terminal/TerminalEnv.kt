@@ -3,6 +3,13 @@ package com.zmf.agent.infra.terminal
 import android.content.Context
 import com.zmf.agent.core.log.FileLog
 import java.io.File
+import java.io.IOException
+import java.nio.file.FileVisitResult
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 
 /**
  * 终端（PRoot Ubuntu）环境的体检与修复。
@@ -68,26 +75,39 @@ object TerminalEnv {
     private fun sizeOf(dir: File): Long {
         if (!dir.exists()) return 0L
         return try {
-            dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            // 不跟随软链接统计，避免链接指回祖辈目录时死循环或把外部文件算进来
+            var total = 0L
+            Files.walkFileTree(dir.toPath(), object : SimpleFileVisitor<Path>() {
+                override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    total += attrs.size()
+                    return FileVisitResult.CONTINUE
+                }
+            })
+            total
         } catch (e: Exception) {
             0L
         }
     }
 
     private fun deleteTree(dir: File): Boolean {
-        if (!dir.exists()) return true
+        if (!Files.exists(dir.toPath(), LinkOption.NOFOLLOW_LINKS)) return true
         return try {
-            // walkBottomUp：先删除子项再删除目录，软链接按文件删除（不得跟随链接进入目标）
-            dir.walkBottomUp().forEach { file ->
-                if (file.isDirectory && !isSymlink(file)) file.delete() else file.delete()
-            }
-            !dir.exists()
+            // walkFileTree 默认不跟随软链接：只删除链接本身，不会误删链接指向的目录外内容
+            Files.walkFileTree(dir.toPath(), object : SimpleFileVisitor<Path>() {
+                override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    Files.deleteIfExists(file)
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun postVisitDirectory(d: Path, exc: IOException?): FileVisitResult {
+                    Files.deleteIfExists(d)
+                    return FileVisitResult.CONTINUE
+                }
+            })
+            !Files.exists(dir.toPath(), LinkOption.NOFOLLOW_LINKS)
         } catch (e: Exception) {
             FileLog.log(TAG, "删除根文件系统失败：" + e)
             false
         }
     }
-
-    private fun isSymlink(file: File): Boolean =
-        runCatching { java.nio.file.Files.isSymbolicLink(file.toPath()) }.getOrDefault(false)
 }

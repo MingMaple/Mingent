@@ -19,7 +19,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -79,11 +78,9 @@ fun ChatScreen(
     // 子任务面板：Registry 为内存 object（子智能体在 IO 协程中写入）。
     // 此处采用订阅版本号的方式：没有子智能体运行时，该 Flow 不会发送任何事件，主线程不会被唤醒；
     // 相比 300ms 轮询，空闲时不会周期性分配快照。
-    var subAgentVersion by remember { mutableStateOf(0) }
     val versionTick by SubAgentRegistry.version.collectAsState()
-    subAgentVersion = versionTick
     // 仅在版本实际变化时重新获取快照（首帧同样经过该 remember，相当于打开页面时先获取一次）
-    val subAgentEntries = remember(subAgentVersion) { SubAgentRegistry.snapshot() }
+    val subAgentEntries = remember(versionTick) { SubAgentRegistry.snapshot() }
 
     // 两条选择文件入口：OpenDocument 为系统文稿页，GetContent 进入设备自带的文件管理器
     // （部分机型的文稿页侧边栏没有「文件管理」入口，因此保留第二个入口作为兜底）。

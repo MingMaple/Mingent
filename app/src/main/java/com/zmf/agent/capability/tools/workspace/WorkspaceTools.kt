@@ -30,6 +30,7 @@ import java.io.File
  */
 private const val LIST_LIMIT = 20
 
+/** 存储根形态的中文名：默认目录 / 内置目录 / 外部目录 / 系统授权目录。 */
 internal fun rootFormOf(storage: Storage?, context: Context): String {
     if (storage == null) return "未知"
     return when (storage.kind) {
@@ -39,6 +40,7 @@ internal fun rootFormOf(storage: Storage?, context: Context): String {
     }
 }
 
+/** 工作区的一行摘要：名称、id、根形态、路径与默认工作区标记。 */
 internal fun workspaceLine(context: Context, space: WorkSpace): String {
     val storage = WorkSpaceStore.storageOf(context, space)
     val root = storage?.let { StorageStore.rootFile(context, it)?.absolutePath } ?: "（目录不可用）"

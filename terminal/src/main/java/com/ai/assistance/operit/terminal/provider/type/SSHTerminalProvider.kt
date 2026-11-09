@@ -130,7 +130,7 @@ class SSHTerminalProvider(
                 val env = buildEnvironment()
                 
                 Log.d(TAG, "Starting local terminal session for SSH with command: ${command.joinToString(" ")}")
-                Log.d(TAG, "Environment: $env")
+                Log.d(TAG, "Environment keys: ${env.keys}")
                 
                 val pty = Pty.start(command, env, filesDir)
                 

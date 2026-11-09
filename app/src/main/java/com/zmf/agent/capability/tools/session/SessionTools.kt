@@ -7,6 +7,8 @@ import com.zmf.agent.capability.storage.StorageReclaimer
 import com.zmf.agent.capability.tools.Tool
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolResult
+import com.zmf.agent.capability.tools.atLeast
+import com.zmf.agent.capability.tools.displayName
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.core.model.SessionPreference
 import com.zmf.agent.core.model.permissionLevelOfWire
@@ -125,6 +127,13 @@ class SessionCreateTool : Tool {
         val permission = args.optString("permission", "").trim().takeIf { it.isNotEmpty() }
             ?.let { raw -> permissionLevelOfWire(raw) ?: return@withContext ToolResult.Error("permission 取值不对：" + raw) }
             ?: PermissionLevel.WORKSPACE
+        // 不能借新建会话把自己的权限档抬上去：否则工作区档调一次工具就能拿到完全档，闸门形同虚设
+        if (!ctx.permission.atLeast(permission)) {
+            return@withContext ToolResult.Error(
+                "不能把新会话的权限设得比当前更高（当前「" + ctx.permission.displayName() + "」）；" +
+                    "需要更高权限请让用户在会话设置里调整"
+            )
+        }
         val effort = args.optString("reasoningEffort", "").trim().takeIf { it.isNotEmpty() }
             ?.let { raw -> SessionPreference.effortOrNull(raw) ?: return@withContext ToolResult.Error("reasoningEffort 取值不对：" + raw) }
             ?: SessionPreference.EFFORT_DEFAULT
@@ -416,6 +425,13 @@ class SessionUpdateSettingsTool : Tool {
         }
         val permission = rawPermission.takeIf { it.isNotEmpty() }?.let {
             permissionLevelOfWire(it) ?: return@withContext ToolResult.Error("permission 取值不对：" + it)
+        }
+        // 只允许下调或保持不变：模型不能把自己的会话提到更高档，提权必须由用户在设置里完成
+        if (permission != null && !ctx.permission.atLeast(permission)) {
+            return@withContext ToolResult.Error(
+                "不能把会话权限提到当前档位之上（当前「" + ctx.permission.displayName() + "」）；" +
+                    "需要更高权限请让用户在会话设置里调整"
+            )
         }
         val effort = rawEffort.takeIf { it.isNotEmpty() }?.let {
             SessionPreference.effortOrNull(it) ?: return@withContext ToolResult.Error("reasoningEffort 取值不对：" + it)

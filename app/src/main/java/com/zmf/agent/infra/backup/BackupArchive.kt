@@ -17,12 +17,19 @@ import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.StringReader
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -102,6 +109,8 @@ object BackupArchive {
             // 未发送的输入内容：不随会话文件走，需单独打包
             "drafts.json",
             "stats.json",
+            // 定时任务：缺它则换机/恢复后所有任务（含目标会话绑定）一起消失
+            "schedules.json",
             "mcp.json",
             "goals.json",
             // 摘要/压缩事件：只读记录，用于换机后排查上下文被压缩的原因
@@ -148,6 +157,11 @@ object BackupArchive {
 
     private const val COPY_BUFFER = 64 * 1024
 
+    /** 单个条目的读取上限：防止异常备份（压缩炸弹）把整份内容读进内存。 */
+    private const val MAX_DATA_ENTRY_BYTES = 64 * 1024 * 1024
+    private const val MAX_PREFS_ENTRY_BYTES = 8 * 1024 * 1024
+    private const val MAX_MANIFEST_BYTES = 1024 * 1024
+
     /** 进度权重的最小单位：每 64KB 算一格，小文件至少 1 格。 */
     private const val UNIT_BYTES = 64L * 1024L
 
@@ -176,7 +190,12 @@ object BackupArchive {
         throw e
     } catch (e: Exception) {
         FileLog.log(TAG, "导出失败：" + e)
-        Result.failure(IllegalStateException("导出备份失败：" + describe(e), e))
+        val message = if (e is IllegalStateException) {
+            describe(e)
+        } else {
+            "无法写入所选位置，请检查存储空间后重试。"
+        }
+        Result.failure(IllegalStateException(message, e))
     }
 
     /**
@@ -322,7 +341,7 @@ object BackupArchive {
         onProgress(0, "准备导出")
         // 必须指定 "wt"：SAF 默认的 "w" 不截断文件，覆盖同名旧文件会残留尾部内容
         val output = app.contentResolver.openOutputStream(uri, "wt")
-            ?: throw IllegalStateException("无法写入目标文件（打开失败）")
+            ?: throw IllegalStateException("无法写入所选位置，请检查存储空间后重试。")
         try {
         output.use { raw ->
             ZipOutputStream(BufferedOutputStream(raw, COPY_BUFFER)).use { zos ->
@@ -426,7 +445,12 @@ object BackupArchive {
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        Result.failure(IllegalStateException(describe(e), e))
+        val message = if (e is IllegalStateException) {
+            describe(e)
+        } else {
+            "文件内容不是本应用的备份格式。"
+        }
+        Result.failure(IllegalStateException(message, e))
     }
 
     // ================= 导入 =================
@@ -445,7 +469,12 @@ object BackupArchive {
         throw e
     } catch (e: Exception) {
         FileLog.log(TAG, "导入失败：" + e)
-        Result.failure(IllegalStateException("导入备份失败：" + describe(e), e))
+        val message = if (e is IllegalStateException) {
+            describe(e)
+        } else {
+            "备份文件无法读取或内容不完整，请确认文件来自本应用后重试。"
+        }
+        Result.failure(IllegalStateException(message, e))
     }
 
     /**
@@ -515,7 +544,7 @@ object BackupArchive {
         try {
             val raw = app.contentResolver.openInputStream(uri)
             if (raw == null) {
-                failed.add("无法读取备份文件（打开失败）")
+                failed.add("无法打开备份文件，请确认文件仍存在并可访问")
             } else {
                 raw.use { stream ->
                     val counting = CountingInputStream(BufferedInputStream(stream, COPY_BUFFER)) { n ->
@@ -544,7 +573,8 @@ object BackupArchive {
                                             // 文件中固定的工作区与附件绝对路径需同步改为当前包
                                             val text = rewritePackageIds(
                                                 app,
-                                                zis.readBytes().toString(Charsets.UTF_8)
+                                                readEntryCapped(zis, MAX_DATA_ENTRY_BYTES)
+                                                    .toString(Charsets.UTF_8)
                                             )
                                             // 必须先能解析为 JSON 才允许替换，损坏的备份不得覆盖有效文件
                                             try {
@@ -561,7 +591,7 @@ object BackupArchive {
                                             if (fileName.isEmpty() || fileName.contains('/') || !fileName.endsWith(".xml")) {
                                                 throw IllegalStateException("设置条目名不合法")
                                             }
-                                            val bytes = zis.readBytes()
+                                            val bytes = readEntryCapped(zis, MAX_PREFS_ENTRY_BYTES)
                                             val count = mergePrefs(
                                                 app,
                                                 fileName.removeSuffix(".xml"),
@@ -575,9 +605,9 @@ object BackupArchive {
 
                                         name.startsWith(PREFIX_WORKSPACES) -> {
                                             val rel = safeRelative(name.removePrefix(PREFIX_WORKSPACES))
-                                                ?: throw IllegalStateException("路径不合法")
+                                                ?: throw IllegalStateException("备份中的路径不合法，已跳过该条目")
                                             val temp = workspacesTemp
-                                                ?: throw IllegalStateException("外部目录不可用")
+                                                ?: throw IllegalStateException("外部存储不可用，该段内容未恢复")
                                             if (workspacesFiles == 0) deleteTree(temp)
                                             writeEntryTo(zis, File(temp, rel))
                                             workspacesFiles++
@@ -585,9 +615,9 @@ object BackupArchive {
 
                                         name.startsWith(PREFIX_WORKSPACE) -> {
                                             val rel = safeRelative(name.removePrefix(PREFIX_WORKSPACE))
-                                                ?: throw IllegalStateException("路径不合法")
+                                                ?: throw IllegalStateException("备份中的路径不合法，已跳过该条目")
                                             val temp = workspaceTemp
-                                                ?: throw IllegalStateException("外部目录不可用")
+                                                ?: throw IllegalStateException("外部存储不可用，该段内容未恢复")
                                             if (workspaceFiles == 0) deleteTree(temp)
                                             writeEntryTo(zis, File(temp, rel))
                                             workspaceFiles++
@@ -595,9 +625,9 @@ object BackupArchive {
 
                                         name.startsWith(PREFIX_LOGS) -> {
                                             val rel = safeRelative(name.removePrefix(PREFIX_LOGS))
-                                                ?: throw IllegalStateException("路径不合法")
+                                                ?: throw IllegalStateException("备份中的路径不合法，已跳过该条目")
                                             val root = external
-                                                ?: throw IllegalStateException("外部目录不可用")
+                                                ?: throw IllegalStateException("外部存储不可用，该段内容未恢复")
                                             // 日志直接覆盖写，坏了也无所谓
                                             writeEntryTo(zis, File(File(root, "logs"), rel))
                                             logFiles++
@@ -605,7 +635,7 @@ object BackupArchive {
 
                                         name.startsWith(PREFIX_SKILLS) -> {
                                             val rel = safeRelative(name.removePrefix(PREFIX_SKILLS))
-                                                ?: throw IllegalStateException("路径不合法")
+                                                ?: throw IllegalStateException("备份中的路径不合法，已跳过该条目")
                                             // 技能直接解到 appdata/skills（合并语义：同名覆盖，不删旧的技能）
                                             writeEntryTo(zis, File(File(AppPaths.dataDir(app), "skills"), rel))
                                             skillFiles++
@@ -613,7 +643,7 @@ object BackupArchive {
 
                                         name.startsWith(PREFIX_MEMORY) -> {
                                             val rel = safeRelative(name.removePrefix(PREFIX_MEMORY))
-                                                ?: throw IllegalStateException("路径不合法")
+                                                ?: throw IllegalStateException("备份中的路径不合法，已跳过该条目")
                                             if (memoryFiles == 0) deleteTree(memoryTemp)
                                             writeEntryTo(zis, File(memoryTemp, rel))
                                             memoryFiles++
@@ -631,12 +661,12 @@ object BackupArchive {
 
                                         name.startsWith(PREFIX_TERMINAL) -> {
                                             val rel = safeRelative(name.removePrefix(PREFIX_TERMINAL))
-                                                ?: throw IllegalStateException("路径不合法")
+                                                ?: throw IllegalStateException("备份中的路径不合法，已跳过该条目")
                                             if (rel == "usr") throw IllegalStateException("终端条目名不合法")
                                             if (rel.startsWith("usr/")) {
                                                 // usr/ 解到 usr.importing，全部写完再整体换上去
                                                 val inner = safeRelative(rel.removePrefix("usr/"))
-                                                    ?: throw IllegalStateException("路径不合法")
+                                                    ?: throw IllegalStateException("备份中的路径不合法，已跳过该条目")
                                                 writeEntryTo(zis, File(usrTemp, inner))
                                                 terminalUsrFiles++
                                             } else {
@@ -651,8 +681,8 @@ object BackupArchive {
                                 } catch (e: CancellationException) {
                                     throw e
                                 } catch (e: Exception) {
-                                    // 单条失败只记一条，接着解下一条
-                                    failed.add(name + "：" + describe(e))
+                                    // 单条失败只记一条，接着解下一条；系统异常的具体信息只写日志
+                                    failed.add(name + "：" + userReason(e))
                                 }
                             }
                             emit()
@@ -665,7 +695,7 @@ object BackupArchive {
             throw e
         } catch (e: Exception) {
             // 包读到一半坏了：已经落盘的段照旧算数，剩下的记一条失败
-            failed.add("读取备份中断：" + describe(e))
+            failed.add("读取备份中断，其余内容未能恢复")
         }
 
         // ---- 收尾：把临时目录整体 rename 换成正式目录 ----
@@ -673,7 +703,7 @@ object BackupArchive {
             if (replaceDir(File(external, "workspace"), workspaceTemp)) {
                 restored.add("工作区文件 workspace/：" + workspaceFiles + " 个文件")
             } else {
-                failed.add("工作区文件（workspace/）：替换目录失败")
+                failed.add("工作区文件（workspace/）：替换目录失败，原数据未改动")
             }
         } else if (workspaceTemp != null) {
             deleteTree(workspaceTemp)
@@ -683,7 +713,7 @@ object BackupArchive {
             if (replaceDir(File(external, "workspaces"), workspacesTemp)) {
                 restored.add("自建工作区文件 workspaces/：" + workspacesFiles + " 个文件")
             } else {
-                failed.add("自建工作区文件（workspaces/）：替换目录失败")
+                failed.add("自建工作区文件（workspaces/）：替换目录失败，原数据未改动")
             }
         } else if (workspacesTemp != null) {
             deleteTree(workspacesTemp)
@@ -771,7 +801,7 @@ object BackupArchive {
     private fun readManifest(app: Context, uri: Uri): BackupManifest {
         val text = try {
             val stream = app.contentResolver.openInputStream(uri)
-                ?: throw IllegalStateException("无法读取备份文件（打开失败）")
+                ?: throw IllegalStateException("无法打开备份文件，请确认文件仍存在并可访问")
             stream.use { raw ->
                 ZipInputStream(BufferedInputStream(raw, COPY_BUFFER)).use { zis ->
                     readManifestEntry(zis)
@@ -792,8 +822,8 @@ object BackupArchive {
         var entry = zis.nextEntry
         while (entry != null) {
             if (!entry.isDirectory && entry.name == MANIFEST_NAME) {
-                // readBytes 仅读取至条目数据末尾（ZipInputStream 在条目边界返回 -1），不会读取后续条目
-                return zis.readBytes().toString(Charsets.UTF_8)
+                // 按条目边界读到数据末尾（ZipInputStream 在条目边界返回 -1），不会读取后续条目
+                return readEntryCapped(zis, MAX_MANIFEST_BYTES).toString(Charsets.UTF_8)
             }
             entry = zis.nextEntry
         }
@@ -858,6 +888,7 @@ object BackupArchive {
         "workspaces.json" -> "工作区与存储单元 workspaces.json"
         "drafts.json" -> "未发送的草稿 drafts.json"
         "stats.json" -> "用量统计 stats.json"
+        "schedules.json" -> "定时任务 schedules.json"
         "providers.json" -> "模型提供商与密钥 providers.json"
         "goals.json" -> "长期目标 goals.json"
         "context_events.json" -> "摘要与压缩事件 context_events.json"
@@ -1059,7 +1090,7 @@ object BackupArchive {
         } catch (e: Exception) {
             runCatching { tarFile.delete() }
             FileLog.log(TAG, "终端环境打包失败：" + e)
-            null to "终端环境未导出：" + (e.message ?: e.javaClass.simpleName).take(160)
+            null to "终端环境未导出：打包过程出错，本次备份不含终端环境"
         }
     }
 
@@ -1234,9 +1265,9 @@ object BackupArchive {
     private fun fileTreeSize(root: File): Long = try {
         var total = 0L
         var seen = 0
-        root.walkTopDown().forEach { file ->
-            // 设置上限作为保底：软链接指回祖辈目录会使 walk 循环，为估算进度不值得承担卡死风险
-            if (++seen > 200_000) return@forEach
+        // 设置上限作为保底：软链接指回祖辈目录会使 walk 循环，为估算进度不值得承担卡死风险
+        for (file in root.walkTopDown()) {
+            if (++seen > 200_000) break
             if (file.isFile) total += file.length()
         }
         total
@@ -1286,10 +1317,11 @@ object BackupArchive {
      */
     private fun extractTar(app: Context, zis: ZipInputStream, usrTemp: File) {
         val busybox = busyboxBinary(app)
-            ?: throw IllegalStateException("找不到 busybox，无法还原终端环境（先打开一次终端再导入）")
+            ?: throw IllegalStateException("终端组件尚未就绪，请先在侧边栏打开一次终端再导入")
         deleteTree(usrTemp)
         if (!usrTemp.mkdirs() && !usrTemp.isDirectory) {
-            throw IllegalStateException("临时目录建不出来：" + usrTemp.absolutePath)
+            FileLog.log(TAG, "创建终端解包临时目录失败：" + usrTemp.absolutePath)
+            throw IllegalStateException("临时目录创建失败，请检查存储空间后重试")
         }
         val process = ProcessBuilder(
             busybox.absolutePath,
@@ -1331,9 +1363,8 @@ object BackupArchive {
                     writeError != null -> writeError.message ?: writeError.javaClass.simpleName
                     else -> ""
                 }
-                throw IllegalStateException(
-                    "busybox tar 解包失败（退出码 " + code + "）" + if (reason.isEmpty()) "" else "：" + reason
-                )
+                FileLog.log(TAG, "终端环境解包失败：退出码 " + code + "，" + reason.take(1000))
+                throw IllegalStateException("终端环境解包失败，备份中的终端数据无法还原；请重新导出备份后重试")
             }
         } finally {
             runCatching { process.destroy() }
@@ -1384,10 +1415,25 @@ object BackupArchive {
         return false
     }
 
-    /** 递归删除；失败只记日志（清临时目录用，删不掉不致命）。 */
+    /**
+     * 递归删除；失败只记日志（清临时目录用，删不掉不致命）。
+     *
+     * 不跟随软链接：备份包里的软链接可以指向任意路径，跟随删除会波及目录外数据。
+     */
     private fun deleteTree(file: File) {
         try {
-            if (file.exists()) file.deleteRecursively()
+            if (!Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)) return
+            Files.walkFileTree(file.toPath(), object : SimpleFileVisitor<Path>() {
+                override fun visitFile(f: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    Files.deleteIfExists(f)
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun postVisitDirectory(d: Path, exc: IOException?): FileVisitResult {
+                    Files.deleteIfExists(d)
+                    return FileVisitResult.CONTINUE
+                }
+            })
         } catch (e: Exception) {
             FileLog.log(TAG, "清理目录失败：" + file.absolutePath + "：" + e)
         }
@@ -1421,6 +1467,26 @@ object BackupArchive {
     private fun describe(e: Throwable): String {
         val message = e.message
         return if (message.isNullOrBlank()) e.javaClass.simpleName else message
+    }
+
+    /** 单条失败的用户可见原因：本类给出的说明直接展示，系统异常只给通用描述并写日志。 */
+    private fun userReason(e: Throwable): String {
+        if (e is IllegalStateException) return describe(e)
+        FileLog.log(TAG, "备份条目处理失败：" + describe(e))
+        return "内容损坏或无法写入，已跳过"
+    }
+
+    /** 读取当前 zip 条目并限制大小；超限按条目损坏处理，避免异常备份撑爆内存。 */
+    private fun readEntryCapped(zis: ZipInputStream, maxBytes: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(COPY_BUFFER)
+        while (true) {
+            val read = zis.read(buffer)
+            if (read <= 0) break
+            out.write(buffer, 0, read)
+            if (out.size() > maxBytes) throw IllegalStateException("条目内容过大，已跳过")
+        }
+        return out.toByteArray()
     }
 
     /** 导出计划里的一个 zip 条目。 */

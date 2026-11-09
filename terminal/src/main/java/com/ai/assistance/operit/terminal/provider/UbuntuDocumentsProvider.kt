@@ -157,7 +157,7 @@ class UbuntuDocumentsProvider : DocumentsProvider() {
             throw IllegalArgumentException("Parent is not a directory")
         }
         
-        val file = File(parent, displayName)
+        val file = resolveChildForDisplayName(parent, displayName)
         
         try {
             if (DocumentsContract.Document.MIME_TYPE_DIR == mimeType) {
@@ -191,7 +191,8 @@ class UbuntuDocumentsProvider : DocumentsProvider() {
     
     override fun renameDocument(documentId: String, displayName: String): String? {
         val sourceFile = getFileForDocId(documentId)
-        val destFile = File(sourceFile.parentFile, displayName)
+        val parent = sourceFile.parentFile ?: throw IllegalArgumentException("Cannot rename root")
+        val destFile = resolveChildForDisplayName(parent, displayName)
         
         if (!sourceFile.renameTo(destFile)) {
             throw IllegalStateException("Failed to rename file")
@@ -303,6 +304,26 @@ class UbuntuDocumentsProvider : DocumentsProvider() {
             throw FileNotFoundException("Invalid documentId: $documentId")
         }
 
+        return file
+    }
+
+    /**
+     * 将 SAF 传入的 displayName 解析为父目录下的子文件。
+     * displayName 由调用方提供，可能包含路径分隔符或 ".."，必须拒绝越出父目录。
+     */
+    private fun resolveChildForDisplayName(parent: File, displayName: String): File {
+        if (displayName.isBlank() || displayName == "." || displayName == ".." ||
+            displayName.contains('/') || displayName.contains('\\')
+        ) {
+            throw IllegalArgumentException("Invalid display name: $displayName")
+        }
+
+        val file = File(parent, displayName)
+        val canonicalParent = parent.canonicalFile
+        val canonicalFile = file.canonicalFile
+        if (!canonicalFile.path.startsWith(canonicalParent.path + File.separator)) {
+            throw IllegalArgumentException("Invalid display name: $displayName")
+        }
         return file
     }
 

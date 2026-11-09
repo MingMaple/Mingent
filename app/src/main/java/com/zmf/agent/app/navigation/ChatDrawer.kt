@@ -1,12 +1,10 @@
 package com.zmf.agent.app.navigation
 import com.zmf.agent.feature.terminal.TerminalActivity
 
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
-import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,7 +59,7 @@ internal fun ChatDrawerPane(
                     },
                     onTerminal = {
                         drawerOpen = false
-                        context.startActivity(Intent(context, com.zmf.agent.feature.terminal.TerminalActivity::class.java))
+                        context.startActivity(Intent(context, TerminalActivity::class.java))
                     },
                     onSettings = {
                         drawerOpen = false

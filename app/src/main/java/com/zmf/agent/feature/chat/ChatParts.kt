@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.app.Activity
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -64,6 +65,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -80,7 +82,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -108,9 +112,10 @@ import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.capability.subagent.SubAgentRegistry
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
-import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.capability.jobs.JobRegistry
 import com.zmf.agent.core.model.ChatMessage
+import com.zmf.agent.core.model.ORIGIN_JOB
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
@@ -151,15 +156,16 @@ internal fun ChatTopBar(
     onPlanClick: () -> Unit,
     /** 内置浏览器中是否存在活动页面：存在时才显示网页图标。 */
     browserOpen: Boolean,
-    onBrowserClick: () -> Unit
+    onBrowserClick: () -> Unit,
+    /** 已打开的预览标签数：为 0 时不显示预览入口（没有可看的内容就不占位）。 */
+    previewCount: Int = 0,
+    onPreviewClick: () -> Unit = {}
 ) {
-    // 状态点四态：请求中蓝 / 出错红 / 就绪青 / 空闲绿
-    val shizukuState by ShizukuBridge.state.collectAsState()
+    // 状态点：请求中蓝 / 网络或请求失败红 / 其余绿
     val dotColor = when {
         viewModel.isStreaming -> UiColors.accentFg
         !viewModel.networkAvailable -> MaterialTheme.colorScheme.error
         viewModel.lastRequestOk == false -> MaterialTheme.colorScheme.error
-        shizukuState == ShizukuBridge.State.READY -> UiColors.success
         else -> UiColors.success
     }
     Row(
@@ -210,16 +216,21 @@ internal fun ChatTopBar(
             }
             Spacer(Modifier.width(10.dp))
         }
+        // 三枚入口按体系中固定的顺序排列：计划 → 浏览 → 预览。
+        // 只在各自确有内容时出现：挂一枚点不开的淡色图标，等于教用户「这里没用」
+        if (plans.isNotEmpty()) {
+            PlanGlyph(onClick = onPlanClick)
+            Spacer(Modifier.width(10.dp))
+        }
         // 网页图标：只有存在活着的页面时才出现。它出现在「从浏览页返回主页之后」，
         // 语义是「网页还开着，点我回去」，所以画的是窗口而不是链接
         if (browserOpen) {
             BrowserGlyph(onClick = onBrowserClick)
             Spacer(Modifier.width(10.dp))
         }
-        // 计划按钮：只有真的存在计划预览时才出现。没有计划还挂一枚淡色图标，
-        // 等于在教用户「这里点不开」，不如让位给状态点
-        if (plans.isNotEmpty()) {
-            PlanGlyph(onClick = onPlanClick)
+        // 预览入口：只统计用户点开过的文件，关掉全部标签即消失
+        if (previewCount > 0) {
+            FilesGlyph(onClick = onPreviewClick)
             Spacer(Modifier.width(10.dp))
         }
         // 轨迹辅窗格模式没有整屏左滑手势，入口放在顶栏；覆盖式与整屏滑入模式不出现
@@ -384,6 +395,71 @@ internal fun TraceGlyph(onClick: () -> Unit) {
 /** 子任务面板最多显示几条。 */
 private const val SUB_AGENT_PANEL_ROWS = 5
 
+/**
+ * 右上角的「预览」入口：一叠纸（前一张右上角折起，后面一张只露出左边与下边）。
+ *
+ * 与计划、网页、轨迹同一套线宽与颜色；没有任何打开的标签时不绘制。
+ * 不画正文横线：17dp 下「圆角矩形 + 横线」与计划图标几乎同形，靠折角与叠层才分得开。
+ */
+@Composable
+internal fun FilesGlyph(onClick: () -> Unit) {
+    val color = Palette.Neutral
+    Box(
+        modifier = Modifier
+            .size(26.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(17.dp)) {
+            val w = size.width
+            val h = size.height
+            val stroke = 1.5.dp.toPx()
+            val left = w * 0.24f
+            val right = w * 0.92f
+            val top = h * 0.08f
+            val bottom = h * 0.8f
+            val fold = w * 0.34f
+            // 后面那张纸：只露出左边与下边，读作「一叠」而不是单页
+            drawPath(
+                path = Path().apply {
+                    moveTo(left - 2.4.dp.toPx(), top + 2.6.dp.toPx())
+                    lineTo(left - 2.4.dp.toPx(), bottom + 2.dp.toPx())
+                    lineTo(right - 2.dp.toPx(), bottom + 2.dp.toPx())
+                },
+                color = color.copy(alpha = 0.6f),
+                style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+            // 前面那张纸：右上角留出折角缺口
+            drawPath(
+                path = Path().apply {
+                    moveTo(left, top)
+                    lineTo(right - fold, top)
+                    lineTo(right, top + fold)
+                    lineTo(right, bottom)
+                    lineTo(left, bottom)
+                    close()
+                },
+                color = color,
+                style = Stroke(width = stroke, join = StrokeJoin.Round)
+            )
+            // 折角的两条边
+            drawPath(
+                path = Path().apply {
+                    moveTo(right - fold, top)
+                    lineTo(right - fold, top + fold)
+                    lineTo(right, top + fold)
+                },
+                color = color,
+                style = Stroke(width = stroke, join = StrokeJoin.Round)
+            )
+        }
+    }
+}
 /**
  * 右上角「子智能体」下拉卡片：只读 [SubAgentRegistry] 的快照，和 ViewModel 无关。
  *
@@ -648,9 +724,7 @@ internal fun PendingImageThumb(
     onClick: () -> Unit,
     onRemove: () -> Unit
 ) {
-    val bitmap = remember(relPath) {
-        decodeSampledBitmap(File(root, relPath).absolutePath, THUMB_EDGE_PX)
-    }
+    val bitmap = rememberThumbnail(File(root, relPath), THUMB_EDGE_PX)
     val onSurface = MaterialTheme.colorScheme.onSurface
     Box(modifier = Modifier.size(PendingThumbSide)) {
         Box(
@@ -899,32 +973,57 @@ internal sealed interface ChatItem {
         val roundsFromEnd: Int = 0
     ) : ChatItem
 
-    data class AssistantItem(val indices: List<Int>, val userIndex: Int) : ChatItem
+    /**
+     * 一个助手回合。[trigger] 非空表示这一轮由后台任务结算通知触发：
+     * 该通知本身不画成用户气泡，只在回合上方留一行说明（与 DSH 的触发说明一致）。
+     */
+    data class AssistantItem(
+        val indices: List<Int>,
+        val userIndex: Int,
+        val trigger: String? = null
+    ) : ChatItem
 }
 
 internal fun buildChatItems(all: List<ChatMessage>): List<ChatItem> {
     val out = ArrayList<ChatItem>()
     var i = 0
     var lastUserIndex = -1
+    // 后台任务结算通知不是用户发言：跳过气泡，只在紧随其后的回合上方留一行触发说明
+    fun isJobNotice(message: ChatMessage): Boolean =
+        message.role == "user" && (message.origin == ORIGIN_JOB ||
+            // 旧数据没有 origin 标记：按固定抬头识别，历史里那几条也不再画成用户气泡
+            (message.programmatic && message.content.startsWith(JobRegistry.NOTICE_PREFIX)))
     // 先数一遍总轮数：轮次差 = 总数 - 当前序号 - 1，单次遍历即可，不必每条消息再扫一次
-    val totalRounds = all.count { it.role == "user" }
+    val totalRounds = all.count { it.role == "user" && !isJobNotice(it) }
     var roundOrdinal = 0
+    var trigger: String? = null
     while (i < all.size) {
-        when (all[i].role) {
-            "user" -> {
+        val message = all[i]
+        when {
+            isJobNotice(message) -> {
+                trigger = "后台任务状态更新"
+                i++
+            }
+
+            message.role == "user" -> {
                 lastUserIndex = i
-                out.add(ChatItem.UserItem(i, all[i], totalRounds - roundOrdinal - 1))
+                out.add(ChatItem.UserItem(i, message, totalRounds - roundOrdinal - 1))
                 roundOrdinal++
                 i++
             }
 
-            "assistant" -> {
+            message.role == "assistant" -> {
                 val indices = ArrayList<Int>()
-                while (i < all.size && all[i].role != "user") {
+                // 通知夹在回合中间时同样跳过：它与前后两段助手内容属于同一轮
+                while (i < all.size && (all[i].role != "user" || isJobNotice(all[i]))) {
                     if (all[i].role == "assistant") indices.add(i)
+                    if (isJobNotice(all[i])) trigger = "后台任务状态更新"
                     i++
                 }
-                if (indices.isNotEmpty()) out.add(ChatItem.AssistantItem(indices, lastUserIndex))
+                if (indices.isNotEmpty()) {
+                    out.add(ChatItem.AssistantItem(indices, lastUserIndex, trigger))
+                    trigger = null
+                }
             }
 
             else -> i++
@@ -1183,9 +1282,7 @@ internal fun SentImageThumb(
     onTap: (Rect) -> Unit,
     onLongPress: (Offset) -> Unit
 ) {
-    val bitmap = remember(relPath) {
-        decodeSampledBitmap(File(root, relPath).absolutePath, THUMB_EDGE_PX)
-    }
+    val bitmap = rememberThumbnail(File(root, relPath), THUMB_EDGE_PX)
     val onSurface = MaterialTheme.colorScheme.onSurface
     // pointerInput(relPath) 不会因为重组而重启，回调必须走 rememberUpdatedState 才是最新的那一个
     val currentTap by rememberUpdatedState(onTap)
@@ -1281,6 +1378,12 @@ internal fun AssistantRow(
     indices: List<Int>,
     streaming: Boolean,
     toolOutcomes: Map<String, Boolean>,
+    /** 工作区根：产物路径按它解析成绝对路径。 */
+    root: File,
+    /** 点击产物卡片：由上层打开预览页。 */
+    onOpenFile: (String) -> Unit,
+    /** 非空表示这一轮由后台任务结算通知触发：在回合上方留一行说明，不画用户气泡。 */
+    trigger: String? = null,
     /** 复制本轮全部正文（用户在气泡里能看全的那些文字）。 */
     onCopy: (String) -> Unit,
     /** 选择文本：正文与思考一起交出去，选择页里再分两段。 */
@@ -1368,6 +1471,7 @@ internal fun AssistantRow(
     // 动作按钮位于气泡尾部（见下方），本轮不挂载长按手势：
     // 长按不消费事件，工具卡照常点击这一点本来就只是为了给弹窗让路
     Column(modifier = Modifier.fillMaxWidth()) {
+        if (trigger != null) TurnTriggerLine(trigger)
         if (hasProcess && !streaming) {
             TurnProcessSummary(
                 thinkCount = thinkCount,
@@ -1407,17 +1511,41 @@ internal fun AssistantRow(
                     cardColor = cardColor
                 )
             }
-        } else {
-            TurnStream(
-                segments = shown,
+        } else if (streaming) {
+            // 运行中：思考与工具按过程组收起，组外正文照常显示（对齐 DSH 的组级折叠）。
+            // 本轮一结束走上面两条分支：整轮收成一行汇总，只留最终回复。
+            TurnLiveStream(
+                blocks = buildTurnBlocks(segments),
                 all = all,
-                streaming = streaming,
                 lastMessageIndex = lastIndex,
                 toolOutcomes = toolOutcomes,
                 thinkColor = thinkColor,
                 bubbleColor = bubbleColor,
                 cardColor = cardColor
             )
+        } else {
+            TurnStream(
+                segments = shown,
+                all = all,
+                streaming = false,
+                lastMessageIndex = lastIndex,
+                toolOutcomes = toolOutcomes,
+                thinkColor = thinkColor,
+                bubbleColor = bubbleColor,
+                cardColor = cardColor
+            )
+        }
+        // 产物卡片：位于收尾正文与动作行之间，与 DSH 的 turnTail 同一位置。
+        // 流式途中不显示：这时还不知道这一轮最终会留下哪些文件。
+        // 回合下标只收 assistant 消息，工具成败需回全会话按 toolCallId 查，并叠加本进程的实时表。
+        val turnFiles = ProducedFiles.ofTurn(
+            turn = indices.mapNotNull { all.getOrNull(it) },
+            all = all,
+            root = root,
+            liveOk = toolOutcomes
+        )
+        if (!streaming && turnFiles.isNotEmpty()) {
+            DeliverableCards(files = turnFiles, onOpen = onOpenFile)
         }
         // 尾部动作行：复制 / 选择文本 / 分支 / 用量 + 时间，跟着这条回复走。
         // 用量的明细仍然点开才看：数字本身不该占着一行。
@@ -1710,3 +1838,17 @@ internal fun turnUsageOf(message: ChatMessage): TurnUsageInfo {
 
 /** 列表缩略图最长边：容器最大约 88dp，取 256px 已足够，再大只会多占内存。 */
 private const val THUMB_EDGE_PX = 256
+
+/**
+ * 缩略图：解码放到 IO 线程，主线程只接结果。
+ *
+ * 消息行与工具卡行都在列表首次进入视口时组合，若在组合里直接解码，
+ * 连续滚动多张图片会逐帧阻塞主线程；这里首帧先返回 null（绘制占位底色），解码完成后自动换图。
+ */
+@Composable
+internal fun rememberThumbnail(file: File, edgePx: Int): Bitmap? {
+    val bitmap by produceState<Bitmap?>(null, file.absolutePath, edgePx) {
+        value = withContext(Dispatchers.IO) { decodeSampledBitmap(file.absolutePath, edgePx) }
+    }
+    return bitmap
+}

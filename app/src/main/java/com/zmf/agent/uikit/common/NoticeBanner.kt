@@ -75,6 +75,11 @@ object NoticeCenter {
 
     private val main = Handler(Looper.getMainLooper())
 
+    /**
+     * 投递一条提示；空白文案直接忽略。
+     *
+     * 可在任意线程调用：非主线程时经主线程 Handler 转发。同一时刻只显示一条，后到的覆盖先到的。
+     */
     fun show(
         text: String,
         tone: NoticeTone = NoticeTone.Neutral,

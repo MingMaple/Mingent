@@ -26,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +44,7 @@ import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.zmf.agent.uikit.common.saltFieldColors
 import com.zmf.agent.uikit.common.NoticeCenter
@@ -67,6 +69,7 @@ fun LogsPage(onBack: () -> Unit) {
     var filter by remember { mutableStateOf("全部") }
     var query by remember { mutableStateOf("") }
     var raw by remember { mutableStateOf<List<String>>(emptyList()) }
+    val scope = rememberCoroutineScope()
 
     // 读取最多两个文件、1MB，不能在主线程执行；context 仅用于定位目录
     LaunchedEffect(Unit) {
@@ -189,9 +192,12 @@ fun LogsPage(onBack: () -> Unit) {
                     text = "清空",
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 ) {
-                    FileLog.clear(context)
-                    raw = emptyList()
-                    logsToast(context, "已清空")
+                    // 删除日志文件同样是磁盘操作，完成后才清空列表
+                    scope.launch {
+                        withContext(Dispatchers.IO) { FileLog.clear(context) }
+                        raw = emptyList()
+                        logsToast(context, "已清空")
+                    }
                 }
                 Spacer(Modifier.weight(1f))
                 Text(

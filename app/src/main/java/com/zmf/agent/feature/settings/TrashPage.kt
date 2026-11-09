@@ -279,7 +279,7 @@ fun TrashPage(onBack: () -> Unit) {
                     if (ok) {
                         NoticeCenter.success("已导出")
                     } else {
-                        NoticeCenter.error("导出失败，路径不可写或有同名文件")
+                        NoticeCenter.error("导出失败，目标路径不可写或已有同名文件；请更换目录后重试")
                     }
                     generation++
                 }

@@ -85,6 +85,11 @@ internal fun ChatAppEffects(
         BrowserState.switchTo(viewModel.currentSessionId)
     }
 
+    // 预览标签同样随会话切换：各自挂起、各自挂回；新会话首次进入时从磁盘读回上次的清单
+    LaunchedEffect(viewModel.currentSessionId) {
+        PreviewTabs.switchTo(context, viewModel.currentSessionId)
+    }
+
     // 返回前台时从磁盘重新读取会话；输入法有意不在此收起，切后台再返回时其应仍在输入框上。
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -226,6 +231,8 @@ internal fun ChatBackHandlers(
     BackHandler(enabled = page == AppPage.GENERAL) { page = AppPage.SETTINGS }
     BackHandler(enabled = page == AppPage.MEMORY) { page = AppPage.SETTINGS }
     BackHandler(enabled = page == AppPage.PLAN) { page = null }
+    // 预览页只有一层：返回即回主页，与页面左上角的箭头一致。标签留在原地，顶栏入口仍在
+    BackHandler(enabled = page == AppPage.PREVIEW) { page = null }
     // 洞察页的返回需回到进入时的层级：自主页输入框进入则退回主页，自设置进入则退回设置
     BackHandler(enabled = page == AppPage.CONTEXT_HUB) {
         page = if (contextHubFromHome) null else AppPage.SETTINGS

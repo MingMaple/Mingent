@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -27,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,6 +58,7 @@ import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -80,7 +83,12 @@ fun SchedulePage(onBack: () -> Unit) {
         tasksLoaded = true
     }
     // 归属工作区只在表单里选择，进入页面时读一次即可
-    val workspaces = remember { WorkSpaceStore.load(context) }
+    var workspaces by remember { mutableStateOf<List<WorkSpace>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        workspaces = withContext(Dispatchers.IO) { WorkSpaceStore.load(context) }
+    }
+    // 排期与读写任务表都在后台完成：列表操作的反馈只需在完成后刷新 state
+    val scope = rememberCoroutineScope()
     var creating by remember { mutableStateOf(false) }
     // 当前展开编辑的任务（null 表示全部折叠）。同一时刻仅展开一条：两条表单同时显示容易导致误改。
     var editingId by remember { mutableStateOf<String?>(null) }
@@ -142,7 +150,7 @@ fun SchedulePage(onBack: () -> Unit) {
 
             if (tasksLoaded && tasks.isEmpty()) {
                 Text(
-                    text = "还没有定时任务。新建一条，到点由系统闹钟叫醒 App 跑一轮 Agent。",
+                    text = "还没有定时任务。新建一条，到达设定时刻后自动执行。",
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     fontSize = 12.sp,
                     color = onSurface.copy(alpha = 0.45f)
@@ -156,8 +164,12 @@ fun SchedulePage(onBack: () -> Unit) {
                     onToggle = { on ->
                         // 开关控制是否排期：arm 启用时计算下一次并设置闹钟，停用时将 nextAt 归零并取消闹钟
                         if (on) ensureNotificationEnabled()
-                        ScheduleRunner.arm(context, task.copy(enabled = on))
-                        tasks = ScheduleStore.load(context)
+                        scope.launch {
+                            tasks = withContext(Dispatchers.IO) {
+                                ScheduleRunner.arm(context, task.copy(enabled = on))
+                                ScheduleStore.load(context)
+                            }
+                        }
                     },
                     // 点击「编辑」展开表单，再次点击收起（同一时刻仅展开一条，两条表单叠加容易导致误改）
                     onToggleExpand = {
@@ -174,8 +186,12 @@ fun SchedulePage(onBack: () -> Unit) {
                         onSave = { draft ->
                             // arm 会按新规则重新计算 nextAt 并重排闹钟；id 相同时覆盖原任务
                             if (draft.enabled) ensureNotificationEnabled()
-                            ScheduleRunner.arm(context, draft)
-                            tasks = ScheduleStore.load(context)
+                            scope.launch {
+                                tasks = withContext(Dispatchers.IO) {
+                                    ScheduleRunner.arm(context, draft)
+                                    ScheduleStore.load(context)
+                                }
+                            }
                             editingId = null
                         }
                     )
@@ -192,8 +208,12 @@ fun SchedulePage(onBack: () -> Unit) {
                     onSave = { draft ->
                         // arm 中统一计算 nextAt、持久化并设置闹钟，页面仅负责提供完整原始字段
                         if (draft.enabled) ensureNotificationEnabled()
-                        ScheduleRunner.arm(context, draft)
-                        tasks = ScheduleStore.load(context)
+                        scope.launch {
+                            tasks = withContext(Dispatchers.IO) {
+                                ScheduleRunner.arm(context, draft)
+                                ScheduleStore.load(context)
+                            }
+                        }
                         creating = false
                     }
                 )
@@ -234,9 +254,13 @@ fun SchedulePage(onBack: () -> Unit) {
             text = { Text("删除「" + task.title.ifEmpty { "未命名任务" } + "」？已排的闹钟会一起取消。") },
             confirmButton = {
                 TextButton(onClick = {
-                    ScheduleRunner.cancel(context, task.id)
-                    tasks = ScheduleStore.remove(context, task.id)
                     pendingDelete = null
+                    ScheduleRunner.cancel(context, task.id)
+                    scope.launch {
+                        tasks = withContext(Dispatchers.IO) {
+                            ScheduleStore.remove(context, task.id)
+                        }
+                    }
                 }) { Text("删除") }
             },
             dismissButton = {
@@ -361,11 +385,12 @@ private fun TaskForm(
         // 时刻统一换算为下一次到达时刻：返回 0 表示 "HH:mm" 格式错误（daily 与 once 共用此校验）
         val at = ScheduleStore.nextTimeOfDay(timeText.trim(), now)
         val problem = when {
-            taskTitle.isEmpty() -> "标题不能为空"
-            taskPrompt.isEmpty() -> "指令不能为空"
-            kind == ScheduleStore.KIND_EVERY && (minutes == null || minutes <= 0) -> "间隔要填正整数分钟"
-            kind != ScheduleStore.KIND_EVERY && at <= 0L -> "时刻要写成 HH:mm"
-            !targetNew && pickedSessionId == null -> "请先选择目标会话"
+            taskTitle.isEmpty() -> "标题不能为空，请填写后再保存"
+            taskPrompt.isEmpty() -> "指令不能为空，请填写后再保存"
+            kind == ScheduleStore.KIND_EVERY && (minutes == null || minutes <= 0) ->
+                "间隔需为正整数分钟，请修改后重试"
+            kind != ScheduleStore.KIND_EVERY && at <= 0L -> "时刻格式应为 HH:mm，请修改后重试"
+            !targetNew && pickedSessionId == null -> "请先选择目标会话后再保存"
             else -> ""
         }
         if (problem.isNotEmpty()) {
@@ -458,37 +483,34 @@ private fun TaskForm(
                 onValueChange = { prompt = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(110.dp),
+                    .heightIn(min = 110.dp),
                 textStyle = bodyStyle,
                 placeholder = { Text("指令（到达触发时刻发送给模型的内容）", fontSize = 12.sp) }
             )
 
             Text("结果存到", fontSize = 12.sp, color = onSurface.copy(alpha = 0.55f))
-            val boundId = initial?.targetSessionId
-            if (boundId != null) {
-                // 任务已绑定会话：只显示「指定会话」与该会话名称，不再提供「新会话」，
-                // 否则用户会误以为修改即可换回新建，而解绑不会自动发生
-                Text(
-                    text = "指定会话 · " + (sessions.firstOrNull { it.id == boundId }
-                        ?.title?.ifBlank { "新会话" } ?: "已解绑"),
-                    fontSize = 12.sp,
-                    color = onSurface.copy(alpha = 0.75f)
-                )
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ScheduleChip("新会话", targetNew) { targetNew = true }
-                    ScheduleChip("选择会话", !targetNew) {
-                        targetNew = false
-                        showPicker = true
-                    }
+            // 新建与编辑共用同一套选择：编辑时按任务已绑定的会话预选，
+            // 改选会话即换目标、改选「新会话」即解绑并在首次触发时新建
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ScheduleChip("新会话", targetNew) {
+                    targetNew = true
+                    pickedSessionId = null
                 }
-                Text(
-                    text = sessions.firstOrNull { it.id == pickedSessionId }
-                        ?.title?.ifBlank { "新会话" } ?: "未选择会话",
-                    fontSize = 11.sp,
-                    color = onSurface.copy(alpha = 0.35f)
-                )
+                ScheduleChip("选择会话", !targetNew) {
+                    targetNew = false
+                    showPicker = true
+                }
             }
+            Text(
+                text = if (targetNew) {
+                    "首次触发时新建会话"
+                } else {
+                    sessions.firstOrNull { it.id == pickedSessionId }
+                        ?.title?.ifBlank { "新会话" } ?: "未选择会话"
+                },
+                fontSize = 11.sp,
+                color = onSurface.copy(alpha = 0.35f)
+            )
 
             // 归属工作区：决定后台执行时的运行根，新建的结果会话也归入该工作区
             Text("归属工作区", fontSize = 12.sp, color = onSurface.copy(alpha = 0.55f))
@@ -539,7 +561,9 @@ private fun TaskForm(
     // 点击外部或返回键关闭由 onDismissRequest 处理
     if (showPicker) {
         SessionPickerDialog(
-            sessions = sessions,
+            // 只列用户看得见的会话：已归档、空白壳、未列出的会话选作目标后，
+            // 定时结果会写进侧边栏里根本不存在的会话（2026-11-09 新闻早报实例）
+            sessions = sessions.filter { !it.archived && it.listed && !it.blank },
             onPick = { id ->
                 pickedSessionId = id
                 targetNew = false
@@ -617,10 +641,13 @@ private fun SessionPickerDialog(
                     Text("还没有会话", fontSize = 12.sp, color = onSurface.copy(alpha = 0.45f))
                 }
                 for (session in sessions) {
+                    // 工作区名为空时退回「未分类」：部分历史工作区只有 id 没有名，直接拼接会留下孤零零的「· 」
+                    val spaceName = session.workspaceId?.let { names[it] }
+                        ?.takeIf { it.isNotBlank() } ?: "未分类"
                     Text(
                         text = session.title.ifBlank { "新会话" } +
                             " · " + SessionStore.relativeTime(session.updatedAt) +
-                            " · " + (session.workspaceId?.let { names[it] } ?: "未分类"),
+                            " · " + spaceName,
                         modifier = Modifier
                             .fillMaxWidth()
                             .saltRowClickable(RoundedCornerShape(10.dp)) { onPick(session.id) }

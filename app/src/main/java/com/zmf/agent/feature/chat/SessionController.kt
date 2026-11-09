@@ -23,6 +23,8 @@ import com.zmf.agent.core.store.StorageStore
 import com.zmf.agent.core.store.UploadStore
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
+import com.zmf.agent.core.store.WorkspaceIo
+import com.zmf.agent.core.store.workspaceIoForRoot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -413,19 +415,14 @@ class SessionController(
     /**
      * 归档前的特例说明，供确认弹窗使用；列表为空表示常规归档（只需一句轻提示）。
      *
-     * 两种特例：① 该会话是某内置目录的最后一个引用，后续删除会话时目录将进回收站；
-     * ② 有定时任务以该会话为目标，归档会把这些任务自动停用并解绑。
+     * 唯一的特例：有定时任务以该会话为目标，归档会把这些任务自动停用并解绑。
+     * 内置目录的引用数不在此提示：归档不改存储单元、不改引用关系，句中所说的
+     * 「以后删除会把它移入回收站」属于删除动作的后果，由 [deleteSessionExtraNote]
+     * 在归档页的删除确认中说明；在可逆的归档前再说一遍属于重复告知。
      */
     fun archiveNotes(id: String): List<String> {
-        val target = sessions.firstOrNull { it.id == id } ?: return emptyList()
-        val notes = ArrayList<String>(2)
-        val storage = StorageStore.find(appContext, target.storageId)
-        if (storage != null && storage.kind == StorageKind.PRIVATE) {
-            val refs = StorageStore.refs(workspaces, sessions, storage.id)
-            if (refs.total == 1) {
-                notes += "该内置目录已无其他会话引用，后续若删除此会话，目录将移入回收站。"
-            }
-        }
+        if (sessions.none { it.id == id }) return emptyList()
+        val notes = ArrayList<String>(1)
         if (ScheduleBridge.affectsSession(id)) {
             notes += "该会话绑定的定时任务已自动停用并解绑，若需启用，请重新配置该定时任务。"
         }
@@ -1089,6 +1086,14 @@ class SessionController(
 
     /** 工作区对应的存储单元；不存在返回 null。 */
     fun storageOf(space: WorkSpace): Storage? = StorageStore.find(appContext, space.storageId)
+
+    /** 当前会话的存储根：预览页与产物推导都按它解析相对路径。 */
+    fun currentStorageRoot(): File =
+        rootOfStorage(sessions.firstOrNull { it.id == currentSessionId }?.storageId?.takeIf { it.isNotEmpty() }
+            ?: storageIdFor(currentWorkspaceId))
+
+    /** 当前会话的读取入口：走 [WorkspaceIo] 才能兼容系统授权目录（SAF）。 */
+    fun currentStorageIo(): WorkspaceIo = workspaceIoForRoot(appContext, currentStorageRoot())
 
     /**
      * 可能把附件写进当前存储目录的会话。

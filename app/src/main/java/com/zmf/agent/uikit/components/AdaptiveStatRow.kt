@@ -65,7 +65,7 @@ fun AdaptiveStatRow(
         // 只留 1dp 时最后一个字会被 Text 自身的约束裁掉（实测「上下文已用」少一个「用」）
         val budget = available - 8.dp
 
-        val widths = remember(leftValue, leftUnit, rightValue, rightLabel, fontScale, budget) {
+        val widths = remember(leftValue, leftUnit, rightValue, rightLabel, density, budget) {
             fun measure(text: String, style: TextStyle): Dp =
                 with(density) { measurer.measure(AnnotatedString(text), style, softWrap = false).size.width.toDp() }
             floatArrayOf(

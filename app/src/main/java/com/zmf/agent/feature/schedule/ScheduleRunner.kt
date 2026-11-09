@@ -65,8 +65,14 @@ object ScheduleRunner {
 
     private const val TAG = "schedule"
 
-    /** 单次任务的工具轮数上限：后台无界面监管，避免无限循环。 */
-    private const val MAX_ROUNDS = 8
+    /**
+     * 单次任务的工具轮数上限：后台无界面监管，避免无限循环。
+     *
+     * 取 48 而非早期的 8：检索类任务（每日新闻）需要十余轮搜索与抓取，
+     * 原值在半途截断，整轮拿不到答复（2026-11-07 实测）。达到上限仍由
+     * AgentLoop 的无人值守收尾保证有一段正文，不会整轮空手而归。
+     */
+    private const val MAX_ROUNDS = 48
 
     /** 失败重试次数（含首次）：一次网络波动不应导致任务等待整整一个周期。 */
     private const val MAX_ATTEMPTS = 2
@@ -333,7 +339,12 @@ object ScheduleRunner {
         // 会话级串行：与聊天页共用同一把锁。同一会话两侧同时跑，落盘时后写者会覆盖对方的整份消息
         if (!SessionBusy.tryAcquire(session.id)) {
             FileLog.log(TAG, "目标会话正在执行其他回合，本轮跳过：" + session.id)
-            Notifier.notifySchedule(app, "定时任务跳过：" + task.title, "目标会话正在使用，本轮未执行", session.id)
+            Notifier.notifySchedule(
+                app,
+                "定时任务跳过：" + task.title,
+                "目标会话正在执行其他任务，本轮未执行；下次触发时会再次尝试。",
+                session.id
+            )
             return
         }
         var content = ""
@@ -373,7 +384,7 @@ object ScheduleRunner {
                 ChatBridge.notifySessionsChanged()
                 Notifier.notifySchedule(app, "定时任务完成：" + task.title, preview(content), session.id)
             } else {
-                Notifier.notifySchedule(app, "定时任务失败：" + task.title, reason, session.id)
+                Notifier.notifySchedule(app, "定时任务失败：" + task.title, failureText(reason), session.id)
             }
         } finally {
             SessionBusy.release(session.id)
@@ -413,7 +424,8 @@ object ScheduleRunner {
         )
         // 携带目标会话已有的问答：否则每轮都相当于首次见到该语句，
         // 用户设置的「第二次回复二」将始终只回复一。
-        val messages = historyOf(session)
+        // 同一任务的历次投递（语句与本轮完全相同）连同其答复整体略去，理由见 historyOf。
+        val messages = historyOf(session, task.prompt)
         // 本轮边界与答复提取走 [TurnOutcome]：与聊天页同一口径，历史消息不参与，
         // 请求失败、本轮没有产出正文时答复为空串，不会把上一轮的答复当成本轮结果写回。
         val turnStart = messages.size
@@ -454,7 +466,9 @@ object ScheduleRunner {
                 workspaceRoot = workspace,
                 sessionId = session.id
             ),
-            ui = ui
+            ui = ui,
+            // 后台无人值守：达到工具轮数上限时以空工具表收尾，保证本轮仍有正文
+            unattended = true
         )
         // 时间账按「这次执行」记一次：与聊天页一样，失败的那一轮也要留下已消耗的等待与生成时间
         UsageLedger.recordTiming(
@@ -479,7 +493,10 @@ object ScheduleRunner {
                 " 字（开跑前 " + turnStart + " 条）"
         )
         if (content.isEmpty()) {
-            return RoundResult("", ui.errors.toString().ifEmpty { "模型没有返回内容" })
+            // 通知正文要能区分「没产出正文」与「请求失败 / 上下文溢出」：
+            // ui.errors 里已带提供方原文（如「请求失败（HTTP 400）：…」），为空说明本轮确实没有正文
+            val detail = ui.errors.toString().ifEmpty { "模型未返回任何内容" }
+            return RoundResult("", "未产出答复：" + detail)
         }
         return RoundResult(content, "", turn)
     }
@@ -489,12 +506,34 @@ object ScheduleRunner {
      *
      * 有意丢弃 tool_calls 与 tool 结果：二者必须成对出现，后台单轮重放容易产生非法请求；
      * 定时任务需要的是上一轮问答的上下文，而非中间工具细节。
+     *
+     * [prompt] 是本任务的固定指令：语句与该指令完全相同的历次投递，连同紧随其后的答复一并略去。
+     * 原因是周期任务的指令逐日一字不差，若把它与上一轮的答复留在历史里，模型会把上一轮的答复
+     * 当作本轮结果照抄（2026-11-08 实测：新闻任务第二次投递只字未检索，复述了 11 月 6 日那一份早报，
+     * 文本相似度 99.5%）。任务之间的其他问答仍然保留，供「第二次回复二」这类多任务衔接使用。
      */
-    private fun historyOf(session: ChatSession): MutableList<ChatMessage> =
-        session.messages
+    private fun historyOf(session: ChatSession, prompt: String): MutableList<ChatMessage> {
+        val picked = session.messages
             .filter { (it.role == "user" || it.role == "assistant") && it.content.isNotBlank() }
             .takeLast(HISTORY_MESSAGES)
-            .mapTo(mutableListOf()) { ChatMessage(role = it.role, content = it.content) }
+        val out = ArrayList<ChatMessage>(picked.size)
+        var i = 0
+        while (i < picked.size) {
+            val message = picked[i]
+            if (message.role == "user" && message.content == prompt) {
+                i++
+                // 投递成功时答复紧随其后；投递失败时只有提问，两种情况都整段略去
+                if (i < picked.size && picked[i].role == "assistant") i++
+                continue
+            }
+            out.add(ChatMessage(role = message.role, content = message.content))
+            i++
+        }
+        if (out.size != picked.size) {
+            FileLog.log(TAG, "历史略去本任务历次投递 " + (picked.size - out.size) + " 条")
+        }
+        return out
+    }
 
     /**
      * 目标会话：存在 id 则续用该会话（已被删除或已归档由调用方提前关闭开关，不会走到这里）。
@@ -507,7 +546,7 @@ object ScheduleRunner {
         val targetId = task.targetSessionId?.takeIf { it.isNotEmpty() }
         if (targetId != null) {
             val existing = SessionStore.load(app).firstOrNull { it.id == targetId }
-            if (existing != null) return existing
+            if (existing != null) return promoteIfHidden(app, existing)
             FileLog.log(TAG, "目标会话已不存在，改为新建：" + targetId)
         }
         val workspaceId = task.workspaceId?.takeIf { it.isNotEmpty() } ?: WorkSpaceStore.DEFAULT_ID
@@ -529,6 +568,22 @@ object ScheduleRunner {
         ChatBridge.notifySessionsChanged()
         FileLog.log(TAG, "为任务「" + task.title + "」建立结果会话：" + created.id)
         return created
+    }
+
+    /**
+     * 目标会话若是空白会话（进入工作区时预建、默认不进侧边栏），写入前先按聊天页
+     * 「发出第一条消息」的同一口径转正。
+     *
+     * 否则定时结果与通知都在，侧边栏却没有这条会话，用户根本找不到
+     * （2026-11-09 06:57 新闻早报实例：目标会话 blank 且未列出，早报写进去了但无处可见）。
+     */
+    private fun promoteIfHidden(app: Context, session: ChatSession): ChatSession {
+        if (!session.blank && session.listed) return session
+        val promoted = session.copy(blank = false, listed = true)
+        SessionStore.saveMerged(app, listOf(promoted))
+        ChatBridge.notifySessionsChanged()
+        FileLog.log(TAG, "目标会话原为空白或未列出，已转正：" + session.id)
+        return promoted
     }
 
     /**
@@ -735,10 +790,21 @@ object ScheduleRunner {
     private fun preview(content: String): String =
         if (content.length <= PREVIEW_CHARS) content else content.take(PREVIEW_CHARS) + "…"
 
+    /**
+     * 通知里的失败原因：只给用户可执行的说明，原始错误（异常类名、服务端错误码）
+     * 留在日志中，避免把技术细节直接推到通知栏。
+     */
+    private fun failureText(raw: String): String =
+        if (raw.startsWith("未产出答复")) {
+            "模型未返回内容，可能是请求被拒绝或上下文过长；请检查模型设置后重试。"
+        } else {
+            "本轮执行中断，请检查网络连接后重试。"
+        }
+
     private fun timeText(millis: Long): String =
         SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(millis))
 
-    /** 单次执行结果：content 非空表示获得答复；error 为失败原因（也用于拼接通知正文）。 */
+    /** 单次执行结果：content 非空表示获得答复；error 为原始失败原因，仅用于日志与排障。 */
     private data class RoundResult(
         val content: String,
         val error: String,

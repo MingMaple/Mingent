@@ -154,7 +154,6 @@ fun AgentTheme(
         density = outerDensity.density,
         fontScale = uiScale
     )
-    val colors = if (darkTheme) saltDark() else saltLight()
     // primary 必须为**中性墨色**，不得使用强调蓝。
     //
     // Material 默认配色将大量控件绑定在 primary 上：TextButton 的文字、输入框的焦点边框与光标、

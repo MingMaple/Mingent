@@ -8,6 +8,7 @@ import com.zmf.agent.capability.tools.agent.SendMessageTool
 import com.zmf.agent.capability.tools.agent.TaskTool
 import com.zmf.agent.capability.tools.file.DeleteFileTool
 import com.zmf.agent.capability.tools.file.ListFilesTool
+import com.zmf.agent.capability.tools.file.PresentTool
 import com.zmf.agent.capability.tools.file.ReadFileTool
 import com.zmf.agent.capability.tools.goal.GoalTool
 import com.zmf.agent.capability.tools.memory.MemTool
@@ -58,6 +59,8 @@ fun defaultTools(): List<Tool> =
         // 高危闸门才能对规范化落点做判定（terminal 的 rm 只能看命令文本）
         DeleteFileTool(),
         ListFilesTool(),
+        // 显式交付：PDF / Office / 图片这类 write_file 写不出的文件，靠它在回合末尾挂卡片
+        PresentTool(),
         TerminalTool(),
         WebTool(),
         SkillTool(),

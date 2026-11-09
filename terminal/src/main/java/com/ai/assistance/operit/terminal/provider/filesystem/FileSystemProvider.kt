@@ -170,11 +170,17 @@ object PRootMountMapping {
             "/$slashNormalized"
         }
 
-        return if (withLeadingSlash.length > 1) {
-            withLeadingSlash.trimEnd('/')
-        } else {
-            withLeadingSlash
+        // 按 chroot 语义折叠 "." 与 ".."，防止通过 ".." 逃逸出 ubuntu rootfs
+        val segments = mutableListOf<String>()
+        for (segment in withLeadingSlash.split('/')) {
+            when (segment) {
+                "", "." -> Unit
+                ".." -> if (segments.isNotEmpty()) segments.removeAt(segments.size - 1)
+                else -> segments.add(segment)
+            }
         }
+
+        return "/" + segments.joinToString("/")
     }
 }
 

@@ -32,7 +32,7 @@
     <!-- 定时任务：执行期间持有部分唤醒锁，避免设备进入 Doze 后中断任务 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Shizuku：动态授权的 shell 通道（见 core/capability/ShizukuBridge.kt） -->
+    <!-- Shizuku：动态授权的 shell 通道（见 infra/system/ShizukuBridge.kt） -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <!-- 允许 http 明文：web_fetch 抓 http 页面、以及后续连本机 dsh 面板（http://127.0.0.1:…）都要用 -->
@@ -98,6 +98,17 @@
         <meta-data
             android:name="moe.shizuku.client.V3_SUPPORT"
             android:value="true" />
+
+        <!-- 预览页的「用其他应用打开」：缓存副本经 FileProvider 授权读取，file:// 会被系统直接拒掉 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

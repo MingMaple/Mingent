@@ -76,7 +76,7 @@ internal fun QuickOptionRow(label: String, selected: Boolean, onClick: () -> Uni
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(42.dp)
+            .heightIn(min = 42.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically

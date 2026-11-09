@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -209,7 +210,7 @@ private fun TemplateRow(title: String, desc: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(38.dp)
+            .heightIn(min = 38.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -237,7 +238,7 @@ private fun SkillRow(name: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(38.dp)
+            .heightIn(min = 38.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -446,8 +447,7 @@ fun ComposerTokenPanel(stats: ComposerStatsInfo, modifier: Modifier = Modifier) 
  * 为什么不直接读会话累计值：用户点的是「这一轮花了多少」。会话累计值是另一本账（状态行那两枚胶囊），
  * 两本账混用就会出现「面板里 75,689、气泡上 45.5K」这种自相矛盾。
  *
- * 字段全部按「服务商报没报」区分：缓存读取 / 缓存写入 / 推理三项为「没报」时，面板上整行不显示
- * 字段全部按「服务商报没报」区分：缓存读取 / 缓存写入 / 推理三项为「没报」时，面板上整行不显示，
+ * 字段全部按「服务商报没报」区分：缓存读取 / 缓存写入 / 推理三项为「没报」时，面板上整行不显示。
  */
 data class TurnUsageInfo(
     /** 未缓存输入（归一化后的口径，见 UsageBuckets）。 */
@@ -581,7 +581,7 @@ private fun DetailRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(28.dp)
+            .heightIn(min = 28.dp)
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -696,8 +696,8 @@ private fun CommandRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // 38dp：弹出键盘时九行亦需完整落在可视区内
-            .height(38.dp)
+            // 38dp：弹出键盘时九行亦需完整落在可视区内；大字号下按内容增高
+            .heightIn(min = 38.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -740,7 +740,7 @@ private fun ChoiceRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(42.dp)
+            .heightIn(min = 42.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically

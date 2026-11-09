@@ -15,6 +15,8 @@ object LinkRouter {
 
     /** 返回 true 表示已处理该链接。 */
     fun open(url: String): Boolean {
+        // 产物路径先交给预览页：这类链接不是网址，交给浏览器只会失败
+        if (FileLinkRouter.openUrl(url)) return true
         val handler = onOpen ?: return false
         return runCatching { handler(url) }.getOrDefault(false)
     }

@@ -357,7 +357,7 @@ object UsageLedger {
         context: Context,
         promptTokens: Int,
         completionTokens: Int,
-       cacheHitTokens: Int,
+        cacheHitTokens: Int,
         cacheMissTokens: Int,
         composition: LedgerComposition = LedgerComposition(),
         costCny: Double = 0.0

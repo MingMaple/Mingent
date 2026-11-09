@@ -217,6 +217,23 @@ Mingent 的内置终端（PRoot + Ubuntu 24 环境）来自 Operit AI 项目，�
 
 ---
 
+## 十一、mammoth.js（BSD 2-Clause）
+
+应用内的 docx 预览由一个内置的 JavaScript 库把 `.docx` 转换为语义 HTML，再交给 WebView 渲染。
+该库以未压缩的浏览器构建产物原样内置，本仓库未修改其代码。
+
+| 项 | 内容 |
+|---|---|
+| 组件 | mammoth.js（`mammoth.browser.min.js`） |
+| 上游项目 | mammoth.js（[github.com/mwilliamson/mammoth.js](https://github.com/mwilliamson/mammoth.js)） |
+| 版权 | Copyright (c) 2013, Michael Williamson |
+| 许可证 | BSD 2-Clause（全文：[app/src/main/assets/docx/LICENSE-mammoth.txt](app/src/main/assets/docx/LICENSE-mammoth.txt)） |
+| 本仓库中的对应位置 | `app/src/main/assets/docx/`（`mammoth.browser.min.js`、调用它的 `viewer.html`） |
+| 用途 | 在应用内把 docx 转换为可读页面，不依赖外部服务，转换在本机完成 |
+| 是否修改 | 否，库文件原样内置；`viewer.html` 为 Mingent 自写，不属于该上游项目 |
+
+---
+
 ## 附：如何报告许可问题
 
 若您认为本仓库包含应标注而未标注的第三方内容，请提交 Issue 或联系仓库所有者，

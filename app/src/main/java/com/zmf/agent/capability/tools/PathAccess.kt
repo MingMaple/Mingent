@@ -16,14 +16,14 @@ object PathAccess {
     /** 能否读：回收站永不放行；工作区（含 tmp）内放行；其余只有「完全」档。 */
     fun canRead(ctx: ToolContext, file: File): Boolean {
         // 回收站属于 Agent 的禁入区域（主体分离）：读取同样禁止，否则删除后仍可读取回收站内容，使删除保护失效
-        if (HighRiskGate.isTrashPath(file.path, ctx.context.packageName)) return false
+        if (HighRiskGate.isTrashPathDeep(file, ctx.context.packageName)) return false
         if (PathGate.isInsideWorkspaceOrTemp(ctx.workspaceRoot, file)) return true
         return ctx.permission == PermissionLevel.FULL
     }
 
     /** 能否写：回收站与只读档永不放行；工作区（含 tmp）内放行；其余只有「完全」档。 */
     fun canWrite(ctx: ToolContext, file: File): Boolean {
-        if (HighRiskGate.isTrashPath(file.path, ctx.context.packageName)) return false
+        if (HighRiskGate.isTrashPathDeep(file, ctx.context.packageName)) return false
         if (ctx.permission == PermissionLevel.READ_ONLY) return false
         if (PathGate.isInsideWorkspaceOrTemp(ctx.workspaceRoot, file)) return true
         return ctx.permission == PermissionLevel.FULL

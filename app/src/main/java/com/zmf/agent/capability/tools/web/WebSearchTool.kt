@@ -88,7 +88,17 @@ class WebSearchTool : Tool {
             coroutineScope {
                 val started = System.currentTimeMillis()
                 val outcomes = queries.map { query ->
-                    async(Dispatchers.IO) { query to runCatching { search(endpoint, apiKey, query) } }
+                    async(Dispatchers.IO) {
+                        val outcome = try {
+                            Result.success(search(endpoint, apiKey, query))
+                        } catch (e: CancellationException) {
+                            // runCatching 会吞掉取消异常，必须单独放行，否则「停止」后还会返回一条失败结果
+                            throw e
+                        } catch (e: Exception) {
+                            Result.failure(e)
+                        }
+                        query to outcome
+                    }
                 }.awaitAll()
                 val elapsed = System.currentTimeMillis() - started
 

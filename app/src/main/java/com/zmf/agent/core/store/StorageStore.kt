@@ -206,9 +206,6 @@ object StorageStore {
     fun find(context: Context, id: String?): Storage? =
         id?.takeIf { it.isNotEmpty() }?.let { key -> loadStorages(context).firstOrNull { it.id == key } }
 
-    /** 默认存储单元。 */
-    fun default(context: Context): Storage = defaultStorage(context)
-
     /** 保证默认存储单元始终在列表中。 */
     fun ensureDefault(storages: List<Storage>): List<Storage> =
         if (storages.any { it.id == DEFAULT_ID }) storages
