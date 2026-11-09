@@ -60,8 +60,18 @@ data class InsightDay(
     val date: String,
     val tokens: Long,
     val requests: Int,
-    /** 轴标签（如「10-31」）；分桶后取该档首日。 */
-    val label: String = ""
+    /** 轴标签（如「10-31」「14时」）；分桶后取该档首日。 */
+    val label: String = "",
+    /**
+     * 该档的构成明细，只给触摸浮层用。
+     *
+     * 缺省 0 表示这一档没有明细（历史遗留摊入的桶、以及被摊进来的差额），浮层据此不显示构成行。
+     */
+    val cacheHit: Int = 0,
+    val cacheMiss: Int = 0,
+    /** 输出 tokens（completion）。 */
+    val output: Int = 0,
+    val costCny: Double = 0.0
 )
 
 /** 耗时六段（毫秒）。 */
@@ -111,8 +121,15 @@ data class InsightGlobalView(
     val toolMillis: Long = 0L,
     val activeMillis: Long = 0L,
     val requests: Int = 0,
-    /** 用量折线序列：今天/近 7 天给 7 点，近 30 天给 30 点，全部按跨度分桶。 */
+    /** 用量折线序列：今天给 24 个整点，近 7 天给 7 点，近 30 天给 30 点，全部按跨度分桶。 */
     val series: List<InsightDay> = emptyList(),
+    /**
+     * 折线画到该下标为止（-1 = 画到末尾）。
+     *
+     * 「今天」用当前小时：横轴固定 0 时至 23 时，但未来时段还没有数据，补 0 会被读成用量归零，
+     * 所以只画到今天已过的部分，末端圆点即「现在」。
+     */
+    val seriesEnd: Int = -1,
     val composition: LedgerComposition? = null,
     val timing: InsightTiming = InsightTiming(),
     /** 全局输出速度 tok/s；null = 没有生成数据。 */

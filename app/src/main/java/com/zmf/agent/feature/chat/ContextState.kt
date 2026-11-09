@@ -15,6 +15,7 @@ import com.zmf.agent.capability.context.ContextStore
 import com.zmf.agent.capability.context.ContextSummarizer
 import com.zmf.agent.capability.context.ToolResultPruner
 import com.zmf.agent.capability.context.contextSummarySystemText
+import com.zmf.agent.capability.context.validSummaryUpTo
 import com.zmf.agent.capability.loop.ContextSummaryState
 import com.zmf.agent.capability.loop.OutputTiming
 import com.zmf.agent.capability.prompt.AgentInstructions
@@ -42,6 +43,8 @@ import com.zmf.agent.core.store.merge
 import com.zmf.agent.core.store.SessionComposition
 import com.zmf.agent.core.store.UsageCost
 import com.zmf.agent.core.store.UsageLedger
+import com.zmf.agent.core.store.hourlyBucketsOf
+import com.zmf.agent.core.store.legacyCoversRange
 import com.zmf.agent.infra.llm.DeepSeekProvider
 import com.zmf.agent.infra.llm.LlmProvider
 import com.zmf.agent.infra.llm.ProviderStore
@@ -615,12 +618,10 @@ class ContextState(
         return ContextSummaryState(text = summary, upTo = upTo, fallback = contextFallback)
     }
 
-    /** 落盘的 summaryUpTo 只有在「是 user 消息边界、且在范围内」时才算数；失效一律当 0（全量）。 */
+    /** 落盘的 summaryUpTo 只有在「是 user 消息边界、且在范围内」时才算数；校验规则见 [validSummaryUpTo]。 */
     private fun normalizedSummaryUpTo(): Int {
         val saved = sessions().firstOrNull { it.id == currentSessionId() }?.summaryUpTo ?: 0
-        if (saved <= 0 || saved >= messages.size) return 0
-        if (messages[saved].role != "user") return 0
-        return saved
+        return validSummaryUpTo(messages, saved)
     }
 
     // ---- 统计与时间账 ----
@@ -1129,11 +1130,8 @@ class ContextState(
         val start = session.inheritedUsage.messages.coerceIn(0, all.size)
         val own = all.drop(start)
         val summary = session.contextSummary
-        val upTo = if (summary.isEmpty()) {
-            0
-        } else {
-            session.summaryUpTo.takeIf { it in 1 until all.size && all[it].role == "user" } ?: 0
-        }
+        // 分界校验与聊天页同一份实现，避免两处对「user 边界 / 范围」的判断分叉
+        val upTo = if (summary.isEmpty()) 0 else validSummaryUpTo(all, session.summaryUpTo)
         val breakdown: Breakdown
         val estimated: Int
         if (isCurrent) {
@@ -1249,10 +1247,10 @@ class ContextState(
             .filterKeys { range == InsightRange.ALL || it >= fromDate }
             .values
             .fold(LedgerUsage()) { acc, day -> acc.merge(day) }
-        // 遗留项表示「第一条有明细的日期之前」的历史。窗口起点早于该日期时即与其重叠，
-        // 必须计入；窗口从明细第一天开始算（如「今天」）时不计，否则今天的数字会被历史撑起来。
+        // 遗留项表示「第一条有明细的日期之前」的历史。判定见 [legacyCoversRange]：
+        // 折线摊分必须用同一份，否则「近 7 天」的图会比上面的区间总量多出一整块历史
         val legacy = ledger.legacy.takeIf {
-            range == InsightRange.ALL || ledger.firstUsageDay.isEmpty() || fromDate < ledger.firstUsageDay
+            legacyCoversRange(range == InsightRange.ALL, ledger.firstUsageDay, fromDate)
         } ?: LedgerUsage()
         val usage = sum.merge(legacy)
         val composition = usage.composition
@@ -1302,6 +1300,8 @@ class ContextState(
             activeMillis = activeWork,
             requests = requests,
             series = series,
+            // 今天的折线画到当前小时为止；其余范围画满
+            seriesEnd = if (range == InsightRange.TODAY) hourOfDay(now) else -1,
             composition = composition.takeIf { !it.isEmpty },
             timing = InsightTiming(
                 ttft = ttft,
@@ -1320,15 +1320,17 @@ class ContextState(
     /**
      * 按范围生成折线图序列。
      *
-     * 刻意让「今天」与「近 7 天」都用 7 天序列：一天的折线只有一个点，看不出趋势。
-     * 「全部」从首次使用日开始，跨度超过 [SERIES_MAX_POINTS] 就**等宽分桶**合并邻近若干天——
-     * 分桶不是滑动平均，所以各档相加仍等于区间总量（线上看不出「总量对不上」）。
+     * 「今天」按整点给出 0 时至 23 时的 24 个点：一天只有一个按天数据，按天序列在这里没有信息量，
+     * 而「这一天怎么用的」只有分时才能回答。其余范围沿用按天序列，「全部」在跨度超过
+     * [SERIES_MAX_POINTS] 时**等宽分桶**合并邻近若干天——分桶不是滑动平均，所以各档相加仍等于
+     * 区间总量（线上看不出「总量对不上」）。
      */
     private fun usageSeries(
         ledger: LedgerSnapshot,
         range: InsightRange,
         now: Long
     ): List<InsightDay> {
+        if (range == InsightRange.TODAY) return todayHourSeries(ledger, now)
         val calendar = Calendar.getInstance()
         calendar.timeInMillis = now
         calendar.set(Calendar.HOUR_OF_DAY, 0)
@@ -1337,7 +1339,7 @@ class ContextState(
         calendar.set(Calendar.MILLISECOND, 0)
         val todayCal = calendar.clone() as Calendar
         when (range) {
-            InsightRange.TODAY, InsightRange.WEEK -> calendar.add(Calendar.DAY_OF_YEAR, -6)
+            InsightRange.WEEK -> calendar.add(Calendar.DAY_OF_YEAR, -6)
             InsightRange.MONTH -> calendar.add(Calendar.DAY_OF_YEAR, -29)
             InsightRange.ALL -> {
                 val first = if (ledger.firstUsedAt > 0L) {
@@ -1362,6 +1364,11 @@ class ContextState(
         val requests = LongArray(buckets)
         // 每档的轮次数：既用于摊历史遗留（权重），也让「均匀摊」有个真实依据
         val rounds = LongArray(buckets)
+        // 点选后要显示缓存与费用，按档累加；历史遗留摊入的档没有明细，保持 0
+        val cacheHit = LongArray(buckets)
+        val cacheMiss = LongArray(buckets)
+        val output = LongArray(buckets)
+        val cost = DoubleArray(buckets)
         val labels = arrayOfNulls<String>(buckets)
         val cursor = calendar.clone() as Calendar
         for (i in 0 until span) {
@@ -1372,6 +1379,10 @@ class ContextState(
                 tokens[index] += day.prompt.toLong() + day.completion
                 requests[index] += day.requests.toLong()
                 rounds[index] += day.rounds.toLong()
+                cacheHit[index] += day.cacheHit
+                cacheMiss[index] += day.cacheMiss
+                output[index] += day.completion
+                cost[index] += day.costCny
             }
             cursor.add(Calendar.DAY_OF_YEAR, 1)
         }
@@ -1382,9 +1393,15 @@ class ContextState(
          * 不摊就会出现「总量 6.1M、折线只有 23K」的矛盾；全压在某一天又会顶出一根假尖峰。
          * 按天轮次加权：轮次是回填时按消息时间落进按天桶的，是这里唯一可用的分布证据，
          * 所以尖峰正好落在真实忙的那几天。权重全 0 时退化成均匀分布。
+         *
+         * 是否该摊与上面的区间总量共用 [legacyCoversRange]：窗口整段落在有明细的区间内时
+         * （如「近 7 天」）遗留不属于这个范围，摊进来会让各档之和比区间总量多出一整块历史。
          */
         val firstDetailed = ledger.firstUsageDay
-        val legacy = ledger.legacy
+        val windowStart = UsageLedger.dateText(calendar.timeInMillis)
+        val legacy = ledger.legacy.takeIf {
+            legacyCoversRange(range == InsightRange.ALL, firstDetailed, windowStart)
+        } ?: LedgerUsage()
         val legacyTokens = legacy.prompt.toLong() + legacy.completion
         if (legacyTokens > 0 || legacy.requests > 0) {
             val targets = (0 until buckets).filter { index ->
@@ -1427,7 +1444,11 @@ class ContextState(
                 date = labels[index] ?: "",
                 tokens = tokens[index],
                 requests = requests[index].toInt(),
-                label = shortDate(labels[index] ?: "")
+                label = shortDate(labels[index] ?: ""),
+                cacheHit = cacheHit[index].toInt(),
+                cacheMiss = cacheMiss[index].toInt(),
+                output = output[index].toInt(),
+                costCny = cost[index]
             )
         }
         return points
@@ -1437,6 +1458,35 @@ class ContextState(
     private fun daysBetween(from: Calendar, to: Calendar): Int {
         val millis = to.timeInMillis - from.timeInMillis
         return (millis / 86_400_000L).toInt() + 1
+    }
+
+    /**
+     * 今天按整点的用量：固定 24 个点（0 时至 23 时），横轴全天不随整点移动。
+     *
+     * 未来时段保持 0，由 [InsightGlobalView.seriesEnd] 控制折线只画到当前小时，
+     * 所以图上不会出现「现在之后被画成用量归零」的段落。
+     */
+    private fun todayHourSeries(ledger: LedgerSnapshot, now: Long): List<InsightDay> {
+        val date = UsageLedger.dateText(now)
+        return hourlyBucketsOf(ledger.hours, date).mapIndexed { hour, usage ->
+            InsightDay(
+                date = date,
+                tokens = usage.prompt.toLong() + usage.completion,
+                requests = usage.requests,
+                label = hour.toString() + "时",
+                cacheHit = usage.cacheHit,
+                cacheMiss = usage.cacheMiss,
+                output = usage.completion,
+                costCny = usage.costCny
+            )
+        }
+    }
+
+    /** 当前整点（0..23）。 */
+    private fun hourOfDay(millis: Long): Int {
+        val calendar = Calendar.getInstance()
+        calendar.timeInMillis = millis
+        return calendar.get(Calendar.HOUR_OF_DAY)
     }
 
     private fun dayCalendar(date: String): Calendar? {

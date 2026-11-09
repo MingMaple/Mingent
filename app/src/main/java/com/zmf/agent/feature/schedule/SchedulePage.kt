@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -481,9 +480,10 @@ private fun TaskForm(
                 colors = saltFieldColors(),
                 value = prompt,
                 onValueChange = { prompt = it },
+                // 固定框高：内容超出后在框内上下滚动，不把整页顶长
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 110.dp),
+                    .height(110.dp),
                 textStyle = bodyStyle,
                 placeholder = { Text("指令（到达触发时刻发送给模型的内容）", fontSize = 12.sp) }
             )

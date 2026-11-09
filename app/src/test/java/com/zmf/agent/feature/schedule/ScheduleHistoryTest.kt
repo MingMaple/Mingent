@@ -9,7 +9,8 @@ import org.junit.Test
  * 定时任务的历史携带口径（纯逻辑，不依赖 Android 框架）。
  *
  * 约定：与普通对话一致，原样携带目标会话的全部消息。不按「与本轮指令逐字相同」删减历次投递，
- * 不截取窗口，也不过过滤工具消息；长度由 AgentLoop 的上下文压缩处理，配对由 sanitized() 清洗。
+ * 不截取窗口，也不过过滤工具消息；请求视图的裁剪由 AgentLoop 按会话摘要处理（见 [ScheduleSummaryTest]），
+ * 工具消息的配对由 sanitized() 清洗。
  */
 class ScheduleHistoryTest {
 

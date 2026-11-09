@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.capability.context.ContextEvent
@@ -255,16 +256,27 @@ fun ContextConfigPage(
                 enabled = enabled,
                 onDraftChange = { limitDraft = it },
                 onCommit = {
-                    // 直接读取页面当前草稿：失焦事件可能携带旧闭包中捕获的值，
-                    // 据此计算会出现「输入框已清空却将上一个数字写回」
-                    val parsed = (limitDraft?.trim()?.toIntOrNull() ?: policy.retainTokens)
-                        .coerceAtLeast(0)
+                    // 直接读取页面当前草稿：失焦事件可能携带旧闭包中捕获的值，据此计算会把上一个数字写回
+                    val draft = limitDraft
+                    val parsed = if (draft == null) {
+                        // 没编辑过这一行：保持落盘值
+                        policy.retainTokens
+                    } else {
+                        // 已编辑：留空与填 0 同义（不设上限，回到按比例），与下面的说明一致
+                        draft.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+                    }
                     if (parsed != policy.retainTokens) {
                         onApply(policy.copy(retainTokens = parsed))
                     }
                     // 提交后恢复显示落盘值，输入框与比例行均以实际值为准
                     limitDraft = null
                 }
+            )
+            Text(
+                text = "留空或填 0 表示不设上限，按上面的比例计算",
+                modifier = Modifier.padding(start = 16.dp, bottom = 2.dp),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
             )
             // 「已按阈值回落」同样按草稿判定：输入 1000 时不应仍显示上限超出阈值的提示
             if (enabled && ContextStore.retainClamped(policy.copy(retainTokens = typedLimit), windowTokens)) {
@@ -690,7 +702,12 @@ private fun ContextEventsSection(events: List<ContextEvent>) {
     }
 }
 
-/** 单条事件：左时间 / 中描述 / 右状态色点，整行不可点。 */
+/**
+ * 单条事件：左描述 / 右下时间 / 最右状态色点，整行不可点。
+ *
+ * 时间和描述分两行：横排时描述只剩约 200dp，「折叠 58 条（分界第 58 条）」会被挤到第二行、
+ * 括号里只剩「条）」，读起来像排版事故。描述独占一行后不再折行，时间退到第二行小字。
+ */
 @Composable
 private fun ContextEventRow(event: ContextEvent) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -706,19 +723,25 @@ private fun ContextEventRow(event: ContextEvent) {
             .padding(horizontal = 16.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = eventTimeText(event.at),
-            fontSize = 12.sp,
-            color = onSurface.copy(alpha = 0.45f)
-        )
-        Text(
-            text = eventDescription(event),
-            modifier = Modifier
-                .weight(1f)
-                .padding(start = 10.dp),
-            fontSize = 15.sp,
-            color = onSurface
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = eventDescription(event),
+                fontSize = 15.sp,
+                lineHeight = 19.sp,
+                color = onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = eventTimeText(event.at),
+                modifier = Modifier.padding(top = 1.dp),
+                fontSize = 12.sp,
+                lineHeight = 15.sp,
+                color = onSurface.copy(alpha = 0.45f),
+                maxLines = 1,
+                softWrap = false
+            )
+        }
         Box(
             modifier = Modifier
                 .padding(start = 8.dp)
@@ -776,7 +799,9 @@ private fun ContextTokenRow(
             text = label,
             modifier = Modifier.weight(1f),
             fontSize = 15.sp,
-            color = onSurface.copy(alpha = if (enabled) 1f else 0.35f)
+            color = onSurface.copy(alpha = if (enabled) 1f else 0.35f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
         ContextTokenField(
             value = value,
@@ -791,7 +816,9 @@ private fun ContextTokenRow(
             text = budgetText,
             modifier = Modifier.padding(start = 8.dp),
             fontSize = 12.sp,
-            color = onSurface.copy(alpha = if (enabled) 0.45f else 0.25f)
+            color = onSurface.copy(alpha = if (enabled) 0.45f else 0.25f),
+            maxLines = 1,
+            softWrap = false
         )
     }
 }
@@ -816,7 +843,9 @@ private fun ContextTokenField(
         onValueChange = onValueChange,
         enabled = enabled,
         modifier = Modifier
-            .widthIn(min = 78.dp)
+            // 固定宽度：TextField 的装饰层会撑满可用宽度，放进 Row 会把左边的标签
+            // 和右边的预算文字挤成一字一行（2026-11-09 实测）
+            .width(96.dp)
             .heightIn(min = 32.dp)
             .onFocusChanged { state ->
                 // 失焦提交：数字已输入完毕却直接点击其它位置的情况比回车更常见

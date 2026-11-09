@@ -124,12 +124,13 @@ import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
 import com.zmf.agent.uikit.layout.LocalUiWindow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
 import java.util.Locale
 import kotlin.math.abs
 import com.zmf.agent.uikit.markdown.MarkdownText
@@ -1805,10 +1806,62 @@ internal suspend fun settleToBottom(state: LazyListState, lastIndex: Int) {
     if (overflow > 0) state.animateScrollBy(overflow.toFloat(), Motion.spring())
 }
 
-/** 气泡右下角的时间仅精确到分钟。复用单个实例：流式输出时每条气泡均会重组，无需每次新建。 */
-internal val usageClock = SimpleDateFormat("HH:mm", Locale.US)
+/**
+ * 气泡右下角的时间文案，口径对齐 DSH 的 formatMessageClock（24 小时制、分钟补零）：
+ * 当天只写「时:分」，同年更早写「M月D日 时:分」，跨年再加年份。
+ *
+ * @param now 参照时刻，用来判断「今天 / 今年」，由 [clockText] 取当前本地日传入。
+ */
+internal fun clockTextAt(at: Long, now: Long): String {
+    val zone = ZoneId.systemDefault()
+    val moment = Instant.ofEpochMilli(at).atZone(zone)
+    val reference = Instant.ofEpochMilli(now).atZone(zone)
+    val clock = String.format(Locale.US, "%02d:%02d", moment.hour, moment.minute)
+    return when {
+        moment.toLocalDate() == reference.toLocalDate() -> clock
+        moment.year == reference.year -> "${moment.monthValue}月${moment.dayOfMonth}日 $clock"
+        else -> "${moment.year}年${moment.monthValue}月${moment.dayOfMonth}日 $clock"
+    }
+}
 
-internal fun clockText(at: Long): String = usageClock.format(Date(at))
+/**
+ * 当前本地日（当天 00:00 的毫秒），跨过本地零点自动前进一天。
+ *
+ * 与 DSH 的 useCalendarDay 同构：页面常驻跨零点时，昨天那些只剩「时:分」的标签要就地补上日期。
+ */
+@Composable
+internal fun rememberCalendarDay(): Long {
+    var day by remember { mutableStateOf(startOfLocalDay(System.currentTimeMillis())) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            val now = System.currentTimeMillis()
+            day = startOfLocalDay(now)
+            delay(msUntilNextLocalMidnight(now))
+        }
+    }
+    return day
+}
+
+/** 气泡时间：跨零点时随 [rememberCalendarDay] 重算，其余时刻每条消息只格式化一次。 */
+@Composable
+internal fun clockText(at: Long): String {
+    val day = rememberCalendarDay()
+    return remember(at, day) { clockTextAt(at, now = day) }
+}
+
+/** 该时刻所在本地日的零点（毫秒）。 */
+internal fun startOfLocalDay(ms: Long): Long {
+    val zone = ZoneId.systemDefault()
+    return Instant.ofEpochMilli(ms).atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toEpochMilli()
+}
+
+/** 距下一个本地零点还有多少毫秒（最少 1ms，避免恰好落在零点上时立即重入）。 */
+internal fun msUntilNextLocalMidnight(ms: Long): Long {
+    val zone = ZoneId.systemDefault()
+    val next = Instant.ofEpochMilli(ms).atZone(zone).toLocalDate().plusDays(1)
+        .atStartOfDay(zone).toInstant().toEpochMilli()
+    return (next - ms).coerceAtLeast(1L)
+}
 
 /**
  * 一条消息的用量 → 「本轮用量」面板要的形状。

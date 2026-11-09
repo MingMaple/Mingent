@@ -42,6 +42,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -109,6 +112,12 @@ fun ContextInsightPage(
     // 全局与会话视图都要读盘聚合，放到后台执行；加载完成前不渲染对应区块
     var global by remember { mutableStateOf<InsightGlobalView?>(null) }
     var session by remember { mutableStateOf<InsightSessionView?>(null) }
+    // 图表收到按下的次数：按下落在图表里时由图表 +1，页面据此不收起浮层
+    var chartPressTick by remember { mutableIntStateOf(0) }
+    // 页面已经看到过的图表按下次数
+    var seenPressTick by remember { mutableIntStateOf(0) }
+    // 外部触摸计数：每点一次图表之外 +1，图表据此收起浮层
+    var dismissTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(range) {
         global = withContext(Dispatchers.IO) { loadGlobal(range) }
     }
@@ -132,6 +141,26 @@ fun ContextInsightPage(
                     .stableStatusBarPadding()
                     .navigationBarsPadding()
                     .verticalScroll(scroll)
+                    /*
+                     * 收起浮层的唯一入口：触摸/滑动/点击统计图表之外的任何位置。
+                     * 判定不用坐标：图表在滚动容器里的 boundsInRoot 与触点不在同一套空间，
+                     * 改用「图表有没有收到这次按下」——图表在自己的 Main 阶段把计数 +1，
+                     * 这里在 Final 阶段（子到父，晚于图表）比对计数，没变就说明按在图表之外。
+                     * 只观察、不消费，图表与其它控件的手势完全不受影响。
+                     */
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Final)
+                                if (event.type != PointerEventType.Press) continue
+                                if (chartPressTick == seenPressTick) {
+                                    dismissTick++
+                                } else {
+                                    seenPressTick = chartPressTick
+                                }
+                            }
+                        }
+                    }
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -183,7 +212,9 @@ fun ContextInsightPage(
                                 viewedId = row.id
                                 scope.launch { scroll.animateScrollTo(0) }
                             },
-                            workspaces = workspaces
+                            workspaces = workspaces,
+                            chartDismissTick = dismissTick,
+                            onChartPress = { chartPressTick++ }
                         )
                     }
                 }
@@ -390,7 +421,9 @@ private fun GlobalSection(
     range: InsightRange,
     onRange: (InsightRange) -> Unit,
     onPickSession: (InsightSessionRow) -> Unit,
-    workspaces: List<Pair<String, String>>
+    workspaces: List<Pair<String, String>>,
+    chartDismissTick: Int,
+    onChartPress: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Text(
@@ -457,6 +490,12 @@ private fun GlobalSection(
     }
 
     var dayMode by remember { mutableIntStateOf(0) }
+    // 点选状态：换范围或换口径即清空，避免下标指向另一条序列
+    var selected by remember(range, dayMode) { mutableStateOf<Int?>(null) }
+    // 只有点图表之外才收起浮层；点图表内一律切节点
+    LaunchedEffect(chartDismissTick) {
+        if (chartDismissTick > 0) selected = null
+    }
     InsightCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -474,13 +513,94 @@ private fun GlobalSection(
         }
         Spacer(Modifier.height(8.dp))
         val values = global.series.map { if (dayMode == 0) it.tokens else it.requests.toLong() }
-        // 轴标签抽稀：最多 7 个，首末必留，其余等间隔
-        val labelStep = ((global.series.size + 6) / 7).coerceAtLeast(1)
-        val labels = global.series.mapIndexed { index, day ->
-            val keep = index == 0 || index == global.series.lastIndex || index % labelStep == 0
-            if (keep) day.label else ""
+        val hourly = range == InsightRange.TODAY
+        // 「今天」固定 7 个刻度：0 时在左端、23 时在右端，按 6 等分排开。
+        // 位置按比例而非按小时算，末段（20→23 只隔 3 小时）才不会比前面挤一截。
+        val ticks = if (hourly) {
+            listOf("0时", "4时", "8时", "12时", "16时", "20时", "23时")
+                .mapIndexed { index, text -> AxisTick(index / 6f, text) }
+        } else {
+            // 其余范围沿用「最多 7 个、首末必留」的抽稀，位置按点在下标里的比例
+            val series = global.series
+            val step = ((series.size + 6) / 7).coerceAtLeast(1)
+            series.mapIndexedNotNull { index, day ->
+                val keep = index % step == 0 || index == series.lastIndex
+                if (!keep) null
+                else AxisTick(
+                    fraction = if (series.size > 1) index.toFloat() / series.lastIndex else 0.5f,
+                    label = day.label
+                )
+            }
         }
-        UsageLineChart(values = values, labels = labels, color = UiColors.accentFill)
+        val point = selected?.let { global.series.getOrNull(it) }
+        // 强调色是 @Composable 属性，先读到局部变量，浮层 lambda 里才能用
+        val accent = UiColors.accentFill
+        // 「今天」的横轴铺满 0 时至 23 时，但只画到当前小时；其余范围画满
+        val end = global.seriesEnd.takeIf { it in values.indices } ?: values.lastIndex
+        UsageLineChart(
+            values = values,
+            ticks = ticks,
+            color = accent,
+            endIndex = end,
+            selection = if (point != null) selected else null,
+            // 浮层与 DSH 同构：第一行「时段 + 合计」，第二行构成明细；
+            // 明细三项始终全列（为 0 也写出来），请求口径只有「请求次数」一项
+            tooltip = { index ->
+                val day = global.series.getOrNull(index)
+                if (day == null) {
+                    null
+                } else {
+                    val header = if (hourly) {
+                        val hour = day.label.removeSuffix("时").toIntOrNull()
+                        day.label + " ~ " + (hour?.plus(1)?.let { it.toString() + "时" } ?: "24时")
+                    } else {
+                        day.label.ifEmpty { day.date }
+                    }
+                    // 强调色是 @Composable 属性，页面里已经读到 accent，这里沿用
+                    if (dayMode == 0) {
+                        TooltipData(
+                            header = header,
+                            total = countText(day.tokens),
+                            // 三项始终全列：为 0 也写出来，与 DSH 的构成行一致
+                            rows = listOf(
+                                TooltipRow(
+                                    label = "命中缓存",
+                                    value = countText(day.cacheHit.toLong()),
+                                    color = accent.copy(alpha = 0.40f)
+                                ),
+                                TooltipRow(
+                                    label = "未命中缓存",
+                                    value = countText(day.cacheMiss.toLong()),
+                                    color = accent.copy(alpha = 0.70f)
+                                ),
+                                TooltipRow(
+                                    label = "输出",
+                                    value = countText(day.output.toLong()),
+                                    color = accent
+                                )
+                            )
+                        )
+                    } else {
+                        TooltipData(
+                            header = header,
+                            total = null,
+                            rows = listOf(
+                                TooltipRow(
+                                    label = "请求次数",
+                                    value = countText(day.requests.toLong()),
+                                    color = accent
+                                )
+                            )
+                        )
+                    }
+                }
+            },
+            // 纵轴刻度的写法随口径走：Token 用 1.1M，请求用整数
+            axisText = { value -> if (dayMode == 0) tokenText(value) else countText(value) },
+            // 点按与拖动都只做「切到最近节点」：浮层平移过去，不关也不重开
+            onSelect = { selected = it },
+            onChartPress = onChartPress
+        )
     }
 
     InsightCard {

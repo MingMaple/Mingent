@@ -86,6 +86,8 @@ data class LedgerSnapshot(
     val todayDate: String = "",
     /** 按天账本（`yyyy-MM-dd` → 当天用量），只保留最近 [UsageLedger.DAYS_KEEP] 天。 */
     val days: Map<String, LedgerUsage> = emptyMap(),
+    /** 按小时账本（`yyyy-MM-dd-HH` → 该小时用量），只保留当天；供「今天」的折线使用。 */
+    val hours: Map<String, LedgerUsage> = emptyMap(),
     val firstUsedAt: Long = 0L,
     val lastUsedAt: Long = 0L
 ) {
@@ -176,12 +178,75 @@ internal fun LedgerUsage.merge(other: LedgerUsage): LedgerUsage = LedgerUsage(
 )
 
 /**
+ * 某一天按整点拆开的用量：返回 24 个桶（0 时至 23 时）。
+ *
+ * 只接受 `yyyy-MM-dd-HH` 且属于 [date] 的键；其余键（其他日期、无法解析的小时）一律忽略。
+ * 抽成纯函数是为了可直接单测：账本自身依赖 Android 的 Context，图表口径却必须能脱离设备验证。
+ */
+internal fun hourlyBucketsOf(hours: Map<String, LedgerUsage>, date: String): List<LedgerUsage> {
+    val out = MutableList(24) { LedgerUsage() }
+    if (date.isEmpty()) return out
+    val prefix = date + "-"
+    for ((key, usage) in hours) {
+        if (!key.startsWith(prefix)) continue
+        val hour = key.removePrefix(prefix).toIntOrNull() ?: continue
+        if (hour !in 0..23) continue
+        out[hour] = out[hour].merge(usage)
+    }
+    return out
+}
+
+/**
+ * 历史遗留项是否落在该范围窗口内。
+ *
+ * 「历史遗留」（`total − Σdays`）没有逐日记录：窗口起点早于「第一条有明细的日期」时与它重叠，
+ * 必须计入，否则「全部」与「近 30 天」会给出两个互相矛盾的数字；窗口整段落在有明细的区间内时不
+ * 计入，否则今天的数字会被历史撑起来。
+ *
+ * 区间总量（KPI）与折线各档的摊分必须共用这一条判定：两处各判一次，一旦分叉，折线各档之和
+ * 就不再等于区间总量，图上会冒出一根只属于历史的假尖峰。
+ */
+internal fun legacyCoversRange(allRange: Boolean, firstUsageDay: String, windowStartDate: String): Boolean =
+    allRange || firstUsageDay.isEmpty() || windowStartDate < firstUsageDay
+
+/** 逐字段相减并夹到 0：用于求「当天桶里尚未分到小时」的差额。 */
+private fun LedgerUsage.minusFloor(other: LedgerUsage): LedgerUsage = LedgerUsage(
+    prompt = (prompt - other.prompt).coerceAtLeast(0),
+    completion = (completion - other.completion).coerceAtLeast(0),
+    requests = (requests - other.requests).coerceAtLeast(0),
+    rounds = (rounds - other.rounds).coerceAtLeast(0),
+    steps = (steps - other.steps).coerceAtLeast(0),
+    cacheHit = (cacheHit - other.cacheHit).coerceAtLeast(0),
+    cacheMiss = (cacheMiss - other.cacheMiss).coerceAtLeast(0),
+    modelMs = (modelMs - other.modelMs).coerceAtLeast(0L),
+    toolMs = (toolMs - other.toolMs).coerceAtLeast(0L),
+    activeMs = (activeMs - other.activeMs).coerceAtLeast(0L),
+    ttftMs = (ttftMs - other.ttftMs).coerceAtLeast(0L),
+    genMs = (genMs - other.genMs).coerceAtLeast(0L),
+    reasoningMs = (reasoningMs - other.reasoningMs).coerceAtLeast(0L),
+    textMs = (textMs - other.textMs).coerceAtLeast(0L),
+    toolArgMs = (toolArgMs - other.toolArgMs).coerceAtLeast(0L),
+    genTokens = (genTokens - other.genTokens).coerceAtLeast(0),
+    toolCalls = (toolCalls - other.toolCalls).coerceAtLeast(0),
+    costCny = (costCny - other.costCny).coerceAtLeast(0.0)
+)
+
+/** 全字段为 0（含构成为空）。 */
+private fun LedgerUsage.isZero(): Boolean =
+    prompt == 0 && completion == 0 && requests == 0 && rounds == 0 && steps == 0 &&
+        cacheHit == 0 && cacheMiss == 0 && modelMs == 0L && toolMs == 0L && activeMs == 0L &&
+        ttftMs == 0L && genMs == 0L && reasoningMs == 0L && textMs == 0L && toolArgMs == 0L &&
+        genTokens == 0 && toolCalls == 0 && costCny == 0.0 && composition.isEmpty
+
+/**
  * 全局用量总账（stats.json）：**只增不减的历史总账**。
  *
  * 口径（由用户确定，不得修改）：
  * - 删会话 / 归档 / 清工作区都**不动**这里；只有真的发生模型请求才往上加。
  * - 本会话的累计另存在 sessions.json 的会话记录里，两套账互不覆盖。
  * - 按天桶用于「近 7 天 / 近 30 天 / 范围筛选」；只保留最近 [DAYS_KEEP] 天。
+ * - 按小时桶只服务「今天」的折线：与按天桶同时写，跨天后清掉旧键。
+ * - `hours` 是后加的可选键，落盘版本仍为 2：旧版本读到会忽略，新版本读到缺省为空。
  *
  * 落盘格式 v2（version=2）；读到 v1 的扁平 10 个键时原样搬进 `total`，
  * 并先把旧文件复制成 `stats.json.bak`。坏文件 / 缺字段一律回落 0，绝不抛。
@@ -197,6 +262,7 @@ object UsageLedger {
     private const val KEY_VERSION = "version"
     private const val KEY_TOTAL = "total"
     private const val KEY_DAYS = "days"
+    private const val KEY_HOURS = "hours"
     private const val KEY_FIRST_USED_AT = "firstUsedAt"
     private const val KEY_LAST_USED_AT = "lastUsedAt"
     private const val KEY_COST_BACKFILLED = "costBackfilled"
@@ -217,6 +283,8 @@ object UsageLedger {
 
     private var total = LedgerUsage()
     private val days = HashMap<String, LedgerUsage>()
+    /** 当天按整点拆分的用量；只保留当天，跨天后由 [trimHours] 清掉旧键。 */
+    private val hours = HashMap<String, LedgerUsage>()
     private var firstUsedAt = 0L
     private var lastUsedAt = 0L
     /** 历史费用是否已从现存会话回填（只做一次）。 */
@@ -230,6 +298,12 @@ object UsageLedger {
     fun dateText(millis: Long): String {
         if (millis <= 0L) return ""
         return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(millis))
+    }
+
+    /** "yyyy-MM-dd-HH" 本地整点；毫秒时间戳 <= 0 返回空串。 */
+    fun hourText(millis: Long): String {
+        if (millis <= 0L) return ""
+        return SimpleDateFormat("yyyy-MM-dd-HH", Locale.US).format(Date(millis))
     }
 
     // ---- 对外 ----
@@ -252,6 +326,12 @@ object UsageLedger {
                     if (dayObj != null) {
                         for (key in dayObj.keys()) {
                             days[key] = usageFromJson(dayObj.optJSONObject(key))
+                        }
+                    }
+                    val hourObj = root.optJSONObject(KEY_HOURS)
+                    if (hourObj != null) {
+                        for (key in hourObj.keys()) {
+                            hours[key] = usageFromJson(hourObj.optJSONObject(key))
                         }
                     }
                 } else {
@@ -282,6 +362,33 @@ object UsageLedger {
             }
         }
         loaded = true
+        // 读盘后补齐当天缺失的分时记录：只影响本功能上线当天，见 seedHours 的注释
+        seedHours(context)
+    }
+
+    /**
+     * 补齐当天尚未分到小时的用量。
+     *
+     * 差额 = 当天桶 − 已记小时之和。分时记账上线当天，此前的用量只有按天记录；不补的话
+     * 「今天」折线之和会小于当天累计，读起来像图表丢数据。差额归到当天最后一次请求所在整点
+     * （无法判断时归 0 时）——位置只能近似，但此后每笔都双写，差额恒为 0，不会累积偏差。
+     *
+     * [load] 之外，两个一次性回填（[backfillCost]、[backfillRounds]）末尾也要再补一次：
+     * 它们在读盘之后才写当天的按天桶，不补则那一天的小时桶之和会比当天桶少掉回填部分。
+     */
+    private fun seedHours(context: Context) {
+        val now = System.currentTimeMillis()
+        val today = dateText(now)
+        val day = days[today] ?: return
+        val recorded = hours
+            .filterKeys { it.startsWith(today) }
+            .values
+            .fold(LedgerUsage()) { acc, usage -> acc.merge(usage) }
+        val diff = day.minusFloor(recorded)
+        if (diff.isZero()) return
+        val fallback = hourText(lastUsedAt).takeIf { it.startsWith(today) } ?: (today + "-00")
+        hours[fallback] = (hours[fallback] ?: LedgerUsage()).merge(diff)
+        save(context)
     }
 
     /**
@@ -307,6 +414,8 @@ object UsageLedger {
         }
         if (sum > 0.0) total = total.copy(costCny = total.costCny + sum)
         costBackfilled = true
+        // 回填写了当天的按天桶：补一次分时，「今天」的小时桶之和才不会小于当天桶
+        seedHours(context)
         save(context)
     }
 
@@ -334,6 +443,8 @@ object UsageLedger {
         }
         if (sum > 0) total = total.copy(rounds = total.rounds + sum)
         roundsBackfilled = true
+        // 同 backfillCost：轮次也写当天的按天桶，补一次分时才不会与小时桶失配
+        seedHours(context)
         save(context)
     }
 
@@ -345,6 +456,7 @@ object UsageLedger {
         val date = dateText(now)
         total = total.copy(rounds = total.rounds + 1)
         days[date] = (days[date] ?: LedgerUsage()).copy(rounds = (days[date]?.rounds ?: 0) + 1)
+        bumpHour(now, LedgerUsage(rounds = 1))
         trimDays()
         if (firstUsedAt <= 0L) firstUsedAt = now
         lastUsedAt = now
@@ -376,6 +488,7 @@ object UsageLedger {
         )
         total = total.merge(add)
         days[date] = (days[date] ?: LedgerUsage()).merge(add)
+        bumpHour(now, add)
         trimDays()
         if (firstUsedAt <= 0L) firstUsedAt = now
         lastUsedAt = now
@@ -398,7 +511,8 @@ object UsageLedger {
         toolCalls: Int
     ) {
         load(context)
-        val date = dateText(System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        val date = dateText(now)
         val add = LedgerUsage(
             modelMs = modelMs,
             toolMs = toolMs,
@@ -413,8 +527,9 @@ object UsageLedger {
         )
         total = total.merge(add)
         days[date] = (days[date] ?: LedgerUsage()).merge(add)
+        bumpHour(now, add)
         trimDays()
-        lastUsedAt = System.currentTimeMillis()
+        lastUsedAt = now
         save(context)
     }
 
@@ -423,9 +538,11 @@ object UsageLedger {
     fun addSteps(context: Context, count: Int) {
         if (count <= 0) return
         load(context)
-        val date = dateText(System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        val date = dateText(now)
         total = total.copy(steps = total.steps + count)
         days[date] = (days[date] ?: LedgerUsage()).copy(steps = (days[date]?.steps ?: 0) + count)
+        bumpHour(now, LedgerUsage(steps = count))
         trimDays()
         save(context)
     }
@@ -439,6 +556,7 @@ object UsageLedger {
             today = days[todayKey] ?: LedgerUsage(),
             todayDate = todayKey,
             days = HashMap(days),
+            hours = HashMap(hours),
             firstUsedAt = firstUsedAt,
             lastUsedAt = lastUsedAt
         )
@@ -450,6 +568,27 @@ object UsageLedger {
         if (days.size <= DAYS_KEEP) return
         val drop = days.keys.sorted().take(days.size - DAYS_KEEP)
         for (key in drop) days.remove(key)
+    }
+
+    /**
+     * 把一笔用量同时记进所在整点。
+     *
+     * 按天桶与按小时桶必须一起写：只写一个会让「今天」的折线与当天累计对不上，
+     * 而两者在页面上是同一张卡片里并排给出的。
+     */
+    private fun bumpHour(now: Long, add: LedgerUsage) {
+        val key = hourText(now)
+        if (key.isEmpty()) return
+        hours[key] = (hours[key] ?: LedgerUsage()).merge(add)
+        trimHours()
+    }
+
+    /** 折线只画当天，旧小时没有用途；留着会让 stats.json 逐日变大。 */
+    private fun trimHours() {
+        if (hours.isEmpty()) return
+        val today = dateText(System.currentTimeMillis())
+        if (hours.keys.all { it.startsWith(today) }) return
+        hours.keys.retainAll { it.startsWith(today) }
     }
 
     private fun backupV1(file: File) {
@@ -464,6 +603,7 @@ object UsageLedger {
     private fun clearMemory() {
         total = LedgerUsage()
         days.clear()
+        hours.clear()
         firstUsedAt = 0L
         lastUsedAt = 0L
     }
@@ -478,6 +618,9 @@ object UsageLedger {
             val dayObj = JSONObject()
             for ((key, usage) in days) dayObj.put(key, usageToJson(usage))
             root.put(KEY_DAYS, dayObj)
+            val hourObj = JSONObject()
+            for ((key, usage) in hours) hourObj.put(key, usageToJson(usage))
+            root.put(KEY_HOURS, hourObj)
             root.put(KEY_FIRST_USED_AT, firstUsedAt)
             root.put(KEY_LAST_USED_AT, lastUsedAt)
             root.put(KEY_COST_BACKFILLED, costBackfilled)

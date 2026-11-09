@@ -257,6 +257,18 @@ fun contextSummarySystemText(summary: String): String =
     "以下是本次会话更早对话的摘要（由你此前生成，不是用户的新发言，供你续接任务用）：\n" + summary
 
 /**
+ * 摘要分界的唯一校验：只有「落在 user 消息边界、且在范围内」时才生效，失效一律返回 0（发全量最安全）。
+ *
+ * 聊天页与定时任务都从这里取分界：两处各写一遍，一旦对历史长度或角色的判断分叉，
+ * 请求视图与水位估算就会对不上。
+ */
+fun validSummaryUpTo(messages: List<ChatMessage>, saved: Int): Int {
+    if (saved <= 0 || saved >= messages.size) return 0
+    if (messages[saved].role != "user") return 0
+    return saved
+}
+
+/**
  * 请求视图的「兜底裁轮」。
  *
  * 正常路径的请求视图是「摘要 + summaryUpTo 之后的原文」（见 AgentLoop）；

@@ -2,7 +2,7 @@
 
 **Mingent** 是一个运行在 Android 上的本地 AI Agent 客户端。填写模型 API Key 后，它可调用工具完成文件读写、命令执行、联网检索等操作；会话记录、密钥、记忆与附件均保存在本机应用私有目录内。
 
-当前版本 **1.3.1**（versionCode 174），支持 Android 8.0（API 26）及以上；内置终端与记忆内核目前只支持 arm64 设备，详见[已知限制](#已知限制)。
+当前版本 **1.3.2**（versionCode 175），支持 Android 8.0（API 26）及以上；内置终端与记忆内核目前只支持 arm64 设备，详见[已知限制](#已知限制)。
 
 ## 能力
 
@@ -70,7 +70,7 @@ python3 -X utf8 -m mingmem recall --query 检索词 --json
 2. 在手机上直接点击安装，或经数据线安装：
 
    ```bash
-   adb install -r Mingent-1.3.1.apk
+   adb install -r Mingent-1.3.2.apk
    ```
 
 3. 打开应用，进入「设置 → 模型」，填写服务商与 API Key。

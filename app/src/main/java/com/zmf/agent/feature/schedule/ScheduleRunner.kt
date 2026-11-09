@@ -6,6 +6,7 @@ import android.content.Intent
 import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.capability.loop.AgentLoop
 import com.zmf.agent.capability.loop.AgentUi
+import com.zmf.agent.capability.loop.ContextSummaryState
 import com.zmf.agent.capability.loop.TurnOutcome
 import com.zmf.agent.capability.permission.PermissionStore
 import com.zmf.agent.capability.prompt.PromptInput
@@ -29,6 +30,8 @@ import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.core.model.permissionLevelOfWire
 import com.zmf.agent.core.model.wireName
 import com.zmf.agent.capability.context.ContextCompactor
+import com.zmf.agent.capability.context.contextSummarySystemText
+import com.zmf.agent.capability.context.validSummaryUpTo
 import com.zmf.agent.capability.prompt.PromptBuilder
 import com.zmf.agent.core.llm.CostBook
 import com.zmf.agent.core.store.LedgerComposition
@@ -407,6 +410,17 @@ object ScheduleRunner {
         val registry = ToolRegistry()
         // 提示词输入只构造一次：既是请求来源，也是用量构成的估算依据，两者必须同源
         val promptInput = PromptInput(workspacePath = workspace.absolutePath, permission = permission)
+        // 携带目标会话已有的上下文：与聊天页同一口径，不做「本任务历次投递」的删减。
+        // 否则周期任务看不到自己上一轮说了什么，「与上次相比」「累计」这类要求无法完成。
+        val messages = historyOf(session)
+        // 请求视图与聊天页同一套裁剪：会话有摘要时只发摘要与分界之后的原文。
+        // 后台不生成摘要，只沿用聊天页生成的那份，因此这里唯一的输入是会话记录上的两个字段。
+        val summary = scheduledSummaryState(messages, session.contextSummary, session.summaryUpTo)
+        FileLog.log(
+            TAG,
+            "历史携带 " + messages.size + " 条，摘要 " +
+                (if (summary.text.isEmpty()) "无" else "分界 " + summary.upTo)
+        )
         val model = ApiConfig.loadModel(app)
         val loop = AgentLoop(
             provider = DeepSeekProvider(
@@ -417,12 +431,11 @@ object ScheduleRunner {
             model = model,
             maxRounds = MAX_ROUNDS,
             // 系统提示词其余项均使用 PromptInput 的默认值，仅补充实际权限级别与工作区路径
-            promptProvider = { promptInput }
+            promptProvider = { promptInput },
+            // 摘要状态交给 AgentLoop 裁剪请求视图；压缩策略不传：后台没有「摘要失败」这一运行时标记，
+            // 策略在请求侧的唯一用途是兜底裁轮，传进去也不会生效。
+            contextState = { summary }
         )
-        // 携带目标会话已有的上下文：与聊天页同一口径，不做「本任务历次投递」的删减。
-        // 否则周期任务看不到自己上一轮说了什么，「与上次相比」「累计」这类要求无法完成。
-        val messages = historyOf(session)
-        FileLog.log(TAG, "历史携带 " + messages.size + " 条")
         // 本轮边界与答复提取走 [TurnOutcome]：与聊天页同一口径，历史消息不参与，
         // 请求失败、本轮没有产出正文时答复为空串，不会把上一轮的答复当成本轮结果写回。
         val turnStart = messages.size
@@ -438,6 +451,7 @@ object ScheduleRunner {
                     input = promptInput,
                     registry = registry,
                     messages = messages,
+                    summary = summary,
                     promptTokens = buckets.promptTokens,
                     completionTokens = buckets.completionTokens
                 )
@@ -499,21 +513,42 @@ object ScheduleRunner {
     }
 
     /**
-     * 取目标会话的全部消息，原样作为本轮上下文。
+     * 取目标会话的全部消息，原样交出。
      *
      * 定时任务与普通对话的差别只在触发方式：一端由用户输入，一端由闹钟投递，上下文口径不另立规则。
      * 周期性任务常需要「与上次相比」「本周累计」这类延续信息，任何按时间或条数切出的窗口都会
      * 让任务看不到自己上一轮做了什么；而且逐轮移动的窗口会使请求前缀每轮都不同，前缀缓存无法命中。
      *
-     * 长度不在这里控制：与聊天页一样交给 AgentLoop 的上下文压缩与工具输出折叠处理。
-     * 工具消息的配对（孤立 tool、结果不完整的轮次）同样由 AgentLoop 的 sanitized() 清洗。
+     * 请求视图不在这里裁剪：与聊天页一样由 AgentLoop 按会话摘要生成（摘要 + 分界之后的原文），
+     * 没有被摘要覆盖的部分才全文发送。工具消息的配对（孤立 tool、结果不完整的轮次）由 sanitized() 清洗。
      */
     private fun historyOf(session: ChatSession): MutableList<ChatMessage> =
         scheduledHistoryOf(session.messages)
 
-    /** [historyOf] 的实现，抽成纯函数以便单测：保持原顺序原样返回。 */
+    /**
+     * [historyOf] 的实现，抽成纯函数以便单测：保持原顺序原样返回。
+     *
+     * 摘要分界不在这里处理：它属于「请求视图」而不是「消息列表」，见 [scheduledSummaryState]。
+     */
     internal fun scheduledHistoryOf(messages: List<ChatMessage>): MutableList<ChatMessage> =
         ArrayList(messages)
+
+    /**
+     * 本轮请求视图的摘要状态，抽成纯函数以便单测。
+     *
+     * 与聊天页同一规则（[validSummaryUpTo]）：分界落在 user 消息上才生效，失效按没有摘要处理，
+     * 此时请求视图为全部原文。后台不产生摘要，也不存在「摘要失败」的兜底标记，故不使用 fallback。
+     */
+    internal fun scheduledSummaryState(
+        messages: List<ChatMessage>,
+        summary: String,
+        savedUpTo: Int
+    ): ContextSummaryState {
+        if (summary.isEmpty()) return ContextSummaryState()
+        val upTo = validSummaryUpTo(messages, savedUpTo)
+        if (upTo <= 0) return ContextSummaryState()
+        return ContextSummaryState(text = summary, upTo = upTo)
+    }
 
     /**
      * 目标会话：存在 id 则续用该会话（已被删除或已归档由调用方提前关闭开关，不会走到这里）。
@@ -961,20 +996,28 @@ object ScheduleRunner {
     /**
      * 计费构成估算：与聊天页的 scaledComposition 同一口径，按真实 prompt tokens 等比折算。
      *
-     * 差异只在「后台没有摘要与压缩」，因此直接统计当前消息，不经过 requestView；
+     * 消息取「真正发出去的那份请求视图」：有摘要时从分界起算，摘要本身计入「注入内容」。
      * 提示词与工具表都取自同一次请求的输入，估算才与真实请求一致。
      */
     private fun estimateComposition(
         input: PromptInput,
         registry: ToolRegistry,
         messages: List<ChatMessage>,
+        summary: ContextSummaryState,
         promptTokens: Int,
         completionTokens: Int
     ): SessionComposition {
+        // AgentLoop 只在分界合法时使用摘要，这里与之同源：分界为 0 即发送全部原文
+        val start = if (summary.text.isEmpty()) 0 else summary.upTo.coerceIn(0, messages.size)
         val promptText = PromptBuilder.build(input)
         val skills = PromptBuilder.skillSectionTokens(input)
         val system = ((promptText?.let { ContextCompactor.estimateText(it) } ?: 0) - skills)
             .coerceAtLeast(0)
+        val inject = if (start > 0) {
+            ContextCompactor.estimateText(contextSummarySystemText(summary.text))
+        } else {
+            0
+        }
         val specs = registry.specs()
         val tools = if (specs.isEmpty()) {
             0
@@ -986,15 +1029,15 @@ object ScheduleRunner {
         var user = 0
         var assistant = 0
         var toolResults = 0
-        for (message in messages) {
-            when (message.role) {
-                "user" -> user += ContextCompactor.estimate(message)
-                "assistant" -> assistant += ContextCompactor.estimate(message)
-                "tool" -> toolResults += ContextCompactor.estimate(message)
+        for (i in start until messages.size) {
+            when (messages[i].role) {
+                "user" -> user += ContextCompactor.estimate(messages[i])
+                "assistant" -> assistant += ContextCompactor.estimate(messages[i])
+                "tool" -> toolResults += ContextCompactor.estimate(messages[i])
                 else -> Unit
             }
         }
-        val total = system + skills + tools + user + assistant + toolResults
+        val total = system + skills + tools + inject + user + assistant + toolResults
         if (total <= 0) return SessionComposition(output = completionTokens)
         fun part(value: Int): Int =
             (value.toDouble() * promptTokens / total).roundToInt().coerceAtLeast(0)
@@ -1003,8 +1046,7 @@ object ScheduleRunner {
             skills = part(skills),
             tools = part(tools),
             user = part(user),
-            // 后台任务不做摘要，注入内容恒为 0
-            inject = 0,
+            inject = part(inject),
             assistant = part(assistant),
             toolResults = part(toolResults),
             output = completionTokens
