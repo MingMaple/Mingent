@@ -83,9 +83,6 @@ object ScheduleRunner {
     /** 会话标题取任务名的最大字数（保证侧边栏单行可显示）。 */
     private const val TITLE_CHARS = 20
 
-    /** 后台单轮携带的历史问答上限：既能承接「第二次回复二」这类上下文，又不会占满上下文窗口。 */
-    private const val HISTORY_MESSAGES = 20
-
     /** 已错过触发时刻的任务统一立即执行：若再等待一个周期，用户会认为任务丢失。 */
     private const val IMMEDIATE_DELAY_MS = 5_000L
 
@@ -422,10 +419,10 @@ object ScheduleRunner {
             // 系统提示词其余项均使用 PromptInput 的默认值，仅补充实际权限级别与工作区路径
             promptProvider = { promptInput }
         )
-        // 携带目标会话已有的问答：否则每轮都相当于首次见到该语句，
-        // 用户设置的「第二次回复二」将始终只回复一。
-        // 同一任务的历次投递（语句与本轮完全相同）连同其答复整体略去，理由见 historyOf。
-        val messages = historyOf(session, task.prompt)
+        // 携带目标会话已有的上下文：与聊天页同一口径，不做「本任务历次投递」的删减。
+        // 否则周期任务看不到自己上一轮说了什么，「与上次相比」「累计」这类要求无法完成。
+        val messages = historyOf(session)
+        FileLog.log(TAG, "历史携带 " + messages.size + " 条")
         // 本轮边界与答复提取走 [TurnOutcome]：与聊天页同一口径，历史消息不参与，
         // 请求失败、本轮没有产出正文时答复为空串，不会把上一轮的答复当成本轮结果写回。
         val turnStart = messages.size
@@ -502,38 +499,21 @@ object ScheduleRunner {
     }
 
     /**
-     * 将目标会话中「有正文的 user/assistant」消息逐条转换为单轮上下文。
+     * 取目标会话的全部消息，原样作为本轮上下文。
      *
-     * 有意丢弃 tool_calls 与 tool 结果：二者必须成对出现，后台单轮重放容易产生非法请求；
-     * 定时任务需要的是上一轮问答的上下文，而非中间工具细节。
+     * 定时任务与普通对话的差别只在触发方式：一端由用户输入，一端由闹钟投递，上下文口径不另立规则。
+     * 周期性任务常需要「与上次相比」「本周累计」这类延续信息，任何按时间或条数切出的窗口都会
+     * 让任务看不到自己上一轮做了什么；而且逐轮移动的窗口会使请求前缀每轮都不同，前缀缓存无法命中。
      *
-     * [prompt] 是本任务的固定指令：语句与该指令完全相同的历次投递，连同紧随其后的答复一并略去。
-     * 原因是周期任务的指令逐日一字不差，若把它与上一轮的答复留在历史里，模型会把上一轮的答复
-     * 当作本轮结果照抄（2026-11-08 实测：新闻任务第二次投递只字未检索，复述了 11 月 6 日那一份早报，
-     * 文本相似度 99.5%）。任务之间的其他问答仍然保留，供「第二次回复二」这类多任务衔接使用。
+     * 长度不在这里控制：与聊天页一样交给 AgentLoop 的上下文压缩与工具输出折叠处理。
+     * 工具消息的配对（孤立 tool、结果不完整的轮次）同样由 AgentLoop 的 sanitized() 清洗。
      */
-    private fun historyOf(session: ChatSession, prompt: String): MutableList<ChatMessage> {
-        val picked = session.messages
-            .filter { (it.role == "user" || it.role == "assistant") && it.content.isNotBlank() }
-            .takeLast(HISTORY_MESSAGES)
-        val out = ArrayList<ChatMessage>(picked.size)
-        var i = 0
-        while (i < picked.size) {
-            val message = picked[i]
-            if (message.role == "user" && message.content == prompt) {
-                i++
-                // 投递成功时答复紧随其后；投递失败时只有提问，两种情况都整段略去
-                if (i < picked.size && picked[i].role == "assistant") i++
-                continue
-            }
-            out.add(ChatMessage(role = message.role, content = message.content))
-            i++
-        }
-        if (out.size != picked.size) {
-            FileLog.log(TAG, "历史略去本任务历次投递 " + (picked.size - out.size) + " 条")
-        }
-        return out
-    }
+    private fun historyOf(session: ChatSession): MutableList<ChatMessage> =
+        scheduledHistoryOf(session.messages)
+
+    /** [historyOf] 的实现，抽成纯函数以便单测：保持原顺序原样返回。 */
+    internal fun scheduledHistoryOf(messages: List<ChatMessage>): MutableList<ChatMessage> =
+        ArrayList(messages)
 
     /**
      * 目标会话：存在 id 则续用该会话（已被删除或已归档由调用方提前关闭开关，不会走到这里）。
