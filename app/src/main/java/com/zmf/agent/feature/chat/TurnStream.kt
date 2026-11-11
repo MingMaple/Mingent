@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -50,9 +51,7 @@ import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 import com.zmf.agent.uikit.markdown.MarkdownText
 import com.zmf.agent.uikit.markdown.copyCode
-import com.zmf.agent.uikit.components.CopyRevealHost
-import com.zmf.agent.uikit.components.claimCopyOnGesture
-import com.zmf.agent.uikit.components.rememberCopyBlockKey
+import com.zmf.agent.uikit.components.CopyActionButton
 
 /*
  * 一个助手回合的内部结构：思考、正文、工具卡按「真实到达顺序」混排，轮末折为一行计数。
@@ -503,7 +502,7 @@ private fun TurnBodyBubble(
     }
     // 不使用 Surface：其 shape 会为节点挂载一层 graphicsLayer + clip 裁剪图层。
     // AI 气泡高度不设上限（长回复中的整段代码块可将气泡撑至十几屏），该图层尺寸
-    // 随之增至数万像素，图层内的子节点（代码块的横滑 /「复制」/「缩进」）将无法接收触摸事件
+    // 随之增至数万像素，图层内的子节点（代码块的横滑、复制、换行按钮）将无法接收触摸事件
     // 此时 AI 消息中的代码块无法滑动，而复制到用户气泡后却可滑动。
     // （15651px / 27187px 两种气泡高度上都实测过）。
     // background(color, shape) 圆角与 Surface 视觉一致，但不建图层。
@@ -536,9 +535,6 @@ private fun TurnThinkBlock(
     var expanded by remember { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    // 「复制」的全局唯一标识：操作其他块时按钮会从该块迁移
-    val copyKey = rememberCopyBlockKey()
-    val copyVisible = expanded && CopyRevealHost.owner === copyKey
     LaunchedEffect(copied) {
         if (copied) {
             delay(1200)
@@ -557,20 +553,17 @@ private fun TurnThinkBlock(
         color = if (inPanel) Color.Transparent else containerColor,
         shape = RoundedCornerShape(16.dp)
     ) {
-        // 仅展开时参与「谁显示复制」的判定；折叠时操作不应使按钮出现
-        Column(
-            modifier = Modifier
-                .then(if (expanded) Modifier.claimCopyOnGesture(copyKey) else Modifier)
-        ) {
+        // 复制按钮只在展开时出现：折叠态只留标题行，不给「复制看不见的内容」的入口
+        Column {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .saltRowClickable(headerShape) {
                         expanded = !expanded
-                        // 收起后立即释放「复制」：下一帧其应消失
-                        if (!expanded) CopyRevealHost.release(copyKey)
                     }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    // 固定行高：复制按钮只在展开时出现，行高不能随之变化，否则标题会上下跳
+                    .heightIn(min = ThinkHeaderHeight)
+                    .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
@@ -583,40 +576,26 @@ private fun TurnThinkBlock(
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
-                // 「复制」占用固定宽度：出现或收回均不改变其他元素的位置，
-                // 整块不会因按钮出现而跳动。
-                // 此 46dp 为**虚拟区域**（不显示）：「复制 / 已复制」均在其中居中，
-                // 涟漪铺满整块并与文字同心：与代码块、工具卡、小窗保持同一约定。
-                Box(
-                    modifier = Modifier
-                        .width(CopySlot)
-                        .clip(RoundedCornerShape(8.dp))
-                        .then(
-                            if (copyVisible) {
-                                Modifier.clickable {
-                                    copyCode(context, reasoning, "思考过程")
-                                    copied = true
-                                }
-                            } else {
-                                Modifier
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (copyVisible) {
-                        Text(
-                            text = if (copied) "已复制" else "复制",
-                            maxLines = 1,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                    }
+                // 复制为常显的图标按钮：只在展开时出现，位置与宽度固定，右侧「展开 / 收起」不位移
+                if (expanded && reasoning.isNotBlank()) {
+                    Spacer(Modifier.width(6.dp))
+                    CopyActionButton(
+                        copied = copied,
+                        ink = MaterialTheme.colorScheme.onSurface,
+                        onClick = {
+                            copyCode(context, reasoning, "思考过程")
+                            copied = true
+                        }
+                    )
                 }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = if (expanded) "收起" else "展开",
-                    fontSize = 12.sp,
-                    color = UiColors.accentFg
+                Spacer(Modifier.width(4.dp))
+                // 展开 / 收起改用箭头：文字标签随状态换词，箭头本身即表示方向，
+                // 与过程组头、工具卡使用同一套折叠箭头（Chevron）
+                Chevron(
+                    expanded = expanded,
+                    size = ChevronSize.SMALL,
+                    kind = ChevronKind.RIGHT_DOWN,
+                    tint = UiColors.accentFg
                 )
             }
             if (expanded) {
@@ -641,5 +620,11 @@ private fun TurnThinkBlock(
 /** 思考正文的限高：240dp 时几乎占满一屏，故调整为 180dp。 */
 private val ThinkBodyMaxHeight = 180.dp
 
-/** 思考块「复制」按钮的固定占位宽度：预先占用该区域，按钮出现时仅在其中填充文字，不挤动相邻元素。 */
-private val CopySlot = 46.dp
+/**
+ * 标题行的固定行高。
+ *
+ * 复制按钮 30dp 高于 12sp 标题（约 16dp），若按内容撑开，展开时行高会从 36dp 涨到 50dp，
+ * 标题随之被推下约 7dp。取 36dp 与「内距 10dp + 文字 16dp」等价，按钮居中、上下各留 3dp，
+ * 展开与收起两种状态下标题位置完全一致。
+ */
+private val ThinkHeaderHeight = 36.dp

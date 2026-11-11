@@ -92,6 +92,22 @@ sealed interface ToolResult {
     }
 }
 
+/**
+ * 每个工具声明里都会追加的公共参数名：这一步在做什么。
+ *
+ * 与 DSH 的 `bash` 工具同名同义（其参数说明为「5–10 个词的主动语态短语，界面直接显示」），
+ * 声明由 [com.zmf.agent.capability.tools.ToolRegistry.specs] 统一注入，工具实现自行忽略；
+ * 取值只服务界面（工具卡与轨迹行标题），不参与执行。
+ */
+const val STEP_DESCRIPTION_PARAM = "description"
+
+/**
+ * 旧字段名：2026-11-10 之前注入的是这个键，历史会话里仍有。
+ *
+ * 只用于读取，不再写入声明；删除它会让旧会话的工具行退回「运行命令 …」那种原文摘要。
+ */
+const val LEGACY_ACTION_SUMMARY_PARAM = "action_summary"
+
 /** 一个可被模型调用的工具。 */
 interface Tool {
     /** 工具名，即请求里 tools[].function.name；同名时以先注册者为准（见 [ToolRegistry]）。 */

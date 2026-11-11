@@ -169,6 +169,32 @@ internal fun DocGlyph(tint: Color, iconSize: Dp) {
     }
 }
 
+/**
+ * 复制：两张叠放的纸，后方纸张露出一角，前方纸张完整。
+ *
+ * 消息气泡尾部与代码块工具条共用这一份路径：同一功能在两处必须使用同一图标。
+ */
+@Composable
+internal fun CopyGlyph(tint: Color, iconSize: Dp) {
+    UnitGlyph(iconSize = iconSize) {
+        val stroke = unitStroke(1.4f)
+        drawRoundRect(
+            color = tint,
+            topLeft = Offset(5.8f, 3.2f),
+            size = Size(9.0f, 9.0f),
+            cornerRadius = CornerRadius(2.2f, 2.2f),
+            style = stroke
+        )
+        drawRoundRect(
+            color = tint,
+            topLeft = Offset(3.2f, 5.8f),
+            size = Size(9.0f, 9.0f),
+            cornerRadius = CornerRadius(2.2f, 2.2f),
+            style = stroke
+        )
+    }
+}
+
 /** 上下文与模型共用的圆柱体：表示数据存储位置，含义直观。 */
 @Composable
 internal fun CylinderGlyph(tint: Color, iconSize: Dp) {

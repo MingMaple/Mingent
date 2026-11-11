@@ -16,18 +16,24 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.zmf.agent.capability.subagent.SubAgentRegistry
 import com.zmf.agent.infra.backup.BackupArchive
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.lifecycle.LifecycleOwner
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.platform.SoftwareKeyboardController
 import com.zmf.agent.capability.runtime.ChatBridge
+import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.core.model.SharePayload
+import com.zmf.agent.uikit.common.NoticeCenter
 import com.zmf.agent.uikit.markdown.LinkRouter
 
 
 /**
- * 聊天页的副作用集合：通知进会话、前后台落盘、小窗桥、抽屉/二级页收键盘、计划自动跳转、
- * 链接路由。其仅读写状态、不产出布局，因此可整体从 [ChatScreen] 拆出。
+ * 聊天页的副作用集合：通知进会话、系统分享受理、前后台落盘、小窗桥、抽屉/二级页收键盘、
+ * 计划自动跳转、链接路由。其仅读写状态、不产出布局，因此可整体从 [ChatScreen] 拆出。
  *
  * 迁移时未改动任何逻辑：每条 effect 的 key、`return@` 的让位条件及取舍理由均原样保留。
  */
@@ -36,10 +42,13 @@ internal fun ChatAppEffects(
     viewModel: ChatViewModel,
     ui: ChatUiState,
     context: Context,
+    scope: CoroutineScope,
     lifecycleOwner: LifecycleOwner,
     focusManager: FocusManager,
     keyboard: SoftwareKeyboardController?,
     initialSessionId: String?,
+    initialShare: SharePayload?,
+    onShareConsumed: () -> Unit,
     subAgentEntries: List<SubAgentRegistry.Entry>
 ) {
     var page by ui.page
@@ -77,6 +86,64 @@ internal fun ChatAppEffects(
             viewModel.switchSession(id)
             pendingSession = null
         }
+    }
+
+    // 系统分享：受理一次（去重、暂存），随后进入**分享模式**——切到默认工作区的新会话，
+    // 底部槽位换成分享面板。启动未就绪时等一等：此前会话表为空，newSession 会落在错误的工作区。
+    var pendingShare by remember(initialShare) { mutableStateOf(initialShare) }
+    LaunchedEffect(pendingShare, viewModel.startupReady) {
+        val payload = pendingShare ?: return@LaunchedEffect
+        if (!viewModel.startupReady) return@LaunchedEffect
+        // 只受理一次：先失效载荷再受理，受理期间的重组不会再次发起
+        pendingShare = null
+        onShareConsumed()
+        // 受理动作放进 composition 级作用域：本 effect 的 key 含 pendingShare，置空会重启它，
+        // 若直接在 effect 里落盘，IO 返回时可能已被取消——表现为「分享进来没有反应」。
+        scope.launch {
+            // 分享进来先回主页：用户可能正停留在设置 / 轨迹等子页；各类浮层也一并收起
+            page = null
+            drawerOpen = false
+            subAgentPanelOpen = false
+            ui.composerPanel.dismiss()
+            ui.viewer.value = null
+            ui.imageMenuVisible.value = false
+            ui.selectionVisible.value = false
+            ui.turnUsage.value = null
+            // 图片与长文先落进与任何工作区无关的中转目录：发送时才按目标会话落盘，
+            // 用户随后在面板或抽屉里改目标，不会留下挂在别的工作区的文件
+            val draft = withContext(Dispatchers.IO) {
+                runCatching { ShareIntake.stage(context, payload) }
+                    .onFailure { FileLog.log("share", "落盘失败：" + (it.message ?: it.javaClass.simpleName)) }
+                    .getOrNull()
+            }
+            if (draft == null) {
+                // 全部图片读取失败且没有正文时没有任何可发送的内容，说明一句即可，不进分享模式
+                NoticeCenter.show("未读到可发送的分享内容")
+                return@launch
+            }
+            // 与「手动新建会话」完全同一套动作：切到默认工作区并新建空会话，会话区就是普通聊天界面。
+            // 生成中改工作区与新建都会被会话层拦下（流式结果写的是当前会话的消息表），
+            // 此时界面停在原会话上，发送仍发往当时所在的会话。
+            val defaultSpace = viewModel.workspaceList.firstOrNull { it.isDefault }?.id
+            if (defaultSpace != null && viewModel.currentWorkspaceId != defaultSpace) {
+                viewModel.switchWorkspace(defaultSpace)
+            }
+            viewModel.newSession()
+            ui.shareDraft.value = draft
+            ui.shareVisible.value = true
+        }
+    }
+
+    // 面板退场结束后再清内容：退场动画期间面板仍要画出附件与正文。
+    // 本次中转批次整批删除；发出的附件已复制进目标工作区，不再依赖中转文件。
+    // 关闭分享不改变当前会话：用户停在新会话里，不回退到分享前的那一条。
+    val shareVisibleNow by ui.shareVisible
+    LaunchedEffect(shareVisibleNow) {
+        if (shareVisibleNow) return@LaunchedEffect
+        delay(320)
+        if (ui.shareVisible.value) return@LaunchedEffect
+        ui.shareDraft.value?.let { draft -> ShareIntake.discard(draft) }
+        ui.shareDraft.value = null
     }
 
     // 网页随会话切换：切换会话时将标签挂起并分别挂回各自会话。
@@ -168,7 +235,7 @@ internal fun ChatAppEffects(
 /**
  * 返回键拦截链：按「最具体」到「最宽」的顺序注册，最后注册的优先级最高。
  *
- * 选择页 > 长按小窗 > 抽屉 > 二级页（回各自上一级）> 设置首页 > 一级页 > 主页退到桌面。
+ * 分享面板 > 选择页 > 长按小窗 > 抽屉 > 二级页（回各自上一级）> 设置首页 > 一级页 > 主页退到桌面。
  * 该顺序即为行为本身，因此整体迁移、不重新排序。
  */
 @Composable
@@ -182,6 +249,7 @@ internal fun ChatBackHandlers(
     var subAgentPanelOpen by ui.subAgentPanelOpen
     var imageMenuVisible by ui.imageMenuVisible
     var selectionVisible by ui.selectionVisible
+    var shareVisible by ui.shareVisible
     var trashRefreshKey by ui.trashRefreshKey
     var contextHubFromHome by ui.contextHubFromHome
 
@@ -204,8 +272,13 @@ internal fun ChatBackHandlers(
         }
     }
 
+    // 分享输入框只是主页输入区槽位的替换，不是覆盖层：抽屉、二级页、各种浮层都盖在它上面。
+    // 因此它紧随「退到桌面」注册（优先级仅高于主页退出）：上面还有任何一层打开时，
+    // 返回先关那一层；全都收起后才关闭分享，此时正常输入框出现，且**不改当前会话**。
+    BackHandler(enabled = shareVisible) { shareVisible = false }
+
     // 返回键按「最具体」到「最宽」的顺序拦截，最后注册的优先级最高：
-    // 选择页 > 长按小窗 > 抽屉 > 二级页（回各自上一级）> 设置首页 > 一级页 > 主页时退到桌面
+    // 选择页 > 长按小窗 > 抽屉 > 二级页（回各自上一级）> 设置首页 > 一级页 > 分享输入框 > 主页时退到桌面
     // 浏览页的返回先走网页历史，退到头才回主页（网页实例留着，返回不关闭网页）。
     // 该功能原由顶栏的「‹」承担，但其无历史时成为不可点击的箭头，看似故障，
     // 已从顶栏移除，改由系统返回统一处理。

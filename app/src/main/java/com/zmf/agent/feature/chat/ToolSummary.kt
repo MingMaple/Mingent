@@ -1,6 +1,8 @@
 package com.zmf.agent.feature.chat
 
 import android.graphics.BitmapFactory
+import com.zmf.agent.capability.tools.LEGACY_ACTION_SUMMARY_PARAM
+import com.zmf.agent.capability.tools.STEP_DESCRIPTION_PARAM
 import org.json.JSONObject
 import java.io.File
 
@@ -55,6 +57,32 @@ internal fun toolSummary(name: String, arguments: String): String {
         else -> verb + " " + arg
     }
     return if (text.length > SUMMARY_LIMIT) text.take(SUMMARY_LIMIT - 1) + "…" else text
+}
+
+/**
+ * 工具卡与轨迹行的标题。
+ *
+ * 取值顺序与 DSH 的 `bash` 工具一致：**先取模型写的 `description`**（这一步在做什么），
+ * 缺失时退回按工具名与参数推断的 [toolSummary]（读取 xxx、列出 xxx）。
+ * 两处显示必须由同一个函数决定，否则同一调用在主页与轨迹页会说成两句话。
+ */
+internal fun toolHeadline(name: String, arguments: String): String =
+    stepDescription(arguments) ?: toolSummary(name, arguments)
+
+/**
+ * 模型写入的这一步说明；缺失、非字符串或空白时返回 null。
+ *
+ * 新调用只写 [STEP_DESCRIPTION_PARAM]；[LEGACY_ACTION_SUMMARY_PARAM] 是为 2026-11-10 之前
+ * 的会话保留的读取路径，两者同义，读的时候都认。
+ */
+internal fun stepDescription(arguments: String): String? {
+    if (arguments.isBlank()) return null
+    val obj = runCatching { JSONObject(arguments) }.getOrNull() ?: return null
+    // 只认字符串：缺键、null 与数组 / 对象都不当作说明，避免标题行出现「null」
+    val raw = (obj.opt(STEP_DESCRIPTION_PARAM) as? String)
+        ?: (obj.opt(LEGACY_ACTION_SUMMARY_PARAM) as? String)
+        ?: return null
+    return raw.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim().ifEmpty { null }
 }
 
 /**

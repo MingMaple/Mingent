@@ -3,6 +3,7 @@ import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 
 import android.content.Context
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -81,7 +82,7 @@ import com.zmf.agent.uikit.common.saltFieldColors
 import com.zmf.agent.uikit.common.NoticeCenter
 
 /**
- * 「包管理」页：插件（MCP 服务）与 Skill 两个 tab，左右滑动切换。
+ * 「包管理」页：Skill 与插件（MCP 服务）两个 tab，左右滑动切换。
  *
  * 版式照 Salt：整页铺满、顶部一个返回箭头 + 标题、tab 不用 Material 的 TabRow 而是自己排一行，
  * 选中项下面一条 24×3dp 的绿条跟着手势走；内容区是 HorizontalPager，两页各自滚动。
@@ -149,8 +150,8 @@ fun PackagePage(
                     .fillMaxWidth()
             ) { page ->
                 when (page) {
-                    0 -> McpTab(registry = registry, onChanged = onChanged)
-                    else -> SkillTab(onChanged = onChanged)
+                    0 -> SkillTab(onChanged = onChanged)
+                    else -> McpTab(registry = registry, onChanged = onChanged)
                 }
             }
         }
@@ -185,13 +186,13 @@ private fun PackageTabBar(pagerState: PagerState, scope: CoroutineScope) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(modifier = Modifier.fillMaxWidth().height(44.dp)) {
                 PackageTab(
-                    text = "插件",
+                    text = "Skill",
                     selected = pagerState.currentPage == 0,
                     modifier = Modifier.weight(1f),
                     onClick = { scope.launch { pagerState.animateScrollToPage(0) } }
                 )
                 PackageTab(
-                    text = "Skill",
+                    text = "插件",
                     selected = pagerState.currentPage == 1,
                     modifier = Modifier.weight(1f),
                     onClick = { scope.launch { pagerState.animateScrollToPage(1) } }
@@ -674,23 +675,56 @@ private fun SkillTab(onChanged: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var skills by remember { mutableStateOf<List<SkillEntry>>(emptyList()) }
-    var showCreate by remember { mutableStateOf(false) }
+    // 编辑目标：第一个元素为 null 表示新建，非 null 表示编辑该技能
+    var editor by remember { mutableStateOf<Pair<SkillEntry?, SkillDraft>?>(null) }
+    // 导入前发现同名技能时先挂起，等用户确认覆盖
+    var pendingImport by remember { mutableStateOf<Uri?>(null) }
+    var conflictName by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) { skills = readSkills(context) }
+
+    fun launchImport(uri: Uri) {
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { SkillStore.importZip(context, uri) }
+            // onSuccess / onFailure 的 lambda 不在挂起上下文中，文件读取需在此处分别处理
+            val count = result.getOrNull()
+            if (count == null) {
+                toast(context, "导入失败：压缩包无法读取或格式不符，请换一个文件后重试")
+            } else {
+                skills = readSkills(context)
+                onChanged()
+                toast(context, "导入成功，当前共 " + count + " 个 Skill")
+            }
+        }
+    }
+
+    fun openEditor(entry: SkillEntry?) {
+        if (entry == null) {
+            editor = null to SkillDraft("", "", "", "")
+            return
+        }
+        scope.launch {
+            val raw = withContext(Dispatchers.IO) { SkillStore.readRaw(context, entry.id) }
+            editor = entry to skillDraft(entry, raw)
+        }
+    }
 
     // OpenDocument：仅选择 zip；未取得 uri 表示用户已取消
     val zipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             scope.launch {
-                val result = withContext(Dispatchers.IO) { SkillStore.importZip(context, uri) }
-                // onSuccess / onFailure 的 lambda 不在挂起上下文中，文件读取需在此处分别处理
-                val count = result.getOrNull()
-                if (count == null) {
-                    toast(context, "导入失败：压缩包无法读取或格式不符，请换一个文件后重试")
+                // 先按条目名判断会落成哪个 id：同名时不能静默覆盖别人的技能
+                val id = withContext(Dispatchers.IO) { SkillStore.peekZipId(context, uri) }
+                val conflict = if (id.isNullOrEmpty()) {
+                    null
                 } else {
-                    skills = readSkills(context)
-                    onChanged()
-                    toast(context, "导入成功，当前共 " + count + " 个 Skill")
+                    withContext(Dispatchers.IO) { SkillStore.find(context, id) }
+                }
+                if (conflict == null) {
+                    launchImport(uri)
+                } else {
+                    pendingImport = uri
+                    conflictName = conflict.name
                 }
             }
         }
@@ -726,6 +760,7 @@ private fun SkillTab(onChanged: () -> Unit) {
                         skills.forEachIndexed { index, entry ->
                             SkillRow(
                                 entry = entry,
+                                onEdit = { openEditor(entry) },
                                 onDelete = {
                                     scope.launch {
                                         val ok = withContext(Dispatchers.IO) {
@@ -770,7 +805,7 @@ private fun SkillTab(onChanged: () -> Unit) {
             Text(
                 text = "＋ 新建",
                 modifier = Modifier
-                    .saltRowClickable(RoundedCornerShape(8.dp)) { showCreate = true }
+                    .saltRowClickable(RoundedCornerShape(8.dp)) { openEditor(null) }
                     .padding(vertical = 2.dp),
                 fontSize = 15.sp,
                 color = Palette.Neutral
@@ -778,36 +813,78 @@ private fun SkillTab(onChanged: () -> Unit) {
         }
     }
 
-    if (showCreate) {
-        NewSkillDialog(
-            onDismiss = { showCreate = false },
-            onCreate = { name, description, body ->
-                showCreate = false
+    editor?.let { pair ->
+        val target = pair.first
+        SkillEditorDialog(
+            isNew = target == null,
+            initial = pair.second,
+            onDismiss = { editor = null },
+            onSave = { name, description, whenToUse, body ->
+                editor = null
                 scope.launch {
                     val result = withContext(Dispatchers.IO) {
-                        SkillStore.importText(context, name, description, body)
+                        SkillStore.save(
+                            context = context,
+                            key = target?.id,
+                            name = name,
+                            description = description,
+                            body = body,
+                            whenToUse = whenToUse,
+                            // 进入编辑态就意味着用户已经看到过这个技能，覆盖无需再确认
+                            overwrite = target != null
+                        )
                     }
-                    val entry = result.getOrNull()
-                    if (entry == null) {
-                        toast(context, "创建失败：名称可能重复或含有不支持的字符，请修改后重试")
+                    val saved = result.getOrNull()
+                    if (saved == null) {
+                        toast(context, "保存失败，请稍后重试")
                     } else {
                         skills = readSkills(context)
                         onChanged()
-                        toast(context, "已创建「" + entry.name + "」")
+                        toast(context, (if (target == null) "已创建「" else "已更新「") + saved.name + "」")
                     }
                 }
             }
         )
     }
+
+    val pending = pendingImport
+    if (pending != null) {
+        AlertDialog(
+            onDismissRequest = {
+                pendingImport = null
+                conflictName = null
+            },
+            title = { Text("已存在同名 Skill") },
+            text = { Text("「" + (conflictName ?: "") + "」已经存在，继续导入会整体覆盖它。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingImport = null
+                        conflictName = null
+                        launchImport(pending)
+                    }
+                ) { Text("覆盖导入") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        pendingImport = null
+                        conflictName = null
+                    }
+                ) { Text("取消") }
+            }
+        )
+    }
 }
 
-/** 一个 Skill：名称 + 描述（最多两行）+ 右侧删除。 */
+/** 一个 Skill：名称 + 描述（最多两行）+ 右侧删除；点按整行进入编辑（正文即预览）。 */
 @Composable
-private fun SkillRow(entry: SkillEntry, onDelete: () -> Unit) {
+private fun SkillRow(entry: SkillEntry, onEdit: () -> Unit, onDelete: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .saltRowClickable(RoundedCornerShape(12.dp), onClick = onEdit)
             .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -828,6 +905,14 @@ private fun SkillRow(entry: SkillEntry, onDelete: () -> Unit) {
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
+            } else {
+                // 描述是模型挑选技能的唯一依据，缺了等于这个技能不会被用到，必须让用户看见
+                Text(
+                    text = "缺少描述：模型无法判断何时使用，点按补上",
+                    modifier = Modifier.padding(top = 2.dp),
+                    fontSize = 11.sp,
+                    color = UiColors.accentFg
+                )
             }
         }
         Text(
@@ -841,23 +926,59 @@ private fun SkillRow(entry: SkillEntry, onDelete: () -> Unit) {
     }
 }
 
-/** 新建 Skill：名称 / 描述 / 正文，落成 skills/<id>/SKILL.md。 */
+/** 编辑框的初始值。 */
+private data class SkillDraft(
+    val name: String,
+    val description: String,
+    val whenToUse: String,
+    val body: String
+)
+
+/** 从原始 SKILL.md 还原初始值；raw 为空（读盘失败）时退回列表里的摘要。 */
+private fun skillDraft(entry: SkillEntry?, raw: String?): SkillDraft {
+    if (raw == null) {
+        return SkillDraft(
+            name = entry?.name.orEmpty(),
+            description = entry?.description.orEmpty(),
+            whenToUse = entry?.whenToUse.orEmpty(),
+            body = ""
+        )
+    }
+    val parsed = SkillStore.frontMatter(raw)
+    val meta = parsed.meta
+    return SkillDraft(
+        name = meta["name"].orEmpty().ifBlank { entry?.name.orEmpty() },
+        description = meta["description"].orEmpty().ifBlank { entry?.description.orEmpty() },
+        whenToUse = meta["whenToUse"].orEmpty().ifBlank { meta["when_to_use"].orEmpty() },
+        body = parsed.body
+    )
+}
+
+/**
+ * 新建 / 编辑 Skill：名称、描述、适用场景、正文，落成 skills/<id>/SKILL.md。
+ *
+ * 编辑时正文框本身就是预览，不需要再单独做只读页；未识别的 frontmatter 字段
+ * （license、allowed-tools 等）由 [SkillStore.save] 原样保留。
+ */
 @Composable
-private fun NewSkillDialog(
+private fun SkillEditorDialog(
+    isNew: Boolean,
+    initial: SkillDraft,
     onDismiss: () -> Unit,
-    onCreate: (name: String, description: String, body: String) -> Unit
+    onSave: (name: String, description: String, whenToUse: String, body: String) -> Unit
 ) {
-    var name by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var body by remember { mutableStateOf("") }
-    val canCreate = name.isNotBlank() && description.isNotBlank()
+    var name by remember(initial) { mutableStateOf(initial.name) }
+    var description by remember(initial) { mutableStateOf(initial.description) }
+    var whenToUse by remember(initial) { mutableStateOf(initial.whenToUse) }
+    var body by remember(initial) { mutableStateOf(initial.body) }
+    val canSave = name.isNotBlank() && description.isNotBlank() && body.isNotBlank()
 
     PackageDialog(
-        title = "新建 Skill",
-        confirmText = "创建",
-        confirmEnabled = canCreate,
+        title = if (isNew) "新建 Skill" else "编辑 Skill",
+        confirmText = if (isNew) "创建" else "保存",
+        confirmEnabled = canSave,
         onDismiss = onDismiss,
-        onConfirm = { onCreate(name.trim(), description.trim(), body) }
+        onConfirm = { onSave(name.trim(), description.trim(), whenToUse.trim(), body) }
     ) {
         OutlinedTextField(
                 colors = saltFieldColors(),
@@ -875,16 +996,25 @@ private fun NewSkillDialog(
             onValueChange = { description = it },
             modifier = Modifier.fillMaxWidth(),
             textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
-            placeholder = { Text("一句话描述：什么时候该用它", fontSize = 12.sp) },
+            placeholder = { Text("一句话描述：什么时候该用它（必填）", fontSize = 12.sp) },
+            singleLine = true
+        )
+        OutlinedTextField(
+                colors = saltFieldColors(),
+            value = whenToUse,
+            onValueChange = { whenToUse = it },
+            modifier = Modifier.fillMaxWidth(),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+            placeholder = { Text("适用场景（可选）：更具体的触发条件", fontSize = 12.sp) },
             singleLine = true
         )
         OutlinedTextField(
                 colors = saltFieldColors(),
             value = body,
             onValueChange = { body = it },
-            modifier = Modifier.fillMaxWidth().height(150.dp),
+            modifier = Modifier.fillMaxWidth().height(180.dp),
             textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
-            placeholder = { Text("正文：给模型看的具体步骤", fontSize = 12.sp) }
+            placeholder = { Text("正文：给模型看的具体步骤（必填）", fontSize = 12.sp) }
         )
     }
 }

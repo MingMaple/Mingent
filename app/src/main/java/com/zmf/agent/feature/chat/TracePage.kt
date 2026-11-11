@@ -89,9 +89,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import com.zmf.agent.uikit.markdown.copyCode
-import com.zmf.agent.uikit.components.CopyRevealHost
-import com.zmf.agent.uikit.components.claimCopyOnGesture
-import com.zmf.agent.uikit.components.rememberCopyBlockKey
+import com.zmf.agent.uikit.components.CopyActionButton
 
 /**
  * 「轨迹」页：把当前会话的消息还原成一条按时间先后排的扁平时间线。
@@ -327,9 +325,6 @@ private val DetailCorner = 18.dp
 
 /** 思考详情的限高：与主页思考框同一约定（180dp），避免整屏均为过程。 */
 private val ThinkingDetailMaxHeight = 180.dp
-
-/** 「复制」按钮的固定占位宽度：宽度固定，出现/消失不会挤动旁边任何东西。 */
-private val TraceCopySlot = 46.dp
 
 /**
  * 展开卡片**整张卡**（含标题行）占当前窗格高度的上限。
@@ -569,12 +564,18 @@ private fun callLine(
     stepLabel: String = ""
 ): TraceLine {
     val sub = call.name.startsWith("mcp__")
-    // 非 MCP 工具的行摘要改为「一句话说明执行内容」（读取 test.txt / 运行命令 …），
-    // 和卡片标题行用同一个纯函数，两处不会说出两种话。
+    // 非 MCP 工具的行摘要取模型写入的 action_summary（缺失时退回按工具名与参数推断），
+    // 与卡片标题行用同一个函数，两处不会说出两种话。
+    // MCP 子工具的说明与参数并排：它没有稳定的动词表，工具名本身就是唯一可靠的定位。
     val headline = if (sub) {
-        call.name + " " + oneLine(flat(call.arguments), ArgLimit)
+        val summary = stepDescription(call.arguments)
+        if (summary == null) {
+            call.name + " " + oneLine(flat(call.arguments), ArgLimit)
+        } else {
+            call.name + " · " + summary
+        }
     } else {
-        toolSummary(call.name, call.arguments)
+        toolHeadline(call.name, call.arguments)
     }
     return TraceLine(
         key = key,
@@ -783,9 +784,6 @@ private fun DetailCard(
     }
     val onSurface = MaterialTheme.colorScheme.onSurface
     val context = LocalContext.current
-    // 「复制」的全局唯一标识：操作其他块时按钮会从该卡迁移（与主页同一约定）
-    val copyKey = rememberCopyBlockKey()
-    val traceCopyVisible = CopyRevealHost.owner === copyKey
     var traceCopied by remember { mutableStateOf(false) }
     LaunchedEffect(traceCopied) {
         if (traceCopied) {
@@ -798,8 +796,6 @@ private fun DetailCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 2.dp, bottom = 8.dp)
-            // 卡片内操作后即显示「复制」
-            .claimCopyOnGesture(copyKey)
             .shadow(elevation = 6.dp, shape = shape, clip = false)
             .border(1.dp, onSurface.copy(alpha = 0.06f), shape),
         shape = shape,
@@ -816,32 +812,18 @@ private fun DetailCard(
                     overflow = TextOverflow.Ellipsis,
                     color = onSurface.copy(alpha = 0.85f)
                 )
-                // 「复制」只占固定宽度：高度由文字自己决定，竖着才和同行文字对齐
-                Box(
-                    modifier = Modifier
-                        .width(TraceCopySlot)
-                        .then(
-                            if (traceCopyVisible) {
-                                Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        copyCode(context, line.detail, line.kind.label)
-                                        traceCopied = true
-                                    }
-                            } else {
-                                Modifier
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (traceCopyVisible) {
-                        Text(
-                            text = if (traceCopied) "已复制" else "复制",
-                            maxLines = 1,
-                            fontSize = 11.sp,
-                            color = onSurface.copy(alpha = 0.55f)
-                        )
-                    }
+                // 复制为常显的图标按钮：卡片只在展开时存在，折叠后随之隐藏；
+                // 宽度固定，右侧用时与关闭按钮不位移
+                if (line.detail.isNotBlank()) {
+                    Spacer(Modifier.width(2.dp))
+                    CopyActionButton(
+                        copied = traceCopied,
+                        ink = onSurface,
+                        onClick = {
+                            copyCode(context, line.detail, line.kind.label)
+                            traceCopied = true
+                        }
+                    )
                 }
                 Spacer(Modifier.width(8.dp))
                 // 拿不到可靠用时就不写这一格：编个数字比留白更糟

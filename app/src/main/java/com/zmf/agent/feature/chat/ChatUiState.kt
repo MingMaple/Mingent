@@ -165,6 +165,15 @@ internal class ChatUiState(context: Context) {
     /** 列表当前是否贴底：仅在此处记录，键盘弹起时再查询已过晚。 */
     val wasAtBottom: MutableState<Boolean> = mutableStateOf(true)
 
+    /**
+     * 系统分享的待发内容；null 表示当前不在分享流程里。
+     *
+     * 与 [shareVisible] 分开存储：面板退场期间内容仍需保留，退场结束才清空。
+     * 附件在中转目录里，放弃或发送结束时整批删除，不会留在任何工作区。
+     */
+    val shareDraft: MutableState<ShareDraft?> = mutableStateOf(null)
+    val shareVisible: MutableState<Boolean> = mutableStateOf(false)
+
     /** 输入框弹出面板的开关入口。面板状态仍归 Composer，父层仅借此铺设遮罩。 */
     val composerPanel = ComposerPanelHost()
 

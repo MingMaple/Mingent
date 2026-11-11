@@ -19,8 +19,8 @@ import java.io.File
 /** 单条消息最多携带几张图片：对齐 DSH。待发图片行的展示上限也复用该值，不另写数字。 */
 internal const val MAX_IMAGES = 20
 
-/** 单张图片的源文件上限：20 MB（模型看到的是压缩后的 JPEG，这条只拦超大原图）。 */
-private const val MAX_IMAGE_BYTES = 20L * 1024 * 1024
+/** 单张图片的源文件上限：50 MB（对齐 DSH；模型看到的是归一化后的图，这条只拦超大原图）。 */
+private const val MAX_IMAGE_BYTES = 50L * 1024 * 1024
 
 /** 待发送的附件：仅记录显示名与文件在工作区中的相对路径，模型通过 read_file 读取。 */
 data class PendingFile(val name: String, val relPath: String)
@@ -75,13 +75,13 @@ class ComposerState(
         val isImage = mime?.startsWith("image/") == true
         // 已满则停止导入：连文件也不复制至工作区，避免保留一份无人引用的附件
         if (!canEnqueuePending(isImage)) return
-        // 单张图片源文件上限 20 MB（对齐 DSH）：无法获取长度（-1）时不拦截，交由导入时的压缩兜底
+        // 单张图片源文件上限 50 MB（对齐 DSH）：无法获取长度（-1）时不拦截，交由导入时的归一化兜底
         if (isImage) {
             val bytes = runCatching {
                 appContext.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
             }.getOrNull() ?: -1L
             if (bytes > MAX_IMAGE_BYTES) {
-                reportError("单张图片最大 20 MB")
+                reportError("单张图片最大 50 MB")
                 return
             }
         }

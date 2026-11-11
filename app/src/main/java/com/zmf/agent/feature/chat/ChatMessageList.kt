@@ -100,6 +100,10 @@ internal fun ColumnScope.ChatMessageList(
     val density = LocalDensity.current
     val window = LocalUiWindow.current
     val bottomTolerancePx = with(density) { 200.dp.toPx() }.toInt()
+    // 列表底部内容内距：视口下沿与「最后一条真正贴底时的下沿」相差这一块，
+    // 贴底计算与 contentPadding 必须共用同一份取值，否则底部会固定留出可上滑的空区。
+    val listBottomInset = if (window.compactChrome) 8.dp else 16.dp
+    val listBottomInsetPx = with(density) { listBottomInset.toPx() }.toInt()
     // 新消息 / 工具返回 / 流式正文各变化一项：四项合成跟随的触发键，仅在键变化时滚动
     val followKey = listOf(
         items.size,
@@ -140,7 +144,7 @@ internal fun ColumnScope.ChatMessageList(
     // 向上翻阅历史时不被拉回底部（此前每次工具调用都会弹回底部）。
     LaunchedEffect(followKey) {
         if (!wasAtBottom) return@LaunchedEffect
-        followBottom(listState, items.lastIndex)
+        followBottom(listState, items.lastIndex, listBottomInsetPx)
     }
 
     // 冷启动 / 切换会话的首次落位：必须直接落在最后一条，而非列表顶部。
@@ -155,7 +159,7 @@ internal fun ColumnScope.ChatMessageList(
         // 先完成滚动，再放开绘制：两次状态写入位于同一协程，中间不会插入新的一帧。
         // 若在滚动前放开绘制，读盘完成后会先呈现会话顶部一帧，随后再跳到底部。
         try {
-            followBottom(listState, items.lastIndex)
+            followBottom(listState, items.lastIndex, listBottomInsetPx)
         } finally {
             anchoredInitialPosition = true
         }
@@ -180,12 +184,19 @@ internal fun ColumnScope.ChatMessageList(
     // 消息区的可见高度：键盘开合、待办条、待发附件行、排队行的出现或收起均会改变该值。这些兄弟节点从下方占用列表空间，视口变化后原本贴底的条目可能落到视口外，因此「贴底」需随视口变化重新计算。
     // 视口稳定后再次校准底部。不得将 imePad / 视口值放入 effect 的 key：键盘动画期间其逐帧变化，effect 会被取消并重启数十次，相当于每帧安排一次延迟吸附，这是掉帧的主要原因。
     // 使用 collectLatest 仅在视口稳定 120ms 后执行一次。
+    //
+    // 同时监听「最后一条的高度」：消息正文、工具卡与图片的最终高度常在首次测量之后才落定，
+    // 只监听视口会漏掉这一类变化，那时底部就会留下固定的一截可上滑余量。
     val lastItemIndex = rememberUpdatedState(items.lastIndex)
     LaunchedEffect(listState) {
-        snapshotFlow { listState.layoutInfo.viewportEndOffset }.collectLatest {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            info.viewportEndOffset to (if (last?.index == lastItemIndex.value) last.size else 0)
+        }.collectLatest {
             delay(120)
             if (!wasAtBottom) return@collectLatest
-            settleToBottom(listState, lastItemIndex.value)
+            settleToBottom(listState, lastItemIndex.value, listBottomInsetPx)
         }
     }
 
@@ -200,9 +211,9 @@ internal fun ColumnScope.ChatMessageList(
                             .alpha(if (anchoredInitialPosition || items.isEmpty()) 1f else 0f),
                         // 横屏高度紧凑时只收纵向内距：左右保持 16dp，气泡宽度不受影响
                         contentPadding = if (window.compactChrome) {
-                            PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                            PaddingValues(horizontal = 16.dp, vertical = listBottomInset)
                         } else {
-                            PaddingValues(16.dp)
+                            PaddingValues(listBottomInset)
                         },
                         // 内容不足一屏时贴底（Bottom）：新消息应从底部向上增长，而非悬于半空。
                         // 内容超过一屏后 Bottom 对齐无法生效，滚动行为与原先的 spacedBy 完全一致。

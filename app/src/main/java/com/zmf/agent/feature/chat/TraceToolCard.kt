@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,7 +23,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,40 +34,30 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.common.BoundedScrollColumn
-import com.zmf.agent.uikit.common.Chevron
-import com.zmf.agent.uikit.common.ChevronKind
-import com.zmf.agent.uikit.common.ChevronSize
-import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.delay
 import java.io.File
 import com.zmf.agent.uikit.markdown.MarkdownCodeBlock
 import com.zmf.agent.uikit.markdown.copyCode
-import com.zmf.agent.uikit.components.CopyRevealHost
-import com.zmf.agent.uikit.components.claimCopyOnGesture
-import com.zmf.agent.uikit.components.rememberCopyBlockKey
+import com.zmf.agent.uikit.components.CopyActionButton
 
 /* ============================== 文件级说明 ==============================
  *
- * 轨迹页专用的工具卡。参数、分区与「复制按钮」的入场方式与 [ToolBlock] 同源，
+ * 轨迹页专用的工具卡。参数、分区与「复制按钮」的口径与 [ToolBlock] 同源，
  * 这里只记与它的差异（为什么另起一份见下面 [TraceToolCard] 的 KDoc）：
  *
  * 一、与主页那份的差异
- *   - 默认展开：轨迹页是「点进来看详情」，不需要「折成一行」这个动作；
+ *   - 没有折叠态：卡片由时间线上方那一行控制进出，卡内不再有「折叠成一行」的动作；
  *   - 多三个参数：stepLabel（标题行右侧「第 N 轮 · 第 M 步」）、imageRoot（把输出里的
  *     相对路径解成工作区里的真文件）、onImageClick（点附件卡打开主页那一个查看器）；
  *   - 输出区下面多一段图片附件（[ToolAttachmentRow]），没有图就整段不出。
  *
  * 二、位置约定
  *   - 参数区：240dp 内滚，参数为空时整块不渲染；
- *   - 代码区：等宽 + 行号，默认单行横滑，点「缩进」换成完整换行，随整页滚动；
+ *   - 代码区：等宽 + 行号，默认单行横滑，点「换行」换成完整折行，随整页滚动；
  *   - 输出区：240dp 内滚，滚到边界后继续滑不带动外层页面；
- *   - 复制按钮：块内任意手势后出现在右上角，口径与 [ToolBlock] 相同。
+ *   - 复制按钮：标题行最右端（原先折叠箭头的位置），「完成」在其左侧（见 [CopyActionButton]）。
  * ========================================================================== */
-
-/** 「复制」按钮的固定占位宽度：始终存在，按钮出现时只填进去，不挤动旁边任何东西。 */
-private val CopySlot = 46.dp
-
 
 /** 「已复制」提示的停留时间。 */
 private const val COPIED_TIP_MS = 1200L
@@ -76,16 +66,24 @@ private const val COPIED_TIP_MS = 1200L
 private val BlockBodyMaxHeight = 240.dp
 
 /**
- * 轨迹页专用的工具卡（从主页那份派生，但默认展开、只服务详情页）。
+ * 标题行的最小行高。
  *
- * 结构：标题行（工具名 + 状态 + 复制）→ 参数区（折叠/展开）→ 代码区（可选）→ 输出区 → 图片附件。
+ * 复制按钮 30dp 高于 12sp 标题（约 16dp），若按内容撑开，行高会随按钮出现而变化，
+ * 标题文字随之上下移动。取 36dp：与「无按钮时的内距 10dp + 文字 16dp」等价，
+ * 按钮在行内居中，上下各留 3dp；大字体下仍允许继续撑高。
+ */
+private val TraceHeaderHeight = 36.dp
+
+/**
+ * 轨迹页专用的工具卡（从主页那份派生，只服务详情页，卡内不再折叠）。
  *
- * 复制按钮的显隐与 [ToolBlock] 同口径：默认不显示，块内任意手势后出现、4 秒无新手势自动收起，
- * 父层递增 [outsideTapKey] 还能立刻收回；不做「全局点击代理」的理由也是同一个（见该处说明）。
+ * 结构：标题行（工具图标 + 说明 + 步骤 + 完成 + 复制）→ 参数区 → 代码区（可选）→ 输出区 → 图片附件。
+ *
+ * 复制按钮与 [ToolBlock] 同为常显的图标按钮：位置与宽度固定，不随触摸出现或收起。
  *
  * 为什么另起一份而不是复用主页的 ToolBlock：两页的「工具卡」只是长得像，
  * 语义不同：主页那张是**过程**，默认折成一行、点开才看；轨迹页这张是**详情**，是专门点进来
- * 查这一步的，所以默认展开，也不需要「折叠成一行」这个动作；放在同一函数里加参数会互相牵制。
+ * 查这一步的，因此没有折叠态；放在同一函数里加参数会互相牵制。
  */
 @Composable
 fun TraceToolCard(
@@ -97,7 +95,6 @@ fun TraceToolCard(
     code: String? = null,
     codeLang: String = "",
     containerColor: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-    outsideTapKey: Any? = null,
     copyText: String? = null,
     /** 标题行右侧的「第 N 轮 · 第 M 步」；空串不显示（主页没有这一步的概念）。 */
     stepLabel: String = "",
@@ -111,19 +108,8 @@ fun TraceToolCard(
     // 参数 / 代码 / 输出共用同一份「代码块底色」，比卡片本身再浅一档
     val bodyBackground = onSurface.copy(alpha = 0.06f)
 
-    // 卡片默认折叠为一行（工具名 + 状态）：参数 / 代码 / 输出需点击展开。
-    // 一轮中常连续七八次工具调用，全部展开会将本轮回答挤出可视区域。
-    // 轨迹页为「点击查看详情」，进入时应为展开状态
-    var open by rememberSaveable { mutableStateOf(true) }
+    // 详情卡没有折叠态：由时间线上方那一行控制进出，卡内始终展示完整内容。
     var copied by remember { mutableStateOf(false) }
-    // 「复制」的全局唯一标识：展开且操作过该块后才显示，操作其他块时迁移
-    val copyKey = rememberCopyBlockKey()
-    val copyVisible = open && CopyRevealHost.owner === copyKey
-
-    // 父层若接收「点击块外」事件，计数变化即立即收回；未接收时仍可正常使用
-    LaunchedEffect(outsideTapKey) {
-        if (outsideTapKey != null) CopyRevealHost.release(copyKey)
-    }
     // 「已复制」1.2 秒后复位
     LaunchedEffect(copied) {
         if (copied) {
@@ -138,9 +124,10 @@ fun TraceToolCard(
     // 卡片上额外的红字反而干扰阅读。
     val statusColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
     val statusText = if (running) "" else "完成"
-    // 一句话总结（「读取 test.txt」「运行命令 tail -c 20 …」）：标题行向用户展示该工具执行了什么
-    val headline = remember(toolName, arguments) { toolSummary(toolName, arguments) }
-    // 参数为空（空串 / 空对象）时整块不渲染：避免「参数 缩进」下仅剩一个空花括号
+    // 标题（「对比本地与远端插件版本」）：优先取模型写入的 description，旧数据回退 action_summary；
+    // 模型遗漏时退回按工具名与参数拼出的句子（[toolSummary]），标题行不会留空。
+    val headline = remember(toolName, arguments) { toolHeadline(toolName, arguments) }
+    // 参数为空（空串 / 空对象）时整块不渲染：避免「参数 + 换行按钮」下仅剩一个空花括号
     val argsBlank = remember(arguments) { toolArgIsBlank(arguments) }
     // 输出里真实存在的图片 → 附件卡（缩略图 + 文件名 + 类型/大小/尺寸）
     val attachments = remember(output, imageRoot) { toolAttachments(output, imageRoot) }
@@ -152,23 +139,18 @@ fun TraceToolCard(
     Surface(
         color = containerColor,
         shape = RoundedCornerShape(14.dp),
-        modifier = modifier
-            .fillMaxWidth()
-            // 复制归属挂载于内容区（见下方 Column），不挂载于整卡：
-            // 若挂载于整卡，点击标题行也会被视为「操作过」，出现「点击展开无按钮、再次点击收起却出现」。
+        modifier = modifier.fillMaxWidth()
     ) {
-        // 内边距下放至各块内容：标题行需顶至卡片边缘，波纹方可铺满整行
-        // （反馈不设计为行内小矩形）。
+        // 内边距下放至各块内容：标题行贴卡片边缘，其余区块各自留白
         Column {
             /* -------------------------- 标题行 -------------------------- */
+            // 固定行高：复制按钮常在，行高不随它变化，标题文字不会因此上下移动。
+            // 该行不再可点：卡片的进出由时间线上方那一行控制，卡内不再提供折叠动作。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .saltRowClickable(if (open) RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp) else RoundedCornerShape(14.dp)) {
-                        open = !open
-                        if (!open) CopyRevealHost.release(copyKey)
-                    }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .heightIn(min = TraceHeaderHeight)
+                    .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
@@ -198,53 +180,27 @@ fun TraceToolCard(
                         color = onSurface.copy(alpha = 0.4f)
                     )
                 }
-                // 「复制」占用固定宽度：出现或消失均不移动其他元素（约定见 [ToolBlock] 同段说明）。
-                Box(
-                    modifier = Modifier
-                        .width(CopySlot)
-                        .then(
-                            if (copyVisible && fullText.isNotBlank()) {
-                                Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable {
-                                        copyCode(context, fullText, "工具调用")
-                                        copied = true
-                                    }
-                            } else {
-                                Modifier
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (copyVisible && fullText.isNotBlank()) {
-                        Text(
-                            text = if (copied) "已复制" else "复制",
-                            maxLines = 1,
-                            fontSize = 11.sp,
-                            color = onSurface.copy(alpha = 0.6f)
-                        )
-                    }
-                }
                 Spacer(Modifier.width(8.dp))
+                // 右侧顺序：完成 → 复制。复制固定在行尾，接替原先折叠箭头的位置，
+                // 与状态字之间留 6dp，两者都在固定行高内居中。
                 if (statusText.isNotEmpty()) {
                     Text(text = statusText, fontSize = 11.sp, color = statusColor)
                 }
-                Spacer(Modifier.width(6.dp))
-                // 折叠时显示朝右的小箭头，用户方可得知该行可点击展开
-                Chevron(
-                    expanded = open,
-                    size = ChevronSize.SMALL,
-                    kind = ChevronKind.RIGHT_DOWN,
-                    tint = onSurface.copy(alpha = 0.35f)
-                )
+                if (fullText.isNotBlank()) {
+                    Spacer(Modifier.width(6.dp))
+                    CopyActionButton(
+                        copied = copied,
+                        ink = onSurface,
+                        onClick = {
+                            copyCode(context, fullText, "工具调用")
+                            copied = true
+                        }
+                    )
+                }
             }
 
-            if (open) {
             Column(
-                modifier = Modifier
-                    .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
-                    // 展开后内容区任意位置按下或滑动均触发复制（Initial 阶段，不消费事件）
-                    .claimCopyOnGesture(copyKey),
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
             /* -------------------------- 参数区 -------------------------- */
@@ -324,7 +280,6 @@ fun TraceToolCard(
                     root = imageRoot,
                     onOpen = onImageClick
                 )
-            }
             }
             }
         }

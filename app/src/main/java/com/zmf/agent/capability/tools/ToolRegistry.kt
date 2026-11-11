@@ -21,6 +21,7 @@ import com.zmf.agent.capability.tools.jobs.JobStartTool
 import com.zmf.agent.capability.tools.schedule.ScheduleCreateTool
 import com.zmf.agent.capability.tools.schedule.ScheduleDeleteTool
 import com.zmf.agent.capability.tools.schedule.ScheduleListTool
+import com.zmf.agent.capability.tools.skill.SkillSaveTool
 import com.zmf.agent.capability.tools.skill.SkillTool
 import com.zmf.agent.capability.tools.system.ShizukuTool
 import com.zmf.agent.capability.tools.task.TodoTool
@@ -41,6 +42,7 @@ import com.zmf.agent.capability.tools.workspace.WorkspaceSetRootTool
 import com.zmf.agent.capability.tools.web.WebSearchTool
 import com.zmf.agent.capability.tools.web.WebTool
 import kotlinx.coroutines.CancellationException
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -64,6 +66,8 @@ fun defaultTools(): List<Tool> =
         TerminalTool(),
         WebTool(),
         SkillTool(),
+        // 写入侧单独成工具：skill 保持只读，避免「加载正文」这种高频动作被权限档连带收紧
+        SkillSaveTool(),
         ShizukuTool(),
         WebSearchTool(),
         TodoTool(),
@@ -122,10 +126,18 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
     @Volatile
     private var snapshot: List<Tool> = emptyList()
 
+    /**
+     * 请求里下发的工具声明。与 [snapshot] 同时重建：
+     * 声明要经过一次 JSON 加工（追加公共参数），不宜每次取用都重算。
+     */
+    @Volatile
+    private var specSnapshot: List<ToolSpec> = emptyList()
+
     init {
         synchronized(lock) {
             sources[BUILTIN_SOURCE] = initial.toMutableList()
             snapshot = initial.toList()
+            specSnapshot = buildSpecs(snapshot)
         }
         if (initial.isNotEmpty()) {
             FileLog.log(TAG, "内置工具 " + initial.size + " 个：" + initial.joinToString(", ") { it.name })
@@ -140,11 +152,17 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
      * 裁工具有两个实测代价：①工具表变化后，整个请求前缀随之失效，缓存从第一处差异起全部失效；
      * ②模型会把「工具被藏起来」误报成「我没有这个能力」。
      */
-    fun specs(): List<ToolSpec> = snapshot
-        // 按工具名排序（code-unit 序，与 locale 无关）。顺序本身不影响能力，
-        // 但工具定义是请求前缀的一部分：固定成「名字序」才能保证换设备、换语言、重启后逐字节一致。
-        .sortedBy { it.name }
-        .map { ToolSpec(it.name, it.description, it.parametersJson) }
+    fun specs(): List<ToolSpec> = specSnapshot
+
+    /**
+     * 由工具列表生成声明。
+     *
+     * 顺序按工具名排序（code-unit 序，与 locale 无关）。顺序本身不影响能力，
+     * 但工具定义是请求前缀的一部分：固定成「名字序」才能保证换设备、换语言、重启后逐字节一致。
+     */
+    private fun buildSpecs(tools: List<Tool>): List<ToolSpec> =
+        tools.sortedBy { it.name }
+            .map { ToolSpec(it.name, it.description, it.parametersJson.withStepDescription(it.name)) }
 
     /** 按名字查找工具；不存在返回 null。 */
     fun find(name: String): Tool? = snapshot.firstOrNull { it.name == name }
@@ -171,6 +189,7 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
                 added.add(tool.name)
             }
             snapshot = flattenLocked()
+            specSnapshot = buildSpecs(snapshot)
         }
         if (added.isEmpty() && skipped.isEmpty()) return
         val detail = buildString {
@@ -193,6 +212,7 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
             if (bucket != null) {
                 removed = bucket
                 snapshot = flattenLocked()
+            specSnapshot = buildSpecs(snapshot)
             }
         }
         val list = removed ?: return
@@ -285,15 +305,27 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
         return tool.mutatesWith(args)
     }
 
-    /** 返回第一个缺失的必填参数名；没有声明 required 或都齐了就返回 null。 */
+    /**
+     * 返回第一个缺失的必填参数名；没有声明 required 或都齐了就返回 null。
+     *
+     * 执行类工具的 `description` 也在此校验：它由 [buildSpecs] 注入而非各工具自己声明，
+     * 只有在这里补一条，模型漏写时才会得到「缺少必填参数」的明确回执并重试；
+     * 不校验的话，漏写的调用会照常执行，界面只能退回显示命令原文。
+     */
     private fun missingRequired(tool: Tool, args: JSONObject): String? {
         val required = runCatching {
             JSONObject(tool.parametersJson).optJSONArray("required")
-        }.getOrNull() ?: return null
-        for (i in 0 until required.length()) {
-            val name = required.optString(i, "")
-            if (name.isEmpty()) continue
-            if (!args.has(name) || args.isNull(name)) return name
+        }.getOrNull()
+        if (required != null) {
+            for (i in 0 until required.length()) {
+                val name = required.optString(i, "")
+                if (name.isEmpty()) continue
+                if (!args.has(name) || args.isNull(name)) return name
+            }
+        }
+        if (tool.name in STEP_DESCRIPTION_REQUIRED) {
+            val description = args.optString(STEP_DESCRIPTION_PARAM, "").trim()
+            if (description.isEmpty()) return STEP_DESCRIPTION_PARAM
         }
         return null
     }
@@ -308,4 +340,63 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
         // 计划模式与只读档不维护工具拒绝名单：改由 Tool.mutates / mutatesWith 的能力声明驱动，
         // 新增写工具只需声明一次即可被识别（见 ToolRegistry.execute 的两道闸）。
     }
+}
+
+/**
+ * 执行类工具：它们的参数里没有可读的宾语（只有一长串命令），工具行标题只能靠模型给的说明。
+ * 这几个工具的 `description` 声明为**必填**，与 DSH 的 `bash` 工具一致。
+ */
+private val STEP_DESCRIPTION_REQUIRED = setOf("terminal", "job_start", "shizuku")
+
+/**
+ * [STEP_DESCRIPTION_PARAM] 的参数说明。
+ *
+ * 措辞对齐 DSH 的 `bash` 工具（「5–10 个词的主动语态短语，界面直接显示」），并给出命令到短语的
+ * 对照示例——只写「简明说明」这类要求时，模型会照抄命令。
+ */
+private const val STEP_DESCRIPTION_HINT =
+    "这一步在做什么：用 5–10 个词的主动语态短语，界面直接把它当作该步的标题。" +
+        "示例：ls →「列出当前目录的文件」；git status →「查看工作区状态」；" +
+        "npm install →「安装依赖包」。不得照抄命令原文，也不要写成「执行命令」这类空话。"
+
+/**
+ * 在工具的参数声明里注入 [STEP_DESCRIPTION_PARAM]，由全表统一注入，各工具不必逐一声明。
+ *
+ * **置于属性表首位**：DSH 的 `bash` 同样把 `description` 排在 `command` 之前，其文档写明
+ * 「schema 把它列在 command 前、请模型先输出它，但不强制 JSON 成员顺序」。模型按声明顺序
+ * 生成参数，落在末尾的字段更容易整段漏掉——这正是此前工具行退化成命令原文的原因之一。
+ *
+ * 执行类工具（见 [STEP_DESCRIPTION_REQUIRED]）把它列入 `required`：模型漏写时按参数缺失处理，
+ * 补一次再调，换来的是工具行能读出「这一步做了什么」。其余工具的标题本就能从路径等参数推出，
+ * 故只加属性、不强制，避免多付一次重试。
+ *
+ * 声明解析失败时原样返回：宁可少一个字段，也不能让整张工具表发不出去。
+ */
+private fun String.withStepDescription(toolName: String): String {
+    val root = runCatching { JSONObject(this) }.getOrNull() ?: return this
+    val properties = root.optJSONObject("properties") ?: JSONObject()
+    if (properties.has(STEP_DESCRIPTION_PARAM)) return this
+    // 重建属性表：说明在前，原有属性按原序跟在后面，相对次序不变
+    val reordered = JSONObject()
+    reordered.put(
+        STEP_DESCRIPTION_PARAM,
+        JSONObject()
+            .put("type", "string")
+            .put("description", STEP_DESCRIPTION_HINT)
+    )
+    val keys = properties.keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        reordered.put(key, properties.opt(key))
+    }
+    root.put("properties", reordered)
+    if (toolName in STEP_DESCRIPTION_REQUIRED) {
+        val required = root.optJSONArray("required") ?: JSONArray().also { root.put("required", it) }
+        var present = false
+        for (i in 0 until required.length()) {
+            if (required.optString(i) == STEP_DESCRIPTION_PARAM) present = true
+        }
+        if (!present) required.put(STEP_DESCRIPTION_PARAM)
+    }
+    return root.toString()
 }

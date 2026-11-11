@@ -46,14 +46,59 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Agent">
         <!-- configChanges：系统切深浅色时不重建 Activity，否则 ChatViewModel 连同聊天记录一起没了 -->
+        <!-- launchMode=singleTop：从其它应用分享时复用栈顶实例并走 onNewIntent，不叠加新任务 -->
         <activity
             android:name=".app.MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize|locale|layoutDirection|density"
             android:windowSoftInputMode="adjustNothing">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- 系统分享入口：文字、图片与文件必须分多组 filter，写在同一个里会互相污染类型匹配；
+                 文字用 text/* 而不是 text/plain：文件管理器分享 .md/.html 等文本文件时类型是
+                 text/markdown、text/html，只声明 text/plain 会让本应用在分享面板里直接消失。
+                 application/* 承接 pdf、docx、xlsx、pptx、zip 等文档与压缩包。
+                 图片与文件同时接受 SEND_MULTIPLE：相册多选与文件多选分享走的是这个 action，缺了它同样不出现。
+                 仍不复用 */*：音频、视频、安装包等本应用不处理，列出来只会误导。
+                 分享进来后主页进入「分享模式」：底部输入区临时换成分享面板，发送完即退场。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/*" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/*" />
             </intent-filter>
         </activity>
 

@@ -18,9 +18,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -61,10 +63,10 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.common.BoundedScrollColumn
-import com.zmf.agent.uikit.components.CopyRevealHost
-import com.zmf.agent.uikit.components.claimCopyOnGesture
-import com.zmf.agent.uikit.components.rememberCopyBlockKey
+import com.zmf.agent.uikit.components.CopyActionButton
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
+import com.zmf.agent.uikit.icons.UnwrapIcon
+import com.zmf.agent.uikit.icons.WrapIcon
 import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.common.NoticeCenter
 import kotlinx.coroutines.delay
@@ -531,13 +533,15 @@ private fun TableRule(color: Color, width: Dp, strong: Boolean) {
 }
 
 /**
- * 围栏代码块：顶部一条工具条（语言 /「缩进」/「复制」），下面是行号列 + 代码体。
+ * 围栏代码块：顶部一条工具条（语言 / 复制 / 换行），下面是行号列 + 代码体。
  *
- * 默认**单行横滑**（不折行，长行通过横向滑动阅读），点击「换行」后改为完整换行；
+ * 默认**单行横滑**（不折行，长行通过横向滑动阅读），点按换行按钮后改为完整换行；
  * 行号等宽右对齐、半透明灰，宽度按总行数取 2–3 位。
  *
- * 「复制」与「缩进」并列于工具条右端，但仅在**触摸过该区块**后出现（全局唯一，触摸其他区块会转移）。
- * 单行横滑的正文保持原样，横向不受限高影响。
+ * 工具条右端是两枚**图标按钮**（复制、换行），均常显：两枚合起来约 62dp，
+ * 远比先前的文字槽窄，因此不再需要「触点后浮现」的显隐机制，功能区宽度恒定。
+ * 复制成功后图标在 1.2 秒内改为对勾，随后复原；换行按钮按状态显示两枚不同图形（换行 / 取消换行），
+ * 不用底色蒙版表示生效。
  *
  * 正文是否限高由 [boundedBody] 决定：
  *  - true（工具卡）：限高 240dp（[BoundedScrollColumn]），内容可容纳时随整页滚动，超出时在区块内纵向滚动；
@@ -547,7 +551,8 @@ private fun TableRule(color: Color, width: Dp, strong: Boolean) {
  * 「横滑到边界不传给外层」用同包的 [blockHorizontalAtEdge]：气泡里的代码块同样要拦住，
  * 否则滑至行末后继续推动会拉出抽屉或进入轨迹页。
  *
- * ToolBlock 会复用本函数：参数区 / 命令区不要行号、不要复制按钮。
+ * ToolBlock 会复用本函数：参数区 / 命令区不要行号、不要复制按钮（[showCopy] = false），
+ * 此时工具条只剩语言标签与换行按钮，换行按钮仍贴右端。
  */
 @Composable
 internal fun MarkdownCodeBlock(
@@ -567,11 +572,10 @@ internal fun MarkdownCodeBlock(
     val codeFontSize = fontSize * 0.88f
     val codeLineHeight = codeFontSize * 1.5f
     val context = LocalContext.current
-    // 每块独立：默认关（单行横滑），开启「缩进」后完整换行。
+    // 每块独立：默认关（单行横滑），开启换行后完整折行。
     // 不设置 key：流式输出逐段增长时不得重置用户选择的状态。
     var wrapMode by remember { mutableStateOf(false) }
     var copied by remember(code) { mutableStateOf(false) }
-    val copyKey = rememberCopyBlockKey()
     val hScroll = rememberScrollState()
     val langLabel = if (lang.isBlank()) "代码" else lang
     // 行号列：宽度按总行数取 2–3 位。等宽字宽约 0.6 em，再乘 fontScale，
@@ -585,39 +589,38 @@ internal fun MarkdownCodeBlock(
     // 正文限高：内容可容纳时随整页滚动，超出时在区块内纵向滚动（不影响横向滑动）。
     // 调用方提供明确高度时使用该值，否则按 240dp。
     val bodyMaxHeight = if (maxBodyHeight != Dp.Unspecified) maxBodyHeight else 240.dp
-    // 点击「复制」后短暂显示「已复制」，1.2 秒后复位
+    // 复制成功后显示对勾，1.2 秒后复原
     LaunchedEffect(copied) {
         if (copied) {
             delay(1200)
             copied = false
         }
     }
+    // 工具条图标色：未开启的操作图标用半透明灰，已开启态提高不透明度。
+    // 不改为 AccentBlue（#0078FF）：主题是单色的，饱和蓝在整屏里是唯一的杂色。
     val toolbarColor = color.copy(alpha = 0.5f)
     Column(
         modifier = modifier
             .fillMaxWidth()
-            // 仅在自身带有复制按钮时参与「显示复制」的竞争：
-            // 参数块与命令区为 showCopy = false，若仍登记为持有者，
-            // 触摸这些位置时整张卡的复制按钮反而不会出现。
-            .then(if (showCopy) Modifier.claimCopyOnGesture(copyKey) else Modifier)
             .background(codeBackground, RoundedCornerShape(12.dp))
             .padding(vertical = 8.dp)
     ) {
         // 工具条要跟着**可用宽度**走，而不是跟着某个固定尺寸：
         // 主页气泡宽 350dp、工具卡更宽，小窗却能被拖到很窄又随时拉宽。
-        // 窄于 [ToolbarCompactWidth] 时先丢掉「复制」，保住「缩进」还贴右端、点得到。
+        // 窄到放不下两枚按钮时先丢掉「复制」，保住换行按钮仍贴右端、点得到。
         BoxWithConstraints {
-            val compact = maxWidth < ToolbarCompactWidth
+            val copyVisible = showCopy && maxWidth >= ToolbarCopyMinWidth
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
+                    // 右内距 4dp：按钮 30dp、图标 14dp，图形右缘正好落在文字右内距 12dp 处，
+                    // 与正文的右边线对齐，不因按钮外框而显得缩进不同
+                    .padding(start = 12.dp, end = 4.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // 左：语言标识（或「代码」「参数」这类标签）。
-                // 用 weight(1f) 占满剩余宽度，把「缩进」和「复制」一起推到右端：
-                // 标签表示「下方内容的类型」，缩进为「切换显示方式」的操作，
-                // 两者紧邻会被识别为同一类；左右分开后，标签在左、操作在右。
+                // 用 weight(1f) 占满剩余宽度，把两枚按钮一起推到右端：
+                // 标签表示「下方内容的类型」，按钮是「对这块内容的操作」，左右分开后才不会混为一类。
                 Text(
                     text = langLabel,
                     modifier = Modifier.weight(1f),
@@ -627,64 +630,26 @@ internal fun MarkdownCodeBlock(
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.width(8.dp))
-                // 「复制」「缩进」各占一块**同宽的固定槽**：两块紧邻、中间不留 Spacer，
-                // 文字在槽内居中，使两枚按钮的涟漪尺寸完全一致，按压时不会出现宽窄不一。
-                // 槽宽收至 38dp 时两字的视觉间距约 15dp（56dp 槽加 4dp Spacer 时约 25dp，过于分散）。
-                // 槽宽下限为 38dp（可容纳「已复制」三个字）；系统字体放大时按字号同比放宽，
-                // 避免「已复制」被裁切。
-                val actionSlot = if (compact) {
-                    CodeActionSlotCompact
-                } else {
-                    maxOf(CodeActionSlot, with(LocalDensity.current) { 34.sp.toDp() } + 3.dp)
-                }
-                if (showCopy && !compact) {
-                    val revealed = CopyRevealHost.owner === copyKey
-                    Box(
-                        modifier = Modifier
-                            .width(actionSlot)
-                            .clip(RoundedCornerShape(8.dp))
-                            .then(
-                                if (revealed) {
-                                    Modifier.clickable {
-                                        copyCode(context, code, langLabel)
-                                        copied = true
-                                    }
-                                } else {
-                                    Modifier
-                                }
-                            )
-                            // 竖向内距留在区域内部：涟漪跟着区域一起长，不会溢到相邻行
-                            .padding(vertical = 7.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (revealed) {
-                            Text(
-                                text = if (copied) "已复制" else "复制",
-                                fontSize = 11.sp,
-                                color = toolbarColor,
-                                // 状态字绝不允许折行：折了第一行只剩「已复」，读起来像坏掉
-                                maxLines = 1,
-                                softWrap = false
-                            )
+                if (copyVisible) {
+                    // 复制走公共实现（成功态换对勾、常显），与工具卡、思考块、轨迹明细卡同一份
+                    CopyActionButton(
+                        copied = copied,
+                        ink = color,
+                        onClick = {
+                            copyCode(context, code, langLabel)
+                            copied = true
                         }
-                    }
+                    )
+                    Spacer(Modifier.width(CodeToolbarGap))
                 }
-                Box(
-                    modifier = Modifier
-                        .width(actionSlot)
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { wrapMode = !wrapMode }
-                        // 命中区按手指给：11sp 的字本身才 15dp 高，竖向内距让涟漪与「复制」同高
-                        .padding(vertical = 7.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (wrapMode) "不换行" else "换行",
-                        fontSize = 11.sp,
-                        // 开启态用同色提高不透明度表示，不刷成 AccentBlue（#0078FF）：
-                        // 主题是单色的，饱和蓝在整屏里是唯一的杂色；「已开启」的强调与
-                        // 「完成」「已复制」这类状态字统一用同色浓淡区分。
-                        color = if (wrapMode) color.copy(alpha = 0.92f) else toolbarColor
+                // 两枚图标按当前状态显示：未换行时给「换行」，已换行时给「取消换行」。
+                // 不再用底色蒙版表示生效——图形本身说明点击后会发生什么。
+                IconButton30(onClick = { wrapMode = !wrapMode }) {
+                    Icon(
+                        imageVector = if (wrapMode) UnwrapIcon else WrapIcon,
+                        contentDescription = if (wrapMode) "取消换行" else "换行",
+                        tint = if (wrapMode) color.copy(alpha = 0.92f) else toolbarColor,
+                        modifier = Modifier.size(CodeToolbarIconSize)
                     )
                 }
             }
@@ -694,7 +659,7 @@ internal fun MarkdownCodeBlock(
         val body: @Composable () -> Unit = {
             if (wrapMode) {
                 // 折行模式：每个逻辑行单独一个 Row，行号才能和「折成多行的那一行」逐行对齐。
-                // 只有用户主动点开「缩进」才走这条分支（长代码建节点会多一些），
+                // 只有用户主动开启换行才走这条分支（长代码建节点会多一些），
                 // 平时走下面那个只有两个 Text 的两列布局。
                 Column(
                     modifier = Modifier
@@ -805,18 +770,36 @@ private fun CodeLineNumber(
     )
 }
 
-/** 代码块工具条上「复制」「缩进」共用的固定槽宽下限：两枚按钮涟漪尺寸一致，按压反馈不突兀。 */
-private val CodeActionSlot = 38.dp
+/** 工具条图标按钮的边长：图标之外留出按压余量，与气泡尾部按钮同档（30dp）。 */
+private val CodeToolbarButtonSize = 30.dp
 
-/** 窄版（小窗被拖窄）时仅保留「缩进」，槽宽收至该值，避免将行撑出区块。 */
-private val CodeActionSlotCompact = 32.dp
+/** 图标本体尺寸：小于按钮，涟漪才不会贴住图形。 */
+private val CodeToolbarIconSize = 14.dp
+
+/** 两枚按钮的间距：紧邻但不相接，避免连点时误触另一枚。 */
+private val CodeToolbarGap = 2.dp
 
 /**
- * 工具条进入「窄版」的宽度阈值：小窗可以被拖到很窄（服务端最小 48dp），
- * 此时标签、复制槽与缩进会撑出区块。窄于该宽度时先移除「复制」，
- * 保留「缩进」并保持贴右端可点击（极窄窗口中复制内容本就难以辨认）。
+ * 工具条保留「复制」的最小可用宽度。
+ *
+ * 两枚图标按钮合计约 62dp，小窗被拖到 48dp 时仍会溢出：
+ * 窄于该阈值时先丢掉「复制」，只留语言标签与换行按钮（极窄窗口中的内容本就难以辨认）。
  */
-private val ToolbarCompactWidth = 180.dp
+private val ToolbarCopyMinWidth = 96.dp
+
+/** 工具条上的一枚图标按钮：固定边长、圆角、整块可点，默认水波纹。 */
+@Composable
+private fun IconButton30(onClick: () -> Unit, glyph: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(CodeToolbarButtonSize)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        glyph()
+    }
+}
 
 /**
  * 把代码块正文放进系统剪贴板；[label] 是剪贴板条目的显示名（「代码」「思考过程」等）。

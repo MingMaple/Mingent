@@ -582,13 +582,13 @@ internal fun contextPercent(usage: ContextUsageInfo): Int {
 }
 
 /** 状态行左边那半句：轮数、步数、输出速度；没有速度样本时最后一段不占位置。 */
-private fun statusLeftText(status: ComposerStatus): String = buildString {
+internal fun statusLeftText(status: ComposerStatus): String = buildString {
     append(status.rounds).append(" 轮 ").append(status.steps).append(" 步")
     status.tokensPerSec?.let { append(" · ").append(it).append(" tok/s") }
 }
 
 /** 状态行右边那半句：累计 tokens 与缓存命中率。服务商不报缓存就写「—」，不写 0%。 */
-private fun statusRightText(status: ComposerStatus): String = buildString {
+internal fun statusRightText(status: ComposerStatus): String = buildString {
     // 百分比放最前：这一行最窄的时候一定会截尾巴，被截掉的应该是总数的零头，
     // 而不是用户最关心的命中率（屏幕窄，顺序让位给可读性）
     append("命中 ")
@@ -960,7 +960,7 @@ private fun TargetGlyph(tint: Color, iconSize: Dp) {
 
 /** 竖箭头：发送，也用作「立即发出这条」。 */
 @Composable
-private fun ArrowUpGlyph(tint: Color, iconSize: Dp) {
+internal fun ArrowUpGlyph(tint: Color, iconSize: Dp) {
     UnitGlyph(iconSize = iconSize) {
         drawPath(
             path = unitPath {

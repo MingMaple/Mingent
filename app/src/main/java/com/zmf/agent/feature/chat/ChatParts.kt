@@ -54,6 +54,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -121,6 +122,7 @@ import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 import com.zmf.agent.uikit.gesture.blockHorizontalAtEdge
+import com.zmf.agent.uikit.icons.fileIconOf
 import com.zmf.agent.uikit.layout.LocalUiWindow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -763,16 +765,30 @@ internal fun PendingImageThumb(
     }
 }
 
-/** 待发送的文件 chip：名字 + 角上的 ✕，和图片缩略图同一行排。 */
+/**
+ * 待发送的文件 chip：类型图标 + 名字 + 角上的 ✕，和图片缩略图同一行排。
+ *
+ * 图标按 [com.zmf.agent.core.model.FileKinds] 判定类别（同一张后缀表，不另写一套）：
+ * 只写文件名的 chip 读不出「这是什么」，加上一枚类型图标后，md / pdf / 表格一眼可分。
+ */
 @Composable
 internal fun PendingFileChip(name: String, onRemove: () -> Unit) {
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-            .padding(start = 10.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            .padding(start = 8.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Icon(
+            imageVector = fileIconOf(name),
+            contentDescription = null,
+            modifier = Modifier
+                .size(14.dp)
+                .padding(end = 0.dp),
+            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
         Text(
             text = name,
             modifier = Modifier.widthIn(max = 140.dp),
@@ -1765,24 +1781,41 @@ internal fun LazyListState.isNearBottom(tolerancePx: Int): Boolean {
     return last.offset + last.size - info.viewportEndOffset <= tolerancePx
 }
 
-/** 自动贴底：最后一条消息变高时，把它底部对齐到视口底部。 */
-internal suspend fun followBottom(state: LazyListState, lastIndex: Int) {
+/**
+ * 自动贴底：最后一条消息变高时，把它底部对齐到真正的列表末尾。
+ *
+ * [bottomInsetPx] 为列表底部内容内距（`contentPadding` 的下内距）。LazyList 的
+ * `viewportEndOffset` 是「可见下沿」，滚到最后一条时其下沿还要再让出这块内距；
+ * 直接按 `viewportEndOffset` 对齐会固定少滚一截，底部留下可上滑的空区。
+ */
+internal suspend fun followBottom(state: LazyListState, lastIndex: Int, bottomInsetPx: Int) {
     if (lastIndex < 0) return
     val info = state.layoutInfo.visibleItemsInfo.lastOrNull { it.index == lastIndex }
     if (info == null) {
         state.scrollToItem(lastIndex)
         // scrollToItem 只把这一项的「顶部」对齐视口顶部。历史最后一条往往是一整轮助手回复
         // （思考 + 工具卡 + 正文，比屏幕高得多），所以进 App 会停在「思考了 N 秒」那一行。
-        // 这里再补一次：把它底部对齐视口底部。
+        // 这里再补一次：把它底部对齐到末尾。
         val landed = state.layoutInfo.visibleItemsInfo.lastOrNull { it.index == lastIndex }
-        if (landed != null) {
-            val bottomOverflow = landed.offset + landed.size - state.layoutInfo.viewportEndOffset
-            if (bottomOverflow > 0) state.scroll { scrollBy(bottomOverflow.toFloat()) }
-        }
+        if (landed != null) scrollToBottomEdge(state, landed.offset + landed.size, bottomInsetPx)
         return
     }
-    val overflow = info.offset + info.size - state.layoutInfo.viewportEndOffset
-    if (overflow > 0) state.scroll { scrollBy(overflow.toFloat()) }
+    scrollToBottomEdge(state, info.offset + info.size, bottomInsetPx)
+}
+
+/**
+ * 把 [itemBottom]（最后一条的下沿，与 `visibleItemsInfo.offset` 同一坐标系）推到列表末尾。
+ *
+ * 对齐后若仍可继续前滚，说明还余着一截（内容内距与二次测量都会造成这种偏差），
+ * 再补一次直接抵到末尾，底部不留可上滑的空白。
+ */
+private suspend fun scrollToBottomEdge(state: LazyListState, itemBottom: Int, bottomInsetPx: Int) {
+    val overflow = itemBottom - (state.layoutInfo.viewportEndOffset - bottomInsetPx)
+    if (overflow <= 0) return
+    state.scroll { scrollBy(overflow.toFloat()) }
+    if (state.canScrollForward) {
+        state.scroll { scrollBy(state.layoutInfo.viewportSize.height.toFloat()) }
+    }
 }
 
 /**
@@ -1793,7 +1826,7 @@ internal suspend fun followBottom(state: LazyListState, lastIndex: Int) {
  * 中间那一帧会停在最近一轮回复气泡的头部（「思考了 N 秒」那一行），
  * 用户看到的就是「先翻到思考、再翻回底部」。
  */
-internal suspend fun settleToBottom(state: LazyListState, lastIndex: Int) {
+internal suspend fun settleToBottom(state: LazyListState, lastIndex: Int, bottomInsetPx: Int) {
     if (lastIndex < 0) return
     val info = state.layoutInfo.visibleItemsInfo.lastOrNull { it.index == lastIndex }
     if (info == null) {
@@ -1802,8 +1835,13 @@ internal suspend fun settleToBottom(state: LazyListState, lastIndex: Int) {
         state.animateScrollToItem(lastIndex)
         return
     }
-    val overflow = info.offset + info.size - state.layoutInfo.viewportEndOffset
-    if (overflow > 0) state.animateScrollBy(overflow.toFloat(), Motion.spring())
+    val overflow = info.offset + info.size - (state.layoutInfo.viewportEndOffset - bottomInsetPx)
+    if (overflow <= 0) return
+    state.animateScrollBy(overflow.toFloat(), Motion.spring())
+    // 动画只走完「可量出」的那一段；仍有余量时补至末尾，避免底部残留空区。
+    if (state.canScrollForward) {
+        state.scroll { scrollBy(state.layoutInfo.viewportSize.height.toFloat()) }
+    }
 }
 
 /**

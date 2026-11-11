@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.capability.subagent.SubAgentRegistry
+import com.zmf.agent.core.model.SharePayload
 import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.infra.backup.BackupOptions
 import com.zmf.agent.core.prefs.ThemeMode
@@ -53,6 +54,11 @@ import com.zmf.agent.feature.chat.ChatViewModel
  * @param themeMode 当前主题模式；由外部持有并持久化
  * @param uiScale 全局界面字号倍率（仅放大 sp，不改变 dp）
  * @param initialSessionId 从通知进入时需切换到的会话；消费一次后自行清空
+ * @param initialShare 从系统分享进入时待受理的内容；消费一次后由 [onShareConsumed] 通知外部清空
+ * @param onShareConsumed 分享内容已被受理时回调，外部据此置空载荷
+ *
+ * 分享进来时本页进入**分享模式**：底部输入区临时换成分享面板（附件行浮在其上），
+ * 发送完或取消后面板整体下滑出屏，常规输入区随即露出——详见 [SharePanel]。
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -63,7 +69,10 @@ fun ChatScreen(
     uiScale: Float = 1f,
     onUiScaleChange: (Float) -> Unit = {},
     /** 从通知进入时需要切换到的会话 id；此处消费一次后清空。 */
-    initialSessionId: String? = null
+    initialSessionId: String? = null,
+    /** 从系统分享进入时的待发内容；此处受理一次后清空。 */
+    initialShare: SharePayload? = null,
+    onShareConsumed: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -239,15 +248,18 @@ fun ChatScreen(
         }
     }
 
-    // 全部副作用：通知进入会话、前后台持久化、小窗桥接、抽屉收起键盘、计划跳转与链接路由
+    // 全部副作用：通知进入会话、分享受理、前后台持久化、小窗桥接、抽屉收起键盘、计划跳转与链接路由
     ChatAppEffects(
         viewModel = viewModel,
         ui = ui,
         context = context,
+        scope = scope,
         lifecycleOwner = lifecycleOwner,
         focusManager = focusManager,
         keyboard = keyboard,
         initialSessionId = initialSessionId,
+        initialShare = initialShare,
+        onShareConsumed = onShareConsumed,
         subAgentEntries = subAgentEntries
     )
 

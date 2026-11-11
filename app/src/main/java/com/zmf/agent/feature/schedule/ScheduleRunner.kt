@@ -408,8 +408,14 @@ object ScheduleRunner {
         // 运行根取任务归属工作区映射的存储单元：会话被移到别的工作区后，任务目录不应随之漂移
         val workspace = rootOf(task.workspaceId, app)
         val registry = ToolRegistry()
-        // 提示词输入只构造一次：既是请求来源，也是用量构成的估算依据，两者必须同源
-        val promptInput = PromptInput(workspacePath = workspace.absolutePath, permission = permission)
+        // 提示词输入只构造一次：既是请求来源，也是用量构成的估算依据，两者必须同源。
+        // 当前时间与聊天页同一口径写进尾部快照：后台由闹钟冷启动，用户无法在提问里补日期，
+        // 缺少这一行时模型只能依据历史推断日期，会把上一轮的答复（如昨天的早报）再产出一次。
+        val promptInput = PromptInput(
+            workspacePath = workspace.absolutePath,
+            permission = permission,
+            nowText = PromptBuilder.nowText()
+        )
         // 携带目标会话已有的上下文：与聊天页同一口径，不做「本任务历次投递」的删减。
         // 否则周期任务看不到自己上一轮说了什么，「与上次相比」「累计」这类要求无法完成。
         val messages = historyOf(session)

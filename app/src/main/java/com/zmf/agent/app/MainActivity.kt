@@ -24,8 +24,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.zmf.agent.core.AppForeground
 import com.zmf.agent.infra.system.ShizukuBridge
+import com.zmf.agent.core.model.SharePayload
 import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.feature.chat.ShareIntake
 import com.zmf.agent.feature.schedule.ScheduleRunner
 import com.zmf.agent.app.navigation.ChatScreen
 import com.zmf.agent.uikit.common.NoticeHost
@@ -48,6 +50,14 @@ class MainActivity : ComponentActivity() {
     /** 从通知进入时需要切换到的会话；null 表示本次不是从通知进入。 */
     private var notificationSessionId by mutableStateOf<String?>(null)
 
+    /**
+     * 从系统分享进入时的待发内容；null 表示本次不是分享进入（或已被界面消费）。
+     *
+     * 与通知令牌同属一次性入口：解析后清空源 Intent，界面受理后再置空，
+     * 因此配置变化与进程重建都不会二次进入分享模式。
+     */
+    private var sharePayload by mutableStateOf<SharePayload?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 冷启动：通知携带的是一次性令牌，兑换成功才切会话；伪造或已用过的令牌会得到 null
@@ -55,6 +65,9 @@ class MainActivity : ComponentActivity() {
         // 读取后立即移除：Activity 因配置变化重建时会复用同一 Intent，残留 extra 会再次发起兑换
         // （令牌已作废，重建时兑换只会得到 null，但仍移除，避免无意义的沙箱读写）
         intent?.removeExtra(Notifier.EXTRA_SESSION_TOKEN)
+        // 冷启动的分享：仅在「非重建」时受理。进程被回收后以 savedInstanceState 恢复时
+        // 重新解析同一个 SEND Intent 会二次进入分享模式，那正是要避免的重复打扰
+        if (savedInstanceState == null) sharePayload = takeShareIntent()
         installCrashHandler()
         enableEdgeToEdge()
         hideStatusBar()
@@ -99,7 +112,10 @@ class MainActivity : ComponentActivity() {
                             uiScale = picked
                             UiScaleStore.save(context, picked)
                         },
-                        initialSessionId = notificationSessionId
+                        initialSessionId = notificationSessionId,
+                        initialShare = sharePayload,
+                        // 载荷只交付一次：界面受理后立刻置空，重组不会再触发一次受理
+                        onShareConsumed = { sharePayload = null }
                     )
                     NoticeHost(modifier = Modifier.align(Alignment.TopCenter))
                 }
@@ -128,10 +144,13 @@ class MainActivity : ComponentActivity() {
     /** 点击通知（应用已在后台或前台）：兑换令牌后切换会话，不重建界面。 */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // 必须刷新引用：不调 setIntent 时后续 getIntent() 仍返回首次启动的那一个
         setIntent(intent)
         sessionIdFrom(intent)?.let { notificationSessionId = it }
         // 同样移除令牌，避免重建时再次兑换
         intent.removeExtra(Notifier.EXTRA_SESSION_TOKEN)
+        // 热启动的分享：singleTop 复用同一实例，按一次性语义解析并交给界面
+        takeShareIntent()?.let { sharePayload = it }
     }
 
     /**
@@ -178,6 +197,29 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         runCatching { com.zmf.agent.core.log.FileLog.flush(300L) }
+    }
+
+    /**
+     * 解析并消费当前 Intent 里的分享内容。
+     *
+     * 解析成功即抹掉 extra 并换一个空 Intent：Activity 因配置变化重建时会复用同一 Intent，
+     * 残留的正文与图片会被再受理一次。两秒内的重复投递由 [ShareIntake.accept] 拦下。
+     */
+    private fun takeShareIntent(): SharePayload? {
+        val current = intent ?: return null
+        // 相册多选分享走 SEND_MULTIPLE，单条与多条的内容都从 EXTRA_STREAM 取
+        val action = current.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return null
+        val accepted = ShareIntake.from(this, current) ?: return null
+        current.removeExtra(Intent.EXTRA_TEXT)
+        current.removeExtra(Intent.EXTRA_STREAM)
+        current.clipData = null
+        setIntent(Intent())
+        if (!ShareIntake.accept(accepted)) {
+            FileLog.log("share", "重复分享已丢弃")
+            return null
+        }
+        return accepted
     }
 
     /** 用通知携带的一次性令牌换取会话 id；令牌缺失、伪造或已用过时返回 null。 */

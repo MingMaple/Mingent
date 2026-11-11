@@ -27,6 +27,7 @@ import com.zmf.agent.core.store.WorkspaceIo
 import com.zmf.agent.core.store.workspaceIoForRoot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -105,6 +106,12 @@ class SessionController(
      */
     private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val persistGeneration = AtomicLong(0)
+
+    /** 每条会话正在进行的模型标题任务；同一会话开始新任务前先取消旧的（对应 DSH 的 supersede）。 */
+    private val titleJobs = HashMap<String, Job>()
+
+    /** 用户显式改过名的会话：本次运行内不再接受自动标题（对应 DSH 用标题来源 `user` 钉住）。 */
+    private val userNamedSessions = HashSet<String>()
 
     /**
      * 启动时读回工作区表与会话表，决定当前会话并载入它的消息。
@@ -393,10 +400,15 @@ class SessionController(
     fun renameSession(id: String, title: String) {
         if (isStreaming()) return
         val trimmed = title.trim()
+        // 显式改名会作废仍在进行的自动命名并钉住标题（对应 DSH 的 `rename`）
+        titleJobs.remove(id)?.cancel()
+        if (trimmed.isNotEmpty()) userNamedSessions.add(id)
+        // 用户输入同样受 80 字节上限约束（DSH 在受理改名时归一化）
+        val accepted = if (trimmed.isEmpty()) "" else SessionStore.normalizeTitle(trimmed)
         // 只改列表里的 title，不走 persistCurrent（那会用内存里的 messages 覆盖这条会话的记录）
-        sessions = sessions.map { if (it.id == id) it.copy(title = trimmed) else it }
+        sessions = sessions.map { if (it.id == id) it.copy(title = accepted) else it }
         persistAll()
-        FileLog.log("session", "重命名会话 " + id + "：" + (if (trimmed.isEmpty()) "（空标题）" else trimmed))
+        FileLog.log("session", "重命名会话 " + id + "：" + (if (accepted.isEmpty()) "（空标题）" else accepted))
     }
 
     /**
@@ -980,17 +992,51 @@ class SessionController(
         FileLog.log("session", "从磁盘重载 " + sessions.size + " 条会话")
     }
 
-    /** 当前会话还没标题时，把这句话前 20 字当标题。 */
+    /**
+     * 当前会话还没有标题时：先同步写入兜底标题，再异步请模型起一个更好的。
+     *
+     * 优先级与 DSH（DeepSeek Harness）的 `session-title` 一致：
+     * 1. 兜底标题（前 5 个词 / 40 字节）在发送路径上立即可见，任何情况下都先落这一层；
+     * 2. 只有首条用户消息才请求模型（对应 `first-prompt`：消息数为 1 且尚无标题）；
+     * 3. 模型结果仅在标题仍是本次写入的兜底名时才替换；用户改名或其它写入一律不覆盖；
+     * 4. 失败、超时、输入超过 4096 字节与输出被截断时静默保留兜底标题。
+     */
     internal fun autoTitleIfNeeded(prompt: String) {
         val id = currentSessionId
         if (id.isEmpty()) return
         val current = sessions.firstOrNull { it.id == id } ?: return
         if (current.title.isNotEmpty()) return
-        val title = prompt.replace('\n', ' ').trim().take(20)
-        if (title.isEmpty()) return
-        sessions = sessions.map { if (it.id == id) it.copy(title = title) else it }
+        val fallback = SessionStore.fallbackTitle(prompt)
+        if (fallback.isEmpty()) return
+        // 首条用户消息：此刻消息容器还是空的（发送流程尚未追加），模型标题只在这一步调度
+        val firstPrompt = messages.isEmpty()
+        sessions = sessions.map { if (it.id == id) it.copy(title = fallback) else it }
         persistCurrent()
-        FileLog.log("session", "会话 " + id + " 起标题：" + title)
+        FileLog.log("session", "会话 " + id + " 起标题：" + fallback)
+        if (!firstPrompt) return
+        requestModelTitle(id, prompt, fallback)
+    }
+
+    /** 异步请求模型标题；期间会话被改名、删除或由别处写过标题，结果一律丢弃。 */
+    private fun requestModelTitle(id: String, firstPrompt: String, fallback: String) {
+        titleJobs.remove(id)?.cancel()
+        val job = scope.launch {
+            try {
+                val generated = SessionTitleNamer.generate(appContext, firstPrompt) ?: return@launch
+                // 模型输出同样受 80 字节上限约束（DSH 在受理 provider 结果时归一化）
+                val accepted = SessionStore.normalizeTitle(generated)
+                if (accepted.isEmpty()) return@launch
+                val current = sessions.firstOrNull { it.id == id } ?: return@launch
+                // 只覆盖本次写入的兜底名：用户改名、工具改名或其它自动命名都优先
+                if (current.title != fallback || id in userNamedSessions) return@launch
+                sessions = sessions.map { if (it.id == id) it.copy(title = accepted) else it }
+                persistAll()
+                FileLog.log("session", "会话 " + id + " 模型起标题：" + accepted)
+            } finally {
+                if (titleJobs[id] === coroutineContext[Job]) titleJobs.remove(id)
+            }
+        }
+        titleJobs[id] = job
     }
 
     /**

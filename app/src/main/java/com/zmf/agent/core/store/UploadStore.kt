@@ -3,6 +3,8 @@ package com.zmf.agent.core.store
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.zmf.agent.core.log.FileLog
@@ -10,6 +12,8 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.util.Locale
+import kotlin.math.sqrt
 
 /**
  * 系统文件选择器给的 Uri → 当前工作区里的真实文件。
@@ -27,17 +31,25 @@ object UploadStore {
     /** 上传目录（相对工作区根；relPath 一律用正斜杠）。 */
     const val DIR = "uploads"
 
-    /** 单文件上限 50MB。 */
-    private const val MAX_BYTES = 50L * 1024L * 1024L
+    /** 单文件上限 50MB；分享入口的普通文件也按这一口径拦截。 */
+    const val MAX_BYTES = 50L * 1024L * 1024L
 
-    /** 图片最长边上限：1568px 是主流多模态接口的推荐上限，更大只会额外消耗 token 与流量。 */
-    private const val IMAGE_MAX_DIM = 1568
+    /**
+     * 图片归一化的总像素预算：2048×2048（约 419 万像素），与 DSH 同口径。
+     *
+     * 按「总像素」而不是「最长边」限制：16:9 照片与正方形图都能吃满预算，
+     * 不会出现 1568px 一刀切把 1569px 的图直接砍半的情况。
+     */
+    private const val IMAGE_MAX_PIXELS = 2048L * 2048L
 
-    /** 单张图片压缩后的目标上限 2MB：base64 还会再涨约 1/3，超过这个量请求体太大。 */
-    private const val MAX_IMAGE_BYTES = 2 * 1024 * 1024
+    /** 长边兜底：极窄长条图按像素预算缩完仍可能超过 8192，再单独兜一道（与 DSH 同值）。 */
+    private const val IMAGE_MAX_DIM = 8192
 
-    /** JPEG 质量档位，由高到低尝试，首次压缩至 2MB 以内即采用。 */
-    private val IMAGE_QUALITIES = intArrayOf(85, 70, 50)
+    /** 归一化后的目标字节上限 4MB（base64 后约 5.3MB），与 DSH 同口径。 */
+    private const val MAX_IMAGE_BYTES = 4 * 1024 * 1024
+
+    /** 质量档位，由高到低尝试，首次压到 4MB 以内即采用（与 DSH 相同）。 */
+    private val IMAGE_QUALITIES = intArrayOf(85, 75, 60)
 
     private const val BUFFER_SIZE = 8 * 1024
 
@@ -102,10 +114,15 @@ object UploadStore {
     }
 
     /**
-     * 把 [uri] 指向的图片（系统相册/文件选择器给的）压成 JPEG 存进 [workspaceRoot]/uploads/。
+     * 把 [uri] 指向的图片归一化后存进 [workspaceRoot]/uploads/（与 DSH 同一套口径）。
      *
-     * 与原样复制（[import]）的区别：原图常见尺寸为 4000×3000、体积数 MB，多模态接口对尺寸有限制
-     * 且按 token 计费；此处统一降采样至最长边 ≤1568 并压缩至 2MB 以内，落盘内容可直接发送。
+     * 三条规则：
+     * 1. **能不动就不动**：静态 PNG/WebP、无旋转、总像素与字节都在预算内的，原字节透传，
+     *    不重编码（避免二次有损、也避免把透明图转成不透明的 JPEG）。
+     * 2. **超预算才处理**：总像素 ≤ [IMAGE_MAX_PIXELS]、最长边 ≤ [IMAGE_MAX_DIM]，
+     *    不放大；透明图统一压 WebP（保 alpha），其余压 JPEG。
+     * 3. **元数据不进工作区**：JPEG 一律重编码并按 EXIF 方向摆正，原图的 GPS/设备信息随之丢弃。
+     *
      * 失败一律返回 Result.failure（不静默丢弃图片），调用方负责在界面提示用户。
      */
     fun importImage(context: Context, uri: Uri, workspaceRoot: File): Result<Imported> {
@@ -113,19 +130,19 @@ object UploadStore {
         return try {
             val dir = File(workspaceRoot, DIR)
             if (!dir.exists()) dir.mkdirs()
-            val jpeg = encodeJpeg(context, uri)
-            val name = uniqueImageName(dir, System.currentTimeMillis())
+            val encoded = normalizeImage(context, uri)
+            val name = uniqueImageName(dir, System.currentTimeMillis(), encoded.ext)
             val target = File(dir, name)
             val temp = File(dir, name + ".part")
             part = temp
 
-            temp.writeBytes(jpeg)
+            temp.writeBytes(encoded.bytes)
             if (!temp.renameTo(target)) throw UploadFailure("保存图片失败，请稍后重试。")
             part = null
 
             val relPath = DIR + "/" + name
-            FileLog.log(TAG, "已导入图片 " + relPath + "（" + jpeg.size + " 字节，来源 " + uri + "）")
-            Result.success(Imported(name = name, relPath = relPath, size = jpeg.size.toLong()))
+            FileLog.log(TAG, "已导入图片 " + relPath + "（" + encoded.bytes.size + " 字节，来源 " + uri + "）")
+            Result.success(Imported(name = name, relPath = relPath, size = encoded.bytes.size.toLong()))
         } catch (e: Exception) {
             // 与 [import] 一致：仅删除本次写入的 .part，不删除目录中已有文件
             part?.delete()
@@ -263,68 +280,214 @@ object UploadStore {
     /** 路径统一为正斜杠：旧数据中可能存在反斜杠。 */
     private fun normalize(rel: String): String = rel.replace('\\', '/').trim()
 
+    /** 归一化后的字节与扩展名：扩展名决定发送时 data URL 的类型，必须与真实编码一致。 */
+    private class Encoded(val bytes: ByteArray, val ext: String)
+
     /**
-     * Uri → JPEG 字节：先只读尺寸算出采样率，再按采样率真解码。
+     * 图片归一化的唯一实现（与 DSH 同口径）。
      *
-     * 两次解码的原因：inJustDecodeBounds 仅读取文件头，可避免将 8000×6000 的原图整体读入内存
-     * （低端设备会直接 OOM）。降采样后再按 [IMAGE_QUALITIES] 由高到低压缩。
+     * 解码分两段：先用 inSampleSize 按 2 的幂粗降（省内存），再精确缩放到目标尺寸。
+     * 只用 inSampleSize 的话，1569px 这种略超预算的图会被直接砍成 785px；两段式不会浪费分辨率。
      */
-    private fun encodeJpeg(context: Context, uri: Uri): ByteArray {
+    private fun normalizeImage(context: Context, uri: Uri): Encoded {
+        // 部分来源（file:// 分享、个别文件管理器）取不到 MIME，回退到按扩展名判断；
+        // 否则 PNG/WebP 会被当成未知类型走进重编码，透明图白白变成有损 WebP。
+        val mime = runCatching { context.contentResolver.getType(uri) }
+            .getOrNull()?.lowercase(Locale.US).orEmpty()
+            .ifEmpty { mimeFromName(uri.lastPathSegment.orEmpty()) }
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         openImage(context, uri).use { BitmapFactory.decodeStream(it, null, bounds) }
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+        val width = bounds.outWidth
+        val height = bounds.outHeight
+        if (width <= 0 || height <= 0) {
             throw UploadFailure("无法解码这张图片，请换一张常见格式的图片。")
         }
 
-        val options = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight)
-        }
-        val bitmap = openImage(context, uri).use { BitmapFactory.decodeStream(it, null, options) }
-            ?: throw UploadFailure("无法解码这张图片，请换一张图片重试。")
-        try {
-            var last = ByteArray(0)
-            for (quality in IMAGE_QUALITIES) {
-                val out = ByteArrayOutputStream()
-                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)) {
-                    throw UploadFailure("压缩这张图片失败，请换一张图片重试。")
-                }
-                last = out.toByteArray()
-                if (last.size <= MAX_IMAGE_BYTES) return last
+        // 透传条件对应 DSH 的 canPassThroughNormalization：静态、方向正常、像素与字节都在预算内
+        // ORIENTATION_UNDEFINED 等同「没有方向标记」：PNG 没有 eXIf 时部分机型给的是 0 而不是 1
+        val orientation = readOrientation(context, uri)
+        val upright = orientation == ExifInterface.ORIENTATION_NORMAL ||
+            orientation == ExifInterface.ORIENTATION_UNDEFINED
+        val withinBudget = width.toLong() * height <= IMAGE_MAX_PIXELS &&
+            maxOf(width, height) <= IMAGE_MAX_DIM
+        if ((mime == "image/png" || mime == "image/webp") && withinBudget && upright) {
+            // 超过 4MB 时 readCapped 返回 null，退回下面的重编码路径
+            val raw = openImage(context, uri).use { readCapped(it, MAX_IMAGE_BYTES) }
+            if (raw != null && !isAnimatedWebp(mime, raw)) {
+                FileLog.log(TAG, "图片透传：" + mime + " " + width + "x" + height + "，" + raw.size + " 字节")
+                return Encoded(raw, if (mime == "image/png") "png" else "webp")
             }
-            // 最低质量仍超过 2MB 时采用该版本（用户已选择图片，舍弃的代价更大），仅记录日志
-            FileLog.log(TAG, "图片压到最低质量仍有 " + last.size + " 字节，超过 2MB 上限")
-            return last
+        }
+
+        FileLog.log(
+            TAG,
+            "图片重编码：" + mime.ifEmpty { "未知类型" } + " " + width + "x" + height +
+                "，方向=" + orientation
+        )
+
+        val (targetW, targetH) = targetSize(width, height)
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize(width, height, targetW, targetH)
+        }
+        val decoded = openImage(context, uri).use { BitmapFactory.decodeStream(it, null, options) }
+            ?: throw UploadFailure("无法解码这张图片，请换一张图片重试。")
+        var bitmap = rotate(decoded, orientation)
+        try {
+            val scaled = scaleToBudget(bitmap)
+            if (scaled !== bitmap) {
+                bitmap.recycle()
+                bitmap = scaled
+            }
+            return encode(bitmap)
         } finally {
-            // 原图采样后的位图可能仍有数 MB，用完立即回收
-            bitmap.recycle()
+            // 中转位图可能仍有数 MB，用完立即回收
+            if (!bitmap.isRecycled) bitmap.recycle()
         }
     }
 
-    /** 每次都重新开流：[encodeJpeg] 要读两遍，ContentResolver 给的流不能复用。 */
+    /** 每次都重新开流：归一化要读多遍（尺寸、EXIF、原字节），ContentResolver 的流不能复用。 */
     private fun openImage(context: Context, uri: Uri): InputStream =
         context.contentResolver.openInputStream(uri) ?: throw UploadFailure("无法读取这张图片，请重新选择。")
 
-    /**
-     * 采样率：BitmapFactory 的 inSampleSize 是 2 的幂，所以只能按 2 倍递减，
-     * 保证「缩小后最长边一定 ≤ [IMAGE_MAX_DIM]」。代价是 1569px 这类略超限的图片会被缩小一半，
-     * 换来的是解码内存可预测（不会出现仅少量缩小反而导致 OOM 的情况）。
-     */
-    private fun sampleSize(width: Int, height: Int): Int {
-        var sample = 1
+    /** 目标尺寸：总像素预算与长边兜底取更严的一档，且绝不放大。 */
+    private fun targetSize(width: Int, height: Int): Pair<Int, Int> {
+        val pixels = width.toLong() * height.toLong()
+        val byPixels = if (pixels <= IMAGE_MAX_PIXELS) 1.0 else sqrt(IMAGE_MAX_PIXELS.toDouble() / pixels)
         val longest = maxOf(width, height)
-        while (longest / sample > IMAGE_MAX_DIM) sample *= 2
-        return sample
+        val byDim = if (longest <= IMAGE_MAX_DIM) 1.0 else IMAGE_MAX_DIM.toDouble() / longest
+        val scale = minOf(byPixels, byDim)
+        if (scale >= 1.0) return width to height
+        return maxOf(1, (width * scale).toInt()) to maxOf(1, (height * scale).toInt())
     }
 
     /**
-     * 图片文件名 img-<ts>-<n>.jpg：时间戳通常可避免与已有文件同名，n 从 1 起仅在重名时递增。
+     * 采样率：取「解码后仍不小于目标尺寸」的最大 2 的幂。
+     *
+     * 解码位图约为目标像素的 1~4 倍，既不浪费太多内存，也不会像最长边一刀切那样把小图砍半。
+     */
+    private fun sampleSize(width: Int, height: Int, targetW: Int, targetH: Int): Int {
+        var sample = 1
+        while (width / (sample * 2) >= targetW && height / (sample * 2) >= targetH) sample *= 2
+        return sample
+    }
+
+    /** 精确缩放到预算内；已达标（或因不放大而无变化）时原样返回同一个实例。 */
+    private fun scaleToBudget(bitmap: Bitmap): Bitmap {
+        val (targetW, targetH) = targetSize(bitmap.width, bitmap.height)
+        if (targetW == bitmap.width && targetH == bitmap.height) return bitmap
+        return Bitmap.createScaledBitmap(bitmap, targetW, targetH, true)
+    }
+
+    /** 按文件名后缀推断图片 MIME；只为判断能否透传，不认识的一律返回空串。 */
+    private fun mimeFromName(name: String): String =
+        when (name.substringAfterLast('.', "").lowercase(Locale.US)) {
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "jpg", "jpeg" -> "image/jpeg"
+            "gif" -> "image/gif"
+            else -> ""
+        }
+
+    /** 读 EXIF 方向：PNG/WebP 也可能带 eXIf，读不到就按正常方向处理。 */
+    private fun readOrientation(context: Context, uri: Uri): Int = runCatching {
+        openImage(context, uri).use {
+            ExifInterface(it).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )
+        }
+    }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+
+    /** 按 EXIF 方向把位图摆正；需要变换时回收原图，避免两份位图同时占内存。 */
+    private fun rotate(bitmap: Bitmap, orientation: Int): Bitmap {
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.postScale(-1f, 1f)
+            }
+            else -> return bitmap
+        }
+        val rotated = runCatching {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        }.getOrNull() ?: return bitmap
+        if (rotated !== bitmap) bitmap.recycle()
+        return rotated
+    }
+
+    /**
+     * 位图 → 字节：带 alpha 走 WebP（保透明），其余走 JPEG。
+     *
+     * 与 DSH 的 encodingLadder 一致：同一档位阶梯逐级尝试，首次 ≤4MB 即采用；
+     * 全部超限时取最小的一份（用户已经选了这张图，丢弃的代价更大），仅记日志。
+     */
+    @Suppress("DEPRECATION")
+    private fun encode(bitmap: Bitmap): Encoded {
+        val hasAlpha = bitmap.hasAlpha()
+        val format = if (hasAlpha) Bitmap.CompressFormat.WEBP else Bitmap.CompressFormat.JPEG
+        val ext = if (hasAlpha) "webp" else "jpg"
+        var smallest: ByteArray? = null
+        for (quality in IMAGE_QUALITIES) {
+            val out = ByteArrayOutputStream()
+            if (!bitmap.compress(format, quality, out)) {
+                throw UploadFailure("压缩这张图片失败，请换一张图片重试。")
+            }
+            val bytes = out.toByteArray()
+            if (bytes.size <= MAX_IMAGE_BYTES) return Encoded(bytes, ext)
+            if (bytes.size < (smallest?.size ?: Int.MAX_VALUE)) smallest = bytes
+        }
+        val bytes = smallest ?: throw UploadFailure("压缩这张图片失败，请换一张图片重试。")
+        FileLog.log(TAG, "图片压到最低质量仍有 " + bytes.size + " 字节，超过 4MB 上限")
+        return Encoded(bytes, ext)
+    }
+
+    /** 读取至多 [max] 字节；超过即返回 null（用于判断能否原字节透传，不把超大文件读进内存）。 */
+    private fun readCapped(input: InputStream, max: Int): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(BUFFER_SIZE)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            out.write(buffer, 0, read)
+            if (out.size() > max) return null
+        }
+        return out.toByteArray()
+    }
+
+    /** WebP 动图识别：前 64 字节里出现 ANIM 块即视为动图（动图不透传，统一取首帧重编码）。 */
+    private fun isAnimatedWebp(mime: String, bytes: ByteArray): Boolean {
+        if (mime != "image/webp" || bytes.size < 30) return false
+        val limit = minOf(bytes.size, 64)
+        for (index in 0..limit - 4) {
+            // "ANIM" 的 ASCII：0x41 0x4E 0x49 0x4D
+            if (bytes[index] == 0x41.toByte() &&
+                bytes[index + 1] == 0x4E.toByte() &&
+                bytes[index + 2] == 0x49.toByte() &&
+                bytes[index + 3] == 0x4D.toByte()
+            ) return true
+        }
+        return false
+    }
+
+    /**
+     * 图片文件名 img-<ts>-<n>.<ext>：扩展名跟随真实编码（jpg/webp/png），
+     * 发送时按扩展名决定 data URL 的类型；n 从 1 起仅在重名时递增。
      * 主名同样经过 [sanitize]：文件名清洗规则仅保留一处，规则变更时此处同步生效。
      */
-    private fun uniqueImageName(dir: File, stamp: Long): String {
+    private fun uniqueImageName(dir: File, stamp: Long, ext: String): String {
         val base = sanitize("img-" + stamp)
         var index = 1
         while (true) {
-            val candidate = base + "-" + index + ".jpg"
+            val candidate = base + "-" + index + "." + ext
             if (!File(dir, candidate).exists()) return candidate
             index++
         }

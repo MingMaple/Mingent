@@ -54,6 +54,34 @@ val PlusIcon: ImageVector = dshIcon().apply {
 }.build()
 
 /**
+ * 换行：顶行整行，第二行在右端折返并向左回收，末端一个左向箭头。
+ *
+ * 规格与 DSH 图标源一致：16 网格、线宽 1、端点与拐角均为圆角。
+ * 只画一种形态——开关是否开启由按钮底色与图标不透明度表达，
+ * 不再切换两套图形：两种形状并置时容易被读成两个不同的动作。
+ */
+val WrapIcon: ImageVector = dshIcon().apply {
+    strokePath("M2.4 3.9H13.6")
+    strokePath("M2.4 8.1H9.4")
+    strokePath("M9.4 8.1C12.6 8.1 12.6 12.3 9.4 12.3H5.2")
+    strokePath("M7.0 10.5L5.2 12.3L7.0 14.1")
+}.build()
+
+/**
+ * 取消换行：三行全部直通右端，中间一行末端带右向箭头。
+ *
+ * 与 [WrapIcon] 同一规格（16 网格、线宽 1），两枚并置时形状差异明确：
+ * 折返箭头表示「折到下一行」，右向箭头表示「不折、向右延伸」。
+ * 工具栏按当前状态显示其中一枚：未换行时显示 [WrapIcon]，已换行时显示本图。
+ */
+val UnwrapIcon: ImageVector = dshIcon().apply {
+    strokePath("M2.4 3.9H13.6")
+    strokePath("M2.4 8.1H10.2")
+    strokePath("M8.8 6.7L10.2 8.1L8.8 9.5")
+    strokePath("M2.4 12.3H13.6")
+}.build()
+
+/**
  * IconListPen（列表 + 笔）：前两条 stroke 是列表里的两行字，
  * 后三条 fill 分别为纸片外框、笔身与笔尖，组合后表示「查看清单并记录」。
  */
@@ -94,6 +122,37 @@ val FolderIcon: ImageVector = dshIcon().apply {
             "V10.8C14.6 11.5 14.1 12.0 13.4 12.0H2.6C1.9 12.0 1.4 11.5 1.4 10.8Z",
         width = 1.4f
     )
+}.build()
+
+/**
+ * 关闭：两条交叉的斜线，16 网格。
+ *
+ * 线宽取 1.3 而非 1：这枚图标在浮层标题行以 14dp 呈现，按 16 网格等比缩到 0.875 倍后
+ * 1 的线宽只剩约 0.88dp，在浅底上偏细；1.3 缩后仍接近 1.1dp，与相邻 12sp 标题的分量相当。
+ */
+val CloseIcon: ImageVector = dshIcon().apply {
+    strokePath("M3.6 3.6L12.4 12.4", width = 1.3f)
+    strokePath("M12.4 3.6L3.6 12.4", width = 1.3f)
+}.build()
+
+/**
+ * 向左的返回箭头：一横 + 一个左向箭头头部，16 网格。
+ *
+ * 只取「←」这一种形态，不画外圈：本工程里返回一律用箭头，不用「‹」文字符，
+ * 文字符在 13sp 上会随字号缩放而变形。
+ */
+val ArrowLeftIcon: ImageVector = dshIcon().apply {
+    strokePath("M12.6 8H3.6", width = 1.3f)
+    strokePath("M7.0 4.4L3.4 8L7.0 11.6", width = 1.3f)
+}.build()
+
+/**
+ * 向下的折角：两笔 V 形，用于「点开有列表」的按键尾部。
+ *
+ * 线宽 1.2：它常与 12sp 文字同一行，过粗会抢字，过细在浅底上几乎看不见。
+ */
+val ChevronDownIcon: ImageVector = dshIcon().apply {
+    strokePath("M4.0 6.4L8 10.4L12 6.4", width = 1.2f)
 }.build()
 
 /**

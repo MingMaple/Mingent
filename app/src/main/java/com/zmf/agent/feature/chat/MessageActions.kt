@@ -1,4 +1,5 @@
 package com.zmf.agent.feature.chat
+import com.zmf.agent.uikit.icons.CopyGlyph
 import com.zmf.agent.uikit.icons.CylinderGlyph
 import com.zmf.agent.uikit.icons.UnitGlyph
 
@@ -33,9 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -111,69 +110,52 @@ fun MessageTailRow(
 /** 尾部按钮的图标：线宽与圆角沿用本项目手绘图标的规范（18×18 单位坐标）。 */
 @Composable
 private fun TailGlyph(kind: TailIcon, tint: Color, iconSize: Dp) {
-    if (kind == TailIcon.USAGE) {
+    when (kind) {
         // 用量复用输入条的小圆柱：同一功能在两处必须使用同一图标
-        CylinderGlyph(tint = tint, iconSize = iconSize)
-        return
-    }
-    UnitGlyph(iconSize = iconSize) {
-        val line = 1.4f
-        val stroke = Stroke(width = line, cap = StrokeCap.Round, join = StrokeJoin.Round)
-        when (kind) {
-            TailIcon.COPY -> {
-                // 两张叠放的纸：后方纸张露出一角，前方纸张完整
-                drawRoundRect(
-                    color = tint,
-                    topLeft = Offset(5.8f, 3.2f),
-                    size = Size(9.0f, 9.0f),
-                    cornerRadius = CornerRadius(2.2f, 2.2f),
-                    style = stroke
-                )
-                drawRoundRect(
-                    color = tint,
-                    topLeft = Offset(3.2f, 5.8f),
-                    size = Size(9.0f, 9.0f),
-                    cornerRadius = CornerRadius(2.2f, 2.2f),
-                    style = stroke
-                )
+        TailIcon.USAGE -> CylinderGlyph(tint = tint, iconSize = iconSize)
+        // 复制与代码块工具条共用同一份路径（见 CopyGlyph），不在此处另行描摹
+        TailIcon.COPY -> CopyGlyph(tint = tint, iconSize = iconSize)
+        TailIcon.SELECT_TEXT, TailIcon.FORK, TailIcon.ROLLBACK -> UnitGlyph(iconSize = iconSize) {
+            val line = 1.4f
+            val stroke = Stroke(width = line, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            when (kind) {
+                TailIcon.SELECT_TEXT -> {
+                    // 三条横线，末行较短：表示「一段可被选中的文本」
+                    drawLine(tint, Offset(3.8f, 5.2f), Offset(14.2f, 5.2f), line, StrokeCap.Round)
+                    drawLine(tint, Offset(3.8f, 9.0f), Offset(14.2f, 9.0f), line, StrokeCap.Round)
+                    drawLine(tint, Offset(3.8f, 12.8f), Offset(10.4f, 12.8f), line, StrokeCap.Round)
+                }
+                TailIcon.FORK -> {
+                    // 一条横线，右端分成上下两岔，末端各一个圆圈：
+                    // 仅有两条斜线时会被识别为「＜」，加上末端两点方可读出「一条线分出两支」
+                    drawLine(tint, Offset(2.4f, 9.0f), Offset(9.0f, 9.0f), line, StrokeCap.Round)
+                    drawLine(tint, Offset(9.0f, 9.0f), Offset(12.8f, 4.8f), line, StrokeCap.Round)
+                    drawLine(tint, Offset(9.0f, 9.0f), Offset(12.8f, 13.2f), line, StrokeCap.Round)
+                    drawCircle(tint, radius = 1.7f, center = Offset(14.3f, 3.9f), style = stroke)
+                    drawCircle(tint, radius = 1.7f, center = Offset(14.3f, 14.1f), style = stroke)
+                }
+                else -> {
+                    // 向左回头的箭头：回到这条提问之前
+                    drawPath(
+                        path = Path().apply {
+                            moveTo(13.2f, 12.8f)
+                            cubicTo(13.2f, 8.4f, 10.6f, 5.8f, 5.8f, 5.8f)
+                        },
+                        color = tint,
+                        style = stroke
+                    )
+                    drawPath(
+                        path = Path().apply {
+                            moveTo(5.8f, 5.8f)
+                            lineTo(8.6f, 3.0f)
+                            moveTo(5.8f, 5.8f)
+                            lineTo(8.6f, 8.6f)
+                        },
+                        color = tint,
+                        style = stroke
+                    )
+                }
             }
-            TailIcon.SELECT_TEXT -> {
-                // 三条横线，末行较短：表示「一段可被选中的文本」
-                drawLine(tint, Offset(3.8f, 5.2f), Offset(14.2f, 5.2f), line, StrokeCap.Round)
-                drawLine(tint, Offset(3.8f, 9.0f), Offset(14.2f, 9.0f), line, StrokeCap.Round)
-                drawLine(tint, Offset(3.8f, 12.8f), Offset(10.4f, 12.8f), line, StrokeCap.Round)
-            }
-            TailIcon.FORK -> {
-                // 一条横线，右端分成上下两岔，末端各一个圆圈：
-                // 仅有两条斜线时会被识别为「＜」，加上末端两点方可读出「一条线分出两支」
-                drawLine(tint, Offset(2.4f, 9.0f), Offset(9.0f, 9.0f), line, StrokeCap.Round)
-                drawLine(tint, Offset(9.0f, 9.0f), Offset(12.8f, 4.8f), line, StrokeCap.Round)
-                drawLine(tint, Offset(9.0f, 9.0f), Offset(12.8f, 13.2f), line, StrokeCap.Round)
-                drawCircle(tint, radius = 1.7f, center = Offset(14.3f, 3.9f), style = stroke)
-                drawCircle(tint, radius = 1.7f, center = Offset(14.3f, 14.1f), style = stroke)
-            }
-            TailIcon.ROLLBACK -> {
-                // 向左回头的箭头：回到这条提问之前
-                drawPath(
-                    path = Path().apply {
-                        moveTo(13.2f, 12.8f)
-                        cubicTo(13.2f, 8.4f, 10.6f, 5.8f, 5.8f, 5.8f)
-                    },
-                    color = tint,
-                    style = stroke
-                )
-                drawPath(
-                    path = Path().apply {
-                        moveTo(5.8f, 5.8f)
-                        lineTo(8.6f, 3.0f)
-                        moveTo(5.8f, 5.8f)
-                        lineTo(8.6f, 8.6f)
-                    },
-                    color = tint,
-                    style = stroke
-                )
-            }
-            TailIcon.USAGE -> Unit
         }
     }
 }

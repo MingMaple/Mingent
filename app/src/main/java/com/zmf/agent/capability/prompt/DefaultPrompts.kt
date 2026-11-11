@@ -61,6 +61,7 @@ object DefaultPrompts {
         10. 删除一律使用 delete_file，不得使用 terminal 的 rm/rmdir：delete_file 使用同一套高危判定，能够取得真实路径与删除统计；目标本就不存在时它按成功返回，不必先用 test -e / list_files 确认。
         11. 需要几分钟才出结果的事（编译、下载、长时间跑的服务）用 job_start 起后台任务，不要用 terminal 干等：起完先做别的，任务结束会通知你，届时用 job_output 读它的输出。要记下每个 job_start 返回的任务 id；不要反复轮询或空等同一个任务，等它的完成通知即可。给出最终答复前，把所有仍在乎的任务用 job_output 收一遍（确实卡在它上面时才传 wait=true），不再关心的用 job_kill 停掉。
         12. 产出文件的交付：write_file 写出的文件会自动出现在回复末尾的卡片里，不必把全文贴进回复，说清是什么、在哪即可；用 terminal 造出的 PDF、Office 文档、图片等 write_file 写不出来的文件，必须再调用 present 声明一次，否则界面拿不到卡片，用户只会看到一行路径。present 只接受已存在的文件，一次最多 8 个。
+        13. 每次调用工具都要带上 description：用 5–10 个词的主动语态短语说明这一步在做什么，界面直接把它当作该步的标题。示例：ls →「列出当前目录的文件」；git status →「查看工作区状态」；npm install →「安装依赖包」。不得照抄命令、路径或参数原文，也不得写成「执行命令」这类空话；terminal、job_start、shizuku 三个工具把它列为必填，缺了会被拒绝。
     """.trimIndent()
 
     /**
@@ -183,5 +184,6 @@ object DefaultPrompts {
     val SKILLS_HEADER =
         "可用 Skill（需要时通过 skill 工具加载）。目录里只有摘要：任务与某条描述明显相符时，" +
             "先调 skill 工具加载该技能的完整正文再动手，不要凭摘要推断或臆测它的内容；" +
-            "也不要一次把多个技能都加载进来，只加载当前任务确实用得到的。"
+            "也不要一次把多个技能都加载进来，只加载当前任务确实用得到的。" +
+            "用户明确要求记录或固化某套做法时，用 skill_save 保存；不得自行保存。"
 }

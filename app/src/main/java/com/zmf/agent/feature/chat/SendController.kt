@@ -148,25 +148,25 @@ class SendController(
      * [send] 本身在流式中仍然直接 return：「繁忙时该干什么」只在这里判一次，
      * 散成两处的话排队与插话迟早会走岔。
      */
-    fun sendWhileBusy(text: String, scope: CoroutineScope) {
+    fun sendWhileBusy(text: String, scope: CoroutineScope): Boolean {
         // 斜杠命令先拦：它们不是消息，忙的时候也该立刻生效（比如中途 /plan off）
-        if (slashCommand(text)) return
+        if (slashCommand(text)) return true
         if (restartBlocked()) {
             reportError("备份刚刚导入，请重启应用后再继续使用，否则新导入的数据将被覆盖")
-            return
+            return false
         }
         val trimmed = text.trim()
         // 与 send 同一口径：只带附件 / 只带图片也算一次提问
-        if (trimmed.isEmpty() && composer.attachments.isEmpty() && composer.pendingImages.isEmpty()) return
+        if (trimmed.isEmpty() && composer.attachments.isEmpty() && composer.pendingImages.isEmpty()) return false
         if (!isStreaming) {
             send(text, scope)
-            return
+            return true
         }
         if (trimmed.isEmpty()) {
             // 只有附件/图片、没有正文：队列只存文字、插话也只能插文字，
             // 与其排一条空消息到轮到时被静默丢掉，不如直接告诉用户等这一轮结束
             reportError("正在生成回复，附件等本轮结束后再发送")
-            return
+            return false
         }
         // 排队模式只入队；插话模式一定插话：末尾正在等工具结果时暂缓到下一轮开始前补入，
         // 不再静默退成排队（那样点一下等于没点，用户看到的只是「无响应」）
@@ -175,6 +175,21 @@ class SendController(
         } else {
             enqueue(trimmed)
         }
+        return true
+    }
+
+    /**
+     * 分享入口的排队：本轮正在生成、且本次分享只有正文时，按「繁忙时发送行为」入队或插话。
+     *
+     * 与 [sendWhileBusy] 的差别仅在于不解析斜杠命令：分享正文是外部内容，以 `/` 开头
+     * 不代表用户要执行本地命令。正文为空时返回 false（附件不参与排队，调用方先行拦下）。
+     */
+    fun queuePayload(text: String, scope: CoroutineScope): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return false
+        if (!isStreaming) return sendPayload(trimmed, emptyList(), emptyList(), null, scope)
+        if (busyMode == BusySendMode.STEER) steerNow(trimmed) else enqueue(trimmed)
+        return true
     }
 
     /**
@@ -258,15 +273,16 @@ class SendController(
         if (folded.isEmpty()) return
         messages.add(ChatMessage(role = "user", content = folded))
         steerPending = true
-        // 单独一个分类：插话出了问题（被当成重复提问、模型答了两遍）只能靠这行日志回溯
-        FileLog.log("steer", "插话（流式中追加用户消息）：" + folded.take(80))
+        // 单独一个分类：插话出了问题（被当成重复提问、模型答了两遍）只能靠这行日志回溯；
+        // 只记长度不记正文——分享进来的内容可能是私人文本，日志里不得留原文
+        FileLog.log("steer", "插话（流式中追加用户消息）：" + folded.length + " 字")
     }
 
     /** 排队：本轮结束后由 [continueAfterTurn] 自动发出去。 */
     private fun enqueue(text: String) {
         val item = QueuedMessage(nextQueueId++, text)
         pendingQueue.add(item)
-        FileLog.log("queue", "繁忙，已排队（第 " + pendingQueue.size + " 条）：" + text.take(80))
+        FileLog.log("queue", "繁忙，已排队（第 " + pendingQueue.size + " 条）：" + text.length + " 字")
     }
 
     /**
@@ -295,14 +311,80 @@ class SendController(
             reportError("备份刚刚导入，请重启应用后再继续使用，否则新导入的数据将被覆盖")
             return
         }
-        val files = composer.attachments.toList()
-        val images = composer.pendingImages.toList()
+        dispatch(
+            text = text,
+            files = composer.attachments.toList(),
+            images = composer.pendingImages.toList(),
+            scope = scope,
+            programmatic = programmatic,
+            clearComposer = true,
+            redactBody = false,
+            titleSource = null
+        )
+    }
+
+    /**
+     * 按调用方给定的正文与附件发送（分享入口专用）。
+     *
+     * 与 [send] 的三处差别，均为分享场景的必需：
+     * 1. 附件与图片取自参数，**不读也不清空输入区队列**：用户正在当前会话编辑的草稿不应被
+     *    带进另一个会话，也不应因这一次发送而消失；
+     * 2. 不解析斜杠命令：分享正文是外部内容，以 `/` 开头不代表用户要执行本地命令；
+     * 3. 日志只记字符数，不记正文：分享内容常含私人对话与代码。
+     *
+     * @return true 表示已受理；false 时原因已写入 [reportError]，界面保留面板并显示该文案
+     */
+    fun sendPayload(
+        text: String,
+        files: List<PendingFile>,
+        images: List<PendingFile>,
+        titleSource: String?,
+        scope: CoroutineScope
+    ): Boolean {
+        if (isStreaming) {
+            reportError("正在生成回复，本轮结束后再发送")
+            return false
+        }
+        if (restartBlocked()) {
+            reportError("备份刚刚导入，请重启应用后再继续使用，否则新导入的数据将被覆盖")
+            return false
+        }
+        return dispatch(
+            text = text,
+            files = files,
+            images = images,
+            scope = scope,
+            programmatic = false,
+            clearComposer = false,
+            redactBody = true,
+            titleSource = titleSource
+        )
+    }
+
+    /**
+     * [send] 与 [sendPayload] 的共同实现：校验、拼 prompt、记轮次、定标题，然后起跑。
+     *
+     * @param clearComposer 发送后是否清空输入区的附件与图片队列、作废当前草稿。
+     *   亲手输入走 true（这些内容已经进了这一条消息）；分享入口走 false（队列属于用户的草稿）。
+     * @param redactBody 日志是否隐去正文，只留字符数
+     * @param titleSource 会话标题的候选；null 时沿用「正文或附件名」的既有规则
+     */
+    private fun dispatch(
+        text: String,
+        files: List<PendingFile>,
+        images: List<PendingFile>,
+        scope: CoroutineScope,
+        programmatic: Boolean,
+        clearComposer: Boolean,
+        redactBody: Boolean,
+        titleSource: String?
+    ): Boolean {
         // 只发附件 / 只发图片、不写字也算一次提问；三者都空才真的没得发
-        if (text.isBlank() && files.isEmpty() && images.isEmpty()) return
+        if (text.isBlank() && files.isEmpty() && images.isEmpty()) return false
         // 会话被后台定时回合占着：在产生任何副作用（记轮次、收清单）之前就拒绝，避免白记一次
         if (SessionBusy.isBusy(session.currentSessionId)) {
             reportError("该会话正在后台执行定时任务，请稍后重试")
-            return
+            return false
         }
         // 用户开口了：连续唤醒的预算复位（封顶只约束「用户不在场时的自激链」）
         if (!programmatic) consecutiveWakes = 0
@@ -333,7 +415,8 @@ class SendController(
         if (!programmatic) UsageLedger.recordRound(appContext)
         // 第一句话顺便当会话标题，侧边栏就不用显示一串「新会话」；只有附件/图片时用文件名
         session.autoTitleIfNeeded(
-            if (text.isBlank()) (files.firstOrNull() ?: used.firstOrNull())?.name ?: prompt else text.trim()
+            titleSource
+                ?: if (text.isBlank()) (files.firstOrNull() ?: used.firstOrNull())?.name ?: prompt else text.trim()
         )
 
         startTurn(
@@ -343,8 +426,11 @@ class SendController(
             images = used,
             scope = scope,
             tooManyImages = tooManyImages,
-            programmatic = programmatic
+            programmatic = programmatic,
+            clearComposer = clearComposer,
+            redactBody = redactBody
         )
+        return true
     }
 
     /**
@@ -356,6 +442,8 @@ class SendController(
      * @param prompt 拼好附件/图片说明之后的正文，只用于日志；与 [userText] 同一个值
      * @param programmatic 本句是否 App 代发（见 [send]）：透传给 AgentLoop 写进消息标记，
      *   高危闸门据此判断「这条消息有没有资格批准删除」
+     * @param clearComposer 发送后是否清空输入区的附件、图片与当前草稿（分享入口不清，原因见 [dispatch]）
+     * @param redactBody 日志是否隐去正文，只记字符数（分享内容常含私人对话与代码）
      */
     private fun startTurn(
         userText: String?,
@@ -364,7 +452,9 @@ class SendController(
         images: List<PendingFile>,
         scope: CoroutineScope,
         tooManyImages: Boolean = false,
-        programmatic: Boolean = false
+        programmatic: Boolean = false,
+        clearComposer: Boolean = true,
+        redactBody: Boolean = false
     ) {
         reportError(null)
         // 会话级串行：定时任务正在同一会话执行时不再起新回合，否则两侧整份覆盖写会丢消息
@@ -395,19 +485,24 @@ class SendController(
         isStreaming = true
         if (userText != null) {
             // 附件/图片已经拼进 prompt 与 images 了：这里立刻清空，避免下一条消息重复带上。
-            // 插话续跑（userText == null）不清：输入框里排着的东西属于用户的下一条消息
-            composer.attachments.clear()
-            composer.pendingImages.clear()
+            // 插话续跑（userText == null）不清：输入框里排着的东西属于用户的下一条消息。
+            // 分享入口（clearComposer = false）同样不清：那条正文不是输入框里的内容，
+            // 用户的草稿与草稿附件与本次分享无关
+            if (clearComposer) {
+                composer.attachments.clear()
+                composer.pendingImages.clear()
+                // 文本已进入历史，草稿随之作废，否则下次打开会回填已发送的内容
+                session.clearCurrentDraft()
+            }
             // 首轮消息发出即转正：清除空白标记并进入会话列表
             session.markSessionStarted()
-            // 文本已进入历史，草稿随之作废，否则下次打开会回填已发送的内容
-            session.clearCurrentDraft()
         }
 
         FileLog.log(
             "chat",
             if (userText != null) {
-                "用户输入：" + prompt.take(200) + "｜思考=" + thinking + "（" + effort + "）｜权限=" +
+                "用户输入：" + (if (redactBody) "（分享内容 " + prompt.length + " 字，正文不记入日志）" else prompt.take(200)) +
+                    "｜思考=" + thinking + "（" + effort + "）｜权限=" +
                     permission.displayName() + "｜附件=" + files.size + "｜图片=" + images.size
             } else {
                 "插话续跑（不追加用户消息）｜思考=" + thinking + "（" + effort + "）｜权限=" +
@@ -577,7 +672,7 @@ class SendController(
                 // 仅在仍位于队列中时发送：其他路径已发送或删除时，不会重复发送或发送空内容
                 if (pendingQueue.none { it.id == next.id }) return@launch
                 pendingQueue.removeAll { it.id == next.id }
-                FileLog.log("queue", "本轮已结束，自动发送队列第一条：" + next.text.take(80))
+                FileLog.log("queue", "本轮已结束，自动发送队列第一条：" + next.text.length + " 字")
                 send(next.text, scope)
             }
             return
@@ -854,7 +949,9 @@ class SendController(
     /**
      * 图片的相对路径 → data URL（"data:image/jpeg;base64,..."）。
      *
-     * 读盘 + base64 一律在 IO：单张压完 2MB 内，主线程做会明显卡一帧。
+     * MIME 按扩展名推导：图片归一化后可能是 JPEG、WebP（透明图）或原样透传的 PNG/WebP，
+     * 一律写死 image/jpeg 会让 data URL 的类型与真实字节不符。
+     * 读盘 + base64 一律在 IO：单张最大 4MB，主线程做会明显卡一帧。
      * 单张失败只丢这一张（记日志），不让整条提问发不出去。
      */
     private suspend fun encodeImages(root: File, relPaths: List<String>): List<String> =
@@ -862,7 +959,7 @@ class SendController(
             relPaths.mapNotNull { rel ->
                 runCatching {
                     val bytes = File(root, rel).readBytes()
-                    "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    "data:" + imageMimeOf(rel) + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
                 }.onFailure {
                     FileLog.log(
                         "chat",

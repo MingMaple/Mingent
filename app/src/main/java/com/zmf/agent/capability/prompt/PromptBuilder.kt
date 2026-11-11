@@ -156,6 +156,24 @@ object PromptBuilder {
         CHECKPOINT_PREAMBLE + "\n\n" + CHECKPOINT_OPEN + "\n" + summary + "\n" + CHECKPOINT_CLOSE
 
     /**
+     * 当前时间的提示词表述：`yyyy-MM-dd HH:mm（周X，GMT+偏移）`。
+     *
+     * 写清星期与 GMT 偏移：模型容易把纯时间戳按 UTC 解读，或不知道今天星期几；
+     * 这两条都是「时间感知」最基础的缺口。每次请求前现取，时间始终是发请求那一刻的。
+     *
+     * 聊天页与定时任务共用同一份格式：定时任务由闹钟在后台冷启动，若快照缺少这一行，
+     * 模型只能从历史里最后一条答复推断「今天是哪一天」，会把上一轮的早报再写一遍。
+     */
+    fun nowText(): String {
+        val fmt = java.text.SimpleDateFormat(
+            "yyyy-MM-dd HH:mm（E，'GMT'XXX）",
+            java.util.Locale.getDefault()
+        )
+        fmt.timeZone = java.util.TimeZone.getDefault()
+        return fmt.format(java.util.Date())
+    }
+
+    /**
      * 快照里的「权限档」那一行。
      *
      * 单独拆出来是给 AgentLoop 做**状态比对**用的：拿上一份快照里有没有这一行，

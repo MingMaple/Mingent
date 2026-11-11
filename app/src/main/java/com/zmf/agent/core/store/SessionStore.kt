@@ -630,6 +630,70 @@ object SessionStore {
             )
         )
 
+    /** 兜底标题的取词上限与字节上限，与 DSH 的 `session-title` 配置同值。 */
+    private const val FALLBACK_MAX_WORDS = 5
+    private const val FALLBACK_MAX_BYTES = 40
+
+    /** 最终标题的 UTF-8 字节上限，与 DSH 的 `session-title` 的 `maxTitleBytes` 同值。 */
+    private const val MAX_TITLE_BYTES = 80
+
+    /** 非空白控制符与方向符：标题里出现会让显示失真，统一剔除（换行与制表符留给空白折叠）。 */
+    private val TITLE_CONTROL = Regex(
+        "[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F" +
+            "\\u200B\\u200E\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF]"
+    )
+    private val TITLE_SPACES = Regex("\\s+")
+
+    /**
+     * 标题文本的清洗：剔除控制符与方向符，把连续空白压成一个空格，再去掉首尾空白。
+     *
+     * 口径与 DSH 的 `cleanTitleText` 相同（控制符不含换行与制表符，它们随后按空白折叠）。
+     */
+    private fun cleanTitleText(text: String): String = text
+        .replace(TITLE_CONTROL, "")
+        .replace(TITLE_SPACES, " ")
+        .trim()
+
+    /**
+     * 会话的兜底标题：首条用户消息的前 5 个空格分隔词，UTF-8 不超过 40 字节。
+     *
+     * 口径对照 DSH（DeepSeek Harness）的 `session-title`：先清洗文本、取前 5 个词，
+     * 再按 UTF-8 字节截断（40 字节，中文约 13 字）。
+     * 中文正文没有空格，整句就是一个词，因此实际表现为「取开头一句并在 40 字节处截断」。
+     */
+    fun fallbackTitle(text: String): String {
+        val cleaned = cleanTitleText(text)
+        if (cleaned.isEmpty()) return ""
+        val words = cleaned.split(' ').filter { it.isNotEmpty() }.take(FALLBACK_MAX_WORDS)
+        return truncateUtf8(words.joinToString(" "), FALLBACK_MAX_BYTES).trimEnd()
+    }
+
+    /**
+     * 最终标题的归一化：清洗文本后按 UTF-8 80 字节截断。
+     *
+     * 对应 DSH 的 `normalizeSessionTitle`，生效于两处受理点：用户改名与模型生成的标题。
+     * 兜底标题不走这里（它自身只受 40 字节约束）。
+     */
+    fun normalizeTitle(text: String): String = truncateUtf8(cleanTitleText(text), MAX_TITLE_BYTES).trimEnd()
+
+    /** 按 UTF-8 字节数截断，且不把多字节字符切成半个。 */
+    private fun truncateUtf8(input: String, maxBytes: Int): String {
+        if (input.toByteArray(Charsets.UTF_8).size <= maxBytes) return input
+        val out = StringBuilder()
+        var used = 0
+        var index = 0
+        while (index < input.length) {
+            val codePoint = input.codePointAt(index)
+            val chars = Character.charCount(codePoint)
+            val bytes = String(input.toCharArray(), index, chars).toByteArray(Charsets.UTF_8).size
+            if (used + bytes > maxBytes) break
+            out.appendCodePoint(codePoint)
+            used += bytes
+            index += chars
+        }
+        return out.toString()
+    }
+
     /** 侧边栏用的相对时间：刚刚 / N 分钟前 / N 小时前 / MM-dd。 */
     fun relativeTime(updatedAt: Long, now: Long = System.currentTimeMillis()): String {
         val diff = now - updatedAt

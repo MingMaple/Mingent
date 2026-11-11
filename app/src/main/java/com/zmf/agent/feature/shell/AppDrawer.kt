@@ -6,9 +6,8 @@ import com.zmf.agent.uikit.common.SaltMenuPopover
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.activity.compose.BackHandler
@@ -64,6 +63,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -1218,25 +1218,33 @@ private fun SessionTreeRow(
         }
         // 「⋯」出现在当前会话行，或手指正接触的那一行。
         // 若每行常驻显示，右侧会形成一条竖排点线；只在接触时出现，既保留可操作性也不干扰扫读。
-        // 出现不做动画（接触即显示）；隐藏由上层先停留 SESSION_MENU_LINGER_MS，再淡出并回收占位。
+        // 出现不设动画（接触即显示）；隐藏由上层先停留 SESSION_MENU_LINGER_MS，再在 200ms 内渐隐。
+        // 渐隐只动透明度、不动宽度：按钮绘制在行尾内距里，本来就不占正文宽度，
+        // 一旦同时收窄宽度，裁剪会把图形切成两半，观感上等同于瞬间消失。
         // 未唤醒的空壳会话不提供菜单：此时可执行的只有「重命名」，而它还没有任何内容需要组织。
         // 用 awakened 而不是 blank：旧数据没有 blank 键，历史里的 0 消息空壳也要一并挡掉。
-        AnimatedVisibility(
-            // 已归档会话不给「⋯」：其中的「归档会话」对它没有意义，取消归档在设置页完成
-            visible = !archived && session.awakened && (isCurrent || revealed || menuOpen),
-            modifier = Modifier.align(Alignment.CenterEnd),
-            enter = EnterTransition.None,
-            exit = fadeOut(tween(SESSION_MENU_FADE_MS)) +
-                shrinkHorizontally(tween(SESSION_MENU_FADE_MS)),
-            label = "sessionMenu"
-        ) {
-            Box(modifier = Modifier.padding(end = 2.dp)) {
-                IconHit(30.dp, onClick = { onMenu(anchor) }, onBounds = { anchor = it }) {
-                    Text(
-                        text = "⋯",
-                        fontSize = 15.sp,
-                        color = onSurface.copy(alpha = 0.9f)
-                    )
+        // 已归档会话同样不给「⋯」：其中的「归档会话」对它没有意义，取消归档在设置页完成。
+        val menuVisible = !archived && session.awakened && (isCurrent || revealed || menuOpen)
+        val menuAlpha by animateFloatAsState(
+            targetValue = if (menuVisible) 1f else 0f,
+            // 出现立即到位（接触即显示），消失按 SESSION_MENU_FADE_MS 渐隐
+            animationSpec = if (menuVisible) snap() else tween(SESSION_MENU_FADE_MS),
+            label = "sessionMenuAlpha"
+        )
+        if (menuAlpha > 0.01f) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .alpha(menuAlpha)
+            ) {
+                Box(modifier = Modifier.padding(end = 2.dp)) {
+                    IconHit(30.dp, onClick = { onMenu(anchor) }, onBounds = { anchor = it }) {
+                        Text(
+                            text = "⋯",
+                            fontSize = 15.sp,
+                            color = onSurface.copy(alpha = 0.9f)
+                        )
+                    }
                 }
             }
         }

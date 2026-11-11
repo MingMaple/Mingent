@@ -1,6 +1,17 @@
 package com.zmf.agent.app.navigation
 
 import android.content.Context
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.runtime.remember
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -35,6 +47,8 @@ import com.zmf.agent.feature.chat.ChatSubAgentPanel
 import com.zmf.agent.feature.chat.ChatTopBar
 import com.zmf.agent.feature.chat.ChatUiState
 import com.zmf.agent.feature.chat.ChatViewModel
+import com.zmf.agent.feature.chat.ShareArea
+import com.zmf.agent.feature.chat.ShareIntake
 import com.zmf.agent.feature.chat.PreviewTabs
 import com.zmf.agent.feature.chat.TracePage
 import com.zmf.agent.uikit.components.salt.SaltFullPane
@@ -222,6 +236,7 @@ private fun ChatColumn(
     var subAgentPanelOpen by ui.subAgentPanelOpen
     val subAgentRunning = subAgentEntries.count { it.state == SubAgentRegistry.RUNNING }
     val window = LocalUiWindow.current
+    val scope = rememberCoroutineScope()
     // 已打开的预览标签数：为 0 时顶栏不出现入口（与计划、网页同一口径）。
     // 读快照状态列表的 size 即建立订阅，标签增删会自动重组，无需额外状态。
     val previewCount = PreviewTabs.count
@@ -281,16 +296,100 @@ private fun ChatColumn(
                     imeVisible = imeVisible
                 )
 
-                ChatComposerArea(
-                    viewModel = viewModel,
-                    ui = ui,
-                    context = context,
-                    imageRoot = imageRoot,
-                    statusRounds = statusRounds,
-                    statusSteps = statusSteps,
-                    onPickFile = onPickFile,
-                    onLogLaunch = onLogLaunch
-                )
+                // 底部槽位：常规输入区与分享面板共用同一位置，一次只画一块。
+                // 分享进入时面板自下而上顶替常规输入区（附件行在面板之上）；
+                // 发送或取消时面板整块下滑出屏，下面的常规输入区原样露出——两段位移都发生在
+                // 同一槽位，消息列表不会先塌后撑。高度变化交给 AnimatedContent 的 SizeTransform
+                // 平滑过渡，clip=false 让下滑的那块能越过动画中的高度继续往下走。
+                val shareDraft by ui.shareDraft
+                val shareVisible by ui.shareVisible
+                var shareSending by remember { mutableStateOf(false) }
+                var shareFailure by remember { mutableStateOf<String?>(null) }
+                // 新一批内容进来时清掉上一批的进度与错误，避免失败文案带到下一次分享
+                LaunchedEffect(shareDraft) {
+                    shareSending = false
+                    shareFailure = null
+                }
+                AnimatedContent(
+                    targetState = shareVisible && shareDraft != null,
+                    transitionSpec = {
+                        if (targetState) {
+                            (slideInVertically(tween(220)) { it } + fadeIn(tween(160))) togetherWith
+                                fadeOut(tween(120))
+                        } else {
+                            fadeIn(tween(160)) togetherWith
+                                (slideOutVertically(tween(220)) { it } + fadeOut(tween(160)))
+                        }.using(SizeTransform(clip = false))
+                    },
+                    label = "shareSlot"
+                ) { sharing ->
+                    val draftNow = shareDraft
+                    if (sharing && draftNow != null) {
+                        ShareArea(
+                            draft = draftNow,
+                            workspaces = viewModel.workspaceList,
+                            sessions = viewModel.sessionList,
+                            // 目标 = 当前会话：面板里选目标即真的切换，抽屉里切换后目标键也随之变化
+                            currentSessionId = viewModel.currentSessionId,
+                            currentWorkspaceId = viewModel.currentWorkspaceId,
+                            sending = shareSending,
+                            failure = shareFailure,
+                            // 删除某个分享文件（长文附件或普通文件）：中转文件同步删除，只保留用户写的那句话
+                            onRemoveFile = { rel ->
+                                ShareIntake.discardFile(draftNow, rel)
+                                ui.shareDraft.value = if (rel == draftNow.longTextRelPath) {
+                                    draftNow.copy(longTextRelPath = null, longTextChars = 0)
+                                } else {
+                                    draftNow.copy(fileRelPaths = draftNow.fileRelPaths - rel)
+                                }
+                            },
+                            onRemoveImage = { rel ->
+                                ShareIntake.discardFile(draftNow, rel)
+                                ui.shareDraft.value = draftNow.copy(
+                                    imageRelPaths = draftNow.imageRelPaths - rel
+                                )
+                            },
+                            // 发送已提交时不再受理放弃：否则面板消失但消息仍会发出
+                            onCancel = { if (!shareSending) ui.shareVisible.value = false },
+                            onTargetPicked = { picked ->
+                                shareFailure = null
+                                // 选目标即真实切换会话：上方的会话区立刻变成那个会话的内容，
+                                // 与抽屉点会话 / 新建完全同一条路径。生成期间会话层不允许切换
+                                // （流式结果写的是当前会话的消息表），此时保持原会话不变。
+                                if (viewModel.isStreaming) {
+                                    shareFailure = "正在生成回复，本轮结束后再切换目标"
+                                } else if (!viewModel.selectShareTarget(picked)) {
+                                    shareFailure = "目标会话或工作区已不存在，请重新选择"
+                                }
+                            },
+                            onSend = { body ->
+                                shareFailure = null
+                                shareSending = true
+                                viewModel.sendShare(body, draftNow, scope) { failure ->
+                                    shareSending = false
+                                    if (failure != null) {
+                                        shareFailure = failure
+                                    } else {
+                                        // 发送成功：面板退场，常规输入区露出，消息就在眼前的这个会话里
+                                        ui.wasAtBottom.value = true
+                                        ui.shareVisible.value = false
+                                    }
+                                }
+                            }
+                        )
+                    } else {
+                        ChatComposerArea(
+                            viewModel = viewModel,
+                            ui = ui,
+                            context = context,
+                            imageRoot = imageRoot,
+                            statusRounds = statusRounds,
+                            statusSteps = statusSteps,
+                            onPickFile = onPickFile,
+                            onLogLaunch = onLogLaunch
+                        )
+                    }
+                }
             }
         }
     }

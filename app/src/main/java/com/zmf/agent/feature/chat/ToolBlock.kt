@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,9 +45,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import com.zmf.agent.uikit.markdown.MarkdownCodeBlock
 import com.zmf.agent.uikit.markdown.copyCode
-import com.zmf.agent.uikit.components.CopyRevealHost
-import com.zmf.agent.uikit.components.claimCopyOnGesture
-import com.zmf.agent.uikit.components.rememberCopyBlockKey
+import com.zmf.agent.uikit.components.CopyActionButton
 
 /* ============================== 文件级 API 说明 ==============================
  *
@@ -64,7 +63,6 @@ import com.zmf.agent.uikit.components.rememberCopyBlockKey
  *       code: String? = null,       // 可选的代码/命令区（供终端类工具使用，无内容时不占位）
  *       codeLang: String = "",      // 代码区的语言标签（空则显示「代码」）
  *       containerColor: Color = …,  // 卡片底色，默认用 onSurface 的低透明度
- *       outsideTapKey: Any? = null, // 父层「点击其他位置」的计数；值变化即收起复制按钮
  *       copyText: String? = null    // 自定义复制内容；null = 自动拼工具名/参数/代码/输出
  *   )
  *
@@ -88,14 +86,10 @@ import com.zmf.agent.uikit.components.rememberCopyBlockKey
  *
  * 四、位置约定
  *   - 参数区：折叠时一行摘要（[ARG_SUMMARY_LIMIT] 字截断），展开后 240dp 内滚；
- *   - 代码区：等宽 + 行号，默认单行横滑，点「缩进」换成完整换行，随整页滚动；
+ *   - 代码区：等宽 + 行号，默认单行横滑，点「换行」换成完整折行，随整页滚动；
  *   - 输出区：240dp 内滚，滚到边界后继续滑不带动外层页面；
- *   - 复制按钮：默认不显示，块内任意手势后出现在右上角，见 [ToolBlock] 的注释。
+ *   - 复制按钮：标题行右端的图标按钮，常显（见 [CopyActionButton]）。
  * ========================================================================== */
-
-/** 「复制」按钮的固定占位宽度：始终存在，按钮出现时只填进去，不挤动旁边任何东西。 */
-private val CopySlot = 46.dp
-
 
 /** 参数摘要的字符上限：路径 / 命令这类长串都截到这个长度。 */
 private const val ARG_SUMMARY_LIMIT = 40
@@ -105,6 +99,15 @@ private const val COPIED_TIP_MS = 1200L
 
 /** 参数区 / 输出区的内部滚动上限：更长就在块内竖滑。 */
 private val BlockBodyMaxHeight = 240.dp
+
+/**
+ * 标题行的固定行高。
+ *
+ * 复制按钮 30dp 高于 12sp 标题（约 16dp），若按内容撑开，行高会随按钮出现而变化，
+ * 标题文字随之上下移动。取 36dp：与「无按钮时的内距 10dp + 文字 16dp」等价，
+ * 按钮在行内居中，上下各留 3dp。
+ */
+private val ToolHeaderHeight = 36.dp
 
 /** 摘要优先取这些字段：一眼能读懂的「在干什么」。 */
 private val ARG_SUMMARY_KEYS = listOf(
@@ -117,15 +120,9 @@ private val ARG_SUMMARY_KEYS = listOf(
  *
  * 结构：标题行（工具名 + 状态 + 复制）→ 参数区（折叠/展开）→ 代码区（可选）→ 输出区。
  *
- * 复制按钮的显隐（最终采用「计时」方案，不是全局点击代理）：
- *  - 默认不显示；
- *  - 块内**任意**手势（点击、长按、滑动，甚至只是按下）都会让它出现，并重置 4 秒计时；
- *  - 4 秒内没有新手势就自动收起；
- *  - 另外留了 [outsideTapKey] 钩子：父页面要是本来就有「点空白处」的事件，
- *    递增该值即可立即收起（父层不接也完全可用）。
- *  为什么不做「全局点击代理」：那要求父层把根节点的点击事件按块分发下来，
- *  聊天页根节点已被长按选文、抽屉横滑占用，强行挂载易造成事件冲突，
- *  而这个按钮本身就是「临时工具」，4 秒自动收起已经够用。
+ * 复制按钮为标题行右端的图标按钮，常显：位置与宽度固定，折叠 / 展开都不移动其他元素。
+ * 点击后 1.2 秒内图标改为对勾，反馈由图形承担（见 [CopyActionButton]）。
+ * 卡片内容区不再挂载「触摸后浮现」的判定：该机制已随图标化一并废止。
  */
 @Composable
 fun ToolBlock(
@@ -137,7 +134,6 @@ fun ToolBlock(
     code: String? = null,
     codeLang: String = "",
     containerColor: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-    outsideTapKey: Any? = null,
     copyText: String? = null
 ) {
     val context = LocalContext.current
@@ -149,14 +145,6 @@ fun ToolBlock(
     // 一轮中常连续七八次工具调用，全部展开会将本轮回答挤出可视区域。
     var open by rememberSaveable { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
-    // 「复制」的全局唯一标识：展开且操作过该块后才显示，操作其他块时迁移
-    val copyKey = rememberCopyBlockKey()
-    val copyVisible = open && CopyRevealHost.owner === copyKey
-
-    // 父层若接收「点击块外」事件，计数变化即立即收回；未接收时仍可正常使用
-    LaunchedEffect(outsideTapKey) {
-        if (outsideTapKey != null) CopyRevealHost.release(copyKey)
-    }
     // 「已复制」1.2 秒后复位
     LaunchedEffect(copied) {
         if (copied) {
@@ -171,9 +159,10 @@ fun ToolBlock(
     // 卡片上额外的红字反而干扰阅读。
     val statusColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
     val statusText = if (running) "" else "完成"
-    // 一句话总结（「读取 test.txt」「运行命令 tail -c 20 …」）：标题行向用户说明该工具执行了什么
-    val headline = remember(toolName, arguments) { toolSummary(toolName, arguments) }
-    // 参数为空（空串 / 空对象）时整块不渲染：避免「参数 缩进」下仅剩一个空花括号
+    // 标题（「对比本地与远端插件版本」）：优先取模型写入的 description，旧数据回退 action_summary；
+    // 模型遗漏时退回按工具名与参数拼出的句子（[toolSummary]），标题行不会留空。
+    val headline = remember(toolName, arguments) { toolHeadline(toolName, arguments) }
+    // 参数为空（空串 / 空对象）时整块不渲染：避免「参数 + 换行按钮」下仅剩一个空花括号
     val argsBlank = remember(arguments) { toolArgIsBlank(arguments) }
     val codeBody = code?.takeIf { it.isNotBlank() }
     val fullText = remember(copyText, toolName, arguments, code, output) {
@@ -183,10 +172,7 @@ fun ToolBlock(
     Surface(
         color = containerColor,
         shape = RoundedCornerShape(14.dp),
-        modifier = modifier
-            .fillMaxWidth()
-            // 复制归属挂载于内容区（见下方 Column），不挂载于整卡：
-            // 若挂载于整卡，点击标题行也会被视为「操作过」，出现「点击展开无按钮、再次点击收起却出现」。
+        modifier = modifier.fillMaxWidth()
     ) {
         // 内边距下放至各块内容：标题行需顶至卡片边缘，波纹方可铺满整行
         // （反馈不设计为行内小矩形）。
@@ -197,9 +183,10 @@ fun ToolBlock(
                     .fillMaxWidth()
                     .saltRowClickable(if (open) RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp) else RoundedCornerShape(14.dp)) {
                         open = !open
-                        if (!open) CopyRevealHost.release(copyKey)
                     }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    // 固定行高：复制按钮只在展开时出现，行高不能随之变化，否则标题会上下跳
+                    .heightIn(min = ToolHeaderHeight)
+                    .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
@@ -220,35 +207,19 @@ fun ToolBlock(
                     overflow = TextOverflow.Ellipsis,
                     color = onSurface.copy(alpha = 0.55f)
                 )
-                // 「复制」占用固定宽度：出现或消失均不移动其他元素，右侧
-                // 「完成 + 箭头」的位置固定（复制浮现时整块不可突变）。
-                // 此 46dp 为**虚拟区域**（界面上不可见）：「复制 / 已复制」均在其中居中，
-                // 涟漪铺满整块并与文字同心（无需考虑「已」多出的宽度，仅调整该区域）。
-                // 不可将此处改为 indication = null：否则涟漪消失，必须使用默认涟漪。
-                Box(
-                    modifier = Modifier
-                        .width(CopySlot)
-                        .clip(RoundedCornerShape(6.dp))
-                        .then(
-                            if (copyVisible && fullText.isNotBlank()) {
-                                Modifier.clickable {
-                                    copyCode(context, fullText, "工具调用")
-                                    copied = true
-                                }
-                            } else {
-                                Modifier
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (copyVisible && fullText.isNotBlank()) {
-                        Text(
-                            text = if (copied) "已复制" else "复制",
-                            maxLines = 1,
-                            fontSize = 11.sp,
-                            color = onSurface.copy(alpha = 0.6f)
-                        )
-                    }
+                // 复制为常显的图标按钮：只在展开时出现（折叠态看不到内容，不提供复制入口）；
+                // 宽度固定，右侧「完成 + 箭头」不因它出现或消失而位移。
+                // 不写 indication = null：涟漪必须保留，按钮的按压反馈靠它。
+                if (open && fullText.isNotBlank()) {
+                    Spacer(Modifier.width(2.dp))
+                    CopyActionButton(
+                        copied = copied,
+                        ink = onSurface,
+                        onClick = {
+                            copyCode(context, fullText, "工具调用")
+                            copied = true
+                        }
+                    )
                 }
                 Spacer(Modifier.width(8.dp))
                 if (statusText.isNotEmpty()) {
@@ -266,10 +237,7 @@ fun ToolBlock(
 
             if (open) {
             Column(
-                modifier = Modifier
-                    .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
-                    // 展开后内容区任意位置按下或滑动均触发复制（Initial 阶段，不消费事件）
-                    .claimCopyOnGesture(copyKey),
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
             /* -------------------------- 参数区 -------------------------- */

@@ -31,6 +31,7 @@ import com.zmf.agent.capability.memory.MemoryState
 import com.zmf.agent.capability.loop.ContextSummaryState
 import com.zmf.agent.capability.loop.OutputTiming
 import com.zmf.agent.capability.permission.PermissionStore
+import com.zmf.agent.capability.prompt.PromptBuilder
 import com.zmf.agent.capability.prompt.PromptInput
 import com.zmf.agent.capability.prompt.PromptStore
 import com.zmf.agent.capability.skill.SkillStore
@@ -56,6 +57,7 @@ import com.zmf.agent.core.log.AuditLog
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.PermissionLevel
+import com.zmf.agent.core.model.SharePayload
 import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
@@ -71,10 +73,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
 
 /**
  * 图片路径说明这段文字在提问里的固定开头。
@@ -285,6 +283,9 @@ class ChatViewModel(context: Context) : AgentUi {
 
     /** 可用 Skill 的名字+描述缓存（给系统提示词的 Skill 段用；装/删 Skill 后调 refreshSkillCatalog）。 */
     private var skillCatalog: List<Pair<String, String>> = emptyList()
+
+    /** 缓存对应的内容版本；与 SkillStore.revision 不一致时说明磁盘上的技能已经变了。 */
+    private var skillCatalogRevision = -1
 
     /** 可用 Skill 的名字，只给输入区的「/」斜杠补全用；随 [refreshSkillCatalog] 一起更新。 */
     var skillNames by mutableStateOf<List<String>>(emptyList())
@@ -541,11 +542,8 @@ class ChatViewModel(context: Context) : AgentUi {
                 startupReady = true
             }
         }
-        // 同时扫描一次 Skill 目录：提示词里的 available_skills 段要用；目录遍历与解析同样放到后台。
-        summaryScope.launch {
-            runCatching { withContext(Dispatchers.IO) { refreshSkillCatalog() } }
-                .onFailure { FileLog.log("skill", "技能目录扫描失败：" + (it.message ?: it.javaClass.simpleName)) }
-        }
+        // 同时扫描一次 Skill 目录：提示词里的 available_skills 段要用；目录遍历与解析在 IO 上执行。
+        refreshSkillCatalog()
         // 同时清理 7 天前的 spill 落盘（后台执行，失败可忽略，不阻塞启动）
         summaryScope.launch {
             runCatching { withContext(Dispatchers.IO) { SpillStore.cleanup(appContext) } }
@@ -697,13 +695,13 @@ class ChatViewModel(context: Context) : AgentUi {
     /**
      * 系统提示词的输入：每次请求前现取，所以换工作区 / 切权限档 / 改附加指令都立刻生效。
      *
-     * Skill 目录走缓存：解析 SKILL.md 要读文件，不能每轮请求都在主线程读盘；
-     * 装了新 Skill 之后调 [refreshSkillCatalog] 刷一次即可。
+     * Skill 目录走内存缓存：日常请求不读盘；内容版本变化时（导入、删除、助手新建）
+     * 在本次请求前重扫一次，保证新技能从下一条消息起就能被看到。
      */
     private fun promptInput(): PromptInput {
         val space = workspaceList.firstOrNull { it.id == currentWorkspaceId }
             ?: WorkSpaceStore.defaultSpace(appContext)
-        val skills = if (PromptStore.loadSkillsEnabled(appContext)) skillCatalog else emptyList()
+        val skills = skillCatalogForPrompt()
         return PromptInput(
             model = model,
             workspacePath = rootOf(space).absolutePath,
@@ -728,22 +726,47 @@ class ChatViewModel(context: Context) : AgentUi {
     /**
      * 当前时间的提示词表述：`yyyy-MM-dd HH:mm（周X，GMT+偏移）`。
      *
-     * 写清星期与 GMT 偏移：模型容易把纯时间戳按 UTC 解读，或不知道今天星期几；
-     * 这两条都是「时间感知」最基础的缺口。每轮请求现取，所以时间始终是发请求那一刻的。
+     * 格式由 [PromptBuilder.nowText] 统一维护：定时任务在后台冷启动时也走同一份，
+     * 两处若各写一遍，日期口径迟早会漂移。每轮请求现取，所以时间始终是发请求那一刻的。
      */
-    private fun nowText(): String {
-        val tz = TimeZone.getDefault()
-        val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm（E，'GMT'XXX）", Locale.getDefault())
-        fmt.timeZone = tz
-        return fmt.format(Date())
+    private fun nowText(): String = PromptBuilder.nowText()
+
+    /** 重新扫描 appdata/skills（导入 / 删除 / 助手新建之后调）。读盘在 IO，结果回写状态。 */
+    fun refreshSkillCatalog() {
+        summaryScope.launch {
+            // 版本号必须在扫描前取：扫描期间若有新写入，下次请求仍会看到版本差异并重扫
+            val revision = SkillStore.revision
+            val list = withContext(Dispatchers.IO) {
+                runCatching { SkillStore.catalog(appContext) }.getOrDefault(emptyList())
+            }
+            applySkillCatalog(list, revision)
+        }
     }
 
-    /** 重新扫描 appdata/skills（导入/删除 Skill 之后调）。 */
-    fun refreshSkillCatalog() {
-        skillCatalog = runCatching { SkillStore.catalog(appContext) }.getOrDefault(emptyList())
+    private fun applySkillCatalog(list: List<Pair<String, String>>, revision: Int) {
+        skillCatalog = list
         // 斜杠补全只认名字：在这里从同一份缓存派生，装/删 Skill 后不会出现「提示词里有、补全里没有」
-        skillNames = skillCatalog.map { it.first }
-        FileLog.log("skill", "可用 Skill " + skillCatalog.size + " 个")
+        skillNames = list.map { it.first }
+        skillCatalogRevision = revision
+        FileLog.log("skill", "可用 Skill " + list.size + " 个")
+    }
+
+    /**
+     * 取提示词用的技能目录。
+     *
+     * 只在内容版本变化时重扫：助手刚用 skill_save 新建的技能，下一条请求就能进入
+     * available_skills，不必等用户去设置页手动刷新。
+     */
+    private fun skillCatalogForPrompt(): List<Pair<String, String>> {
+        if (!PromptStore.loadSkillsEnabled(appContext)) return emptyList()
+        val revision = SkillStore.revision
+        if (skillCatalogRevision != revision) {
+            applySkillCatalog(
+                runCatching { SkillStore.catalog(appContext) }.getOrDefault(emptyList()),
+                revision
+            )
+        }
+        return skillCatalog
     }
 
     /** 切换当前会话的权限档：只写会话字段并记一条审计；档位没变时不做任何事。 */
@@ -847,6 +870,97 @@ class ChatViewModel(context: Context) : AgentUi {
 
     /** 清理当前工作区里没有被任何会话引用的附件（设置页「清理未引用附件」）。 */
     fun cleanOrphanImages(onDone: (String) -> Unit) = composer.cleanOrphanImages(onDone)
+
+    // ---- 系统分享入口：解析、去重与落盘见 ShareIntake.kt，面板见 SharePanel.kt（主页底部槽位），这里只负责「把面板拼好的内容发出去」这一条路径 ----
+
+    /**
+     * 把面板拼好的内容发往**当前会话**。
+     *
+     * 目标不是另存的一份选择：面板与抽屉里选定目标时已经真的切换过会话（见 [selectShareTarget]），
+     * 因此这里只负责「把中转附件落进当前工作区 → 交给发送链路」。附件与图片由本函数显式交给
+     * 发送链路，不读写输入区队列，用户正在当前会话编辑的草稿不会被打扰。
+     *
+     * 本轮正在生成时沿用普通输入框的繁忙语义：带附件则拒绝（面板保留），纯文字则排队或插话。
+     *
+     * @param onResult null 表示已受理；非 null 为应显示在面板里的一句失败说明
+     */
+    internal fun sendShare(
+        editorText: String,
+        draft: ShareDraft,
+        scope: CoroutineScope,
+        onResult: (String?) -> Unit
+    ) {
+        if (draft.isEmpty) {
+            onResult("没有可发送的内容")
+            return
+        }
+        val body = ShareIntake.composeBody(draft, editorText)
+        if (isStreaming) {
+            // 发到正在回复的这一条：沿用普通输入框的繁忙语义（排队或插话）
+            if (draft.hasFiles) {
+                onResult("正在生成回复，附件等本轮结束后再发送")
+                return
+            }
+            val queued = sender.queuePayload(body, scope)
+            onResult(if (queued) null else lastError ?: "发送失败，请重试")
+            return
+        }
+        scope.launch {
+            // 中转文件落进当前会话的工作区：与普通输入框选择附件走同一套 UploadStore.import
+            val attachments = withContext(Dispatchers.IO) {
+                ShareIntake.stageForSend(appContext, draft, currentWorkspaceRoot())
+            }
+            val accepted = sender.sendPayload(
+                text = body,
+                files = attachments.files,
+                images = attachments.images,
+                titleSource = draft.titleHint.ifEmpty { null },
+                scope = scope
+            )
+            if (accepted) {
+                FileLog.log(
+                    "share",
+                    "按分享发送：目标=当前会话" +
+                        "，正文 " + body.length + " 字，附件 " + attachments.files.size +
+                        "，图片 " + attachments.images.size
+                )
+                onResult(null)
+            } else {
+                onResult(lastError ?: "发送失败，请重试")
+            }
+        }
+    }
+
+    /**
+     * 分享面板选定目标时调用：真的切换会话，让上方的会话区立刻变成该会话的内容。
+     *
+     * 「新建会话」也走这里：与抽屉新建一致，立刻切到该工作区并建一条空会话。
+     * 选定即切换，发送时不再二次切换，因此「用户先看再发」与「直接发」走的是同一条路径。
+     */
+    internal fun selectShareTarget(target: ShareTarget): Boolean = applyShareTarget(target)
+
+    /**
+     * 把会话切到分享面板所选的目标；返回 false 表示目标已不存在（工作区被删、会话被归档删除）。
+     *
+     * 「新建会话」不校验新建后的会话 id：`newSession()` 会复用同工作区的空白会话，
+     * 因此只能以工作区是否切换成功作为判据。
+     */
+    private fun applyShareTarget(target: ShareTarget): Boolean = when (target) {
+        is ShareTarget.NewSession -> {
+            if (currentWorkspaceId != target.workspaceId) switchWorkspace(target.workspaceId)
+            if (currentWorkspaceId != target.workspaceId) {
+                false
+            } else {
+                newSession()
+                true
+            }
+        }
+
+        is ShareTarget.Session -> {
+            if (currentSessionId != target.id) switchSession(target.id)
+            currentSessionId == target.id
+        }
+    }
 
     /**
      * 给一个已结束的子智能体追加一条消息，接着它自己的上下文再跑一次。
