@@ -553,7 +553,9 @@ class SendController(
                         // 现在快照会漏掉本轮这句话；闸门要的是「此刻会话里最后一条用户亲口说的话」
                         lastUserMessage = {
                             messages.lastOrNull { it.role == "user" && it.content.isNotBlank() }
-                        }
+                        },
+                        // 检索等工具自行发起的请求同样计费：只并入会话与总账，不进本轮上下文
+                        onAuxUsage = context::recordAuxUsage
                     ),
                     ui = agentUi(),
                     // 计划模式不作为参数传递：AgentLoop 每轮从 promptInput().planMode 实时读取

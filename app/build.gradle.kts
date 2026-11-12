@@ -40,8 +40,8 @@ android {
         targetSdk = 28
         // 版本规则（2026-10-26 定）：首位/中位由用户定（助手可推荐），末位由助手按改动程度自行 +1；
         // 每次打包 versionCode 必须 +1（跨 versionName 也不重置），否则覆盖安装会因「版本未升高」被系统直接拒掉
-        versionCode = 190
-        versionName = "1.3.3"
+        versionCode = 199
+        versionName = "1.3.4"
     }
 
     signingConfigs {

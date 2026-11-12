@@ -68,9 +68,14 @@ object SessionTitleNamer {
      *
      * @param context 用于读取当前提供商、模型与鉴权信息
      * @param firstPrompt 首条用户消息的正文（调用方已按标题候选规则选定）
+     * @param onUsage 收到服务端收尾用量时回调；标题请求同样计费，由调用方入账
      * @return 清洗后仍非空的标题文本；任何失败路径均返回 null
      */
-    suspend fun generate(context: Context, firstPrompt: String): String? {
+    suspend fun generate(
+        context: Context,
+        firstPrompt: String,
+        onUsage: ((LlmEvent.Finished) -> Unit)? = null
+    ): String? {
         val provider = providerFor(context) ?: return null
         val model = ApiConfig.loadModel(context)
         if (model.isBlank()) {
@@ -110,7 +115,11 @@ object SessionTitleNamer {
                         when (event) {
                             is LlmEvent.ContentDelta -> output.append(event.text)
                             is LlmEvent.ToolCallDelta -> toolCall = true
-                            is LlmEvent.Finished -> finishReason = event.finishReason
+                            is LlmEvent.Finished -> {
+                                finishReason = event.finishReason
+                                // 即使后续按失败处理（截断、含工具调用），这次请求的 token 已经消耗
+                                onUsage?.invoke(event)
+                            }
                             is LlmEvent.Failed -> failure = if (event.code > 0) {
                                 "HTTP " + event.code + "：" + event.message
                             } else {

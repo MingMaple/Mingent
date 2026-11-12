@@ -28,7 +28,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.PlanStore
-import com.zmf.agent.uikit.common.TopIconButton
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.common.stableStatusBarPadding
@@ -72,15 +71,22 @@ fun PlanPage(
                 .fillMaxSize()
                 .stableStatusBarPadding()
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TopIconButton(glyph = "←", onClick = onBack)
-                Text(
-                    text = "计划",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-            }
+            // 顶栏一行：返回、计划标签条。选中计划即当前页面标题，不再单起「计划」标题行
+            // 计划条：横滑、选中项自动进入视野、滑至尽头的余量就地消耗；与浏览页网页条共用（TabStrip）
+            TabHeaderRow(
+                items = plans.map { plan ->
+                    TabStripItem(
+                        key = plan.id,
+                        label = plan.title.ifBlank { "未命名计划" },
+                        // 已消费的计划条目同样淡化：与详情页中变灰的按钮含义相同
+                        muted = !plan.actionable
+                    )
+                },
+                selectedKey = current?.id,
+                onSelect = onSelect,
+                onClose = onDelete,
+                onBack = onBack
+            )
 
             if (plans.isEmpty()) {
                 // 无计划时无动作可执行：底部两个按钮整块不显示，仅保留返回（父会话此时自行返回主页）
@@ -91,24 +97,9 @@ fun PlanPage(
                     color = UiColors.subText
                 )
             } else {
-                // 计划条：横滑、选中项自动进入视野、滑至尽头的余量就地消耗：
-                // 与浏览页网页条共用（TabStrip），两页条目样式必须一致。
-                TabStrip(
-                    items = plans.map { plan ->
-                        TabStripItem(
-                            key = plan.id,
-                            label = plan.title.ifBlank { "未命名计划" },
-                            // 已消费的计划条目同样淡化：与详情页中变灰的按钮含义相同
-                            muted = !plan.actionable
-                        )
-                    },
-                    selectedKey = current?.id,
-                    onSelect = onSelect,
-                    onClose = onDelete
-                )
-                Spacer(Modifier.height(10.dp))
-
                 if (current != null) {
+                    // 顶栏压到一行后，正文与标签条之间留一点呼吸位（与预览页的文件头一致）
+                    Spacer(Modifier.height(6.dp))
                     // 正文交叉淡化：与预览页同一套过渡，切条目时下方不再硬切
                     AnimatedContent(
                         targetState = current,

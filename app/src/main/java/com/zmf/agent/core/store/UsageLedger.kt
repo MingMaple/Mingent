@@ -54,6 +54,8 @@ data class LedgerUsage(
     val prompt: Int = 0,
     val completion: Int = 0,
     val requests: Int = 0,
+    /** 联网检索的服务端调用次数（按次计费，不计 token）。 */
+    val searches: Int = 0,
     /** 用户亲手输入的轮次（不含分叉克隆与 App 代发）；只增不减，删会话也不回落。 */
     val rounds: Int = 0,
     val steps: Int = 0,
@@ -159,6 +161,7 @@ internal fun LedgerUsage.merge(other: LedgerUsage): LedgerUsage = LedgerUsage(
     prompt = prompt + other.prompt,
     completion = completion + other.completion,
     requests = requests + other.requests,
+    searches = searches + other.searches,
     rounds = rounds + other.rounds,
     steps = steps + other.steps,
     cacheHit = cacheHit + other.cacheHit,
@@ -214,6 +217,7 @@ private fun LedgerUsage.minusFloor(other: LedgerUsage): LedgerUsage = LedgerUsag
     prompt = (prompt - other.prompt).coerceAtLeast(0),
     completion = (completion - other.completion).coerceAtLeast(0),
     requests = (requests - other.requests).coerceAtLeast(0),
+    searches = (searches - other.searches).coerceAtLeast(0),
     rounds = (rounds - other.rounds).coerceAtLeast(0),
     steps = (steps - other.steps).coerceAtLeast(0),
     cacheHit = (cacheHit - other.cacheHit).coerceAtLeast(0),
@@ -233,7 +237,7 @@ private fun LedgerUsage.minusFloor(other: LedgerUsage): LedgerUsage = LedgerUsag
 
 /** 全字段为 0（含构成为空）。 */
 private fun LedgerUsage.isZero(): Boolean =
-    prompt == 0 && completion == 0 && requests == 0 && rounds == 0 && steps == 0 &&
+    prompt == 0 && completion == 0 && requests == 0 && searches == 0 && rounds == 0 && steps == 0 &&
         cacheHit == 0 && cacheMiss == 0 && modelMs == 0L && toolMs == 0L && activeMs == 0L &&
         ttftMs == 0L && genMs == 0L && reasoningMs == 0L && textMs == 0L && toolArgMs == 0L &&
         genTokens == 0 && toolCalls == 0 && costCny == 0.0 && composition.isEmpty
@@ -463,7 +467,12 @@ object UsageLedger {
         save(context)
     }
 
-    /** 记一次成功请求：总账累加、当天桶累加、首次/最近使用时间跟着更新。 */
+    /**
+     * 记一次请求：总账累加、当天桶累加、首次/最近使用时间跟着更新。
+     *
+     * @param requests 本次请求数；联网检索这类一次调用里含多条 query 的旁路请求按实际条数传
+     * @param searches 本次会话侧服务端检索次数；只计次、不占 token
+     */
     @Synchronized
     fun record(
         context: Context,
@@ -472,7 +481,9 @@ object UsageLedger {
         cacheHitTokens: Int,
         cacheMissTokens: Int,
         composition: LedgerComposition = LedgerComposition(),
-        costCny: Double = 0.0
+        costCny: Double = 0.0,
+        requests: Int = 1,
+        searches: Int = 0
     ) {
         load(context)
         val now = System.currentTimeMillis()
@@ -480,7 +491,8 @@ object UsageLedger {
         val add = LedgerUsage(
             prompt = promptTokens,
             completion = completionTokens,
-            requests = 1,
+            requests = requests.coerceAtLeast(0),
+            searches = searches.coerceAtLeast(0),
             cacheHit = cacheHitTokens,
             cacheMiss = cacheMissTokens,
             costCny = costCny,
@@ -643,6 +655,7 @@ object UsageLedger {
         put("prompt", usage.prompt)
         put("completion", usage.completion)
         put("requests", usage.requests)
+        put("searches", usage.searches)
         put("rounds", usage.rounds)
         put("steps", usage.steps)
         put("cacheHit", usage.cacheHit)
@@ -669,6 +682,7 @@ object UsageLedger {
             prompt = obj.optInt("prompt", 0),
             completion = obj.optInt("completion", 0),
             requests = obj.optInt("requests", 0),
+            searches = obj.optInt("searches", 0),
             rounds = obj.optInt("rounds", 0),
             steps = obj.optInt("steps", 0),
             cacheHit = obj.optInt("cacheHit", 0),

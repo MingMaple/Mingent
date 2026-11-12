@@ -60,6 +60,7 @@ data class TabStripItem(
  * @param selectedKey 当前选中条目的 [TabStripItem.key]；null 表示没有选中项
  * @param onClose 点条目上的「×」时调用，只关闭不切换
  * @param horizontalPadding 条带左右留白，默认 16dp 与页面内容边对齐
+ * @param maxItemWidth 单枚条目的最大宽度；顶栏内联时由可用宽度均分得出，见 [TabHeaderRow]
  */
 @Composable
 fun TabStrip(
@@ -68,7 +69,8 @@ fun TabStrip(
     onSelect: (String) -> Unit,
     onClose: (String) -> Unit,
     modifier: Modifier = Modifier,
-    horizontalPadding: Dp = 16.dp
+    horizontalPadding: Dp = 16.dp,
+    maxItemWidth: Dp = 190.dp
 ) {
     val scroll = rememberScrollState()
     // 每枚条目在滚动内容中的位置：自动滚动据此判断是否可见
@@ -114,6 +116,7 @@ fun TabStrip(
                 label = item.label,
                 selected = item.key == selectedKey,
                 muted = item.muted,
+                maxWidth = maxItemWidth,
                 modifier = Modifier.onGloballyPositioned { coords ->
                     bounds[item.key] = TabBounds(
                         x = coords.positionInParent().x,
@@ -148,6 +151,8 @@ private fun TabChip(
     label: String,
     selected: Boolean,
     muted: Boolean,
+    /** 整枚条目的宽度上限；文本区的上限由它减去内距与 × 的热区得出。 */
+    maxWidth: Dp,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
     onClose: () -> Unit
@@ -167,7 +172,7 @@ private fun TabChip(
             else -> onSurface.copy(alpha = if (dark) 0.08f else 0.06f)
         },
         modifier = modifier
-            .widthIn(max = 190.dp)
+            .widthIn(max = maxWidth)
             .saltRowClickable(shape, onClick = onClick)
     ) {
         Row(
@@ -176,7 +181,8 @@ private fun TabChip(
         ) {
             Text(
                 text = label,
-                modifier = Modifier.widthIn(max = 150.dp),
+                // 12dp 左内距 + 26dp 的 × 热区 + 4dp 右内距
+                modifier = Modifier.widthIn(max = (maxWidth - 42.dp).coerceAtLeast(48.dp)),
                 fontSize = 13.sp,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,

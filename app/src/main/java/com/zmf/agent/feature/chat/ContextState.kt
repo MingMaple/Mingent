@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.capability.context.ContextCompactor
 import com.zmf.agent.capability.context.ContextEvent
 import com.zmf.agent.capability.context.ContextEventKind
@@ -21,6 +22,7 @@ import com.zmf.agent.capability.loop.OutputTiming
 import com.zmf.agent.capability.prompt.AgentInstructions
 import com.zmf.agent.capability.prompt.PromptBuilder
 import com.zmf.agent.capability.prompt.PromptInput
+import com.zmf.agent.capability.tools.AuxUsage
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.core.llm.ApiDefaults
 import com.zmf.agent.core.llm.CostBook
@@ -29,6 +31,7 @@ import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.InheritedUsage
 import com.zmf.agent.core.store.InsightColors
+import com.zmf.agent.infra.llm.LlmEvent
 import com.zmf.agent.core.store.InsightDay
 import com.zmf.agent.core.store.InsightGlobalView
 import com.zmf.agent.core.store.InsightPart
@@ -1020,6 +1023,136 @@ class ContextState(
     }
 
     /**
+     * 记一次工具旁路请求的用量（联网检索）。
+     *
+     * 只并入会话累计与总账：检索结果作为工具结果进入请求，输入构成记在「工具结果」一段；
+     * 本轮的上下文水位、状态行与气泡用量都不受影响，它们仍只反映对话请求本身。
+     */
+    fun recordAuxUsage(aux: AuxUsage) {
+        if (aux.promptTokens <= 0 && aux.completionTokens <= 0 && aux.searchRequests <= 0) return
+        val hit = if (aux.cacheReadReported) aux.cachedTokens.coerceAtLeast(0) else 0
+        val miss = if (aux.cacheReadReported) aux.uncachedInputTokens.coerceAtLeast(0) else aux.promptTokens
+        val cost = (CostBook.costOf(
+            usageModel = aux.model,
+            promptTokens = aux.promptTokens,
+            completionTokens = aux.completionTokens,
+            cachedTokens = hit,
+            uncachedTokens = miss,
+            cacheWriteTokens = aux.cacheWriteTokens,
+            atMillis = System.currentTimeMillis()
+        ) ?: 0.0) + CostBook.searchCostCny(aux.searchRequests)
+        // 会话累计：检索与对话共用同一张会话卡片，请求数与 token 都要算进去
+        val id = currentSessionId()
+        writeSessions(sessions().map {
+            if (it.id == id) {
+                it.copy(
+                    promptTokens = it.promptTokens + aux.promptTokens,
+                    completionTokens = it.completionTokens + aux.completionTokens,
+                    requests = it.requests + aux.modelRequests,
+                    cacheHitTokens = it.cacheHitTokens + hit,
+                    cacheMissTokens = it.cacheMissTokens + miss,
+                    composition = it.composition + SessionComposition(toolResults = aux.promptTokens)
+                )
+            } else {
+                it
+            }
+        })
+        persistCurrent()
+        UsageLedger.record(
+            context = appContext,
+            promptTokens = aux.promptTokens,
+            completionTokens = aux.completionTokens,
+            cacheHitTokens = hit,
+            cacheMissTokens = miss,
+            composition = LedgerComposition(toolResults = aux.promptTokens),
+            costCny = cost,
+            requests = aux.modelRequests,
+            searches = aux.searchRequests
+        )
+        val ledger = UsageLedger.snapshot()
+        stats = stats.copy(
+            totalPromptTokens = stats.totalPromptTokens + aux.promptTokens,
+            totalCompletionTokens = stats.totalCompletionTokens + aux.completionTokens,
+            totalRequests = stats.totalRequests + aux.modelRequests,
+            globalPromptTokens = ledger.totalPromptTokens,
+            globalCompletionTokens = ledger.totalCompletionTokens,
+            globalRequests = ledger.totalRequests,
+            todayPromptTokens = ledger.todayPromptTokens,
+            todayCompletionTokens = ledger.todayCompletionTokens,
+            todayRequests = ledger.todayRequests
+        )
+        syncSessionTiming()
+    }
+
+    /**
+     * 把会话标题那一次模型请求入账。
+     *
+     * 标题请求在会话建立时旁路发出，用量不属于任何对话回合；不记账就会让总账比官方少一次请求
+     * 与百余 tokens。单价取当前模型、峰谷取发生时刻；输入归「用户」段、输出归「输出」段。
+     *
+     * @param sessionId 发起标题请求的会话；切走之后结果仍要落回原会话
+     */
+    fun recordTitleUsage(sessionId: String, finished: LlmEvent.Finished) {
+        val prompt = finished.promptTokens.coerceAtLeast(0)
+        val completion = finished.completionTokens.coerceAtLeast(0)
+        if (prompt <= 0 && completion <= 0) return
+        val hit = if (finished.cacheReported) finished.cachedTokens.coerceAtLeast(0) else 0
+        val miss = when {
+            !finished.cacheReported -> prompt
+            finished.promptIncludesCache -> (prompt - hit).coerceAtLeast(0)
+            else -> prompt
+        }
+        val cost = CostBook.costOf(
+            usageModel = ProviderStore.current(appContext).id + "/" + ApiConfig.loadModel(appContext),
+            promptTokens = prompt,
+            completionTokens = completion,
+            cachedTokens = hit,
+            uncachedTokens = miss,
+            cacheWriteTokens = finished.cacheWriteTokens ?: 0,
+            atMillis = System.currentTimeMillis()
+        ) ?: 0.0
+        val id = sessionId.ifEmpty { currentSessionId() }
+        writeSessions(sessions().map {
+            if (it.id == id) {
+                it.copy(
+                    promptTokens = it.promptTokens + prompt,
+                    completionTokens = it.completionTokens + completion,
+                    requests = it.requests + 1,
+                    cacheHitTokens = it.cacheHitTokens + hit,
+                    cacheMissTokens = it.cacheMissTokens + miss,
+                    composition = it.composition +
+                        SessionComposition(user = prompt, output = completion)
+                )
+            } else {
+                it
+            }
+        })
+        persistCurrent()
+        UsageLedger.record(
+            context = appContext,
+            promptTokens = prompt,
+            completionTokens = completion,
+            cacheHitTokens = hit,
+            cacheMissTokens = miss,
+            composition = LedgerComposition(user = prompt, output = completion),
+            costCny = cost
+        )
+        val ledger = UsageLedger.snapshot()
+        stats = stats.copy(
+            totalPromptTokens = stats.totalPromptTokens + prompt,
+            totalCompletionTokens = stats.totalCompletionTokens + completion,
+            totalRequests = stats.totalRequests + 1,
+            globalPromptTokens = ledger.totalPromptTokens,
+            globalCompletionTokens = ledger.totalCompletionTokens,
+            globalRequests = ledger.totalRequests,
+            todayPromptTokens = ledger.todayPromptTokens,
+            todayCompletionTokens = ledger.todayCompletionTokens,
+            todayRequests = ledger.todayRequests
+        )
+        syncSessionTiming()
+    }
+
+    /**
      * 把「本次请求视图的估算构成」折算成计费构成。
      *
      * 服务端给的 prompt tokens 是真实总额，这里按七段估算占比分摊；输出直接取 completion。
@@ -1362,6 +1495,7 @@ class ContextState(
         val buckets = (span + bucketDays - 1) / bucketDays
         val tokens = LongArray(buckets)
         val requests = LongArray(buckets)
+        val searches = LongArray(buckets)
         // 每档的轮次数：既用于摊历史遗留（权重），也让「均匀摊」有个真实依据
         val rounds = LongArray(buckets)
         // 点选后要显示缓存与费用，按档累加；历史遗留摊入的档没有明细，保持 0
@@ -1378,6 +1512,7 @@ class ContextState(
             ledger.days[key]?.let { day ->
                 tokens[index] += day.prompt.toLong() + day.completion
                 requests[index] += day.requests.toLong()
+                searches[index] += day.searches.toLong()
                 rounds[index] += day.rounds.toLong()
                 cacheHit[index] += day.cacheHit
                 cacheMiss[index] += day.cacheMiss
@@ -1444,6 +1579,7 @@ class ContextState(
                 date = labels[index] ?: "",
                 tokens = tokens[index],
                 requests = requests[index].toInt(),
+                searches = searches[index].toInt(),
                 label = shortDate(labels[index] ?: ""),
                 cacheHit = cacheHit[index].toInt(),
                 cacheMiss = cacheMiss[index].toInt(),
@@ -1473,6 +1609,7 @@ class ContextState(
                 date = date,
                 tokens = usage.prompt.toLong() + usage.completion,
                 requests = usage.requests,
+                searches = usage.searches,
                 label = hour.toString() + "时",
                 cacheHit = usage.cacheHit,
                 cacheMiss = usage.cacheMiss,

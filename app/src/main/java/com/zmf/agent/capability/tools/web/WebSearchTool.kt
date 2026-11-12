@@ -5,6 +5,7 @@ import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.capability.tools.Tool
+import com.zmf.agent.capability.tools.AuxUsage
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolResult
 import kotlinx.coroutines.CancellationException
@@ -101,6 +102,10 @@ class WebSearchTool : Tool {
                     }
                 }.awaitAll()
                 val elapsed = System.currentTimeMillis() - started
+
+                // 检索端点每条 query 都是一次真实的模型请求，服务端已按 token 与检索次数计费：
+                // 无论下面是否报错，先把这批用量交给账本，否则对话框与总账都会少算。
+                reportUsage(ctx, outcomes.mapNotNull { it.second.getOrNull()?.usage })
 
                 // 任一 query 失败则整次报错：仅返回不完整结果会使模型误判为「网络上仅有这些内容」
                 val failed = outcomes.firstOrNull { it.second.isFailure }
@@ -269,7 +274,68 @@ class WebSearchTool : Tool {
         if (hits.isEmpty()) throw SearchException("检索没有返回任何结果")
         return Parsed(
             hits = hits.map { hit -> hit.copy(snippet = snippets[hit.url].orEmpty()) },
-            answer = mergeAnswer(answers)
+            answer = mergeAnswer(answers),
+            usage = usageOf(root)
+        )
+    }
+
+    /**
+     * 读出这次检索响应的用量。
+     *
+     * 端点走 Anthropic 协议：`input_tokens` 不含缓存部分，缓存读写各有独立字段，
+     * 检索次数在 `server_tool_use.web_search_requests`。字段缺失时按 0 计，
+     * 只有缓存读取字段单独标记「是否上报」，避免把「没报」画成「命中 0」。
+     */
+    private fun usageOf(root: JSONObject): SearchUsage {
+        val usage = root.optJSONObject("usage") ?: return SearchUsage()
+        val tool = usage.optJSONObject("server_tool_use")
+        return SearchUsage(
+            inputTokens = usage.optInt("input_tokens", 0).coerceAtLeast(0),
+            cacheReadTokens = usage.optInt("cache_read_input_tokens", 0).coerceAtLeast(0),
+            cacheWriteTokens = usage.optInt("cache_creation_input_tokens", 0).coerceAtLeast(0),
+            outputTokens = usage.optInt("output_tokens", 0).coerceAtLeast(0),
+            cacheReported = usage.has("cache_read_input_tokens"),
+            searchRequests = (tool?.optInt("web_search_requests", 0) ?: 0).coerceAtLeast(0)
+        )
+    }
+
+    /** 把一批检索响应的用量汇总成一次旁路上报；没有任何数字时不上报。 */
+    private fun reportUsage(ctx: ToolContext, usages: List<SearchUsage>) {
+        if (usages.isEmpty()) return
+        var input = 0
+        var read = 0
+        var write = 0
+        var output = 0
+        var searches = 0
+        var cacheReported = false
+        for (usage in usages) {
+            input += usage.inputTokens
+            read += usage.cacheReadTokens
+            write += usage.cacheWriteTokens
+            output += usage.outputTokens
+            searches += usage.searchRequests
+            if (usage.cacheReported) cacheReported = true
+        }
+        val prompt = input + read + write
+        if (prompt <= 0 && output <= 0 && searches <= 0) return
+        FileLog.log(
+            TAG,
+            "检索用量：请求 " + usages.size + " 次、输入=" + prompt + " 未缓存=" + input +
+                " 缓存读取=" + read + " 缓存写入=" + write + " 输出=" + output +
+                " 检索=" + searches + " 次"
+        )
+        ctx.onAuxUsage(
+            AuxUsage(
+                model = "deepseek/" + ApiDefaults.SEARCH_MODEL,
+                modelRequests = usages.size,
+                promptTokens = prompt,
+                uncachedInputTokens = input,
+                cachedTokens = read,
+                cacheWriteTokens = write,
+                cacheReadReported = cacheReported,
+                completionTokens = output,
+                searchRequests = searches
+            )
         )
     }
 
@@ -363,8 +429,22 @@ class WebSearchTool : Tool {
     /** 一条检索结果；snippet 要等解析完 citations 才知道，所以允许后补。 */
     private data class Hit(val title: String, val url: String, val snippet: String = "")
 
-    /** 一次响应的两半：结果列表 + 正文块拼出的 answer。 */
-    private data class Parsed(val hits: List<Hit>, val answer: String)
+    /** 一次响应的三半：结果列表 + 正文块拼出的 answer + 服务端用量。 */
+    private data class Parsed(
+        val hits: List<Hit>,
+        val answer: String,
+        val usage: SearchUsage
+    )
+
+    /** 一次检索响应的原始用量；字段缺失时全为 0。 */
+    private data class SearchUsage(
+        val inputTokens: Int = 0,
+        val cacheReadTokens: Int = 0,
+        val cacheWriteTokens: Int = 0,
+        val outputTokens: Int = 0,
+        val cacheReported: Boolean = false,
+        val searchRequests: Int = 0
+    )
 
     /** 本工具自己判定的失败（HTTP 非 2xx、响应结构不对），message 就是给模型看的原因。 */
     private class SearchException(message: String) : Exception(message)

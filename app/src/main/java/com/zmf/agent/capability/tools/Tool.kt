@@ -57,7 +57,15 @@ data class ToolContext(
      * 默认返回 null：子智能体 / 定时任务没有「用户当场授权」这条通道，
      * 需要确认的高危操作在那里一律被拒绝（确定性优先）。
      */
-    val lastUserMessage: () -> ChatMessage? = { null }
+    val lastUserMessage: () -> ChatMessage? = { null },
+    /**
+     * 工具自行发起的旁路请求用量回调（目前只有联网检索）。
+     *
+     * 这类请求与对话回合走同一条计费通道，却不属于本轮上下文：
+     * 上报后只进会话累计与总账，不参与本轮请求的输入构成。
+     * 默认空实现：子智能体等没有计费归属的调用方不必实现。
+     */
+    val onAuxUsage: (AuxUsage) -> Unit = {}
 ) {
     init {
         // 没有 context 的 ToolPolicy.checkPath 需要「当前工作区根」当越界比较基准；
@@ -91,6 +99,30 @@ sealed interface ToolResult {
         override val ok: Boolean get() = false
     }
 }
+
+/**
+ * 工具自行发起的旁路请求用量（目前只有联网检索）。
+ *
+ * 检索端点每条 query 就是一次真实的模型请求，服务端同样按 token 与成功请求次数计费；
+ * 这些数字不在对话回合的 usage 里，必须由工具自己上报。
+ */
+data class AuxUsage(
+    /** 计费用模型名，与对话页同一拼法（`provider/model`）。 */
+    val model: String,
+    /** 本批旁路请求数（一条 query 一次请求）。 */
+    val modelRequests: Int,
+    /** 输入总量：未命中 + 命中 + 写入。 */
+    val promptTokens: Int,
+    val uncachedInputTokens: Int,
+    val cachedTokens: Int,
+    /** 缓存写入 tokens；服务端未上报时恒为 0。 */
+    val cacheWriteTokens: Int,
+    /** 服务端是否上报了缓存读取字段；未上报时缓存按 0 计。 */
+    val cacheReadReported: Boolean,
+    val completionTokens: Int,
+    /** 服务端上报的检索次数，按次计费。 */
+    val searchRequests: Int
+)
 
 /**
  * 每个工具声明里都会追加的公共参数名：这一步在做什么。

@@ -25,6 +25,7 @@ import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.core.store.WorkspaceIo
 import com.zmf.agent.core.store.workspaceIoForRoot
+import com.zmf.agent.infra.llm.LlmEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -63,7 +64,9 @@ class SessionController(
     /** 新建会话时快照进会话字段的当前权限档。 */
     private val currentPermission: () -> PermissionLevel,
     /** 新建会话时快照进会话字段的当前思考强度（`off` 表示关闭思考）。 */
-    private val currentEffort: () -> String
+    private val currentEffort: () -> String,
+    /** 标题请求的用量回调（会话 id + 服务端用量）：这条请求同样计费，交给上下文层入账。 */
+    private val onTitleUsage: (String, LlmEvent.Finished) -> Unit
 ) {
 
     /** 全部会话，按 updatedAt 降序（第一个就是最近用过的）；侧边栏直接用。 */
@@ -1022,7 +1025,11 @@ class SessionController(
         titleJobs.remove(id)?.cancel()
         val job = scope.launch {
             try {
-                val generated = SessionTitleNamer.generate(appContext, firstPrompt) ?: return@launch
+                val generated = SessionTitleNamer.generate(
+                    appContext,
+                    firstPrompt,
+                    onUsage = { finished -> onTitleUsage(id, finished) }
+                ) ?: return@launch
                 // 模型输出同样受 80 字节上限约束（DSH 在受理 provider 结果时归一化）
                 val accepted = SessionStore.normalizeTitle(generated)
                 if (accepted.isEmpty()) return@launch

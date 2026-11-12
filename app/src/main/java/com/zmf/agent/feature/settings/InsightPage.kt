@@ -544,7 +544,7 @@ private fun GlobalSection(
             endIndex = end,
             selection = if (point != null) selected else null,
             // 浮层与 DSH 同构：第一行「时段 + 合计」，第二行构成明细；
-            // 明细三项始终全列（为 0 也写出来），请求口径只有「请求次数」一项
+            // 明细三项始终全列（为 0 也写出来），请求口径只有「请求次数」与「检索 API 次数」两项
             tooltip = { index ->
                 val day = global.series.getOrNull(index)
                 if (day == null) {
@@ -589,6 +589,12 @@ private fun GlobalSection(
                                     label = "请求次数",
                                     value = countText(day.requests.toLong()),
                                     color = accent
+                                ),
+                                // 检索按次计费、不占 token，与请求数并列给出，不并入任何构成段
+                                TooltipRow(
+                                    label = "检索 API 次数",
+                                    value = countText(day.searches.toLong()),
+                                    color = accent.copy(alpha = 0.55f)
                                 )
                             )
                         )

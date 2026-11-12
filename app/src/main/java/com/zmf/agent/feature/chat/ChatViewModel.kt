@@ -216,7 +216,11 @@ class ChatViewModel(context: Context) : AgentUi {
         persistenceBlocked = { needsRestart },
         // 新建会话时把「此刻的全局默认值」快照进会话字段；此后的修改只影响之后新建的会话
         currentPermission = { PermissionStore.load(appContext) },
-        currentEffort = { globalEffortWire() }
+        currentEffort = { globalEffortWire() },
+        // 标题请求也计费：用量交回上下文层，与会话累计、总账同口径入账
+        onTitleUsage = { sessionId, finished ->
+            this@ChatViewModel.context.recordTitleUsage(sessionId, finished)
+        }
     )
 
     /** 全部会话，按 updatedAt 降序（第一个就是最近用过的）；侧边栏直接用。 */

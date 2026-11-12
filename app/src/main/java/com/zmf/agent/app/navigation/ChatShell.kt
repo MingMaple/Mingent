@@ -133,10 +133,10 @@ internal fun ChatShell(
                         onOpenChange = { drawerOpen = it },
                         // 面板宽度按窗口收敛：320dp 窗口为 260dp，393dp 及以上为现行的 304dp
                         panelWidth = window.drawerWidthCover,
-                        // 抽屉在所有一级与二级页均可拉出；仅计划页与内置浏览器例外，因其内部包含横滑内容。
-                        // 包管理的 pager 通过 nestedScroll 衔接抽屉进度。
+                        // 抽屉在所有一级与二级页均可拉出；计划、浏览、预览三个独立页例外——
+                        // 它们自带横滑内容或整屏正文，右滑不该把抽屉拉出来。包管理的 pager 通过 nestedScroll 衔接抽屉进度。
                         gestureEnabled = drawerOpen || page == null ||
-                            (page != AppPage.PLAN && page != AppPage.BROWSER),
+                            (page != AppPage.PLAN && page != AppPage.BROWSER && page != AppPage.PREVIEW),
                         onSwipeLeft = null,
                         interceptRightSwipe = page == AppPage.PACKAGE && pagerAtFirstPage,
                         panel = {

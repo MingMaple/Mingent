@@ -60,6 +60,8 @@ data class InsightDay(
     val date: String,
     val tokens: Long,
     val requests: Int,
+    /** 该档的服务端检索次数；只给请求口径的触摸浮层用。 */
+    val searches: Int = 0,
     /** 轴标签（如「10-31」「14时」）；分桶后取该档首日。 */
     val label: String = "",
     /**

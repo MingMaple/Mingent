@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -59,6 +60,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -296,19 +298,32 @@ internal fun UsageLineChart(
     val density = LocalDensity.current
     // 关键：values 也要进键。切 Token / 请求 时数据换了但点数不变，只靠 tooltip 的 lambda
     // 身份判断并不稳：面板宽度会沿用上一个口径的，看起来两边一样宽。
-    val popupWidth = remember(tooltip, values, last, measurer, density) {
-        val headerStyle = TextStyle(fontSize = 11.sp)
-        val totalStyle = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        val rowStyle = TextStyle(fontSize = 11.sp)
+    /*
+     * 测量与绘制必须共用同一份 TextStyle。
+     *
+     * 只写 fontSize 时，Text 还会叠一层 LocalTextStyle，而 Material 默认带 0.5sp 字距，
+     * 实测宽度比真正渲染的窄，行名与数字的末尾就被裁掉一截。这里以 LocalTextStyle 为底，
+     * 让测量拿到的字距、字体与 Text 完全一致。
+     */
+    val baseTextStyle = LocalTextStyle.current
+    val popupMetrics = remember(tooltip, values, last, measurer, density, baseTextStyle) {
+        val headerStyle = baseTextStyle.merge(TextStyle(fontSize = 11.sp, lineHeight = 15.sp))
+        val totalStyle = baseTextStyle.merge(
+            TextStyle(fontSize = 13.sp, lineHeight = 15.sp, fontWeight = FontWeight.SemiBold)
+        )
+        val rowStyle = baseTextStyle.merge(TextStyle(fontSize = 11.sp, lineHeight = 14.sp))
         val padding = with(density) { POPUP_PADDING.roundToPx() }
         val columnGap = with(density) { COLUMN_GAP.roundToPx() }
         val dot = with(density) { DOT.roundToPx() }
         val dotGap = with(density) { DOT_GAP.roundToPx() }
+        // 测量值与绘制时的字宽可能有 1px 级舍入差，留一点余量，避免末尾一两个字被裁掉
+        val slack = with(density) { 2.dp.roundToPx() }
         /*
-         * 左右分区：左列只放「行名」与左上角日期，取两者最宽的一个，宽度固定；
-         * 右列只放数字，取这张图所有数字里最宽的一个（通常是右上角的总量）；
-         * 中间留固定空白。数字一律右对齐，最宽的那个正好贴着空白右缘。
-         * 这样面板宽度整张图恒定，且长数字永远不会压到左列。
+         * 左中右三段：
+         * - 左：行名与左上角日期，取两者最宽的一个；固定宽度，只写文字；
+         * - 中：固定空白，把左右两列隔开；
+         * - 右：数字，取这张图所有数字里最宽的一个；固定宽度、右对齐。
+         * 三段宽度都写死，行内不再用 weight 分配，数字再长也不会挤到左边的标题。
          */
         var maxLabel = 0
         var maxHeader = 0
@@ -328,10 +343,20 @@ internal fun UsageLineChart(
                 if (valueWidth > maxNumber) maxNumber = valueWidth
             }
         }
-        val leftWidth = maxOf(maxHeader, dot + dotGap + maxLabel)
-        padding * 2 + leftWidth + columnGap + maxNumber
+        val leftWidth = maxOf(maxHeader, dot + dotGap + maxLabel) + slack
+        val numberWidth = maxNumber + slack
+        PopupMetrics(
+            width = padding * 2 + leftWidth + columnGap + numberWidth,
+            leftWidth = leftWidth,
+            numberWidth = numberWidth,
+            headerStyle = headerStyle,
+            totalStyle = totalStyle,
+            rowStyle = rowStyle
+        )
     }
-    val popupWidthDp = with(density) { popupWidth.toDp() }
+    val popupWidthDp = with(density) { popupMetrics.width.toDp() }
+    val leftWidthDp = with(density) { popupMetrics.leftWidth.toDp() }
+    val numberWidthDp = with(density) { popupMetrics.numberWidth.toDp() }
     /*
      * 浮层的横坐标只由手势驱动，不跟着 selected 走。
      *
@@ -524,7 +549,7 @@ internal fun UsageLineChart(
                 if (boxes.lastIndex > 0) tryDraw(boxes.lastIndex)
                 for (index in 1 until boxes.lastIndex) tryDraw(index)
             }
-            if (data != null) UsageChartPopup(data, popupWidthDp)
+            if (data != null) UsageChartPopup(data, popupWidthDp, leftWidthDp, numberWidthDp, popupMetrics)
         }
     ) { measurables, constraints ->
         val chartPlaceable = measurables[0].measure(constraints)
@@ -584,7 +609,13 @@ internal data class TooltipRow(val label: String, val value: String, val color: 
  * 不照搬 DSH 的深色胶囊（反色黑块在本应用里只出现在提示条）。
  */
 @Composable
-private fun UsageChartPopup(data: TooltipData, width: Dp) {
+private fun UsageChartPopup(
+    data: TooltipData,
+    width: Dp,
+    leftWidth: Dp,
+    numberWidth: Dp,
+    metrics: PopupMetrics
+) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Surface(
         modifier = Modifier.width(width),
@@ -594,60 +625,77 @@ private fun UsageChartPopup(data: TooltipData, width: Dp) {
         shadowElevation = 8.dp
     ) {
         Column(Modifier.padding(horizontal = POPUP_PADDING, vertical = 7.dp)) {
+            /*
+             * 每行都是「左固定 + 中固定 + 右固定」：左右两列不再用 weight 分剩余空间，
+             * 中间空白单独占位。否则右侧数字加间距会把左侧标题的最后几个字挤掉。
+             */
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = data.header,
-                    modifier = Modifier.weight(1f),
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
+                    modifier = Modifier.width(leftWidth),
+                    style = metrics.headerStyle,
                     color = onSurface.copy(alpha = 0.55f),
                     maxLines = 1,
                     softWrap = false
                 )
+                Spacer(Modifier.width(COLUMN_GAP))
                 if (data.total != null) {
                     Text(
                         text = data.total,
-                        modifier = Modifier.padding(start = COLUMN_GAP),
-                        fontSize = 13.sp,
-                        lineHeight = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.width(numberWidth),
+                        style = metrics.totalStyle,
                         color = onSurface,
                         maxLines = 1,
-                        softWrap = false
+                        softWrap = false,
+                        textAlign = TextAlign.End
                     )
                 }
             }
             for (row in data.rows) {
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(DOT)
-                            .background(row.color, RoundedCornerShape(1.5.dp))
-                    )
-                    Text(
-                        text = row.label,
-                        modifier = Modifier.weight(1f).padding(start = DOT_GAP),
-                        fontSize = 11.sp,
-                        lineHeight = 14.sp,
-                        color = onSurface.copy(alpha = 0.70f),
-                        maxLines = 1,
-                        softWrap = false
-                    )
+                    Box(Modifier.width(leftWidth)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(DOT)
+                                    .background(row.color, RoundedCornerShape(1.5.dp))
+                            )
+                            Text(
+                                text = row.label,
+                                modifier = Modifier.padding(start = DOT_GAP),
+                                style = metrics.rowStyle,
+                                color = onSurface.copy(alpha = 0.70f),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(COLUMN_GAP))
                     Text(
                         text = row.value,
-                        modifier = Modifier.padding(start = COLUMN_GAP),
-                        fontSize = 11.sp,
-                        lineHeight = 14.sp,
+                        modifier = Modifier.width(numberWidth),
+                        style = metrics.rowStyle,
                         color = onSurface,
                         maxLines = 1,
-                        softWrap = false
+                        softWrap = false,
+                        textAlign = TextAlign.End
                     )
                 }
             }
         }
     }
 }
+
+/** 浮层三段（左标题 / 中空白 / 右数值）的固定宽度（px）与实测用的文字样式。 */
+private data class PopupMetrics(
+    val width: Int,
+    val leftWidth: Int,
+    val numberWidth: Int,
+    val headerStyle: TextStyle,
+    val totalStyle: TextStyle,
+    val rowStyle: TextStyle
+)
 
 
 

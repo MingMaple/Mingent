@@ -8,11 +8,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
@@ -94,16 +91,15 @@ internal fun PreviewPage(
                 if (PreviewTabs.observe(path, source?.version ?: 0L)) refreshed = refreshed + path
             }
 
-            // 顶栏恒定，与「计划」页同一结构：切换标签时上方不再整块替换
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TopIconButton(glyph = "←", onClick = onBack)
-                Text(
-                    text = "预览",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(Modifier.weight(1f))
+            // 顶栏一行：返回、文件标签条、导出。选中标签即当前文件，不再单起「预览」标题行，
+            // 切换标签时上方结构不变，只有正文交叉淡化
+            TabHeaderRow(
+                items = tabs.map { TabStripItem(key = it.path, label = FileKinds.nameOf(it.path)) },
+                selectedKey = active?.path,
+                onSelect = { path -> PreviewTabs.activate(path) },
+                onClose = { path -> PreviewTabs.close(path) },
+                onBack = onBack
+            ) {
                 // 导出固定在最右上角：md、pdf、docx、图片、打不开的格式一律同一位置，
                 // 各页正文布局可以不同，这个入口不许动；文件已不存在时不给这个入口
                 if (source != null && source.exists) {
@@ -120,17 +116,6 @@ internal fun PreviewPage(
                         }
                     )
                 }
-            }
-
-            // 标签条常驻（哪怕只剩一条）：多标签与单标签的页面结构一致，不会因少一条而整体上移
-            if (tabs.isNotEmpty()) {
-                TabStrip(
-                    items = tabs.map { TabStripItem(key = it.path, label = FileKinds.nameOf(it.path)) },
-                    selectedKey = active?.path,
-                    onSelect = { path -> PreviewTabs.activate(path) },
-                    onClose = { path -> PreviewTabs.close(path) }
-                )
-                Spacer(Modifier.height(8.dp))
             }
 
             if (active == null) {

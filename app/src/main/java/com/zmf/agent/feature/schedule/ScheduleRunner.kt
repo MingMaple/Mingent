@@ -42,6 +42,7 @@ import com.zmf.agent.core.notify.Notifier
 import com.zmf.agent.infra.system.AndroidPermissions
 import com.zmf.agent.capability.runtime.AgentForegroundService
 import com.zmf.agent.capability.runtime.PlatformAlarms
+import com.zmf.agent.capability.tools.AuxUsage
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
@@ -481,7 +482,9 @@ object ScheduleRunner {
                 context = app,
                 permission = permission,
                 workspaceRoot = workspace,
-                sessionId = session.id
+                sessionId = session.id,
+                // 检索等工具自行发起的请求同样计费：与聊天页同一口径，只并入会话与总账
+                onAuxUsage = { aux -> recordAuxUsage(app, session.id, aux) }
             ),
             ui = ui,
             // 后台无人值守：达到工具轮数上限时以空工具表收尾，保证本轮仍有正文
@@ -996,6 +999,50 @@ object ScheduleRunner {
                 output = composition.output
             ),
             costCny = cost ?: 0.0
+        )
+    }
+
+    /**
+     * 记一次工具旁路请求的用量（联网检索）。
+     *
+     * 与聊天页同一口径：只并入会话累计与总账，不改本轮消息的用量；
+     * 检索结果作为工具结果进入请求，输入构成记在「工具结果」一段。
+     */
+    private fun recordAuxUsage(app: Context, sessionId: String, aux: AuxUsage) {
+        if (aux.promptTokens <= 0 && aux.completionTokens <= 0 && aux.searchRequests <= 0) return
+        val hit = if (aux.cacheReadReported) aux.cachedTokens.coerceAtLeast(0) else 0
+        val miss = if (aux.cacheReadReported) aux.uncachedInputTokens.coerceAtLeast(0) else aux.promptTokens
+        val cost = (CostBook.costOf(
+            usageModel = aux.model,
+            promptTokens = aux.promptTokens,
+            completionTokens = aux.completionTokens,
+            cachedTokens = hit,
+            uncachedTokens = miss,
+            cacheWriteTokens = aux.cacheWriteTokens,
+            atMillis = System.currentTimeMillis()
+        ) ?: 0.0) + CostBook.searchCostCny(aux.searchRequests)
+        SessionStore.addUsage(
+            app,
+            sessionId,
+            SessionUsageDelta(
+                promptTokens = aux.promptTokens,
+                completionTokens = aux.completionTokens,
+                requests = aux.modelRequests,
+                cacheHitTokens = hit,
+                cacheMissTokens = miss,
+                composition = SessionComposition(toolResults = aux.promptTokens)
+            )
+        )
+        UsageLedger.record(
+            context = app,
+            promptTokens = aux.promptTokens,
+            completionTokens = aux.completionTokens,
+            cacheHitTokens = hit,
+            cacheMissTokens = miss,
+            composition = LedgerComposition(toolResults = aux.promptTokens),
+            costCny = cost,
+            requests = aux.modelRequests,
+            searches = aux.searchRequests
         )
     }
 
