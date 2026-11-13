@@ -225,6 +225,9 @@ internal fun ChatAppEffects(
     DisposableEffect(Unit) {
         LinkRouter.onOpen = { url ->
             BrowserHolder.open(context, url)
+            // 从预览页里的链接进入网页：记住来路，返回时回到刚才那一页（阅读位置原样保留）；
+            // 从主页进入则没有来路，返回仍回主页
+            ui.browserReturnPage.value = ui.page.value.takeIf { it == AppPage.PREVIEW }
             page = AppPage.BROWSER
             true
         }
@@ -283,7 +286,7 @@ internal fun ChatBackHandlers(
     // 该功能原由顶栏的「‹」承担，但其无历史时成为不可点击的箭头，看似故障，
     // 已从顶栏移除，改由系统返回统一处理。
     BackHandler(enabled = page == AppPage.BROWSER) {
-        if (!BrowserHolder.goBack()) page = null
+        if (!BrowserHolder.goBack()) page = ui.browserExitTarget()
     }
     BackHandler(enabled = page == AppPage.WORKSPACE) { page = null }
     BackHandler(enabled = page == AppPage.SUBAGENT) { page = null }
@@ -304,8 +307,11 @@ internal fun ChatBackHandlers(
     BackHandler(enabled = page == AppPage.GENERAL) { page = AppPage.SETTINGS }
     BackHandler(enabled = page == AppPage.MEMORY) { page = AppPage.SETTINGS }
     BackHandler(enabled = page == AppPage.PLAN) { page = null }
-    // 预览页只有一层：返回即回主页，与页面左上角的箭头一致。标签留在原地，顶栏入口仍在
-    BackHandler(enabled = page == AppPage.PREVIEW) { page = null }
+    // 预览页可叠层：md 正文里的文件链接在预览页内部逐层打开。
+    // 系统返回先退回上一层预览，回到第一层后才回主页；标签本身不关闭
+    BackHandler(enabled = page == AppPage.PREVIEW) {
+        if (!PreviewTabs.back()) page = null
+    }
     // 洞察页的返回需回到进入时的层级：自主页输入框进入则退回主页，自设置进入则退回设置
     BackHandler(enabled = page == AppPage.CONTEXT_HUB) {
         page = if (contextHubFromHome) null else AppPage.SETTINGS

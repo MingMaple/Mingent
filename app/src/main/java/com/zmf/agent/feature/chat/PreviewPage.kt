@@ -5,6 +5,8 @@ import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,7 +29,10 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -46,6 +51,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
+import kotlin.math.abs
 
 /**
  * 预览页：顶栏 + 标签条 + 正文，与「计划」「浏览」同一套交互与层级。
@@ -64,6 +70,19 @@ internal fun PreviewPage(
     val scope = rememberCoroutineScope()
     // 每个标签的正文状态（滚动位置、已展开的 PDF 页）各自保存：切回来仍在原处
     val holder = rememberSaveableStateHolder()
+
+    // 顶栏随滑动收起（与 via 同一套判定）：一次手势结束时看竖直位移，
+    // 超过 36dp 且以竖直为主才切换——上移收起，下移展开；轻触正文任意位置直接唤出。
+    var headerVisible by remember { mutableStateOf(true) }
+    val swipeThreshold = with(LocalDensity.current) { 36.dp.toPx() }
+    val tapSlop = with(LocalDensity.current) { 8.dp.toPx() }
+    // 切换标签回到展开：新标签的阅读位置与上一份无关
+    LaunchedEffect(active?.path) { headerVisible = true }
+
+    /** docx 正文由 WebView 自己滚动，竖滑判定在它的 View 层完成；true 表示应收起顶栏。 */
+    fun onWebHide(hide: Boolean) {
+        headerVisible = !hide
+    }
 
     // 最后一条标签被关掉：这一页已无内容，退回主页
     LaunchedEffect(tabs.size) {
@@ -92,29 +111,31 @@ internal fun PreviewPage(
             }
 
             // 顶栏一行：返回、文件标签条、导出。选中标签即当前文件，不再单起「预览」标题行，
-            // 切换标签时上方结构不变，只有正文交叉淡化
-            TabHeaderRow(
-                items = tabs.map { TabStripItem(key = it.path, label = FileKinds.nameOf(it.path)) },
-                selectedKey = active?.path,
-                onSelect = { path -> PreviewTabs.activate(path) },
-                onClose = { path -> PreviewTabs.close(path) },
-                onBack = onBack
-            ) {
-                // 导出固定在最右上角：md、pdf、docx、图片、打不开的格式一律同一位置，
-                // 各页正文布局可以不同，这个入口不许动；文件已不存在时不给这个入口
-                if (source != null && source.exists) {
-                    TopIconButton(
-                        glyph = "↗",
-                        fontSize = 17.sp,
-                        onClick = {
-                            // 缓存副本可能是几十兆，放到后台线程，避免点击时卡住界面
-                            scope.launch {
-                                if (!openExternally(context, source)) {
-                                    NoticeCenter.info("没有找到能打开这个文件的应用")
+            // 切换标签时上方结构不变，只有正文交叉淡化。整行可收起，收起时高度归零
+            HideableHeader(visible = headerVisible) {
+                TabHeaderRow(
+                    items = tabs.map { TabStripItem(key = it.path, label = FileKinds.nameOf(it.path)) },
+                    selectedKey = active?.path,
+                    onSelect = { path -> PreviewTabs.activate(path) },
+                    onClose = { path -> PreviewTabs.close(path) },
+                    onBack = onBack
+                ) {
+                    // 导出固定在最右上角：md、pdf、docx、图片、打不开的格式一律同一位置，
+                    // 各页正文布局可以不同，这个入口不许动；文件已不存在时不给这个入口
+                    if (source != null && source.exists) {
+                        TopIconButton(
+                            glyph = "↗",
+                            fontSize = 17.sp,
+                            onClick = {
+                                // 缓存副本可能是几十兆，放到后台线程，避免点击时卡住界面
+                                scope.launch {
+                                    if (!openExternally(context, source)) {
+                                        NoticeCenter.info("没有找到能打开这个文件的应用")
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
 
@@ -123,42 +144,84 @@ internal fun PreviewPage(
                     Text(text = "没有打开的预览", fontSize = 14.sp, color = UiColors.subText)
                 }
             } else {
-                // 正文区交叉淡化：与「计划」页同一套过渡，切标签时下方不再硬切
-                AnimatedContent(
-                    targetState = active,
-                    transitionSpec = { tabContentTransform() },
-                    modifier = Modifier.fillMaxSize(),
-                    label = "preview-body"
-                ) { tab ->
-                    // 每份正文各自取来源：淡出中的那一份仍读自己的路径与版本
-                    val tabVersion = PreviewTabs.versionOf(tab.path)
-                    val tabSource = remember(tab.path, tabVersion, io.displayRoot, io.isSaf) {
-                        previewSourceOf(io, tab.path)
-                    }
-                    // 标签身份即状态键：切换时各自的位置与展开情况跟着走，切回来接在原处
-                    holder.SaveableStateProvider(tab.path) {
-                        key(tab.path) {
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                val pages = pdfPages[tab.path]
-                                val pageText = if (tabSource.kind == FileKind.PDF && pages != null && pages.second > 0) {
-                                    " · 第 " + (pages.first + 1) + " / " + pages.second + " 页"
-                                } else {
-                                    ""
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // 顶栏显隐与轻触唤出共用一次手势：只读位移、不消费事件，正文照常滚动与点击
+                        .pointerInput(swipeThreshold, tapSlop) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(
+                                    requireUnconsumed = false,
+                                    pass = PointerEventPass.Initial
+                                )
+                                var lastX = down.position.x
+                                var lastY = down.position.y
+                                var dx = 0f
+                                var dy = 0f
+                                var multiTouch = false
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    if (event.changes.count { it.pressed } > 1) multiTouch = true
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    dx += change.position.x - lastX
+                                    dy += change.position.y - lastY
+                                    lastX = change.position.x
+                                    lastY = change.position.y
+                                    if (!change.pressed) break
                                 }
-                                PreviewFileHeader(tabSource, pageText)
-                                if (refreshed.contains(tab.path) && tabSource.exists) {
-                                    Text(
-                                        text = "文件已更新",
-                                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
-                                        fontSize = 11.sp,
-                                        color = UiColors.subText
+                                if (multiTouch) return@awaitEachGesture
+                                when {
+                                    // 竖直且够长：上移收起、下移展开
+                                    abs(dy) > swipeThreshold && abs(dy) > abs(dx) -> headerVisible = dy >= 0f
+                                    // 轻触：收起状态下点正文即唤出顶栏
+                                    abs(dx) < tapSlop && abs(dy) < tapSlop -> headerVisible = true
+                                }
+                            }
+                        }
+                ) {
+                    // 正文区交叉淡化：与「计划」页同一套过渡，切标签时下方不再硬切
+                    //
+                    // 过渡目标取路径而不是标签对象：同一路径换新实例（文件被改写、标签刷新）时，
+                    // 以对象为目标会同时组合新旧两份，而保存键同为该路径，SaveableStateProvider
+                    // 会抛「Key … was used multiple times」。以路径为目标则原地更新、不触发过渡。
+                    AnimatedContent(
+                        targetState = active.path,
+                        transitionSpec = { tabContentTransform() },
+                        modifier = Modifier.fillMaxSize(),
+                        label = "preview-body"
+                    ) { path ->
+                        val tab = tabs.firstOrNull { it.path == path } ?: return@AnimatedContent
+                        // 每份正文各自取来源：淡出中的那一份仍读自己的路径与版本
+                        val tabVersion = PreviewTabs.versionOf(tab.path)
+                        val tabSource = remember(tab.path, tabVersion, io.displayRoot, io.isSaf) {
+                            previewSourceOf(io, tab.path)
+                        }
+                        // 标签身份即状态键：切换时各自的位置与展开情况跟着走，切回来接在原处
+                        holder.SaveableStateProvider(tab.path) {
+                            key(tab.path) {
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    val pages = pdfPages[tab.path]
+                                    val pageText = if (tabSource.kind == FileKind.PDF && pages != null && pages.second > 0) {
+                                        " · 第 " + (pages.first + 1) + " / " + pages.second + " 页"
+                                    } else {
+                                        ""
+                                    }
+                                    PreviewFileHeader(tabSource, pageText)
+                                    if (refreshed.contains(tab.path) && tabSource.exists) {
+                                        Text(
+                                            text = "文件已更新",
+                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+                                            fontSize = 11.sp,
+                                            color = UiColors.subText
+                                        )
+                                    }
+                                    PreviewBody(
+                                        source = tabSource,
+                                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                                        onPdfPage = { page, total -> pdfPages[tab.path] = page to total },
+                                        onWebHide = { hide -> onWebHide(hide) }
                                     )
                                 }
-                                PreviewBody(
-                                    source = tabSource,
-                                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                                    onPdfPage = { page, total -> pdfPages[tab.path] = page to total }
-                                )
                             }
                         }
                     }
@@ -173,7 +236,9 @@ internal fun PreviewPage(
 private fun PreviewBody(
     source: PreviewSource,
     modifier: Modifier = Modifier,
-    onPdfPage: ((Int, Int) -> Unit)? = null
+    onPdfPage: ((Int, Int) -> Unit)? = null,
+    /** docx 由 WebView 滚动，方向由它上报给顶栏显隐。 */
+    onWebHide: ((Boolean) -> Unit)? = null
 ) {
     when {
         !source.exists -> PreviewNotice(
@@ -183,7 +248,7 @@ private fun PreviewBody(
         )
         source.kind == FileKind.PDF -> PdfBody(source, modifier, onPdfPage)
         source.kind == FileKind.IMAGE -> ImageBody(source, modifier)
-        source.kind == FileKind.DOCX -> DocxBody(source, modifier)
+        source.kind == FileKind.DOCX -> DocxBody(source, modifier, onWebHide)
         source.kind == FileKind.MARKDOWN -> TextBody(source, markdown = true, modifier = modifier)
         source.kind == FileKind.CODE -> TextBody(source, markdown = false, modifier = modifier)
         source.kind == FileKind.TEXT -> TextBody(source, markdown = false, modifier = modifier)

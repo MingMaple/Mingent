@@ -510,7 +510,9 @@ class SendController(
             }
         )
 
-        streamJob = scope.launch {
+        // 回合必须挂在控制器自有的稳定作用域上：界面传入的 scope 来自输入区组合，
+        // 分享面板顶替输入区时该组合会被销毁，作用域随之取消，正在生成的回合会被误当成「用户停止」。
+        streamJob = this.scope.launch {
             // 用户点「停止」也会走到 finally：那种情况既不算完成也不算失败，不发通知
             var stopped = false
             // 本轮最终答复：只取本轮新增消息，通知不会再把上一轮的答复当成本轮结果
@@ -628,7 +630,7 @@ class SendController(
                 // 落盘完成后再释放会话占用：释放过早会让定时回合在界面写盘期间插进来，被旧快照覆盖
                 SessionBusy.release(turnSessionId)
                 // 收尾链放在最后：状态、落盘、通知都做完，才轮到「接着再跑一个回合」
-                if (!stopped) continueAfterTurn(scope)
+                if (!stopped) continueAfterTurn(this@SendController.scope)
             }
         }
     }

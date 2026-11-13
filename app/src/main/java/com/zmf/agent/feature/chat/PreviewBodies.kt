@@ -245,7 +245,11 @@ private fun lineNumbers(text: String): String {
 
 /** docx 正文：体积上限内整份读出，交给 mammoth 转 HTML 显示。 */
 @Composable
-internal fun DocxBody(source: PreviewSource, modifier: Modifier = Modifier) {
+internal fun DocxBody(
+    source: PreviewSource,
+    modifier: Modifier = Modifier,
+    onHideHint: ((Boolean) -> Unit)? = null
+) {
     var bytes by remember(source.path, source.version) { mutableStateOf<ByteArray?>(null) }
     var failure by remember(source.path, source.version) { mutableStateOf<String?>(null) }
     LaunchedEffect(source.path, source.version) {
@@ -267,7 +271,7 @@ internal fun DocxBody(source: PreviewSource, modifier: Modifier = Modifier) {
         bytes == null -> Box(modifier = modifier, contentAlignment = Alignment.Center) {
             CircularProgressIndicator(strokeWidth = 2.dp)
         }
-        else -> DocxHtmlView(bytes = bytes!!, modifier = modifier)
+        else -> DocxHtmlView(bytes = bytes!!, modifier = modifier, onHideHint = onHideHint)
     }
 }
 

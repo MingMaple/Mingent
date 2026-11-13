@@ -158,7 +158,9 @@ internal fun BoxScope.ChatOverlays(
             startIndex = target.startIndex,
             origin = target.origin,
             root = imageRoot,
-            onDismiss = { viewer = null }
+            onDismiss = { viewer = null },
+            // 背景虚化与图片缩放同一条进度：写回界面状态，由聊天列按图层半径读取
+            onProgress = { ui.viewerProgress.floatValue = it }
         )
     }
 }

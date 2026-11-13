@@ -83,7 +83,12 @@ internal fun ColumnScope.ChatMessageList(
     DisposableEffect(producedFiles) {
         FileLinkRouter.attach { token -> ProducedFiles.match(producedFiles, token)?.path }
         FileLinkRouter.open = { path ->
-            PreviewTabs.open(path)
+            // 在预览页里点开文件链接＝进入下一层：记下来路，系统返回时逐层退回
+            if (ui.page.value == AppPage.PREVIEW) {
+                PreviewTabs.openChild(path)
+            } else {
+                PreviewTabs.open(path)
+            }
             ui.page.value = AppPage.PREVIEW
             true
         }

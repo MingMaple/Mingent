@@ -101,14 +101,21 @@ fun PlanPage(
                     // 顶栏压到一行后，正文与标签条之间留一点呼吸位（与预览页的文件头一致）
                     Spacer(Modifier.height(6.dp))
                     // 正文交叉淡化：与预览页同一套过渡，切条目时下方不再硬切
+                    //
+                    // 过渡的目标取 id 而不是计划对象本身：计划对象在状态变化（例如「同意执行」后
+                    // 转为不可执行）时会被替换成新实例，若以对象为目标，交叉淡化会同时组合新旧两份，
+                    // 而两者的保存键同为 plan.id，SaveableStateProvider 会直接抛
+                    // 「Key … was used multiple times」把进程带走。
                     AnimatedContent(
-                        targetState = current,
+                        targetState = current.id,
                         transitionSpec = { tabContentTransform() },
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         label = "plan-body"
-                    ) { plan ->
+                    ) { planId ->
+                        // 计划刚被删除时本帧没有可画的内容，直接返回，不进入保存态
+                        val plan = plans.firstOrNull { it.id == planId } ?: return@AnimatedContent
                         // 每份计划的滚动位置各自保存：切回来仍在原处
-                        holder.SaveableStateProvider(plan.id) {
+                        holder.SaveableStateProvider(planId) {
                             Column(modifier = Modifier.fillMaxSize()) {
                                 Column(
                                     modifier = Modifier

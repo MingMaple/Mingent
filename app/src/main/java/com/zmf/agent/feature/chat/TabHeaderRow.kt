@@ -1,5 +1,8 @@
 package com.zmf.agent.feature.chat
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -7,10 +10,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.zmf.agent.uikit.common.TopIconButton
+import kotlin.math.roundToInt
 
 /**
  * 独立页的顶栏：返回、标签条与页级动作共用一行。
@@ -56,5 +64,35 @@ internal fun TabHeaderRow(
             )
         }
         actions()
+    }
+}
+
+/**
+ * 可随滑动收起的顶栏容器。
+ *
+ * 收起时高度真正归零：正文因此多出这一行的高度，阅读空间是实打实变大的。
+ * 内容按自身高度测量（不设最大高度），收起过程中整体上移并由本层裁掉——视觉上是一条
+ * 平滑滑出的 180ms 滑出／滑入，与 via 的节奏一致（不再用弹簧，避免回弹与拖尾）。
+ */
+@Composable
+internal fun HideableHeader(
+    visible: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val progress by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "header-hide"
+    )
+    Layout(modifier = modifier.clipToBounds(), content = content) { measurables, constraints ->
+        val placeables = measurables.map {
+            it.measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+        }
+        val height = placeables.maxOfOrNull { it.height } ?: 0
+        val shown = (height * progress).roundToInt().coerceIn(0, height)
+        layout(placeables.maxOfOrNull { it.width } ?: constraints.maxWidth, shown) {
+            placeables.forEach { it.place(0, shown - height) }
+        }
     }
 }

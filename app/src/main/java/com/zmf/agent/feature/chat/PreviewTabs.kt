@@ -27,6 +27,14 @@ internal object PreviewTabs {
 
     val tabs = mutableStateListOf<PreviewTab>()
 
+    /**
+     * 从预览页内部打开文件的来路（如 md 里的产物链接）。
+     *
+     * 与标签清单分开：标签是「打开过什么」，这里只记录「从哪一层进来的」，
+     * 系统返回据此逐层退回，直到第一层预览才回到主页。
+     */
+    private val trail = mutableListOf<String>()
+
     var activePath by mutableStateOf<String?>(null)
         private set
 
@@ -75,6 +83,32 @@ internal object PreviewTabs {
         }
     }
 
+    /**
+     * 在预览页内部打开另一个文件（正文里的文件链接）：先记下来路，再切到目标。
+     *
+     * 与 [open] 分开是因为来源不同：从会话卡片打开的文件没有上一层，
+     * 系统返回直接回主页；而正文链接是「从当前这一页进去的」，返回应退回当前页。
+     */
+    fun openChild(path: String) {
+        val from = activePath
+        if (from != null && from != path) trail.add(from)
+        open(path)
+    }
+
+    /** 系统返回：退回上一层预览；没有来路时返回 false，由调用方回主页。 */
+    fun back(): Boolean {
+        while (trail.isNotEmpty()) {
+            val previous = trail.removeAt(trail.lastIndex)
+            // 来路已被关闭时继续往上找，不停在一个不存在的标签上
+            if (tabs.any { it.path == previous }) {
+                activePath = previous
+                save()
+                return true
+            }
+        }
+        return false
+    }
+
     /** 关掉一条标签；关掉当前项时落到原位置的下一项，没有则退回最后一条。 */
     fun close(path: String) {
         val index = tabs.indexOfFirst { it.path == path }
@@ -82,6 +116,7 @@ internal object PreviewTabs {
         tabs.removeAt(index)
         versions.remove(path)
         PreviewTextCache.drop(path)
+        trail.removeAll { it == path }
         if (activePath == path) {
             activePath = tabs.getOrNull(index)?.path ?: tabs.lastOrNull()?.path
         }
@@ -120,6 +155,7 @@ internal object PreviewTabs {
         }
         parked[owner] = Parked(tabs.map { it.path }, activePath)
         owner = sessionId
+        trail.clear()
         val back = parked.remove(sessionId)
         tabs.clear()
         if (back != null) {

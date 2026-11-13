@@ -1,5 +1,6 @@
 package com.zmf.agent.feature.shell
 
+import android.content.res.Configuration
 import com.zmf.agent.uikit.common.AnimatedPresenceColumn
 import com.zmf.agent.uikit.common.SaltMenuRow
 import com.zmf.agent.uikit.common.SaltMenuPopover
@@ -59,6 +60,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
@@ -408,6 +410,8 @@ fun AppDrawerContent(
     val drawerScroll = rememberScrollState()
     val scroll = if (compactHeight) drawerScroll else treeScroll
     val density = LocalDensity.current
+    // 竖屏收窄顶部内距：状态栏高度已由 stableStatusBarPadding 按设备给出；横屏维持原内距
+    val portrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
 
     // 展开搜索即聚焦；矮窗口整条抽屉可滚动，输入框在键盘弹起后会被压到键盘下方，
     // 因此聚焦后再把标题行滚到抽屉顶部。输入框在本帧内刚进入组合，等两帧让布局完成后再请求焦点
@@ -479,7 +483,14 @@ fun AppDrawerContent(
             .imePadding()
             // 抽屉体水平内距收到 10dp（仅抽屉体，行内图标与操作区间距不变）：
             // 再低于 10dp 会使会话标题与右侧时间贴边
-            .padding(horizontal = 10.dp, vertical = 12.dp)
+            // 顶部竖屏只保留 4dp、横屏维持 12dp：状态栏高度已由 stableStatusBarPadding 按设备给出，
+            // 竖屏再叠 12dp 会让抽屉头部离状态栏过远
+            .padding(
+                start = 10.dp,
+                end = 10.dp,
+                top = if (portrait) 4.dp else 12.dp,
+                bottom = 12.dp
+            )
             // 矮窗口：整条抽屉（头部 + 入口卡 + 工作区树）一起滚动，树按内容自然展开；
             // 此时可视区边框由本列给出，冷启动回位以它为基准
             .then(
@@ -1552,10 +1563,15 @@ private fun DrawerRow(
         Spacer(Modifier.width(14.dp))
         Text(
             text = label,
+            // 标题优先占位、说明文字让位：抽屉最窄 280dp，特大字号下两者会挤在一处。
+            // 标题按剩余宽度伸缩并以省略号收尾，与说明之间固定留 8dp，避免文字粘连
+            modifier = Modifier.weight(1f),
             fontSize = 16.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.35f)
         )
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
         // 没有说明文字（例如「设置」行）时整块不画，避免留下多余间隔
         if (value != null) {
             Text(

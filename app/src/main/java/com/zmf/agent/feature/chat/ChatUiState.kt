@@ -2,7 +2,9 @@ package com.zmf.agent.feature.chat
 
 import android.content.Context
 import android.net.Uri
+import androidx.compose.runtime.MutableFloatState
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -122,6 +124,30 @@ internal class ChatUiState(context: Context) {
 
     /** 图片详情：这条消息的全部图片 + 起点下标。 */
     val viewer: MutableState<ViewerTarget?> = mutableStateOf(null)
+
+    /**
+     * 浏览页的来路：从预览页里的链接进入时记住预览页。
+     *
+     * 浏览页返回（含系统返回退到历史尽头）应回到离开的那一页，而不是直接回主页；
+     * 从主页打开的网页没有来路，仍回主页。
+     */
+    val browserReturnPage: MutableState<AppPage?> = mutableStateOf(null)
+
+    /** 离开浏览页的落点：来路仍有效则回去，否则回主页；读一次即清空。 */
+    fun browserExitTarget(): AppPage? {
+        val back = browserReturnPage.value
+        browserReturnPage.value = null
+        // 预览标签已全部关闭时没有可回去的页面，按主页处理
+        return if (back == AppPage.PREVIEW && PreviewTabs.count > 0) back else null
+    }
+
+    /**
+     * 图片查看器的入场／退场进度（0–1），由查看器自己写入。
+     *
+     * 聊天列不在查看器的组合内，却需要在同一节奏上虚化背景；把动画值集中到这里，
+     * 两边读的是同一条曲线，不会出现「图片在动、背景已经到位」的脱节。
+     */
+    val viewerProgress: MutableFloatState = mutableFloatStateOf(0f)
 
     val subAgentPanelOpen: MutableState<Boolean> = mutableStateOf(false)
     val subAgentDetailId: MutableState<String?> = mutableStateOf(null)

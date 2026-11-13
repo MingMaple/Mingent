@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -17,7 +18,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.toArgb
 import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.uikit.theme.Palette
 
 /**
  * 内置浏览器（与「计划页」对齐）：一个地址一个标签，标签并列、可左右滑。
@@ -74,6 +77,9 @@ internal object BrowserState {
     /** 是否至少有一个标签：顶栏网页图标的显隐依据。 */
     val alive: Boolean get() = tabs.isNotEmpty()
 
+    /** 全部标签，含其他会话挂起的那些：深浅色切换必须作用到每一份 WebView。 */
+    fun allTabs(): List<BrowserTab> = tabs + parked.values.flatMap { it.tabs }
+
     /** 切到已经存在的标签；id 不在名单里时什么都不做。 */
     fun activate(id: Long) {
         if (tabs.any { it.id == id }) activeId = id
@@ -112,6 +118,21 @@ internal object BrowserHolder {
 
     private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private var nextTabId = 1L
+
+    /**
+     * 当前是否深色：由界面在主题变化时告知，新建标签时也要用上。
+     *
+     * 网页的深浅色以 App 自己的主题为准，不读系统夜间模式——本应用的深浅色是独立设置项，
+     * 可以与系统相反；若交给系统的 FORCE_DARK_AUTO，两者会不一致。
+     */
+    private var dark = false
+
+    /** 主题切换：作用到每一份已存在的 WebView，含其他会话挂起的标签。 */
+    fun setDark(value: Boolean) {
+        if (dark == value) return
+        dark = value
+        BrowserState.allTabs().forEach { applyDark(it.web) }
+    }
 
     /**
      * 打开一个新地址 = 新建一个标签，并切到它。
@@ -192,6 +213,25 @@ internal object BrowserHolder {
     }
 
     /**
+     * 让一份 WebView 的网页配色跟随 App 的深浅色。
+     *
+     * 底色一并设置：网页首帧绘制前的那一瞬会露出 WebView 自身底色，深色下是刺眼的白。
+     * Android 10 起用 FORCE_DARK 强制网页转为深色；更早的系统没有这项能力，网页保持原色。
+     */
+    private fun applyDark(web: WebView) {
+        runCatching {
+            web.setBackgroundColor(
+                (if (dark) Palette.DarkBackground else Palette.LightBackground).toArgb()
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                @Suppress("DEPRECATION")
+                web.settings.forceDark =
+                    if (dark) WebSettings.FORCE_DARK_ON else WebSettings.FORCE_DARK_OFF
+            }
+        }.onFailure { FileLog.log("browser", "网页深浅色应用失败: " + it.message) }
+    }
+
+    /**
      * 交由 AndroidView 的壳。**先将自身从旧父容器上移除**再交出：
      * 上一轮离开浏览页时 Compose 仅将壳从窗口移除，壳内 WebView 与壳的父子关系仍存在，
      * 直接 addView 至新容器会抛出 "already has a parent"。
@@ -235,6 +275,8 @@ internal object BrowserHolder {
             }
             val frame = FrameLayout(context)
             frame.addView(web, FrameLayout.LayoutParams(MATCH, MATCH))
+            // 新建标签同样按当前主题上色：主题切换发生在页面打开之前时，不能等到下一次切换
+            applyDark(web)
             val tab = BrowserTab(nextTabId++, web, frame, url)
             tab.url = url
             // 回调中写入的是**该标签自身**的状态：多个标签各自记录标题与历史

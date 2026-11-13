@@ -32,8 +32,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.zmf.agent.capability.subagent.SubAgentRegistry
@@ -86,7 +89,6 @@ internal fun ChatMainContent(
     splitTrace: Boolean
 ) {
     var page by ui.page
-    var viewer by ui.viewer
     val window = LocalUiWindow.current
 
     // 轨迹辅窗格打开时，聊天列实际可用宽度会再窄一截：气泡与内容列按压缩后的宽度计算
@@ -117,8 +119,7 @@ internal fun ChatMainContent(
                             imePad = imePad,
                             imeVisible = imeVisible,
                             onPickFile = onPickFile,
-                            onLogLaunch = onLogLaunch,
-                            blurred = viewer != null
+                            onLogLaunch = onLogLaunch
                         )
                     } else {
                         // 轨迹页与聊天页为一对连体平移面板：向左滑动将聊天页推出左边界、
@@ -149,8 +150,7 @@ internal fun ChatMainContent(
                                 imePad = imePad,
                                 imeVisible = imeVisible,
                                 onPickFile = onPickFile,
-                                onLogLaunch = onLogLaunch,
-                                blurred = viewer != null
+                                onLogLaunch = onLogLaunch
                             )
                         }
                     }
@@ -227,8 +227,7 @@ private fun ChatColumn(
     imePad: Dp,
     imeVisible: Boolean,
     onPickFile: () -> Unit,
-    onLogLaunch: (String) -> Unit,
-    blurred: Boolean
+    onLogLaunch: (String) -> Unit
 ) {
     var page by ui.page
     var drawerOpen by ui.drawerOpen
@@ -240,12 +239,22 @@ private fun ChatColumn(
     // 已打开的预览标签数：为 0 时顶栏不出现入口（与计划、网页同一口径）。
     // 读快照状态列表的 size 即建立订阅，标签增删会自动重组，无需额外状态。
     val previewCount = PreviewTabs.count
+    // 取 16dp 而非 24dp：模糊后仍需辨认下方文字轮廓，24dp 会使整屏变为纯色
+    val blurRadiusPx = with(LocalDensity.current) { 16.dp.toPx() }
 
     Surface(
         modifier = Modifier
             .fillMaxSize()
-            // 取 16dp 而非 24dp：模糊后仍需辨认下方文字轮廓，24dp 会使整屏变为纯色
-            .then(if (blurred) Modifier.blur(16.dp) else Modifier),
+            // 虚化半径跟随查看器的出入场进度（两者同一条动画）。半径在图层阶段读取，
+            // 只重绘这一层，不触发整个聊天列重组，滑动与缩放期间不会因此掉帧
+            .graphicsLayer {
+                val progress = ui.viewerProgress.floatValue
+                renderEffect = if (progress > 0.01f) {
+                    BlurEffect(blurRadiusPx * progress, blurRadiusPx * progress, TileMode.Clamp)
+                } else {
+                    null
+                }
+            },
         color = MaterialTheme.colorScheme.background
     ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
@@ -279,7 +288,11 @@ private fun ChatColumn(
                             page = AppPage.PLAN
                         },
                         browserOpen = BrowserState.alive,
-                        onBrowserClick = { page = AppPage.BROWSER },
+                        // 从主页进入浏览页没有来路：返回即回主页（若上次是从预览页进来的，来路已作废）
+                        onBrowserClick = {
+                            ui.browserReturnPage.value = null
+                            page = AppPage.BROWSER
+                        },
                         previewCount = previewCount,
                         onPreviewClick = { page = AppPage.PREVIEW }
                     )
@@ -353,11 +366,12 @@ private fun ChatColumn(
                             onCancel = { if (!shareSending) ui.shareVisible.value = false },
                             onTargetPicked = { picked ->
                                 shareFailure = null
-                                // 选目标即真实切换会话：上方的会话区立刻变成那个会话的内容，
-                                // 与抽屉点会话 / 新建完全同一条路径。生成期间会话层不允许切换
-                                // （流式结果写的是当前会话的消息表），此时保持原会话不变。
+                                // 生成期间会话层不允许切换（流式结果写的是当前会话的消息表），
+                                // 此时保持原会话不变；选中的就是当前会话本身则不算切换，不提示。
                                 if (viewModel.isStreaming) {
-                                    shareFailure = "正在生成回复，本轮结束后再切换目标"
+                                    if (!viewModel.isShareTargetCurrent(picked)) {
+                                        shareFailure = "正在生成回复，本轮结束后再切换目标"
+                                    }
                                 } else if (!viewModel.selectShareTarget(picked)) {
                                     shareFailure = "目标会话或工作区已不存在，请重新选择"
                                 }

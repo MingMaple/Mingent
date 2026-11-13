@@ -372,22 +372,27 @@ internal fun ChatPageLayers(
             )
         }
 
-        // 内置浏览器：点击回复中的链接即滑入。独立于设置层，返回仅回主页（页面不销毁）
+        // 产物预览：与计划、浏览同层次的一页。卡片、正文里的产物路径、顶栏图标都进这里。
+        // 从预览页点网页链接时本层保持可见（浏览页在其上方），返回即回到原来的阅读位置
+        PageSlide(
+            visible = page == AppPage.PREVIEW ||
+                (page == AppPage.BROWSER && ui.browserReturnPage.value == AppPage.PREVIEW)
+        ) {
+            PreviewPage(
+                io = viewModel.currentStorageIo(),
+                onBack = { page = null }
+            )
+        }
+
+        // 内置浏览器：点击回复中的链接即滑入。返回先退网页历史，退到头才回落点：
+        // 从预览页进来的回预览页，从主页进来的回主页（页面实例不销毁）
         AnimatedVisibility(
             visible = page == AppPage.BROWSER,
             enter = slideInHorizontally(Motion.spring()) { it },
             exit = slideOutHorizontally(tween(220)) { it },
             modifier = Modifier.fillMaxSize()
         ) {
-            BrowserPage(onBack = { page = null })
-        }
-
-        // 产物预览：与计划、浏览同层次的一页。卡片、正文里的产物路径、顶栏图标都进这里
-        PageSlide(visible = page == AppPage.PREVIEW) {
-            PreviewPage(
-                io = viewModel.currentStorageIo(),
-                onBack = { page = null }
-            )
+            BrowserPage(onBack = { page = ui.browserExitTarget() })
         }
 
         // 包管理：MCP 服务与 Skill 两个标签页（设置下的二级页）

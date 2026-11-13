@@ -171,6 +171,8 @@ internal fun ChatTopBar(
         viewModel.lastRequestOk == false -> MaterialTheme.colorScheme.error
         else -> UiColors.success
     }
+    // 顶栏按系统状态栏的实际高度留白，与设备无关：stableStatusBarPadding 竖屏取「忽略可见性」
+    // 的 inset（状态栏临时出现时不跳动），横屏沿用按可见性计算的 inset（常态为 0）。
     Row(
         modifier = Modifier
             .fillMaxWidth()

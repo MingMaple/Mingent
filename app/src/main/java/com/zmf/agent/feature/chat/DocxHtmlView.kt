@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -26,8 +27,15 @@ import kotlinx.coroutines.withContext
  * WebView 在这里只是离线文档容器：禁网络、禁跳转，配色由主题注入。
  */
 @Composable
-internal fun DocxHtmlView(bytes: ByteArray, modifier: Modifier = Modifier) {
+internal fun DocxHtmlView(
+    bytes: ByteArray,
+    modifier: Modifier = Modifier,
+    /** 顶栏显隐提示：true 表示应收起。WebView 不经 Compose，手势在 View 层判定。 */
+    onHideHint: ((Boolean) -> Unit)? = null
+) {
     val context = LocalContext.current
+    // factory 只执行一次：回调必须跟随最新组合，否则切换标签后仍写到上一份的显隐状态
+    val hideHint by rememberUpdatedState(onHideHint)
     // 主题色必须在组合内先读出来：UiColors 的几个取值是 @Composable 属性，不能进 remember 的 lambda
     val background = MaterialTheme.colorScheme.background.toArgb()
     val onSurface = MaterialTheme.colorScheme.onSurface.toArgb()
@@ -55,6 +63,9 @@ internal fun DocxHtmlView(bytes: ByteArray, modifier: Modifier = Modifier) {
                 settings.domStorageEnabled = false
                 settings.setSupportZoom(false)
                 setBackgroundColor(background)
+                // 顶栏收起同样走竖滑判定（与浏览页、via 一致）：监听器返回 false，
+                // 文档自身的点击、滑动与缩放不受影响
+                installHeaderSwipe(this) { hide -> hideHint?.invoke(hide) }
                 // 任何跳转一律拦下：文档里的链接不应把用户带出预览页
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = true

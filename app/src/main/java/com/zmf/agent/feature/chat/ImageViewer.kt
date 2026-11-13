@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -29,7 +30,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -78,7 +81,9 @@ fun ImageViewer(
     startIndex: Int,
     root: File,
     origin: Rect? = null,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** 入场／退场进度（0–1）：与图片缩放共用同一条动画，供下层同步背景虚化。 */
+    onProgress: (Float) -> Unit = {}
 ) {
     // 索引在此收口一次，父层传入的越界值不会使下方 paths[index] 抛出异常
     var index by remember(paths, startIndex) {
@@ -270,6 +275,19 @@ fun ImageViewer(
     }
     val backgroundAlpha = (open.value * (1f - dragProgress * 1.6f)).coerceIn(0f, 1f)
     val dismissScale = 1f - dragProgress * 0.12f
+
+    // 背景虚化与遮罩共用同一条进度：开＝图片放大到哪、虚化就到哪；关＝图片缩回的同时归零。
+    // 这里写入的是「动画值」而不是动画结束后的状态，因此下层不会在动效之外另起一次渐变。
+    val progressSink by rememberUpdatedState(onProgress)
+    LaunchedEffect(Unit) {
+        snapshotFlow {
+            val height = viewport.height
+            val pull = if (height > 0) (dragY / height).coerceIn(0f, 1f) else 0f
+            (open.value * (1f - pull * 1.6f)).coerceIn(0f, 1f)
+        }.collect { progressSink(it) }
+    }
+    // 非常规移除（切会话、页面重建）时不会走 onDismiss：此处兜底归零，下层不会残留一层虚化
+    DisposableEffect(Unit) { onDispose { progressSink(0f) } }
 
     Box(
         modifier = Modifier

@@ -943,6 +943,10 @@ class ChatViewModel(context: Context) : AgentUi {
      */
     internal fun selectShareTarget(target: ShareTarget): Boolean = applyShareTarget(target)
 
+    /** 分享面板所选目标是否就是当前会话本身：选它只是确认，不构成切换，生成中也应放行。 */
+    internal fun isShareTargetCurrent(target: ShareTarget): Boolean =
+        target is ShareTarget.Session && target.id == currentSessionId
+
     /**
      * 把会话切到分享面板所选的目标；返回 false 表示目标已不存在（工作区被删、会话被归档删除）。
      *
