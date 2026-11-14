@@ -16,7 +16,6 @@ import com.zmf.agent.core.model.PermissionLevel
  * @param extraInstructions 用户附加指令，空串 = 不加
  * @param systemOverride 用户整份覆盖；非空时默认提示词全部不用
  * @param planMode 计划模式（只调研、不产生副作用）
- * @param summaryText 会话摘要，空串 = 没有摘要
  * @param goalText 当前目标的一句话（含轮次），空串 = 没有目标；只进尾部快照，不进 system
  */
 data class PromptInput(
@@ -29,6 +28,5 @@ data class PromptInput(
     val extraInstructions: String = "",
     val systemOverride: String? = null,
     val planMode: Boolean = false,
-    val summaryText: String = "",
     val goalText: String = ""
 )

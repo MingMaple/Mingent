@@ -65,23 +65,6 @@ object ToolPolicy {
         }
     }
 
-    // ---- 当前工作区根：给没有 context 的 checkPath 当比较基准 ----
-
-    /**
-     * 进程内「当前工作区根」快照。
-     *
-     * 三参 [checkPath] 拿不到 context，也拿不到 ToolContext.workspaceRoot，而「写是否越界」
-     * 必须有个基准才能判；本 App 同一时刻只有一个活动工作区，单值快照就够，不必上集合。
-     * 由 [ToolContext] 每次构造时刷新（一次工具调用一个实例），业务代码不需要手动维护。
-     */
-    @Volatile
-    private var boundRoot: File? = null
-
-    /** 刷新当前工作区根：由 [ToolContext] 构造时调用。 */
-    fun bindWorkspaceRoot(root: File?) {
-        boundRoot = root
-    }
-
     /** 终端命令闸：在 TerminalTool 真正执行前调用。 */
     fun checkTerminal(permission: PermissionLevel, command: String): Decision {
         val raw = command.trim()
@@ -112,25 +95,15 @@ object ToolPolicy {
     /**
      * 文件路径闸：把「三档」落到具体路径上，档位名与 mode 前缀一一对应。
      *
-     * - 只读：读取全部放行，写入一律拒绝（只读档的承诺是不修改存储）；
-     * - 工作区：读取全部放行，写入只能落在工作区根或 `<workspace>/tmp` 内（canonical 比较）；
-     * - 完全：全部放行。
+     * - 只读：写入一律拒绝（只读档的承诺是不修改存储）；
+     * - 工作区：写入只能落在工作区根或 `<workspace>/tmp` 内（canonical 比较）；
+     * - 完全：写入全部放行。
      *
-     * 为什么读不设限：工作区档的目标是不破坏用户数据，读取他人文件不会造成破坏；
-     * 工作区档的语义是「写受限、读放开」，提示词与代码必须采用同一套判定，否则模型会按提示词反复试探。
+     * 本函数只判定写入边界，读取范围由 [PathAccess] 判定。
      * 越界只拒绝 + 给提权提示，**不弹审批**：选择权留在设置的档位上，闸门保持确定性。
      */
     fun checkPath(permission: PermissionLevel, root: File, path: String, write: Boolean): Decision =
         checkPathCore(permission, root, path, write)
-
-    /**
-     * 三参版本：工作区根取 [bindWorkspaceRoot] 绑定的当前值。
-     *
-     * 没有绑定（还没构造过 ToolContext）且真要写时按拒绝处理：拿不到基准就放行等于闸门失效，
-     * 报错让调用方早点发现，比默默放过越界写安全。
-     */
-    fun checkPath(permission: PermissionLevel, path: String, write: Boolean): Decision =
-        checkPathCore(permission, boundRoot, path, write)
 
     private fun checkPathCore(
         permission: PermissionLevel,
@@ -181,10 +154,6 @@ object ToolPolicy {
 
     /** 旧签名的兼容层：历史调用点均用于命令类拒绝，语义等同 [deniedCommand]。 */
     fun deniedText(permission: PermissionLevel, reason: String): String = deniedCommand(permission, reason)
-
-    /** 带工具名的命令类拒绝：原因前补一句「工具 <name>：」，便于定位是哪个工具触发的。 */
-    fun deniedText(permission: PermissionLevel, tool: String, reason: String): String =
-        deniedCommand(permission, "工具 " + tool + "：" + reason)
 
     /**
      * 拼一条拒绝文案：`[sandbox: <类别> denied under <mode> mode] 档位「中文」：<原因><提权提示>`。

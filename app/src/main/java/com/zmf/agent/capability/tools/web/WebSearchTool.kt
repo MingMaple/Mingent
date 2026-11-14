@@ -412,7 +412,7 @@ class WebSearchTool : Tool {
     private fun describe(e: Throwable?): String {
         if (e == null) return "未知原因"
         val message = e.message.orEmpty()
-        // OkHttp 的 callTimeout 只抛一个 InterruptedIOException("timeout")，直接回给模型看不懂
+        // 直接回传异常类型对模型无解释价值，改为固定提示
         if (e is InterruptedIOException) {
             val detail = if (message.isBlank()) "" else "：" + message
             return "超时（单次请求上限 " + TIMEOUT_SECONDS + " 秒）" + detail
@@ -429,7 +429,7 @@ class WebSearchTool : Tool {
     /** 一条检索结果；snippet 要等解析完 citations 才知道，所以允许后补。 */
     private data class Hit(val title: String, val url: String, val snippet: String = "")
 
-    /** 一次响应的三半：结果列表 + 正文块拼出的 answer + 服务端用量。 */
+    /** 一次响应由三部分组成：结果列表、正文块拼出的 answer、服务端用量。 */
     private data class Parsed(
         val hits: List<Hit>,
         val answer: String,

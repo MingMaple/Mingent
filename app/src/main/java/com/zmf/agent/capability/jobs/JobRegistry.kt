@@ -118,9 +118,6 @@ object JobRegistry {
     /** 结算为失败。 */
     fun fail(id: String, note: String = "") = settle(id, Status.FAILED, note)
 
-    /** 结算为被杀（job_kill 主动取消）。 */
-    fun kill(id: String, note: String = "") = settle(id, Status.KILLED, note)
-
     /**
      * 请求取消：标记「已请求取消」，由调用方随后向进程组发终止信号（见
      * [com.zmf.agent.infra.terminal.TerminalApi.killDetached]）。
@@ -155,9 +152,6 @@ object JobRegistry {
             return delta to e.totalBytes
         }
     }
-
-    /** 列表快照（按创建顺序）。 */
-    fun list(): List<Entry> = synchronized(lock) { jobs.values.toList() }
 
     /** 按 id 找；没有返回 null。 */
     fun find(id: String): Entry? = synchronized(lock) { jobs[id] }

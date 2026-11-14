@@ -136,14 +136,14 @@ object StorageStore {
     @Synchronized
     fun loadRegistry(context: Context): Registry {
         val file = storeFile(context)
-        if (!file.exists() || file.length() == 0L) return freshRegistry(context)
+        if (!file.exists() || file.length() == 0L) return freshRegistry()
         val text = try {
             file.readText(Charsets.UTF_8)
         } catch (e: Exception) {
             FileLog.log(TAG, "读取工作区与存储单元失败：" + e)
-            return freshRegistry(context)
+            return freshRegistry()
         }
-        if (text.isBlank()) return freshRegistry(context)
+        if (text.isBlank()) return freshRegistry()
         return try {
             val root = JSONObject(text)
             val workspaces = parseWorkspaces(root.optJSONArray(KEY_WORKSPACES))
@@ -151,7 +151,7 @@ object StorageStore {
             Registry(workspaces, ensureDefault(storages))
         } catch (e: Exception) {
             FileLog.log(TAG, "解析工作区与存储单元失败：" + e)
-            freshRegistry(context)
+            freshRegistry()
         }
     }
 
@@ -209,7 +209,7 @@ object StorageStore {
     /** 保证默认存储单元始终在列表中。 */
     fun ensureDefault(storages: List<Storage>): List<Storage> =
         if (storages.any { it.id == DEFAULT_ID }) storages
-        else listOf(defaultStorage(null)) + storages
+        else listOf(defaultStorage()) + storages
 
     // ---- 路径 ----
 
@@ -314,7 +314,7 @@ object StorageStore {
     // ---- 创建 ----
 
     /** 默认存储单元：全库唯一，目录沿用既有的 `externalFilesDir/workspace`。 */
-    fun defaultStorage(@Suppress("UNUSED_PARAMETER") context: Context?): Storage =
+    fun defaultStorage(): Storage =
         Storage(id = DEFAULT_ID, kind = StorageKind.DEFAULT, createdAt = 0L)
 
     /** 新建内置存储单元：先建目录，目录名在创建时确定（仅 ASCII，便于用 adb 识别）。 */
@@ -432,8 +432,8 @@ object StorageStore {
 
     // ---- 序列化 ----
 
-    private fun freshRegistry(context: Context): Registry =
-        Registry(listOf(defaultWorkspace()), listOf(defaultStorage(context)))
+    private fun freshRegistry(): Registry =
+        Registry(listOf(defaultWorkspace()), listOf(defaultStorage()))
 
     /** 工作区记录的默认形态：默认工作区绑定默认存储单元。 */
     fun defaultWorkspace(): WorkSpace =

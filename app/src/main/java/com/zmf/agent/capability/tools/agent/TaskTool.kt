@@ -13,7 +13,7 @@ import org.json.JSONObject
  * subagent 工具：将一段可独立执行的任务交给子智能体，并获取其结论。
  *
  * provider 与 registry 在工具层无法获取，由 [SubAgentDeps] 在启动时注入；
- * 未注入时明确返回「子智能体未初始化」，不采用伪成功的降级方案。
+ * 未注入时明确返回「子智能体未初始化」，不以成功回执掩盖失败。
  */
 class TaskTool : Tool {
 

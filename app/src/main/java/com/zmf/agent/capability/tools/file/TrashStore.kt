@@ -441,8 +441,8 @@ object TrashStore {
         return runCatching { source.copyTo(dest, overwrite = false) }.isSuccess
     }
 
-    /** 永久删除一条记录（调用方是用户手势，不经 Agent）。 */
-    fun deleteEntry(context: Context, entry: Entry): Boolean = synchronized(lock) {
+    /** 永久删除一条记录（调用方是用户手势，不经 Agent）。阻塞调用，须在 IO 线程执行。 */
+    fun deleteEntry(entry: Entry): Boolean = synchronized(lock) {
         val ok = SafeDelete.delete(entry.payload).existed
         entry.dir.deleteRecursively()
         cleanEmptyBuckets(entry.dir.parentFile)

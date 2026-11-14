@@ -65,7 +65,7 @@ object BalanceClient {
      * 查一次余额。
      *
      * [apiKey] / [baseUrl] 由调用方完整传入，此处不读取配置：配置读取属于上层职责（上层知晓当前 provider），
-     * infra 仅负责发送请求；此处不回落至 [ApiConfig]，以避免 infra 反向依赖业务配置层。
+     * infra 仅负责发送请求；此处不回落至配置读取层，以避免 infra 反向依赖业务配置层。
      */
     suspend fun fetchBalance(apiKey: String, baseUrl: String): BalanceResult {
         val key = apiKey.trim()

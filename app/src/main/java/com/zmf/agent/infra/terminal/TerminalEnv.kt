@@ -18,7 +18,7 @@ import java.nio.file.attribute.BasicFileAttributes
  * /lib64/ld-linux-… 等）与可执行位。备份包为 zip，而 zip **无法保存软链接与权限位**：
  * 导入后这些链接变为普通文件、脚本丢失可执行位，PRoot 可以启动，但 bash 一进入即退出：
  * 表现为终端黑屏、进程短暂出现后消失，或记忆内核报告 Hidden exec shell exited before ready。
- * 镜像位于 APK 内（assets/ubuntu-noble-…tar.xz），因此修复方式为删除已解压的根文件系统，
+ * 镜像位于 APK 内（`assets/` 下的 Ubuntu 根镜像，文件名随版本变化），因此修复方式为删除已解压的根文件系统，
  * 下次启动终端时由启动脚本依据内置镜像重新解压完整环境。
  *
  * usr/bin 下的 proot / busybox / bash 无需处理：它们是指向 native so 的软链接，每次启动都会重新创建。

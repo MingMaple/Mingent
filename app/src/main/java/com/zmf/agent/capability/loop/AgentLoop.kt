@@ -596,7 +596,8 @@ class AgentLoop(
         val pruneActive = withSummary || (policy.enabled && state.fallback)
         val viewMessages = if (pruneActive) ToolResultPruner.prune(sanitized) else sanitized
         val request = ArrayList<ChatMessage>(viewMessages.size + 1)
-        // system 只放**稳定层**（身份 / 设备 / 边界 / 工具总则 / 沟通 / 记忆 / 计划确认 / Skill / 附加指令）：
+        // system 只放**稳定层**（身份 / 环境 / 权限事实 / 边界 / 工具总则 / 沙箱与删除 / 沟通 / 记忆 /
+         // 计划确认 / Skill / 附加指令）：
          // 契约是同一会话内**一字不变**：它位于请求最前缀，只有保持恒定才能命中 provider 的前缀缓存。
         // 会变的（权限档 / 计划模式 / 工作区 / 时间 / 摘要）全部走末尾的运行时快照。
         val systemText = PromptBuilder.buildStable(input)

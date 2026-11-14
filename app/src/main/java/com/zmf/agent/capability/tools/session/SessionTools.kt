@@ -118,7 +118,7 @@ class SessionCreateTool : Tool {
     override val mutates = true
 
     override suspend fun invoke(args: JSONObject, ctx: ToolContext): ToolResult = withContext(Dispatchers.IO) {
-        val defaultSpace = WorkSpaceStore.defaultSpace(ctx.context)
+        val defaultSpace = WorkSpaceStore.defaultSpace()
         val workspaceId = args.optString("workspaceId", "").trim().takeIf { it.isNotEmpty() }
             ?: defaultSpace.id
         val space = workspaceOf(ctx.context, workspaceId)
@@ -266,7 +266,7 @@ class SessionArchiveTool : Tool {
     override val name = "session_archive"
 
     override val description =
-        "归档会话：从列表收起但数据保留，可随时恢复。归档后不再减少内置目录的引用。" +
+        "归档会话：从列表收起但数据保留，可随时恢复。归档不改变内置目录的引用计数。" +
             "若该会话是定时任务的目标，任务会自动停用并解绑（单向，恢复会话不会自动重绑）。" +
             "会话正在生成回复时拒绝。"
 

@@ -40,8 +40,6 @@ object WorkSpaceStore {
     /** 默认工作区的固定 id：不允许删除。 */
     const val DEFAULT_ID = StorageStore.DEFAULT_ID
 
-    private const val DEFAULT_NAME = "默认工作区"
-
     /** 读全部工作区；文件缺失或损坏时返回仅含默认工作区的最小可用集合。 */
     fun load(context: Context): List<WorkSpace> = StorageStore.loadWorkspaces(context)
 
@@ -49,8 +47,7 @@ object WorkSpaceStore {
     fun save(context: Context, list: List<WorkSpace>) = StorageStore.saveWorkspaces(context, list)
 
     /** 默认工作区：绑定默认存储单元。 */
-    @Suppress("UNUSED_PARAMETER")
-    fun defaultSpace(context: Context): WorkSpace = StorageStore.defaultWorkspace()
+    fun defaultSpace(): WorkSpace = StorageStore.defaultWorkspace()
 
     /**
      * 组装一条新的工作区记录，**不落盘**：调用方把存储单元与记录一并写回，

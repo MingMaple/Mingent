@@ -17,9 +17,9 @@ import org.json.JSONObject
 /**
  * 在 App 内的 Ubuntu 24 (PRoot) 中执行一条 shell 命令。
  *
- * 底层使用 TerminalManager.executeHiddenCommand()（后台常驻 bash 管道、无 PTY、无回显、无提示符），
+ * 经 `TerminalApi.exec` 在 PRoot 中隐藏执行（后台常驻 bash 管道、无 PTY、无回显、无提示符），
  * 可获得真实退出码，stdout/stderr 已合并。每条命令均为新的子进程，
- * 因此工作目录必须在命令中显式拼接 "cd <cwd> && <cmd>"，不能依赖跨命令保留。
+ * 因此工作目录不能依赖跨命令保留，需在命令前显式 `cd`（见 `cwd` 参数）。
  *
  * 隐藏执行内部包含 Thread.sleep，必须置于 Dispatchers.IO，否则会阻塞主线程。
  */
@@ -80,8 +80,10 @@ class TerminalTool : Tool {
         }
 
         val timeoutMs = args.optLong("timeout_ms", DEFAULT_TIMEOUT_MS).coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
-        // proot 中每条命令均为新的子进程，cwd 不跨命令保留，只能拼接在命令最前面
-        val full = "cd " + cwd + " && " + raw
+        // proot 中每条命令均为新的子进程，cwd 不跨命令保留，只能拼接在命令最前面。
+        // cwd 由单引号包裹并转义内部单引号，防止分号、换行等被解释为命令分隔符绕过上方两道闸门。
+        val quotedCwd = "'" + cwd.replace("'", "'\\''") + "'"
+        val full = "cd " + quotedCwd + " && " + raw
 
         return try {
             val result = withContext(Dispatchers.IO) {

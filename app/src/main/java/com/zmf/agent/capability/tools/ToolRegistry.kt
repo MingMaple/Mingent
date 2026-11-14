@@ -7,6 +7,7 @@ import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.capability.tools.agent.SendMessageTool
 import com.zmf.agent.capability.tools.agent.TaskTool
 import com.zmf.agent.capability.tools.file.DeleteFileTool
+import com.zmf.agent.capability.tools.file.EditFileTool
 import com.zmf.agent.capability.tools.file.ListFilesTool
 import com.zmf.agent.capability.tools.file.PresentTool
 import com.zmf.agent.capability.tools.file.ReadFileTool
@@ -57,6 +58,8 @@ fun defaultTools(): List<Tool> =
     listOf(
         ReadFileTool(),
         WriteFileTool(),
+        // 精确编辑：按原文片段替换，避免为改一行整文件重写
+        EditFileTool(),
         // 删除单独成工具：它是唯一能拿到「解析后的真实路径」的删除入口，
         // 高危闸门才能对规范化落点做判定（terminal 的 rm 只能看命令文本）
         DeleteFileTool(),

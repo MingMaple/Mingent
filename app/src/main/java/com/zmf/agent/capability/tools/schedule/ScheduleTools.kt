@@ -33,9 +33,6 @@ import java.util.Locale
 /** 间隔上限：7 天，与定时任务域的约束一致。 */
 private const val MAX_EVERY_MINUTES = 7 * 24 * 60
 
-/** 一次性任务至少安排在一分钟后，避免创建即触发。 */
-private const val MIN_ONCE_MINUTES = 1
-
 /** 创建：把一条规则写进定时任务并设置闹钟。 */
 class ScheduleCreateTool : Tool {
 

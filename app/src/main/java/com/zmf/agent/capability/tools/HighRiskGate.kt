@@ -465,12 +465,6 @@ object HighRiskGate {
         return normalized.endsWith(marker) || normalized.contains(marker + "/")
     }
 
-    /** 按当前绑定的环境判回收站路径；还没绑定时一律返回 false。 */
-    fun isTrashPath(file: File): Boolean {
-        val env = boundEnv ?: return false
-        return isTrashPath(file.path, env.packageName)
-    }
-
     /**
      * 回收站判定：**字面路径与 canonical 路径都看**。
      *
@@ -1371,9 +1365,6 @@ object HighRiskGate {
         PermissionLevel.WORKSPACE -> "workspace"
         PermissionLevel.FULL -> "danger-full-access"
     }
-
-    /** 供回归用例读取当前签发数量（只读快照）。 */
-    internal fun pendingCount(): Int = pending.size
 
     /** 供回归用例把某个码置为过期。 */
     internal fun ageForTest(sessionId: String) {

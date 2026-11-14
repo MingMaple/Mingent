@@ -12,14 +12,14 @@ data class PromptSection(val order: Int, val name: String, val text: String)
 /**
  * 各段的固定次序（稳定在前、易变在后）。
  *
- * 取值预留间隔（10 / 100 / 9000 …），后续需要在两段之间插入新段时无需修改已有常量。
+ * 取值预留间隔（10 / 100 / 1000），后续需要在两段之间插入新段时无需修改已有常量。
  *
  * **进 system 的（稳定层）**：契约是同一会话内一字不变，否则前缀缓存失效。
- * - 身份 → 设备事实 → 边界 → 工具总则 → 沟通 → 记忆 → 计划确认 → Skill → 附加指令。
- * - 边界排在设备事实之后、工具总则之前：判定类要早于描述类（长上下文里中间位置最容易被忽略，
+ * - 身份 → 环境 → 权限事实 → 边界 → 工具总则 → 沙箱与删除 → 沟通 → 记忆 → 计划确认 → Skill → 附加指令。
+ * - 边界排在环境之后、工具总则之前：判定类要早于描述类（长上下文里中间位置最容易被忽略，
  *   硬约束必须靠前）。
  *
- * **只进尾部快照的（易变层，编号统一放到 9000+）**：权限档、工作区路径、计划模式、当前时间、摘要。
+ * **只进尾部快照的（易变层）**：权限档、工作区路径、计划模式、当前时间、摘要。
  * 若放入 system 段，任何时间变化都会导致整份缓存失效。
  */
 object PromptOrders {
@@ -35,13 +35,6 @@ object PromptOrders {
     const val COMMUNICATION = 300
     const val MEMORY = 400
     const val PLAN_RULES = 500
-    // 计划模式说明：**常驻**段。若仅在开启时出现，进出模式会改变请求前缀并导致缓存失效
-    const val PLAN_POLICY = 510
     const val SKILLS = 3100
     const val USER_EXTRA = 3200
-
-    // ---- 易变层（进尾部运行时快照）：编号为对齐稳定层预留，拼接顺序由 PromptBuilder.build() 固定 ----
-    const val PERMISSION = 9100
-    const val PLAN = 9200
-    const val SUMMARY = 9900
 }

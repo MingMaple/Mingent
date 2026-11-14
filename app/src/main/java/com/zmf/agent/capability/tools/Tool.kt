@@ -68,16 +68,10 @@ data class ToolContext(
     val onAuxUsage: (AuxUsage) -> Unit = {}
 ) {
     init {
-        // 没有 context 的 ToolPolicy.checkPath 需要「当前工作区根」当越界比较基准；
-        // ToolContext 是唯一保证这个根准确的入口（每次工具调用新建一个），因此在此刷新快照。
-        ToolPolicy.bindWorkspaceRoot(workspaceRoot)
         // 高危闸门要判「App 核心数据目录 / 存储根 / PRoot 根」，这些路径只能从 Context 推出来。
         // 同样每次工具调用刷新一次，避免会话切换工作区后仍用旧快照。
         HighRiskGate.bind(context)
     }
-
-    /** [workspaceRoot] 的别名，保留用于按旧名称调用的代码。 */
-    val workspace: File get() = workspaceRoot
 }
 
 /**

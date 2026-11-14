@@ -64,7 +64,7 @@ class JobOutputTool : Tool {
 
         val current = JobRegistry.find(id) ?: return ToolResult.Error("后台任务已移出内存：" + id)
         // since 用「上次交付到哪」：同一任务连续读两次，第二次只给新增的部分
-        val (delta, total) = JobRegistry.read(id, current.deliveredBytes) ?: return ToolResult.Error("读不到任务：" + id)
+        val (delta, _) = JobRegistry.read(id, current.deliveredBytes) ?: return ToolResult.Error("读不到任务：" + id)
 
         val body = if (delta.isEmpty()) "(无新增输出)" else delta
         val statusText = statusLine(current.status, current.note)

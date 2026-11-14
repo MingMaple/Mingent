@@ -270,7 +270,7 @@ class DeleteFileTool : Tool {
 
         /**
          * SAF 复制进回收站的预算：SAF 不支持 rename，只能「复制后删除」。
-         * 超出预算时不再复制（提升为确认档），避免一次删除在手机上复制数百 MB。
+         * 超出预算时跳过回收站复制、直接删除；回执注明本次删除不可恢复。
          */
         const val TRASH_COPY_MAX_COUNT = 3_000
         const val TRASH_COPY_MAX_BYTES = 128L * 1024 * 1024

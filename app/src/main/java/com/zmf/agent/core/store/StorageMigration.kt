@@ -112,7 +112,7 @@ object StorageMigration {
     private fun deriveStorages(context: Context, root: JSONObject): Boolean {
         val array = root.optJSONArray(KEY_WORKSPACES) ?: return false
         val storages = JSONArray()
-        storages.put(storageJson(StorageStore.defaultStorage(context)))
+        storages.put(storageJson(StorageStore.defaultStorage()))
         val byKey = HashMap<String, String>()
 
         for (i in 0 until array.length()) {

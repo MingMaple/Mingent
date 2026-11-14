@@ -498,7 +498,7 @@ object SandboxRegression {
         val again = runCatching { TrashStore.moveInto(context, target, session, "test") }.getOrNull()
         if (again != null) {
             out += "回收站：永久删除条目" to (
-                runCatching { TrashStore.deleteEntry(context, again) }.getOrDefault(false) &&
+                runCatching { TrashStore.deleteEntry(again) }.getOrDefault(false) &&
                     !again.payload.exists()
                 )
         }
