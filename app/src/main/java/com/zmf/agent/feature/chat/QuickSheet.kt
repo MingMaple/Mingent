@@ -69,14 +69,15 @@ internal fun effortDisplayName(effort: String): String = when (effort) {
     else -> effort
 }
 
-/** 二级窗中的一行：左侧名称、右侧勾选。选中仅改变字色与勾，不绘制背景块，与设置页的选择行保持一致。 */
+/** 二级窗中的一行：左侧名称、右侧勾选。选中仅显示勾选，不绘制背景块，与设置页的选择行保持一致。 */
 @Composable
 internal fun QuickOptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 42.dp)
+            // 固定 42dp：单行选择行的高度不随字号变化
+            .height(42.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically

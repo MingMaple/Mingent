@@ -2,14 +2,12 @@ package com.zmf.agent.feature.chat
 import com.zmf.agent.uikit.icons.DshIcons
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,7 +24,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -66,11 +63,11 @@ private const val COPIED_TIP_MS = 1200L
 private val BlockBodyMaxHeight = 240.dp
 
 /**
- * 标题行的最小行高。
+ * 标题行的固定行高。
  *
  * 复制按钮 30dp 高于 12sp 标题（约 16dp），若按内容撑开，行高会随按钮出现而变化，
- * 标题文字随之上下移动。取 36dp：与「无按钮时的内距 10dp + 文字 16dp」等价，
- * 按钮在行内居中，上下各留 3dp；大字体下仍允许继续撑高。
+ * 标题文字随之上下移动。固定 36dp：与「无按钮时的内距 10dp + 文字 16dp」等价，
+ * 按钮在行内居中，上下各留 3dp；内容超出时由内部文字省略。
  */
 private val TraceHeaderHeight = 36.dp
 
@@ -149,7 +146,7 @@ fun TraceToolCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = TraceHeaderHeight)
+                    .height(TraceHeaderHeight)
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {

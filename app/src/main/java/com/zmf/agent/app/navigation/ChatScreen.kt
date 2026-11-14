@@ -18,7 +18,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -27,13 +26,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.capability.subagent.SubAgentRegistry
 import com.zmf.agent.core.model.SharePayload
-import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.infra.backup.BackupOptions
 import com.zmf.agent.core.prefs.ThemeMode
+import com.zmf.agent.core.prefs.FontSizeStore
 import kotlinx.coroutines.launch
 import com.zmf.agent.feature.chat.ChatAppEffects
 import com.zmf.agent.feature.chat.ChatBackHandlers
@@ -49,28 +47,28 @@ import com.zmf.agent.feature.chat.ChatViewModel
  * 主页：消息流 + 底部输入区，以及抽屉与各二级全屏页的唯一宿主。
  *
  * 页面状态全在内部：会话与模型状态来自自建的 [ChatViewModel]，页面层级由 [AppPage] 表达，
- * 二次确认、查看器、长按小窗等瞬时状态使用局部 remember。父层仅传入主题、字号与启动会话 id。
+ * 二次确认、查看器、长按小窗等瞬时状态使用局部 remember。
+ * 父层传入主题、字号、启动会话 id 与一次性分享载荷。
  *
- * @param themeMode 当前主题模式；由外部持有并持久化
- * @param uiScale 全局界面字号倍率（仅放大 sp，不改变 dp）
- * @param initialSessionId 从通知进入时需切换到的会话；消费一次后自行清空
- * @param initialShare 从系统分享进入时待受理的内容；消费一次后由 [onShareConsumed] 通知外部清空
+ * @param themeMode 当前主题模式，由外部持有并持久化
+ * @param onThemeModeChange 主题模式变更回调
+ * @param baseFontSp 全局基准字号（sp，仅放大文字，不改变 dp），由 MainActivity 持有并持久化
+ * @param onBaseFontSpChange 基准字号变更回调
+ * @param initialSessionId 从通知进入时需要切换到的会话 id，消费一次后清空
+ * @param initialShare 从系统分享进入时的待发内容，受理一次后清空
  * @param onShareConsumed 分享内容已被受理时回调，外部据此置空载荷
  *
  * 分享进来时本页进入**分享模式**：底部输入区临时换成分享面板（附件行浮在其上），
- * 发送完或取消后面板整体下滑出屏，常规输入区随即露出——详见 [SharePanel]。
+ * 发送完或取消后面板整体下滑出屏，常规输入区随即露出。
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     onThemeModeChange: (ThemeMode) -> Unit = {},
-    /** 全局界面字号（仅放大 sp，不改变 dp）；由 MainActivity 持有并持久化。 */
-    uiScale: Float = 1f,
-    onUiScaleChange: (Float) -> Unit = {},
-    /** 从通知进入时需要切换到的会话 id；此处消费一次后清空。 */
+    baseFontSp: Int = FontSizeStore.DEFAULT_SP,
+    onBaseFontSpChange: (Int) -> Unit = {},
     initialSessionId: String? = null,
-    /** 从系统分享进入时的待发内容；此处受理一次后清空。 */
     initialShare: SharePayload? = null,
     onShareConsumed: () -> Unit = {}
 ) {
@@ -282,8 +280,8 @@ fun ChatScreen(
         imeVisible = imeVisible,
         themeMode = themeMode,
         onThemeModeChange = onThemeModeChange,
-        uiScale = uiScale,
-        onUiScaleChange = onUiScaleChange,
+        baseFontSp = baseFontSp,
+        onBaseFontSpChange = onBaseFontSpChange,
         onPickFile = { openFilePicker() },
         onLogLaunch = { name -> logLauncher.launch(name) },
         onImportLaunch = {
@@ -295,7 +293,6 @@ fun ChatScreen(
     ChatDialogs(
         viewModel = viewModel,
         ui = ui,
-        context = context,
         scope = scope,
         onExportLaunch = { name -> exportLauncher.launch(name) }
     )

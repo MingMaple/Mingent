@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -649,7 +648,7 @@ private fun TraceRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = RowHeight)
+                .height(RowHeight)
                 .clickable { onToggle() }
                 .padding(start = if (sub) SubRowIndent else 0.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -722,7 +721,9 @@ private fun KindChip(kind: TraceKind) {
         modifier = Modifier
             .clip(RoundedCornerShape(ChipCorner))
             .background(fill)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            // 固定 28dp：14sp 基准下的设计高度（2dp 内距 + 24dp 行高），字号变化不改变标签高度
+            .height(28.dp)
+            .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(

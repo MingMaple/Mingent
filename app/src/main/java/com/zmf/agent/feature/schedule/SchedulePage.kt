@@ -46,9 +46,6 @@ import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.core.store.WorkSpace
 import com.zmf.agent.core.store.WorkSpaceStore
-import com.zmf.agent.feature.schedule.ScheduleRunner
-import com.zmf.agent.feature.schedule.ScheduleStore
-import com.zmf.agent.feature.schedule.ScheduleTask
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
@@ -250,7 +247,7 @@ fun SchedulePage(onBack: () -> Unit) {
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("删除定时任务") },
-            text = { Text("删除「" + task.title.ifEmpty { "未命名任务" } + "」？已排的闹钟会一起取消。") },
+            text = { Text("删除「" + task.title.ifEmpty { "未命名任务" } + "」？已设置的闹钟将一并取消。") },
             confirmButton = {
                 TextButton(onClick = {
                     pendingDelete = null
@@ -670,20 +667,18 @@ private fun SessionPickerDialog(
 private fun ScheduleChip(
     text: String,
     selected: Boolean,
-    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val alpha = if (enabled) 1f else 0.3f
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = if (selected) {
             // 选中为墨色底反白：与模型页、洞察页的分段规则一致
-            onSurface.copy(alpha = alpha)
+            onSurface
         } else {
-            onSurface.copy(alpha = 0.06f * alpha)
+            onSurface.copy(alpha = 0.06f)
         },
-        modifier = Modifier.saltCardRow(enabled = enabled, onClick = onClick)
+        modifier = Modifier.saltCardRow(onClick = onClick)
     ) {
         Text(
             text = text,
@@ -691,9 +686,9 @@ private fun ScheduleChip(
             fontSize = 13.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) {
-                MaterialTheme.colorScheme.surface.copy(alpha = alpha)
+                MaterialTheme.colorScheme.surface
             } else {
-                onSurface.copy(alpha = 0.6f * alpha)
+                onSurface.copy(alpha = 0.6f)
             }
         )
     }

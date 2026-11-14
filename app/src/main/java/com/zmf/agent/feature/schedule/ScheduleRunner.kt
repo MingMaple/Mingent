@@ -72,9 +72,8 @@ object ScheduleRunner {
     /**
      * 单次任务的工具轮数上限：后台无界面监管，避免无限循环。
      *
-     * 取 48 而非早期的 8：检索类任务（每日新闻）需要十余轮搜索与抓取，
-     * 原值在半途截断，整轮拿不到答复（2026-11-07 实测）。达到上限仍由
-     * AgentLoop 的无人值守收尾保证有一段正文，不会整轮空手而归。
+     * 单轮上限 48：检索类任务通常需要十余轮搜索与抓取。
+     * 达到上限仍由 AgentLoop 的无人值守收尾保证有一段正文，不会整轮空手而归。
      */
     private const val MAX_ROUNDS = 48
 
@@ -575,7 +574,7 @@ object ScheduleRunner {
         }
         val workspaceId = task.workspaceId?.takeIf { it.isNotEmpty() } ?: WorkSpaceStore.DEFAULT_ID
         val space = WorkSpaceStore.load(app).firstOrNull { it.id == workspaceId }
-            ?: WorkSpaceStore.defaultSpace(app)
+            ?: WorkSpaceStore.defaultSpace()
         // 标题先使用任务名：便于在侧边栏识别该会话来自哪个定时任务（已有标题后聊天不会覆盖）
         val created = SessionStore.newSession(
             storageId = space.storageId,
@@ -598,8 +597,8 @@ object ScheduleRunner {
      * 目标会话若是空白会话（进入工作区时预建、默认不进侧边栏），写入前先按聊天页
      * 「发出第一条消息」的同一口径转正。
      *
-     * 否则定时结果与通知都在，侧边栏却没有这条会话，用户根本找不到
-     * （2026-11-09 06:57 新闻早报实例：目标会话 blank 且未列出，早报写进去了但无处可见）。
+     * 否则定时结果与通知都在，侧边栏却没有这条会话，用户根本找不到：
+     * 空白或未列出的会话在侧边栏不可见，须先转正。
      */
     private fun promoteIfHidden(app: Context, session: ChatSession): ChatSession {
         if (!session.blank && session.listed) return session
@@ -618,7 +617,7 @@ object ScheduleRunner {
      */
     private fun rootOf(workspaceId: String?, app: Context): File {
         val space = WorkSpaceStore.load(app).firstOrNull { it.id == workspaceId }
-            ?: WorkSpaceStore.defaultSpace(app)
+            ?: WorkSpaceStore.defaultSpace()
         val storage = StorageStore.find(app, space.storageId)
         val root = storage?.let { StorageStore.ensureRoot(app, it) }
         if (root != null) return root

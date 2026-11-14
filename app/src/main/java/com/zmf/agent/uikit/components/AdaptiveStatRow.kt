@@ -32,12 +32,12 @@ import kotlin.math.max
  * 收敛顺序固定为「先压间距，再按比例缩字号」：
  *
  * 1. 左右两组的间距从 6dp 降到 2dp；
- * 2. 整体在 1.0 → 0.70 之间寻找最大可容纳比例；
- * 3. 展示型数字下限 0.75，说明小字下限 0.70（小字可以比数字更小）。
+ * 2. 整体按比例缩字号：展示型数字下限 0.75，普通文本（单位与说明）下限 0.85；
+ * 3. 缩到下限仍放不下时才由调用方接受截断，绝不先删单位。
  *
- * 展示型数字不随应用内字号档位放大：以 `valueSizeSp / fontScale` 作为基准，
- * 再乘收敛比例，效果是数字始终保持约 24dp 的视觉尺寸，只有正文与说明跟随档位。
- * 测量使用 [rememberTextMeasurer]，按文案、可用宽度与字号档位缓存，不额外组合子树。
+ * 展示型数字不随全局基准字号放大：以 `valueSizeSp / fontScale` 作为基准，
+ * 再乘收敛比例，效果是数字始终保持约 24dp 的视觉尺寸，只有正文与说明跟随基准字号。
+ * 测量使用 [rememberTextMeasurer]，按文案、可用宽度与字号倍率缓存，不额外组合子树。
  */
 @Composable
 fun AdaptiveStatRow(
@@ -54,7 +54,7 @@ fun AdaptiveStatRow(
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
     val fontScale = density.fontScale.coerceAtLeast(0.01f)
-    // 展示型数字的基准字号：先抵消应用内字号档位，再按收敛比例缩小
+    // 展示型数字的基准字号：先抵消全局基准字号，再按收敛比例缩小
     val valueBaseSp = valueSizeSp / fontScale
     val valueStyle = TextStyle(fontSize = valueBaseSp.sp, fontWeight = FontWeight.SemiBold)
     val noteStyle = TextStyle(fontSize = noteSizeSp.sp)
@@ -82,7 +82,7 @@ fun AdaptiveStatRow(
 
         fun total(gap: Dp, scale: Float): Float {
             val number = max(scale, 0.75f)
-            val note = max(scale, 0.70f)
+            val note = max(scale, 0.85f)
             return widths[0] * number + widths[1] * note +
                 widths[2] * number + widths[3] * note +
                 (gap + labelGap).value
@@ -97,14 +97,15 @@ fun AdaptiveStatRow(
             gap = tightGap
             scale = 1f
         } else {
+            // 数字最低可到 0.75；普通文本由 noteScale 兜在 0.85，不再继续缩小
             var s = 1f
-            while (s > 0.70f && total(tightGap, s) > budget.value) s -= 0.02f
+            while (s > 0.75f && total(tightGap, s) > budget.value) s -= 0.02f
             gap = tightGap
-            scale = s.coerceIn(0.70f, 1f)
+            scale = s.coerceIn(0.75f, 1f)
         }
 
         val numberScale = max(scale, 0.75f)
-        val noteScale = max(scale, 0.70f)
+        val noteScale = max(scale, 0.85f)
 
         Row(
             modifier = Modifier.fillMaxWidth(),

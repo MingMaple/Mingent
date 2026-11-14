@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -30,7 +29,6 @@ import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.PlanStore
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
-import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.theme.UiColors
 
 /**
@@ -69,7 +67,6 @@ fun PlanPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .stableStatusBarPadding()
         ) {
             // 顶栏一行：返回、计划标签条。选中计划即当前页面标题，不再单起「计划」标题行
             // 计划条：横滑、选中项自动进入视野、滑至尽头的余量就地消耗；与浏览页网页条共用（TabStrip）

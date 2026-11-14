@@ -42,7 +42,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
@@ -183,7 +182,7 @@ fun FloatingChatWindow(
         }
     }
     val visible = if (shown.size > MAX_SHOWN) shown.subList(shown.size - MAX_SHOWN, shown.size) else shown
-    // 列表项的稳定 key：流式输出时条数会变，索引 key 会把新回合复用到旧槽位，导致展开态错位
+    // 列表项 key 用全局偏移量抵消截断：避免截断后索引整体错位，展开态落到相邻项
     val visibleOffset = shown.size - visible.size
 
     /*
@@ -245,7 +244,7 @@ fun FloatingChatWindow(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "还没有消息，说句话试试",
+                                text = "暂无消息，可在此发送第一条",
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
                             )
@@ -388,7 +387,7 @@ private fun SessionPickerPanel(
         if (sessions.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    text = "还没有其它会话",
+                    text = "暂无其他会话",
                     fontSize = 13.sp,
                     color = onSurface.copy(alpha = 0.45f)
                 )

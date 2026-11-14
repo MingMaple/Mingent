@@ -40,7 +40,6 @@ import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.common.SaltConfirmDialog
 import com.zmf.agent.uikit.common.blockTapsOnly
-import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.icons.DshIcons
 import com.zmf.agent.uikit.theme.Palette

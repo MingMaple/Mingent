@@ -41,7 +41,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.icons.DshIcons
-import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.delay
 
@@ -116,9 +115,8 @@ object NoticeCenter {
 /**
  * 提示里的名称最多 6 字，超出以省略号收尾。
  *
- * 名称长度直接决定提示条长度：本应用字号可调到 1.3 档，13sp 汉字实际占 16.9dp，
- * 加上内距、图标、间距与动作共 88dp 固定开销，名称每多 1 字就多 17dp。
- * 实测 12 字时整条 96.8% 屏宽且名称仍被省略号截断；6 字时约 72%。
+ * 名称长度直接决定提示条长度：字号最大可放大到 16/14（约 1.14 倍），13sp 汉字约占 14.9dp，
+ * 加上内距、图标、间距与动作的固定开销，名称每多 1 字提示条就加宽约 15dp。
  * 会话标题多由首句自动生成，长标题本就没有辨识度，硬截不影响判断。
  */
 fun noticeName(raw: String, max: Int = 6): String {
@@ -170,7 +168,7 @@ private fun NoticeBanner(notice: Notice) {
             // 页头普遍为 62dp，提示条让过页头，避免盖住标题
             .padding(top = 64.dp)
             .padding(horizontal = 16.dp)
-            // 宽度上限按最大字号档（1.3）也算得出：328dp 是 360dp 屏减去左右 16dp 的可用宽
+            // 宽度上限按最大倍率（16/14 ≈ 1.14）复核：328dp 为 360dp 屏宽减去左右 16dp
             .widthIn(max = 328.dp)
             .wrapContentWidth()
             .draggable(

@@ -14,8 +14,6 @@ import androidx.compose.ui.unit.dp
 import com.zmf.agent.uikit.icons.CopyGlyph
 import com.zmf.agent.uikit.icons.DshIcons
 
-/** 常显的复制图标按钮：固定占位，成功态由调用方置位，避免右侧元素随之位移。 */
-
 /** 按钮边长：与代码块工具条、气泡尾部按钮同档（30dp）。 */
 private val CopyButtonSize = 30.dp
 

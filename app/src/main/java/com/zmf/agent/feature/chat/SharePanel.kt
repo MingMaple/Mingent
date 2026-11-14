@@ -110,6 +110,8 @@ import java.io.File
  * 若在这里按「输入框里现在剩多少字」重判，用户删几个字就会让附件跳回正文，形态会来回变。
  *
  * @param draft 已落盘到中转目录的分享内容
+ * @param workspaces 可选的目标工作区；与 `sessions` 一起构成目标树
+ * @param sessions 全部会话；目标树按工作区归组
  * @param currentSessionId 当前会话：目标键、状态行都按它取数——面板里选目标即真的切换会话，
  *        抽屉里切换会话后目标键也立刻跟随，不另存一份「目标」
  * @param currentWorkspaceId 当前工作区：当前会话还没有内容时，目标键显示它的名字
@@ -119,6 +121,7 @@ import java.io.File
  * @param onRemoveImage 删除某张分享图片
  * @param onCancel 放弃本次分享
  * @param onTargetPicked 用户选定了目标：父层据此真正切换会话，上方会话区随之变化
+ * @param onSend 最终提交入口；参数为输入框正文，父层负责发送并收起面板
  */
 @Composable
 internal fun ShareArea(
@@ -521,7 +524,7 @@ private fun TargetPickerPopover(
     val activeSpaceId = currentSession?.workspaceId ?: currentWorkspaceId
 
     // Popup 会新建窗口：Compose 在新窗口里按系统资源重建 LocalDensity，
-    // 主题按字号档位覆盖的 fontScale 不会带进来，面板文字会停在系统字号。
+    // 主题覆盖的 fontScale 不会带进来，面板文字会停在系统字号。
     // 进入 Popup 前取当前 density，再在弹窗内容里原样提供一次。
     val pickerDensity = LocalDensity.current
 
@@ -621,14 +624,13 @@ private val PickerPopupPadding = 8.dp
 private val PickerEdgeMargin = 12.dp
 
 /**
- * 面板字号与抽屉列表行同一套（字号只以 sp 表示，由 AgentTheme 的 fontScale 统一缩放，
- * 见 `UiScaleStore.STEPS`「小 / 标准 / 大 / 特大」）。
+ * 面板字号与抽屉列表行同一套（字号只以 sp 表示，由 AgentTheme 按全局基准字号统一换算）。
  *
  * - 工作区行：14sp，与抽屉工作区分组标题同号；
- * - 会话行：13sp、行高 17sp，与抽屉会话行（`AppDrawer` 的 `SessionTreeRow`）的标题完全一致；
+ * - 会话行：13sp、行高 17sp，与抽屉会话行（`AppDrawer` 的 `SessionTreeRow`）标题字号一致，行高按 sp 随基准字号缩放；
  * - 条数 / 时间戳：10sp、行高 13sp，与抽屉会话行的时间行一致。
  *
- * 不再单独乘系数：弹窗内容继承父组合的 `LocalDensity`，档位放大对面板与抽屉同时生效。
+ * 弹窗不继承父组合的主题覆盖：进入前取当前 density，再在弹窗内容里提供一次。
  */
 private val PickerWorkspaceTitleSize = 14.sp
 private val PickerSessionTitleSize = 13.sp
@@ -769,7 +771,7 @@ private fun SessionList(
  * 标题占据剩余宽度、超出用省略号：浮层只有屏宽的六成，固定宽度会让右侧时间戳被挤掉。
  *
  * 字号取自抽屉列表行（见文件中的 `Picker*Size` 常量）：标题默认按会话行 13sp／17sp 行高，
- * 工作区行传入 14sp；条数与时间戳统一 10sp／13sp 行高。三者都是 sp，随全局字号档位缩放。
+ * 工作区行传入 14sp；条数与时间戳统一 10sp／13sp 行高。三者都是 sp，随全局基准字号缩放。
  */
 @Composable
 private fun PickerRow(
@@ -785,8 +787,8 @@ private fun PickerRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // 行高取「不小于 40dp」：标准档位下就是 40dp，特大档位文字变大时行自然被撑高，不裁字
-            .heightIn(min = PickerRowHeight)
+            // 固定 40dp：单行选择行的高度不随字号变化，文字在内部垂直居中
+            .height(PickerRowHeight)
             .background(if (selected) UiColors.rowSelected else Color.Transparent)
             .saltRowClickable(RoundedCornerShape(10.dp)) { onClick() }
             .padding(start = 20.dp, end = 16.dp),

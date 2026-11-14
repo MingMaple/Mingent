@@ -8,7 +8,7 @@ import com.zmf.agent.core.model.BusySendMode
  *
  * 发送流程的繁忙策略与设置页使用同一份数据，属于数据容器而非页面私有。
  *
- * 与 ThemeStore / UiScaleStore 共用 "app_prefs" 文件：备份导出的是整个 app_prefs.xml，
+ * 与 ThemeStore / FontSizeStore 共用 "app_prefs" 文件：备份导出的是整个 app_prefs.xml，
  * 独立文件会增加备份逻辑的登记项。
  */
 object GeneralPrefs {

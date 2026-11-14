@@ -35,7 +35,7 @@ import com.zmf.agent.uikit.theme.AgentTheme
 import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.core.prefs.ThemeMode
 import com.zmf.agent.core.prefs.ThemeStore
-import com.zmf.agent.core.prefs.UiScaleStore
+import com.zmf.agent.core.prefs.FontSizeStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -89,15 +89,15 @@ class MainActivity : ComponentActivity() {
             val context = applicationContext
             // 深浅色仅修改此处的 Compose 状态，不重建 Activity，会话状态不会丢失
             var mode by remember { mutableStateOf(ThemeStore.load(context)) }
-            // 界面字号：档位合法性由 UiScaleStore 保证，读取结果已回退到合法档
-            var uiScale by remember { mutableStateOf(UiScaleStore.load(context)) }
+            // 界面基准字号：合法性由 FontSizeStore 保证，读取结果已夹取到区间
+            var baseFontSp by remember { mutableStateOf(FontSizeStore.load(context)) }
             val dark = when (mode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
             }
-            // uiScale 仅放大字号（AgentTheme 内部仅乘以 fontScale），修改不重建 Activity，会话不丢失
-            AgentTheme(darkTheme = dark, uiScale = uiScale) {
+            // 基准字号只放大文字（AgentTheme 内部仅换算 fontScale），修改不重建 Activity，会话不丢失
+            AgentTheme(darkTheme = dark, baseFontSp = baseFontSp) {
                 // 提示条挂在整棵界面的最外层：抽屉、设置各级页、全屏页都在它下面，
                 // 任何位置发起的一次反馈都能以同一个形态出现在屏幕顶部
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -107,10 +107,10 @@ class MainActivity : ComponentActivity() {
                             mode = picked
                             ThemeStore.save(context, picked)
                         },
-                        uiScale = uiScale,
-                        onUiScaleChange = { picked ->
-                            uiScale = picked
-                            UiScaleStore.save(context, picked)
+                        baseFontSp = baseFontSp,
+                        onBaseFontSpChange = { picked ->
+                            baseFontSp = picked
+                            FontSizeStore.save(context, picked)
                         },
                         initialSessionId = notificationSessionId,
                         initialShare = sharePayload,

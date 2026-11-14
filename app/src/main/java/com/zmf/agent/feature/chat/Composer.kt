@@ -27,6 +27,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -41,6 +42,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -68,9 +70,12 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
@@ -608,9 +613,41 @@ internal fun percentText(value: Float): String {
 }
 
 /**
+ * 单行文案按可用宽度收敛字号：从 [baseSizeSp] 起按 0.5sp 递减，最低到 0.85 倍。
+ *
+ * 优先缩字而不是直接省略，避免窄窗 + 大字号时把「tok」这类单位截掉；
+ * 缩到下限仍放不下时，调用方再使用省略号。测量样式与渲染样式同源（LocalTextStyle + 字号覆盖）。
+ */
+@Composable
+internal fun fitSingleLineSize(
+    text: String,
+    baseSizeSp: Float,
+    maxWidth: Dp
+): Float {
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val baseStyle = LocalTextStyle.current
+    return remember(text, baseSizeSp, maxWidth, density, baseStyle) {
+        val floor = baseSizeSp * 0.85f
+        var size = baseSizeSp
+        while (size > floor) {
+            val widthPx = measurer.measure(
+                text = AnnotatedString(text),
+                style = baseStyle.copy(fontSize = size.sp),
+                softWrap = false
+            ).size.width
+            if (with(density) { widthPx.toDp() } <= maxWidth) break
+            size -= 0.5f
+        }
+        size.coerceAtLeast(floor)
+    }
+}
+
+/**
  * 状态行上的一枚胶囊：小图标 + 一行浅灰字，整块可点、带涟漪。
  *
- * 内边距刻意小（左右 6dp、上下 2dp）：它占的是输入条下面那一行，点不到 36dp 也不该把行撑高。
+ * 文案在可用宽度内先缩字号（下限 0.85 倍），缩到下限仍放不下才省略，
+ * 避免窄窗下「tok」这类单位被省略号吃掉。
  */
 @Composable
 private fun StatusChip(
@@ -620,25 +657,32 @@ private fun StatusChip(
     modifier: Modifier = Modifier
 ) {
     val tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            // 左右 4dp：这一行本来就窄，内边距每省 2dp 就多一个字的位置
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        glyph(tint)
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(
-            text = text,
-            // 11sp：这一行要装两段数字，12sp 在窄屏上必然截尾；11sp 让两段都完整
-            fontSize = 11.sp,
-            color = tint,
-            maxLines = 1,
-            // 宁可看到省略号，也不要被裁掉半截数字：用户要看到的是「命中 xx%」
-            overflow = TextOverflow.Ellipsis
-        )
+    BoxWithConstraints(modifier = modifier) {
+        // 剩余可用宽度 = 胶囊宽度 − 图标 11dp − 间距 4dp − 左右内距 8dp
+        val textBudget = (maxWidth - 23.dp).coerceAtLeast(24.dp)
+        val size = fitSingleLineSize(text, 11f, textBudget)
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                // 固定容器高 28dp：内容垂直居中，上下余量均分，字号变化不改变容器高度
+                .height(28.dp)
+                // 左右 4dp：这一行本来就窄，每省 2dp 可多容纳约 0.2 字
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            glyph(tint)
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = text,
+                // 11sp 为基准，窄窗下先缩到 0.85 倍，避免省略号吃掉「tok」这类单位
+                fontSize = size.sp,
+                color = tint,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 
@@ -757,8 +801,8 @@ private fun ModelPickRow(title: String, value: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // 最小高度固定，字号放大时随内容增高，避免大字体下文字被裁
-            .heightIn(min = 44.dp)
+            // 固定 44dp：单行选择行的高度不随字号变化
+            .height(44.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -855,7 +899,8 @@ private fun QueuedRow(
             .clip(shape)
             .background(onSurface.copy(alpha = 0.06f))
             .then(if (editing) Modifier.border(1.dp, UiColors.accentFg, shape) else Modifier)
-            .heightIn(min = 40.dp)
+            // 固定 40dp：排队行只承载单行文字，字号变化不再改变行高
+            .height(40.dp)
             .padding(start = 12.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -897,7 +942,8 @@ private fun PermissionChip(label: String, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     Row(
         modifier = Modifier
-            .heightIn(min = 28.dp)
+            // 固定 28dp：芯片高度不随字号变化，文字在内部垂直居中
+            .height(28.dp)
             .clip(RoundedCornerShape(9.dp))
             .background(onSurface.copy(alpha = 0.06f))
             .clickable(onClick = onClick)

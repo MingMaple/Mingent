@@ -1,6 +1,5 @@
 package com.zmf.agent.app.navigation
 
-import android.content.Context
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -42,14 +41,14 @@ import com.zmf.agent.uikit.common.noticeName
  *
  * 它们与主界面布局无关（不占用布局位置、不拦截手势），仅读写 [ChatUiState] 与 [ChatViewModel]，
  * 因此独立于 [ChatScreen] 实现，主函数仅保留一行调用。
+ *
+ * @param onExportLaunch 导出位置由调用方选择（SAF），本层仅传递文件名
  */
 @Composable
 internal fun ChatDialogs(
     viewModel: ChatViewModel,
     ui: ChatUiState,
-    context: Context,
     scope: CoroutineScope,
-    /** 导出位置由调用方选择（SAF），本层仅负责传递文件名。 */
     onExportLaunch: (String) -> Unit
 ) {
     var showCreateWorkspace by ui.showCreateWorkspace

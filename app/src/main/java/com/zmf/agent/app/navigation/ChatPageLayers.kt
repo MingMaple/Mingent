@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -36,11 +35,9 @@ import com.zmf.agent.feature.settings.DataSettingsPage
 import com.zmf.agent.feature.settings.GeneralSettingsPage
 import com.zmf.agent.feature.settings.ModelSettingsPage
 import com.zmf.agent.feature.settings.SettingsHomePage
-import com.zmf.agent.core.store.UsageLedger
 import com.zmf.agent.capability.prompt.PromptStore
 import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.theme.Motion
-import com.zmf.agent.core.prefs.UiScaleStore
 import kotlinx.coroutines.launch
 import com.zmf.agent.feature.chat.BrowserPage
 import com.zmf.agent.feature.chat.WorkSpacePage
@@ -93,15 +90,16 @@ private fun PageSlide(visible: Boolean, content: @Composable () -> Unit) {
  * 每页各一层 [AnimatedVisibility]，下层页面保留原位，中间不会闪现主页画面。全部为同一个 Box 的
  * 直接子节点，按代码顺序叠放；因此必须在同一组合内一次性声明，拆分为多次调用会改变层序，
  * 滑入动画时会露出下层页面。
+ *
+ * @param onImportLaunch 导入位置由调用方选择（SAF），本层仅通知「需要弹出选择器」
  */
 @Composable
 internal fun ChatPageLayers(
     viewModel: ChatViewModel,
     ui: ChatUiState,
-    uiScale: Float,
-    onUiScaleChange: (Float) -> Unit,
+    baseFontSp: Int,
+    onBaseFontSpChange: (Int) -> Unit,
     subAgentEntries: List<SubAgentRegistry.Entry>,
-    /** 导入位置由调用方选择（SAF），本层仅负责通知「需要弹出选择器」。 */
     onImportLaunch: () -> Unit
 ) {
     val context = LocalContext.current
@@ -119,11 +117,6 @@ internal fun ChatPageLayers(
     var showExportDialog by ui.showExportDialog
     val openContextHub: (Boolean) -> Unit = ui::openContextHub
     val forkWithReload: (() -> Unit) -> Unit = { action -> ui.forkWithReload(scope, action) }
-    // 上下文页所需的全局总账快照：进入页面时读取一次磁盘（UsageLedger.load 自带「只读一次」机制）
-    val lastLedger = remember(page) {
-        UsageLedger.load(context)
-        UsageLedger.snapshot()
-    }
         // 设置、工作区与设置下的所有页面均为独立全屏页，每页各一层 AnimatedVisibility：
         // 下层页面保留原位，中间不会闪现主页画面；页面自身不透明，因此仅执行横向滑动。
         PageSlide(
@@ -214,9 +207,8 @@ internal fun ChatPageLayers(
             GeneralSettingsPage(
                 onBack = { page = AppPage.SETTINGS },
                 onPermission = { page = AppPage.PERMISSION },
-                uiScale = uiScale,
-                uiScaleLabel = UiScaleStore.label(uiScale),
-                onUiScale = { onUiScaleChange(it) },
+                baseFontSp = baseFontSp,
+                onBaseFontSpChange = { onBaseFontSpChange(it) },
                 busyMode = viewModel.busyMode,
                 onBusyModeChange = { mode -> viewModel.applyBusyMode(mode) },
                 onSchedule = { page = AppPage.SCHEDULE }

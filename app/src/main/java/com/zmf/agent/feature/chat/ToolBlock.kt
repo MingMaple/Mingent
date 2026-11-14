@@ -2,14 +2,12 @@ package com.zmf.agent.feature.chat
 import com.zmf.agent.uikit.icons.DshIcons
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,7 +25,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -41,8 +38,6 @@ import com.zmf.agent.uikit.common.ChevronSize
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Palette
 import kotlinx.coroutines.delay
-import org.json.JSONArray
-import org.json.JSONObject
 import com.zmf.agent.uikit.markdown.MarkdownCodeBlock
 import com.zmf.agent.uikit.markdown.copyCode
 import com.zmf.agent.uikit.components.CopyActionButton
@@ -76,8 +71,7 @@ import com.zmf.agent.uikit.components.CopyActionButton
  *       containerColor = cardColor
  *   )
  *   数据来自一次工具调用：call.name → toolName，call.arguments → arguments，结果 → output。
- *   行为：参数默认折叠成一行摘要（点摘要行展开），结果是常显的 240dp 内滚区，
- *   整卡不折叠；如果仍想要「整卡折叠」，在外面套一层自己的开关即可。
+ *   行为：整卡默认折叠为标题行，点击展开参数 / 代码 / 输出；参数区与输出区各为 240dp 内滚区。
  *
  * 三、轨迹页
  *
@@ -85,14 +79,11 @@ import com.zmf.agent.uikit.components.CopyActionButton
  *   TraceLine 的 args / result 原文直接传进来就行。
  *
  * 四、位置约定
- *   - 参数区：折叠时一行摘要（[ARG_SUMMARY_LIMIT] 字截断），展开后 240dp 内滚；
+ *   - 参数区：随整卡展开后 240dp 内滚；
  *   - 代码区：等宽 + 行号，默认单行横滑，点「换行」换成完整折行，随整页滚动；
  *   - 输出区：240dp 内滚，滚到边界后继续滑不带动外层页面；
  *   - 复制按钮：标题行右端的图标按钮，常显（见 [CopyActionButton]）。
  * ========================================================================== */
-
-/** 参数摘要的字符上限：路径 / 命令这类长串都截到这个长度。 */
-private const val ARG_SUMMARY_LIMIT = 40
 
 /** 「已复制」提示的停留时间。 */
 private const val COPIED_TIP_MS = 1200L
@@ -108,12 +99,6 @@ private val BlockBodyMaxHeight = 240.dp
  * 按钮在行内居中，上下各留 3dp。
  */
 private val ToolHeaderHeight = 36.dp
-
-/** 摘要优先取这些字段：一眼能读懂的「在干什么」。 */
-private val ARG_SUMMARY_KEYS = listOf(
-    "path", "file_path", "filePath", "command", "cmd", "query", "url",
-    "description", "prompt", "goal", "pattern", "name"
-)
 
 /**
  * 通用工具块（主页聊天气泡 / 轨迹页共用）。
@@ -185,7 +170,7 @@ fun ToolBlock(
                         open = !open
                     }
                     // 固定行高：复制按钮只在展开时出现，行高不能随之变化，否则标题会上下跳
-                    .heightIn(min = ToolHeaderHeight)
+                    .height(ToolHeaderHeight)
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -313,31 +298,6 @@ fun ToolBlock(
 }
 
 /* ------------------------------ 内部实现 ------------------------------ */
-
-/**
- * 参数摘要：优先取 path / command 这类一眼能读懂的字段，取不到就把整串压成一行。
- * 统一截到 [ARG_SUMMARY_LIMIT] 字：路径和命令都太长，一行放不下。
- */
-private fun toolArgSummary(arguments: String): String {
-    if (arguments.isBlank()) return ""
-    val json = runCatching { JSONObject(arguments) }.getOrNull()
-    val picked = json?.let { obj ->
-        ARG_SUMMARY_KEYS.firstNotNullOfOrNull { key ->
-            val value = obj.opt(key) ?: return@firstNotNullOfOrNull null
-            if (value === JSONObject.NULL || value is JSONObject || value is JSONArray) {
-                return@firstNotNullOfOrNull null
-            }
-            value.toString().takeIf { it.isNotBlank() }
-        }
-    }
-    val flat = (picked ?: arguments)
-        .replace('\n', ' ')
-        .replace('\r', ' ')
-        .split(' ')
-        .filter { it.isNotEmpty() }
-        .joinToString(" ")
-    return if (flat.length > ARG_SUMMARY_LIMIT) flat.take(ARG_SUMMARY_LIMIT) + "…" else flat
-}
 
 /** 默认的复制内容：工具名 + 有哪段带哪段，按「标签换行正文」拼，粘到外面还能读。 */
 private fun buildToolCopyText(

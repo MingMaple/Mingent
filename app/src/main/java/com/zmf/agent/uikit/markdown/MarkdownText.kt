@@ -578,13 +578,27 @@ internal fun MarkdownCodeBlock(
     var copied by remember(code) { mutableStateOf(false) }
     val hScroll = rememberScrollState()
     val langLabel = if (lang.isBlank()) "代码" else lang
-    // 行号列：宽度按总行数取 2–3 位。等宽字宽约 0.6 em，再乘 fontScale，
-    // 否则系统放大字体后行号会被右对齐裁切。
+    // 行号列：宽度按最长行号实测取宽。等宽字体在连续字号下的实际字宽不等于
+    // 「0.62 × 字号」这一经验系数，手写比例会在放大时偏窄、末位被裁。
     val lines = remember(code) { code.split('\n') }
     val gutter = remember(lines) { lines.indices.joinToString("\n") { (it + 1).toString() } }
     val gutterDigits = lines.size.toString().length.coerceIn(2, 3)
-    val fontScale = LocalDensity.current.fontScale
-    val gutterWidth = (gutterDigits * 0.62f * codeFontSize.value * fontScale).dp + 2.dp
+    val localDensity = LocalDensity.current
+    val gutterMeasurer = rememberTextMeasurer()
+    val gutterWidth = remember(gutterDigits, codeFontSize, codeLineHeight, localDensity) {
+        val style = TextStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = codeFontSize,
+            lineHeight = codeLineHeight
+        )
+        // 等宽字体下每一位数字等宽，全 9 的最长串即为最宽行号
+        val widest = gutterMeasurer.measure(
+            text = AnnotatedString("9".repeat(gutterDigits)),
+            style = style,
+            softWrap = false
+        )
+        with(localDensity) { widest.size.width.toDp() } + 2.dp
+    }
     val lineNumberColor = color.copy(alpha = 0.32f)
     // 正文限高：内容可容纳时随整页滚动，超出时在区块内纵向滚动（不影响横向滑动）。
     // 调用方提供明确高度时使用该值，否则按 240dp。

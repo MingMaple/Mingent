@@ -57,7 +57,6 @@ import com.zmf.agent.core.log.AuditLog
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.PermissionLevel
-import com.zmf.agent.core.model.SharePayload
 import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
@@ -704,7 +703,7 @@ class ChatViewModel(context: Context) : AgentUi {
      */
     private fun promptInput(): PromptInput {
         val space = workspaceList.firstOrNull { it.id == currentWorkspaceId }
-            ?: WorkSpaceStore.defaultSpace(appContext)
+            ?: WorkSpaceStore.defaultSpace()
         val skills = skillCatalogForPrompt()
         return PromptInput(
             model = model,

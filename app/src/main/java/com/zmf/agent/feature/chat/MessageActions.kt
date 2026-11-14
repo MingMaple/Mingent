@@ -81,7 +81,11 @@ fun MessageTailRow(
 ) {
     val secondary = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            // 固定 34dp：顶部 4dp 间距 + 30dp 图标行，图标位置不随字号变化
+            .padding(top = 4.dp)
+            .height(30.dp),
         horizontalArrangement = if (alignEnd) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically
     ) {

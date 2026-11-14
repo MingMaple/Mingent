@@ -55,7 +55,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.core.store.InsightColors
@@ -72,6 +71,7 @@ import com.zmf.agent.uikit.components.AdaptiveStatRow
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
+import com.zmf.agent.uikit.theme.baselineTextDensity
 import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -125,15 +125,15 @@ fun ContextInsightPage(
         session = withContext(Dispatchers.IO) { loadSession(viewedId) }
     }
 
-    // 洞察页锁定设计字号（fontScale = 1）：系统字体调大时版式保持不变，
-    // 避免窄屏或大字号下标签被挤成竖排、按钮被撑满整行。系统字号仍作用于其它页面。
+    // 洞察页视觉锁定在统一的设计基准（fontScale = 1）：整页不随全局基准字号变化，
+    // 避免窄屏或大字号下标签被挤成竖排、按钮被撑满整行。页面版式因此保持既定形态。
     val baseDensity = LocalDensity.current
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
         CompositionLocalProvider(
-            LocalDensity provides Density(density = baseDensity.density, fontScale = 1f)
+            LocalDensity provides baselineTextDensity(baseDensity)
         ) {
             Column(
                 modifier = Modifier

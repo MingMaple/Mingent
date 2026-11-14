@@ -301,7 +301,7 @@ fun TrashPage(onBack: () -> Unit) {
             onConfirm = {
                 pendingDelete = null
                 scope.launch {
-                    val ok = withContext(Dispatchers.IO) { TrashStore.deleteEntry(context, entry) }
+                    val ok = withContext(Dispatchers.IO) { TrashStore.deleteEntry(entry) }
                     if (ok) {
                         NoticeCenter.success("已永久删除「" + noticeName(entryName(entry)) + "」")
                     } else {

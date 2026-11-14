@@ -275,7 +275,7 @@ class ContextState(
         val request = requestView(requestStart(summary, upTo), summary, upTo)
         val summaryText = if (summary.isNotEmpty() && upTo > 0) summary else ""
         // planMode 由 promptInput() 自带（与 AgentLoop 同源）；摘要单独计量，避免将摘要计入提示词段
-        val promptOnly = PromptBuilder.build(promptInput().copy(summaryText = ""))
+        val promptOnly = PromptBuilder.build(promptInput())
         val skillTokens = PromptBuilder.skillSectionTokens(promptInput())
         val systemTokens = ((promptOnly?.let { ContextCompactor.estimateText(it) } ?: 0) - skillTokens)
             .coerceAtLeast(0)
@@ -1706,7 +1706,7 @@ class ContextState(
 
     /** 任意请求视图的六段估算（与 [refreshContextBreakdown] 同一套口径）。 */
     private fun breakdownFor(request: List<ChatMessage>, summaryText: String): Breakdown {
-        val promptOnly = PromptBuilder.build(promptInput().copy(summaryText = ""))
+        val promptOnly = PromptBuilder.build(promptInput())
         val skillTokens = PromptBuilder.skillSectionTokens(promptInput())
         val systemTokens = ((promptOnly?.let { ContextCompactor.estimateText(it) } ?: 0) - skillTokens)
             .coerceAtLeast(0)

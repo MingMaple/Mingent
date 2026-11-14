@@ -32,8 +32,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,12 +52,10 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import com.zmf.agent.core.log.FileLog
-import com.zmf.agent.feature.float.FloatingChatWindow
-import com.zmf.agent.feature.float.LocalFloatInputFocus
-import com.zmf.agent.feature.float.SiriBall
 import com.zmf.agent.uikit.theme.AgentTheme
 import com.zmf.agent.core.prefs.ThemeMode
 import com.zmf.agent.core.prefs.ThemeStore
+import com.zmf.agent.core.prefs.FontSizeStore
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import com.zmf.agent.capability.runtime.ChatBridge
@@ -375,6 +375,8 @@ class FloatingBallService : Service() {
         // （isSystemInDarkTheme），应用内选择「深色」而系统为浅色时小窗会始终保持浅色。
         // 此处创建视图前读取一次应用设置，切换主题后重新打开小窗即生效。
         val appThemeMode = ThemeStore.load(this)
+        // 服务可能先于主界面启动：先按磁盘刷新一次进程内基准字号，避免小窗开到旧值
+        FontSizeStore.load(this)
 
         val view = ComposeView(this).apply {
             attachLifecycleOwner(this, owner)
@@ -388,7 +390,15 @@ class FloatingBallService : Service() {
                     ThemeMode.LIGHT -> false
                     ThemeMode.DARK -> true
                 }
-                AgentTheme(darkTheme = dark) {
+                // 服务没有 Activity，基准字号只能从进程级偏好取：订阅 FontSizeStore，
+                // 设置页调整字号时小窗即时跟随，不重建窗口
+                var baseFontSp by remember { mutableStateOf(FontSizeStore.current) }
+                DisposableEffect(Unit) {
+                    val listener: (Int) -> Unit = { baseFontSp = it }
+                    FontSizeStore.addListener(listener)
+                    onDispose { FontSizeStore.removeListener(listener) }
+                }
+                AgentTheme(darkTheme = dark, baseFontSp = baseFontSp) {
                     CompositionLocalProvider(
                         LocalFloatInputFocus provides { focused -> onInputFocusChanged(focused) }
                     ) {
@@ -522,7 +532,7 @@ class FloatingBallService : Service() {
                     onGestureEnd = { onWindowGestureEnd() }
                 )
             } else {
-                // 球始终绘制在自身 60dp 的盒子内：过渡期间窗口可能仍为小窗尺寸，
+                // 球始终绘制在自身 52dp 的盒子内：过渡期间窗口可能仍为小窗尺寸，
                 // 若不固定尺寸，Canvas 会按窗口大小绘制出 150dp 的大球
                 Box(
                     modifier = Modifier

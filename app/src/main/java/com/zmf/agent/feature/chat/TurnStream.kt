@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -562,7 +561,7 @@ private fun TurnThinkBlock(
                         expanded = !expanded
                     }
                     // 固定行高：复制按钮只在展开时出现，行高不能随之变化，否则标题会上下跳
-                    .heightIn(min = ThinkHeaderHeight)
+                    .height(ThinkHeaderHeight)
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {

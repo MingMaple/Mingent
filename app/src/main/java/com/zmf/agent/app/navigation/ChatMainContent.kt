@@ -65,6 +65,8 @@ import java.io.File
  * 这一层只决定「轨迹页用整屏滑入还是右侧辅窗格」，以及聊天列的限宽与居中；
  * 具体的页面、浮层与业务仍由各自模块组合。把它从 [ChatShell] 拆出来，
  * 是为了让外壳只负责抽屉形态，内容只负责窗格形态，两层不互相掺入。
+ *
+ * @param splitTrace 内容宽度充足时，轨迹改为右侧辅窗格，聊天区保持可见可输入
  */
 @Composable
 internal fun ChatMainContent(
@@ -80,12 +82,11 @@ internal fun ChatMainContent(
     subAgentEntries: List<SubAgentRegistry.Entry>,
     imePad: Dp,
     imeVisible: Boolean,
-    uiScale: Float,
-    onUiScaleChange: (Float) -> Unit,
+    baseFontSp: Int,
+    onBaseFontSpChange: (Int) -> Unit,
     onPickFile: () -> Unit,
     onLogLaunch: (String) -> Unit,
     onImportLaunch: () -> Unit,
-    /** 内容宽度充足时，轨迹改为右侧辅窗格，聊天区保持可见可输入。 */
     splitTrace: Boolean
 ) {
     var page by ui.page
@@ -195,8 +196,8 @@ internal fun ChatMainContent(
         ChatPageLayers(
             viewModel = viewModel,
             ui = ui,
-            uiScale = uiScale,
-            onUiScaleChange = onUiScaleChange,
+            baseFontSp = baseFontSp,
+            onBaseFontSpChange = onBaseFontSpChange,
             subAgentEntries = subAgentEntries,
             onImportLaunch = onImportLaunch
         )

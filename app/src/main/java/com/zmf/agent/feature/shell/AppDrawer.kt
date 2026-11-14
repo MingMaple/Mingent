@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -74,8 +75,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -87,17 +86,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntRect
-import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupPositionProvider
-import androidx.compose.ui.window.PopupProperties
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.core.store.WorkSpace
@@ -155,6 +148,22 @@ private val SESSION_TITLE_LINE = 17.dp
 private val SESSION_TIME_LINE = 13.dp
 private val SESSION_TIME_GAP = 1.dp
 private val TREE_CONTENT_HEIGHT = SESSION_TITLE_LINE + SESSION_TIME_GAP + SESSION_TIME_LINE
+
+/**
+ * 树内单行会话的固定总高：14sp 基准下为 51dp（上下各 10dp 内距 + 31dp 两行文字）。
+ *
+ * 行高固定后，两行文字内容高固定 31dp（17 + 1 + 13），整行 51dp，16sp 时也不会被裁切。
+ */
+private val TREE_ROW_HEIGHT = TREE_ROW_PAD * 2 + TREE_CONTENT_HEIGHT
+
+/**
+ * 会话行两行文字的行高：按 dp 固定。
+ *
+ * `Dp.toSp()` 会按当前 density 与 fontScale 折算，因此渲染出来的高度恒为给定 dp，
+ * 基准字号调大时行高不跟着长，抽屉的行距保持稳定。
+ */
+@Composable
+private fun fixedLineHeight(dp: Dp): TextUnit = with(LocalDensity.current) { dp.toSp() }
 
 /** 展开状态表的键：null（未分类）用空串占位，工作区 id 不会是空串。 */
 private const val NO_WORKSPACE_KEY = ""
@@ -1109,7 +1118,10 @@ private fun WorkspaceSection(
                 modifier = Modifier
                     .fillMaxWidth()
                     .saltCardRow() { onShowAllChange(!showAll) }
-                    .padding(start = 46.dp, end = 16.dp, top = 4.dp, bottom = 6.dp),
+                    // 固定容器高 34dp：行高 24sp，上下余量由居中分配，文字垂直居中
+                    .height(34.dp)
+                    .wrapContentHeight(Alignment.CenterVertically)
+                    .padding(start = 46.dp, end = 16.dp),
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
             )
@@ -1185,11 +1197,11 @@ private fun SessionTreeRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                // 固定整行高度：竖向不再用内距撑高，两行文字在行内居中
+                .height(TREE_ROW_HEIGHT)
                 .padding(
                     start = SESSION_INSET,
-                    end = SESSION_INSET,
-                    top = TREE_ROW_PAD,
-                    bottom = TREE_ROW_PAD
+                    end = SESSION_INSET
                 ),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1202,7 +1214,7 @@ private fun SessionTreeRow(
                     // 两行合计高度明显高于「主页/终端/设置」行
                     style = MaterialTheme.typography.bodyMedium.copy(
                         fontSize = 13.sp,
-                        lineHeight = SESSION_TITLE_LINE.value.sp
+                        lineHeight = fixedLineHeight(SESSION_TITLE_LINE)
                     ),
                     fontWeight = if (isCurrent) FontWeight.Medium else FontWeight.Normal,
                     color = when {
@@ -1217,7 +1229,7 @@ private fun SessionTreeRow(
                     maxLines = 1,
                     style = MaterialTheme.typography.bodyMedium.copy(
                         fontSize = 10.sp,
-                        lineHeight = SESSION_TIME_LINE.value.sp
+                        lineHeight = fixedLineHeight(SESSION_TIME_LINE)
                     ),
                     color = when {
                         archived -> onSurface.copy(alpha = 0.38f)
@@ -1312,7 +1324,10 @@ private fun SearchResultRow(
         modifier = Modifier
             .fillMaxWidth()
             .saltCardRow { onClick() }
-            .padding(start = SESSION_INSET, end = 16.dp, top = TREE_ROW_PAD, bottom = TREE_ROW_PAD)
+            // 固定整行高度，两行内容在行内居中；竖向不再用内距撑高
+            .height(TREE_ROW_HEIGHT)
+            .padding(start = SESSION_INSET, end = 16.dp),
+        verticalArrangement = Arrangement.Center
     ) {
         Text(
             text = hit.session.title.ifBlank { "新会话" },
@@ -1320,7 +1335,7 @@ private fun SearchResultRow(
             overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontSize = 13.sp,
-                lineHeight = SESSION_TITLE_LINE.value.sp
+                lineHeight = fixedLineHeight(SESSION_TITLE_LINE)
             ),
             fontWeight = if (isCurrent) FontWeight.Medium else FontWeight.Normal,
             color = when {
@@ -1341,7 +1356,7 @@ private fun SearchResultRow(
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyMedium.copy(
                     fontSize = 10.sp,
-                    lineHeight = SESSION_TIME_LINE.value.sp
+                    lineHeight = fixedLineHeight(SESSION_TIME_LINE)
                 ),
                 color = onSurface.copy(alpha = if (archived) 0.38f else 0.45f)
             )
@@ -1354,7 +1369,7 @@ private fun SearchResultRow(
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodyMedium.copy(
                         fontSize = 10.sp,
-                        lineHeight = SESSION_TIME_LINE.value.sp
+                        lineHeight = fixedLineHeight(SESSION_TIME_LINE)
                     ),
                     color = onSurface.copy(alpha = if (archived) 0.38f else 0.3f)
                 )
@@ -1541,7 +1556,6 @@ private fun DrawerRow(
     icon: ImageVector,
     label: String,
     value: String? = null,
-    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     Row(
@@ -1549,8 +1563,10 @@ private fun DrawerRow(
             .fillMaxWidth()
             // 抽屉内这几行若使用裸 clickable：默认水波纹为矩形，置于圆角卡片内会露出直角。
             // 统一使用 saltCardRow，形状由卡片自身的 clip 裁剪
-            .saltCardRow(enabled = enabled) { onClick() }
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .saltCardRow { onClick() }
+            // 固定容器高 50dp：行高 24sp，上下余量由居中分配，字号变化不改变容器高度
+            .height(50.dp)
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -1558,29 +1574,30 @@ private fun DrawerRow(
             contentDescription = null,
             // 20dp：比 16sp 的字略高一档，三行图标与文字视觉齐平；24 网格按 20 缩放，线宽约为 1.5dp
             modifier = Modifier.size(20.dp),
-            tint = if (enabled) Palette.Neutral else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+            tint = Palette.Neutral
         )
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(12.dp))
         Text(
             text = label,
-            // 标题优先占位、说明文字让位：抽屉最窄 280dp，特大字号下两者会挤在一处。
-            // 标题按剩余宽度伸缩并以省略号收尾，与说明之间固定留 8dp，避免文字粘连
-            modifier = Modifier.weight(1f),
+            // 标题先量、优先占位：说明文字只吃剩余宽度，窄窗 + 16sp 时也不会把「终端」挤成省略号
             fontSize = 16.sp,
             maxLines = 1,
+            softWrap = false,
             overflow = TextOverflow.Ellipsis,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.35f)
+            color = MaterialTheme.colorScheme.onSurface
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(6.dp))
         // 没有说明文字（例如「设置」行）时整块不画，避免留下多余间隔
         if (value != null) {
             Text(
                 text = value,
-                modifier = Modifier.widthIn(max = 150.dp),
+                // 剩余宽度不足时由说明文字自己省略，标题不参与让位
+                modifier = Modifier.weight(1f, fill = false),
                 fontSize = 12.sp,
                 maxLines = 1,
+                softWrap = false,
                 overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 0.55f else 0.25f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
             )
             Spacer(Modifier.width(6.dp))
         }
@@ -1588,7 +1605,7 @@ private fun DrawerRow(
         Chevron(
             expanded = false,
             size = ChevronSize.NORMAL,
-            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 0.35f else 0.15f)
+            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
         )
     }
 }

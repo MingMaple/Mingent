@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import com.moriafly.salt.ui.SaltColors
+import com.zmf.agent.core.prefs.FontSizeStore
 import com.moriafly.salt.ui.SaltConfigs
 import com.moriafly.salt.ui.SaltDynamicColors
 import com.moriafly.salt.ui.SaltTheme
@@ -135,16 +136,20 @@ private fun saltDark() = SaltColors(
 /**
  * 全局主题。
  *
- * 字号**不跟随系统**：Compose 的 fontScale 固定为 [uiScale]，系统字体大小设置不参与。
- * 调整整个 App 的字号只能通过设置中的字号选项（写入 [uiScale]）。
+ * 字号**不跟随系统**：Compose 的 fontScale 由 [baseFontSp] 与设计基准换算得出，系统字体大小设置不参与。
+ * 调整整个 App 的字号只能通过设置中的基准字号（写入 `FontSizeStore`）。
  * 理由：本 App 版式按 360dp 设计，系统字体会破坏行高、图标与圆角之间的比例关系；
- * 用户所需的「更大」是整体缩放，而非仅放大文字。
- * 合法性由 UiScaleStore 保证（load 已完成回落处理），此处不再重复校验。
+ * 用户所需的「更大」是放大文字，而非放大全部元素。
+ *
+ * 若写成 `outerDensity.fontScale * 倍率`，系统倍率会被重新乘入，隔离随即失效。
+ * 合法性由 `FontSizeStore` 保证（`load` 已完成夹取），此处不再重复校验。
+ *
+ * @param baseFontSp 全局基准字号（sp），倍率由本函数一次性换算
  */
 @Composable
 fun AgentTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    uiScale: Float = 1f,
+    baseFontSp: Int = FontSizeStore.DEFAULT_SP,
     content: @Composable () -> Unit
 ) {
     // 必须在 provider 外层读：provider 内部读到的已经是放大过的 density，
@@ -152,7 +157,7 @@ fun AgentTheme(
     val outerDensity = LocalDensity.current
     val scaledDensity = Density(
         density = outerDensity.density,
-        fontScale = uiScale
+        fontScale = baseFontSp / FontSizeStore.DESIGN_BASE_SP
     )
     // primary 必须为**中性墨色**，不得使用强调蓝。
     //

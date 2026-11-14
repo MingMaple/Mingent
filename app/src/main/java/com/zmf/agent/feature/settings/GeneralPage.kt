@@ -42,29 +42,31 @@ import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltRowClickable
 import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.theme.Motion
-import com.zmf.agent.core.prefs.UiScaleStore
-import kotlin.math.abs
 import com.zmf.agent.core.prefs.GeneralPrefs
 
 /**
- * 「通用设置」页：权限、字号、工作代码视图、繁忙时发送行为、定时任务。
+ * 设置行的固定容器高 52dp：行高 24sp，上下余量由居中分配，字号变化时不改变容器高度。
+ * 选项行的内距较小，因此取 48dp。
+ */
+private val SettingsRowHeight = 52.dp
+private val SettingsOptionRowHeight = 48.dp
+
+/**
+ * 「通用设置」页：权限、字号、繁忙时发送行为、定时任务。
  *
- * 字号与繁忙行为采用「展开一行再选」的方式，不跳转页面：选项仅两三个，页面跳转的交互成本更高，
- * 展开区使用弹簧动画（与抽屉一致），展开与收起不产生闪烁。
+ * 字号采用「数值 + 上下微调箭头」，原地生效、不展开选项；繁忙行为仍采用「展开一行再选」的方式，
+ * 该展开区使用弹簧动画（与抽屉一致），展开与收起不产生闪烁。
  */
 @Composable
 fun GeneralSettingsPage(
     onBack: () -> Unit,
     onPermission: () -> Unit,
-    uiScale: Float,
-    uiScaleLabel: String,
-    onUiScale: (Float) -> Unit,
+    baseFontSp: Int,
+    onBaseFontSpChange: (Int) -> Unit,
     busyMode: BusySendMode,
     onBusyModeChange: (BusySendMode) -> Unit,
     onSchedule: () -> Unit
 ) {
-    // 两个展开区互斥：同一屏只展开一个，否则页面过长，滚动位置也难以恢复
-    var scaleOpen by remember { mutableStateOf(false) }
     var busyOpen by remember { mutableStateOf(false) }
 
     GeneralScaffold(title = "通用设置", onBack = onBack) {
@@ -77,38 +79,17 @@ fun GeneralSettingsPage(
                 onClick = onPermission
             )
             GeneralDivider()
-            GeneralExpanderRow(
-                title = "字号大小",
-                value = uiScaleLabel,
-                expanded = scaleOpen,
-                onClick = {
-                    scaleOpen = !scaleOpen
-                    if (scaleOpen) busyOpen = false
-                }
+            FontSizeStepperRow(
+                baseFontSp = baseFontSp,
+                onBaseFontSpChange = onBaseFontSpChange
             )
-            GeneralExpander(visible = scaleOpen) {
-                // 档位由 UiScaleStore 定：界面只画它认的那几档，选出来的值一定能存回去
-                UiScaleStore.STEPS.forEach { step ->
-                    GeneralOptionRow(
-                        text = UiScaleStore.label(step),
-                        selected = abs(step - uiScale) < 0.001f,
-                        onClick = {
-                            onUiScale(step)
-                            scaleOpen = false
-                        }
-                    )
-                }
-            }
         }
         GeneralCard {
             GeneralExpanderRow(
                 title = "繁忙时发送行为",
                 value = GeneralPrefs.busyModeLabel(busyMode),
                 expanded = busyOpen,
-                onClick = {
-                    busyOpen = !busyOpen
-                    if (busyOpen) scaleOpen = false
-                }
+                onClick = { busyOpen = !busyOpen }
             )
             GeneralExpander(visible = busyOpen) {
                 BusySendMode.entries.forEach { mode ->
@@ -196,7 +177,7 @@ private fun GeneralCard(content: @Composable () -> Unit) {
     }
 }
 
-/** 卡片内的分隔线：从文字左边起，不横穿整张卡片。 */
+/** 卡片内通栏分隔线。 */
 @Composable
 private fun GeneralDivider() {
     HorizontalDivider(
@@ -216,7 +197,8 @@ private fun GeneralNavRow(
         modifier = Modifier
             .fillMaxWidth()
             .saltCardRow() { onClick() }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .height(SettingsRowHeight)
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -265,7 +247,8 @@ private fun GeneralExpanderRow(
         modifier = Modifier
             .fillMaxWidth()
             .saltCardRow() { onClick() }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .height(SettingsRowHeight)
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -308,7 +291,7 @@ private fun GeneralExpander(visible: Boolean, content: @Composable () -> Unit) {
     }
 }
 
-/** 展开区里的一个选项：选中吃 Salt 绿并在右侧打勾。 */
+/** 展开区里的一个选项：选中时文字加粗并在右侧显示勾选。 */
 @Composable
 private fun GeneralOptionRow(
     text: String,
@@ -320,7 +303,8 @@ private fun GeneralOptionRow(
         modifier = Modifier
             .fillMaxWidth()
             .saltCardRow() { onClick() }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .height(SettingsOptionRowHeight)
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -328,7 +312,7 @@ private fun GeneralOptionRow(
             modifier = Modifier.weight(1f),
             fontSize = 15.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            // 列表项选中：底色 + 加粗 + 勾，不把整行文字染蓝
+            // 列表项选中：文字加粗 + 右侧勾选，不改变文字颜色
             color = if (selected) onSurface else onSurface.copy(alpha = 0.75f)
         )
         if (selected) {

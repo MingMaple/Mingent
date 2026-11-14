@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -210,7 +211,7 @@ private fun TemplateRow(title: String, desc: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 38.dp)
+            .height(38.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -238,7 +239,7 @@ private fun SkillRow(name: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 38.dp)
+            .height(38.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -317,7 +318,8 @@ fun ComposerContextPanel(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .clickable(onClick = onOpenDetail)
-                    .padding(vertical = 2.dp),
+                    // 固定 24dp 单行：16sp 下也不折行，下方的构成条不会被文字顶动或压住
+                    .height(24.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // 标题与百分比分两档着色：标题是说明（三级），百分比是数值（一级）
@@ -335,16 +337,27 @@ fun ComposerContextPanel(
                     fontWeight = FontWeight.Medium,
                     color = UiColors.meterPrimary
                 )
-                Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = "~" + composerTokenText(usage.used) + " / " + composerTokenText(usage.window),
-                    fontSize = 12.sp,
-                    lineHeight = 20.sp,
-                    fontWeight = FontWeight.Medium,
-                    // 等宽数字：数值在两帧之间变化时不会因字宽不同而左右抖动
-                    style = TextStyle(fontFeatureSettings = "tnum"),
-                    color = UiColors.meterPrimary
-                )
+                // 右侧 token 总数：剩余宽度内先缩字号（下限 0.85 倍），再考虑省略，
+                // 保证窄窗下「~111.9K / 111.9K」不被折行或截掉关键数字。
+                BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                    val usedText = "~" + composerTokenText(usage.used) + " / " +
+                        composerTokenText(usage.window)
+                    val size = fitSingleLineSize(usedText, 12f, maxWidth)
+                    Text(
+                        text = usedText,
+                        modifier = Modifier.fillMaxWidth(),
+                        fontSize = size.sp,
+                        lineHeight = 20.sp,
+                        fontWeight = FontWeight.Medium,
+                        // 等宽数字：数值在两帧之间变化时不会因字宽不同而左右抖动
+                        style = TextStyle(fontFeatureSettings = "tnum"),
+                        textAlign = TextAlign.End,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        color = UiColors.meterPrimary
+                    )
+                }
             }
             Spacer(modifier = Modifier.height(10.dp))
             // 构成条：底槽固定，彩色段按各段占比切分，整条的总长仍是占用百分比
@@ -487,9 +500,7 @@ data class TurnUsageInfo(
  * （提供方/模型、缓存命中、未缓存输入、缓存读取、缓存写入、输出〔其中推理〕），
  * 卡片本体仍用本工程这套 Salt 观感：20dp 圆角、surface 底、不投影不描边、标题下一道细分割线。
  *
- * 条件行的取舍：模型串为空不显示「提供方 / 模型」；缓存读取没报不显示；
- * 缓存写入为 null 不显示；推理为 null 时不加「（其中推理 N tok）」。
- * 这样换一家服务商，面板不会凭空多出几行 0。
+ * 六行固定渲染，无数据的行写「—」，不整行消失。
  */
 @Composable
 fun TurnUsagePanel(usage: TurnUsageInfo, modifier: Modifier = Modifier) {
@@ -696,8 +707,8 @@ private fun CommandRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // 38dp：弹出键盘时九行亦需完整落在可视区内；大字号下按内容增高
-            .heightIn(min = 38.dp)
+            // 38dp：弹出键盘时九行亦需完整落在可视区内；高度固定，字号变化不改变行高
+            .height(38.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -740,7 +751,7 @@ private fun ChoiceRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 42.dp)
+            .height(42.dp)
             .saltCardRow { onClick() }
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically

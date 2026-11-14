@@ -66,7 +66,7 @@ private val BallColors = listOf(
  * 不使用 TextView 与 GradientDrawable：球体的「透出背景」效果依赖多层 radialGradient
  * 通过 BlendMode.Screen 叠加形成玻璃质感，静态 drawable 无法实现。
  *
- * 调用方提供 60dp 的精确像素窗口，因此所有内容均绘制在 60dp 画布内：光晕与涟漪全部
+ * 调用方提供 52dp 的精确像素窗口，因此所有内容均绘制在 52dp 画布内：光晕与涟漪全部
  * 通过画布内渐变实现，不依赖放大 View（外层窗口会直接裁剪）。
  *
  * 可见时运行完整动效：30 秒自转、4.5 秒呼吸、2 道 3.6 秒涟漪；不可见时（息屏、折叠为小窗、
@@ -79,7 +79,7 @@ private val BallColors = listOf(
  */
 @Composable
 fun SiriBall(pressed: Boolean, visible: Boolean, onClick: () -> Unit) {
-    // 按压缩放仅作用于内容层，窗口尺寸不变，因此缩放至 0.85 不会超出 60dp 而被裁剪
+    // 按压缩放仅作用于内容层，窗口尺寸不变，因此缩放至 0.85 不会超出 52dp 而被裁剪
     val scale by animateFloatAsState(
         targetValue = if (pressed) PRESS_SCALE else 1f,
         animationSpec = tween(durationMillis = PRESS_MS, easing = FastOutSlowInEasing),

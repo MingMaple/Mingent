@@ -12,6 +12,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -78,36 +79,42 @@ fun SaltMenuPopover(
             }
         }
     }
+    // Popup 会新建窗口：Compose 在新窗口里按系统资源重建 LocalDensity，主题覆盖的 fontScale
+    // 可能不会带进来。进入 Popup 前取当前 density，再在弹窗内容里原样提供一次。
+    val popoverDensity = LocalDensity.current
+
     Popup(
         popupPositionProvider = provider,
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true)
     ) {
-        val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-        var shown by remember { mutableStateOf(false) }
-        val scale by animateFloatAsState(
-            targetValue = if (shown) 1f else 0.92f,
-            animationSpec = Motion.spring(),
-            label = "saltMenuScale"
-        )
-        LaunchedEffect(Unit) { shown = true }
-        Surface(
-            shape = RoundedCornerShape(18.dp),
-            color = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh,
-            shadowElevation = 8.dp,
-            modifier = Modifier
-                // 菜单按内容宽度展开：限制过窄会让较长的条目留下大片空白；
-                // 上限按「全部对话（显示已归档）」这一行放得下为准，短菜单仍随内容收窄
-                .widthIn(min = 148.dp, max = 224.dp)
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                    // 从右上角展开：贴合触发点所在侧，视觉上明确为该行的菜单
-                    transformOrigin = TransformOrigin(1f, 0f)
-                }
-        ) {
-            // 行自带上下内距，Column 不额外填充：首末行的波纹才能贴合 18dp 圆弧并被裁剪为圆角
-            Column(content = content)
+        CompositionLocalProvider(LocalDensity provides popoverDensity) {
+            val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+            var shown by remember { mutableStateOf(false) }
+            val scale by animateFloatAsState(
+                targetValue = if (shown) 1f else 0.92f,
+                animationSpec = Motion.spring(),
+                label = "saltMenuScale"
+            )
+            LaunchedEffect(Unit) { shown = true }
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = if (isDark) Palette.DarkSurfaceHigh else Palette.LightSurfaceHigh,
+                shadowElevation = 8.dp,
+                modifier = Modifier
+                    // 菜单按内容宽度展开：限制过窄会让较长的条目留下大片空白；
+                    // 上限按「全部对话（显示已归档）」这一行放得下为准，短菜单仍随内容收窄
+                    .widthIn(min = 148.dp, max = 224.dp)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        // 从右上角展开：贴合触发点所在侧，视觉上明确为该行的菜单
+                        transformOrigin = TransformOrigin(1f, 0f)
+                    }
+            ) {
+                // 行自带上下内距，Column 不额外填充：首末行的波纹才能贴合 18dp 圆弧并被裁剪为圆角
+                Column(content = content)
+            }
         }
     }
 }

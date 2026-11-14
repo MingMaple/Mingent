@@ -162,9 +162,7 @@ fun TerminalScreen(
 /**
  * 回终端主页：清空整个返回栈到根、只留一个干净的 home。
  *
- * 之前从 setup/settings 返回用 `navigate(home) + popUpTo(setup)`，会把 home 重复压栈，
- * 反复「进环境配置→返回」就让栈越堆越深，每点一次环境配置都叠一个新实例。这里统一清栈，
- * 保证任何时候回到主页都只有一个 home 实例。
+ * 统一清栈，保证任何时候回到主页都只有一个 home 实例。
  */
 private fun NavHostController.goHome() {
     navigate(TerminalRoutes.TERMINAL_HOME_ROUTE) {

@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -27,7 +26,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.uikit.common.saltCardRow
@@ -177,12 +175,14 @@ private fun HomeDivider() {
     )
 }
 
+/** 设置首页列表行的固定高度：14sp 基准下为 52dp，字号变化不再改变行高。 */
+private val HomeNavRowHeight = 52.dp
+
 /** 跳页行：波纹形状由 [saltCardRow] 交由卡片裁剪。 */
 @Composable
 private fun HomeNavRow(
     icon: ImageVector,
     title: String,
-    value: String? = null,
     onClick: () -> Unit
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -190,7 +190,8 @@ private fun HomeNavRow(
         modifier = Modifier
             .fillMaxWidth()
             .saltCardRow() { onClick() }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .height(HomeNavRowHeight)
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -207,16 +208,6 @@ private fun HomeNavRow(
             fontSize = 15.sp,
             color = onSurface
         )
-        if (value != null) {
-            Text(
-                text = value,
-                modifier = Modifier.widthIn(max = 180.dp),
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = onSurface.copy(alpha = 0.45f)
-            )
-        }
         Text(
             text = "›",
             modifier = Modifier.padding(start = 6.dp),

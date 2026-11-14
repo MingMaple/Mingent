@@ -10,7 +10,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- 存储：targetSdk 28 走 legacy 外部存储，授予后 /sdcard 可全盘读写（Android 14 待装机实测） -->
-    <!-- 不加 maxSdkVersion：加了等于在 Android 13+ 上「根本没申请」，pm grant 会报 has not requested -->
+    <!-- 不加 maxSdkVersion：声明后会使 Android 13+ 视为未申请，pm grant 报 has not requested -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
@@ -45,13 +45,13 @@
         android:label="${appLabel}"
         android:supportsRtl="true"
         android:theme="@style/Theme.Agent">
-        <!-- configChanges：系统切深浅色时不重建 Activity，否则 ChatViewModel 连同聊天记录一起没了 -->
+        <!-- configChanges：系统切深浅色时不重建 Activity，否则 Activity 重建会丢失 ChatViewModel 中的会话状态 -->
         <!-- launchMode=singleTop：从其它应用分享时复用栈顶实例并走 onNewIntent，不叠加新任务 -->
         <activity
             android:name=".app.MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize|locale|layoutDirection|density"
+            android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize|locale|layoutDirection|density|fontScale"
             android:windowSoftInputMode="adjustNothing">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
