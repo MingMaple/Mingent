@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -43,7 +45,7 @@ internal fun TabHeaderRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 44.dp)
+            .height(44.dp)
             .padding(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -68,31 +70,51 @@ internal fun TabHeaderRow(
 }
 
 /**
- * 可随滑动收起的顶栏容器。
+ * 可随滑动收起的顶栏容器，两种放置方式：
  *
- * 收起时高度真正归零：正文因此多出这一行的高度，阅读空间是实打实变大的。
- * 内容按自身高度测量（不设最大高度），收起过程中整体上移并由本层裁掉——视觉上是一条
- * 平滑滑出的 180ms 滑出／滑入，与 via 的节奏一致（不再用弹簧，避免回弹与拖尾）。
+ * - [reserveSpace] = true（预览页）：顶栏占正文空间，收起后正文实打实多出一行。正文是预加载好的
+ *   Compose 内容，高度变化不会让内容跳位。
+ * - [reserveSpace] = false（浏览页）：顶栏尺寸不变、整块向上平移出屏，网页始终按原尺寸排版。
+ *   网页以视口高度（100vh）布局，只要视图高度变一点就会重排：内容下移、顶部露出空白带、
+ *   底部输入框被顶出屏幕——所以这里绝不能占位。代价是展开时压住网页顶部一条，与 via 一致。
  */
 @Composable
 internal fun HideableHeader(
     visible: Boolean,
     modifier: Modifier = Modifier,
+    reserveSpace: Boolean = true,
+    /** 由调用方驱动的展开进度（1 展开 / 0 收起）；&lt; 0 时用内部动画。 */
+    progress: Float = -1f,
+    /** 顶栏实际高度（px）：浏览页据此在网页上方留出等高的空位（占位立即变化、动画只走视觉）。 */
+    onHeight: (Int) -> Unit = {},
     content: @Composable () -> Unit
 ) {
-    val progress by animateFloatAsState(
+    val inner by animateFloatAsState(
         targetValue = if (visible) 1f else 0f,
         animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
         label = "header-hide"
     )
-    Layout(modifier = modifier.clipToBounds(), content = content) { measurables, constraints ->
+    val p = if (progress >= 0f) progress else inner
+    Layout(
+        modifier = modifier.clipToBounds(),
+        content = {
+            Surface(color = MaterialTheme.colorScheme.background) { content() }
+        }
+    ) { measurables, constraints ->
         val placeables = measurables.map {
             it.measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
         }
         val height = placeables.maxOfOrNull { it.height } ?: 0
-        val shown = (height * progress).roundToInt().coerceIn(0, height)
-        layout(placeables.maxOfOrNull { it.width } ?: constraints.maxWidth, shown) {
-            placeables.forEach { it.place(0, shown - height) }
+        if (height > 0) onHeight(height)
+        val width = placeables.maxOfOrNull { it.width } ?: constraints.maxWidth
+        if (reserveSpace) {
+            val shown = (height * p).roundToInt().coerceIn(0, height)
+            layout(width, shown) { placeables.forEach { it.place(0, shown - height) } }
+        } else {
+            val offset = ((p - 1f) * height).roundToInt()
+            // 完全收起时把自身体积压到 0：否则那块看不见的区域仍会拦住网页顶部的点击
+            val own = if (p > 0f) height else 0
+            layout(width, own) { placeables.forEach { it.place(0, offset) } }
         }
     }
 }
