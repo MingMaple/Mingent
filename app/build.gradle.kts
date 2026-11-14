@@ -8,13 +8,13 @@ plugins {
 }
 
 // 签名只从 signing/keystore.properties 读：该文件和 keystore 实体都不进仓库（已在 .gitignore 里）。
-// 找不到就退回 debug 签名并打一行警告——开源出去后谁都能 build，正式包用自己的 key。
+// 找不到就退回 debug 签名并打一行警告：仓库公开后，缺失密钥的构建会回退到 debug 签名；正式包须配置自有密钥。
 val signingPropsFile = rootProject.file("signing/keystore.properties")
 val signingProps = Properties().apply {
     if (signingPropsFile.exists()) signingPropsFile.inputStream().use { load(it) }
 }
 // 密码可以完全不落盘：环境变量 MINGENT_STORE_PASSWORD / MINGENT_KEY_PASSWORD 优先于 properties 文件。
-// 这样钥匙主人可以在自己要打包的那一刻才把密码交给构建进程，磁盘上不留明文。
+// 打包时通过环境变量注入密码，磁盘不保留明文。
 val signingValue: (String, String) -> String? = { propKey, envKey ->
     System.getenv(envKey)?.takeIf { it.isNotBlank() } ?: signingProps.getProperty(propKey)?.takeIf { it.isNotBlank() }
 }
@@ -40,8 +40,8 @@ android {
         targetSdk = 28
         // 版本规则（2026-10-26 定）：首位/中位由用户定（助手可推荐），末位由助手按改动程度自行 +1；
         // 每次打包 versionCode 必须 +1（跨 versionName 也不重置），否则覆盖安装会因「版本未升高」被系统直接拒掉
-        versionCode = 217
-        versionName = "1.3.5"
+        versionCode = 252
+        versionName = "1.3.6"
     }
 
     signingConfigs {
