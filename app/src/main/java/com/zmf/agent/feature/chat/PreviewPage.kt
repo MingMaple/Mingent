@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -13,7 +12,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -44,7 +42,6 @@ import com.zmf.agent.core.store.WorkspaceIo
 import com.zmf.agent.uikit.common.NoticeCenter
 import com.zmf.agent.uikit.common.TopIconButton
 import com.zmf.agent.uikit.common.blockTapsOnly
-import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -95,7 +92,7 @@ internal fun PreviewPage(
             .blockTapsOnly(),
         color = MaterialTheme.colorScheme.background
     ) {
-        Column(modifier = Modifier.fillMaxSize().stableStatusBarPadding()) {
+        Column(modifier = Modifier.fillMaxSize()) {
             val version = PreviewTabs.versionOf(active?.path)
             // 版本进键：文件被改写后重新取一次来源，正文随之重读
             val source = remember(active?.path, version, io.displayRoot, io.isSaf) {
@@ -110,8 +107,7 @@ internal fun PreviewPage(
                 if (PreviewTabs.observe(path, source?.version ?: 0L)) refreshed = refreshed + path
             }
 
-            // 顶栏一行：返回、文件标签条、导出。选中标签即当前文件，不再单起「预览」标题行，
-            // 切换标签时上方结构不变，只有正文交叉淡化。整行可收起，收起时高度归零
+            // 顶栏占正文空间：正文高度已预先确定，收起顶栏后不会重排
             HideableHeader(visible = headerVisible) {
                 TabHeaderRow(
                     items = tabs.map { TabStripItem(key = it.path, label = FileKinds.nameOf(it.path)) },
@@ -274,8 +270,6 @@ internal fun PreviewNotice(title: String, detail: String, modifier: Modifier = M
 
 /**
  * 正文顶部的文件说明：文件名 + 类型／大小／目录。
- *
- * 顶栏恒定只写「预览」，文件身份挪到这里：切换标签时它随正文一起交叉淡化，不再是上方整块替换。
  */
 @Composable
 private fun PreviewFileHeader(source: PreviewSource, pageText: String) {

@@ -12,7 +12,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -79,7 +78,11 @@ private const val MAX_DOCX_BYTES = 8L * 1024 * 1024
 
 /** 文本正文：按页累积加载，Markdown 走统一渲染器，代码与非 Markdown 文本用等宽带行号。 */
 @Composable
-internal fun TextBody(source: PreviewSource, markdown: Boolean, modifier: Modifier = Modifier) {
+internal fun TextBody(
+    source: PreviewSource,
+    markdown: Boolean,
+    modifier: Modifier = Modifier
+) {
     // 切标签回来时沿用已经读出的部分：不重读，也不把滚动位置拉回顶部（位置由外层按标签保存）
     val cached = remember(source.path, source.version) { PreviewTextCache.get(source.path, source.version) }
     var text by remember(source.path, source.version) { mutableStateOf(cached?.text.orEmpty()) }
@@ -131,7 +134,7 @@ internal fun TextBody(source: PreviewSource, markdown: Boolean, modifier: Modifi
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp)
                     ) {
                         MarkdownText(text = text, fontSize = 15.sp, color = onSurface)
                         // 「加载更多」挂在正文末尾：滑到已读内容的最下方才出现，不占版面、不挡视线
@@ -145,7 +148,7 @@ internal fun TextBody(source: PreviewSource, markdown: Boolean, modifier: Modifi
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
                     ) {
-                        Row(modifier = Modifier.padding(vertical = 12.dp)) {
+                        Row(modifier = Modifier.padding(top = 12.dp, bottom = 12.dp)) {
                             if (source.kind == FileKind.CODE) {
                                 // 行号列不参与横滑：长行向右滚走时，行号必须留在原地
                                 Text(
@@ -266,14 +269,32 @@ internal fun DocxBody(
             bytes = loaded
         }
     }
-    when {
-        failure != null -> PreviewNotice(title = "这个文档打不开", detail = failure!!, modifier = modifier)
-        bytes == null -> Box(modifier = modifier, contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(strokeWidth = 2.dp)
+    // 文档区始终保留同一个 WebView：读盘与渲染只更新其内容，加载态叠在它上面显示，
+    // 不整块替换视图。
+    Box(modifier = modifier) {
+        DocxHtmlView(
+            bytes = bytes ?: EmptyDocxBytes,
+            modifier = Modifier.fillMaxSize(),
+            onHideHint = onHideHint
+        )
+        when {
+            failure != null -> PreviewNotice(
+                title = "这个文档打不开",
+                detail = failure!!,
+                modifier = Modifier.fillMaxSize()
+            )
+            bytes == null -> Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(strokeWidth = 2.dp)
+            }
         }
-        else -> DocxHtmlView(bytes = bytes!!, modifier = modifier, onHideHint = onHideHint)
     }
 }
+
+/** 空字节：表示文档尚未读入，仅用于占位，不参与页面组装。 */
+private val EmptyDocxBytes = ByteArray(0)
 
 /**
  * PDF：整份开一次，页位图按需渲染；页面按纵向序列排，未渲染的页留 3:4 占位。
@@ -369,7 +390,10 @@ internal fun PdfViewer(
                 snapshotFlow { listState.firstVisibleItemIndex }
                     .collect { onPage?.invoke(it, doc.pageCount) }
             }
-            LazyColumn(modifier = modifier, state = listState) {
+            LazyColumn(
+                modifier = modifier,
+                state = listState
+            ) {
                 items(doc.pageCount) { index -> PdfPageView(doc, index) }
             }
         }

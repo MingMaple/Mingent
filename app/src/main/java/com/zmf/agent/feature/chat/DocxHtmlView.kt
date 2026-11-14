@@ -2,6 +2,7 @@ package com.zmf.agent.feature.chat
 
 import android.content.Context
 import android.util.Base64
+import android.view.View
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -14,10 +15,12 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import com.zmf.agent.uikit.theme.UiColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /**
  * docx 正文：用 mammoth 把文档映射成语义 HTML，再交给 WebView 显示。
@@ -41,11 +44,18 @@ internal fun DocxHtmlView(
     val onSurface = MaterialTheme.colorScheme.onSurface.toArgb()
     val subText = UiColors.subText.toArgb()
     val stroke = UiColors.stroke.toArgb()
+    // 文档文字随全局基准字号缩放：与浏览页同一口径，只改文字，版式与图片尺寸不变
+    val textZoomPercent = (LocalDensity.current.fontScale * 100f).roundToInt()
     val codeBg = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f).toArgb()
-    // 组装包含读模板与整篇 base64 编码，放到 IO 线程，页面先空一帧再载入
+    // 组装包含读模板与整篇 base64 编码，放到 IO 线程，页面先空一帧再载入。
+    // 字节尚未读到时保持空页：WebView 先挂载，文档到达后只换内容，视图本身不被替换。
     val page by produceState("", bytes, background, onSurface, subText, stroke, codeBg) {
-        value = withContext(Dispatchers.IO) {
-            buildDocxPage(context.applicationContext, bytes, background, onSurface, subText, stroke, codeBg)
+        value = if (bytes.isEmpty()) {
+            ""
+        } else {
+            withContext(Dispatchers.IO) {
+                buildDocxPage(context.applicationContext, bytes, background, onSurface, subText, stroke, codeBg)
+            }
         }
     }
     // 已载入内容只用于去重，不参与重组，用普通数组持有
@@ -62,7 +72,12 @@ internal fun DocxHtmlView(
                 settings.allowContentAccess = false
                 settings.domStorageEnabled = false
                 settings.setSupportZoom(false)
+                settings.textZoom = textZoomPercent
                 setBackgroundColor(background)
+                // 文档首次绘制时，WebView 的绘制请求会并入窗口的绘制列表；那一帧窗口内容尚未
+                // 重新提交，整页（含顶栏）会空白一帧。自持硬件层后，首帧只更新这层位图，
+                // 窗口其余内容照常合成。该层随 WebView 存在，onRelease 调用 destroy() 时一并释放。
+                setLayerType(View.LAYER_TYPE_HARDWARE, null)
                 // 顶栏收起同样走竖滑判定（与浏览页、via 一致）：监听器返回 false，
                 // 文档自身的点击、滑动与缩放不受影响
                 installHeaderSwipe(this) { hide -> hideHint?.invoke(hide) }
@@ -76,6 +91,10 @@ internal fun DocxHtmlView(
             }
         },
         update = { webView ->
+            // 字号变更时页面已载入，只需更新缩放，不重新装载文档
+            if (webView.settings.textZoom != textZoomPercent) {
+                webView.settings.textZoom = textZoomPercent
+            }
             if (page.isNotEmpty() && loadedPage[0] != page) {
                 loadedPage[0] = page
                 webView.loadDataWithBaseURL("file:///android_asset/docx/", page, "text/html", "utf-8", null)

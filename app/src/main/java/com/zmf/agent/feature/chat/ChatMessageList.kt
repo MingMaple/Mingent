@@ -286,7 +286,9 @@ internal fun ColumnScope.ChatMessageList(
                                             )
                                             imageMenuVisible = true
                                         }
-                                    }
+                                    },
+                                    // 用户上传的非图片附件与助手产物共用同一预览链路
+                                    onOpenFile = openPreview
                                 )
 
                                 is ChatItem.AssistantItem -> AssistantRow(

@@ -62,7 +62,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -177,7 +176,9 @@ internal fun ChatTopBar(
         modifier = Modifier
             .fillMaxWidth()
             .stableStatusBarPadding()
-            .padding(horizontal = 12.dp, vertical = if (compact) 6.dp else 12.dp),
+            // 固定顶栏高度：常规 48dp、紧凑 36dp，字号变化不改变栏高与图标位置
+            .height(if (compact) 36.dp else 48.dp)
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (menuVisible) {
@@ -201,7 +202,9 @@ internal fun ChatTopBar(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null
                     ) { onSubAgentClick() }
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                    // 固定 34dp：14sp 基准下的胶囊高度，字号变化不再改变高度
+                    .height(34.dp)
+                    .padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
@@ -779,7 +782,9 @@ internal fun PendingFileChip(name: String, onRemove: () -> Unit) {
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-            .padding(start = 8.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            // 固定容器高 36dp：行高 24sp，上下余量由居中分配，字号变化只放大文字
+            .height(36.dp)
+            .padding(start = 8.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -954,7 +959,9 @@ internal fun WorkSpaceRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onPick)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            // 固定容器高 52dp：行高 24sp，上下余量由居中分配，字号调大时只放大文字
+            .height(52.dp)
+            .padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -1076,7 +1083,8 @@ internal fun UserRow(
     onSelectText: (String) -> Unit,
     onRollback: () -> Unit,
     onImageClick: (List<String>, Int, Rect?) -> Unit,
-    onImageLongPress: (String, Offset) -> Unit
+    onImageLongPress: (String, Offset) -> Unit,
+    onOpenFile: (String) -> Unit
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val bubbleColor = if (isDark) Palette.BubbleUserDark else Palette.BubbleUserLight
@@ -1086,8 +1094,13 @@ internal fun UserRow(
     // 不会出现「最后一行只剩半个字」。展开态只活在这一屏，列表滚走再回来回到折叠态。
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
     val foldAt = if (roundsFromEnd < 3) Dp.Unspecified else screenHeight * 0.45f
-    // 折叠后最多约九行（15sp × 1.5 行高）：够看清开头，也不至于只剩一条缝
-    val foldedHeight = with(LocalDensity.current) { (15f * 1.5f * 9f).sp.toDp() }
+    // 折叠高度按当前正文实际字号折算为 dp：九行（1.45 倍行高），并受屏高 45% 封顶。
+    // 按 TextUnit 折算为 dp，折叠高度随基准字号同步。
+    val bodyFontSize = 15.sp
+    val foldedHeight = minOf(
+        with(LocalDensity.current) { (bodyFontSize * 1.45f).toDp() } * 9f,
+        screenHeight * 0.45f
+    )
     var expanded by rememberSaveable { mutableStateOf(false) }
     // 附件从正文那段说明反向解析：发送时「附件在前、图片在后」拼进 prompt，这里保持同一顺序
     val files = remember(message.content) { attachmentPaths(message) }
@@ -1116,7 +1129,12 @@ internal fun UserRow(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     files.forEach { rel ->
-                        SentFileCard(relPath = rel, root = imageRoot)
+                        // 预览层按绝对路径定位文件；附件在消息里存的是相对工作区的路径
+                        SentFileCard(
+                            relPath = rel,
+                            root = imageRoot,
+                            onClick = { onOpenFile(File(imageRoot, rel).absolutePath) }
+                        )
                     }
                     images.forEachIndexed { index, rel ->
                         SentImageThumb(
@@ -1149,7 +1167,7 @@ internal fun UserRow(
                     MarkdownText(
                         text = text,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                        fontSize = 15.sp,
+                        fontSize = bodyFontSize,
                         color = MaterialTheme.colorScheme.onSurface,
                         codeBackground = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
                         // 用户输入的换行视为其排版：空行需可见（发送时已压缩为一个）
@@ -1225,7 +1243,7 @@ internal fun attachmentPaths(message: ChatMessage): List<String> {
  * 用户清理过附件之后，那张卡还在老会话里，写 0 B 会像「文件坏了」。
  */
 @Composable
-internal fun SentFileCard(relPath: String, root: File) {
+internal fun SentFileCard(relPath: String, root: File, onClick: (() -> Unit)? = null) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val name = relPath.substringAfterLast('/')
     val sizeText = remember(relPath, root) {
@@ -1243,6 +1261,8 @@ internal fun SentFileCard(relPath: String, root: File) {
             .width(SentFileCardWidth)
             .clip(SentCardShape)
             .background(onSurface.copy(alpha = 0.07f))
+            // 与图片缩略图同一入口：点卡片进入预览页，文件类型由预览层按扩展名分发
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 12.dp, vertical = 11.dp)
     ) {
         FileGlyph(tint = onSurface.copy(alpha = 0.55f))
