@@ -30,6 +30,7 @@ import com.zmf.agent.core.llm.ApiDefaults
 import com.zmf.agent.core.llm.CostBook
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
+import com.zmf.agent.core.model.ORIGIN_RECOVERY
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.InheritedUsage
 import com.zmf.agent.core.store.InsightColors
@@ -722,6 +723,9 @@ class ContextState(
         }
 
         val previous = summaryOf(sessionId)
+        // 首次压缩前，主请求视图还没有折叠过长工具输出（折叠只在「已有摘要」或兜底时生效）；
+        // 此时摘要前缀若折叠，字节就与主请求对不上，缓存从第一条差异处失效。
+        val replayPrune = previous.isNotBlank()
         // 摘要请求要「蹭」主请求的热前缀：把主请求从 system 到分界处的字节**原样重放**，
         // 只把「请压缩」作为最后一条 user 消息追加。system / 工作区指令 / 已有检查点 / 工具表少给或换了
         // 顺序，缓存就断在那一处，摘要调用就从「几乎全命中」退化成「付一整份输入」。
@@ -742,10 +746,13 @@ class ContextState(
             prefix.add(ChatMessage(role = "user", content = PromptBuilder.checkpointText(previous)))
         }
         for (message in rangeView) {
+            // 恢复标记（origin=recovery）主请求视图从不重放，摘要前缀也不得带上，
+            // 否则从该条起字节分叉，摘要调用拿不到主请求的热缓存。
+            if (message.role == "user" && message.origin == ORIGIN_RECOVERY) continue
             // 与主请求同一口径：待压区间里的超长工具输出先折中段，再喂给摘要器。
             // 摘要器要的是「读懂再压成几段话」，中段原始输出进不了摘要正文，折掉只省不亏；
             // 折叠形态与压缩后的请求视图一致，压完那一轮拼出来的前缀才对得上。
-            prefix.add(ToolResultPruner.pruneMessage(message))
+            prefix.add(if (replayPrune) ToolResultPruner.pruneMessage(message) else message)
             if (message.role == "user" &&
                 message.runtimeSnapshot.startsWith(PromptBuilder.SNAPSHOT_MARKER)
             ) {
@@ -755,6 +762,13 @@ class ContextState(
         }
         val startedAt = System.currentTimeMillis()
         val target = summaryTarget()
+        // 摘要走独立模型时，服务端缓存天然不与主对话共享：先记一行，便于核对「本应命中却未命中」
+        if (target.second != modelName()) {
+            FileLog.log(
+                "context",
+                "摘要使用独立模型，本次不期望缓存命中（摘要=" + target.second + "，主对话=" + modelName() + "）"
+            )
+        }
         val text = ContextSummarizer.summarize(
             provider = target.first,
             model = target.second,
