@@ -119,13 +119,13 @@ class TreeRoot internal constructor(
     private val rootDocId: String =
         runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrDefault("")
 
-    /** 这个根本身能不能用（拿不到 treeDocumentId 就是坏的）。 */
+    /** 这个根本身是否可用（无法取得 treeDocumentId 时视为无效）。 */
     val isAvailable: Boolean get() = rootDocId.isNotEmpty()
 
     /** 全部子项（不递归）。 */
     fun listChildren(): List<Item> = queryChildren(rootDocId)
 
-    /** 子文件夹，按名字排序；跳过 `.` 开头的隐藏目录（跟本地列表同一个口径）。 */
+    /** 子文件夹，按名字排序；跳过以 `.` 开头的隐藏目录（与本地列表同一口径）。 */
     fun listDirs(): List<Item> = listChildren()
         .filter { it.isDirectory && !it.name.startsWith(".") }
         .sortedBy { it.name.lowercase() }

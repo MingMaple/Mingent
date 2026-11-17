@@ -245,14 +245,14 @@ private fun LedgerUsage.isZero(): Boolean =
 /**
  * 全局用量总账（stats.json）：**只增不减的历史总账**。
  *
- * 口径（由用户确定，不得修改）：
+ * 口径（固定，不得修改）：
  * - 删会话 / 归档 / 清工作区都**不动**这里；只有真的发生模型请求才往上加。
  * - 本会话的累计另存在 sessions.json 的会话记录里，两套账互不覆盖。
  * - 按天桶用于「近 7 天 / 近 30 天 / 范围筛选」；只保留最近 [DAYS_KEEP] 天。
  * - 按小时桶只服务「今天」的折线：与按天桶同时写，跨天后清掉旧键。
  * - `hours` 是后加的可选键，落盘版本仍为 2：旧版本读到会忽略，新版本读到缺省为空。
  *
- * 落盘格式 v2（version=2）；读到 v1 的扁平 10 个键时原样搬进 `total`，
+ * 落盘格式 v2（version=2）；读到 v1 的扁平键时原样迁入 `total`，
  * 并先把旧文件复制成 `stats.json.bak`。坏文件 / 缺字段一律回落 0，绝不抛。
  */
 object UsageLedger {
@@ -339,7 +339,7 @@ object UsageLedger {
                         }
                     }
                 } else {
-                    // v1：先留备份，再原样搬进 total；今日三项按旧日期落到当天桶
+                    // v1：先留备份，再将旧值原样迁入 total；今日三项按旧日期落到当天桶
                     backupV1(file)
                     total = LedgerUsage(
                         prompt = root.optInt(KEY_TOTAL_PROMPT, 0),

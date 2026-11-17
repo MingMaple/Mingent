@@ -31,6 +31,18 @@ object AppPaths {
     }
 
     /**
+     * 会话文件目录：appdata/sessions/，每会话一个 `<id>.jsonl`（D1）。
+     *
+     * 目录按需创建；索引 `sessions.idx.json` 落在 appdata 根（与各 store 的平级文件一致），
+     * 不落在本目录内，避免被目录段的整段导出误带上。
+     */
+    fun sessionsDir(context: Context): File {
+        val dir = File(dataDir(context), "sessions")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    /**
      * filesDir/appdata/<name>。
      *
      * 新位置已存在时直接返回；否则若 filesDir/<name> 存在，则一次性复制过去并保留源文件；

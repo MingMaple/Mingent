@@ -80,12 +80,15 @@ object FileLog {
      *
      * 主线程可安全调用：锁内仅有内存拼装与一次页缓存写，无 open/close/fsync。
      * 例外是恰好触发轮转，此时执行 close/rename/reopen，每 512KB 发生一次，可忽略。
+     *
+     * P31：[sessionId] / [agentId] 是结构化归属字段（非空时写入 `[sid=…][sa=…]`）：
+     * 给定会话 id 可一行 grep 筛出该会话全部日志；子智能体同理。旧格式历史日志仍可读（不迁移）。
      */
     @Synchronized
-    fun log(tag: String, message: String) {
+    fun log(tag: String, message: String, sessionId: String = "", agentId: String = "") {
         // 未 init 时静默丢弃：日志失败不应影响调用方
         if (logFile == null) return
-        val bytes = (format(tag, message) + '\n').toByteArray(Charsets.UTF_8)
+        val bytes = (format(tag, message, sessionId, agentId) + '\n').toByteArray(Charsets.UTF_8)
         try {
             val file = logFile ?: return
             if (stream == null) openLocked(file)
@@ -205,10 +208,17 @@ object FileLog {
         stream = null
     }
 
-    /** 拼一行：「MM-dd HH:mm:ss.SSS [tag] message」。不带换行，由调用方补。 */
-    private fun format(tag: String, message: String): String {
+    /**
+     * 拼一行：「MM-dd HH:mm:ss.SSS [tag][sid=…][sa=…] message」。
+     * 无归属时省略 sid/sa 段，与旧格式逐字节一致；不带换行，由调用方补。
+     */
+    private fun format(tag: String, message: String, sessionId: String = "", agentId: String = ""): String {
         // 仅 log() 调用且已持对象锁；此处加锁用于防止其他入口调用时缺少同步
         val stamp = synchronized(timeFormat) { timeFormat.format(Date()) }
-        return stamp + " [" + tag + "] " + message
+        val line = StringBuilder(stamp).append(" [").append(tag).append(']')
+        if (sessionId.isNotEmpty()) line.append("[sid=").append(sessionId).append(']')
+        if (agentId.isNotEmpty()) line.append("[sa=").append(agentId).append(']')
+        line.append(' ').append(message)
+        return line.toString()
     }
 }

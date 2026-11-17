@@ -2,7 +2,7 @@ package com.zmf.agent.core.model
 
 /** 预览页认的格式类别：只看文件名后缀，不读内容。 */
 enum class FileKind {
-    MARKDOWN, TEXT, CODE, PDF, IMAGE, DOCX, OFFICE_OTHER, ARCHIVE, OTHER;
+    MARKDOWN, TEXT, CODE, PDF, IMAGE, VIDEO, DOCX, OFFICE_OTHER, ARCHIVE, OTHER;
 
     /** 能否在本应用内渲染；false 的类别只显示元信息与「用其他应用打开」。 */
     val previewable: Boolean
@@ -25,6 +25,7 @@ object FileKinds {
         "less", "vue", "lua", "dart", "proto", "asm", "s"
     )
     private val image = setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "ico", "heic", "heif")
+    private val video = setOf("mp4", "webm", "mkv", "mov", "3gp", "m4v", "avi")
     private val office = setOf("doc", "ppt", "pptx", "xls", "xlsx", "xlsm")
     private val archive = setOf(
         "zip", "gz", "tgz", "tar", "bz2", "xz", "zst", "7z", "rar", "jar", "apk",
@@ -49,6 +50,7 @@ object FileKinds {
             in text -> FileKind.TEXT
             in code -> FileKind.CODE
             in image -> FileKind.IMAGE
+            in video -> FileKind.VIDEO
             in office -> FileKind.OFFICE_OTHER
             in archive -> FileKind.ARCHIVE
             "pdf" -> FileKind.PDF
@@ -64,6 +66,7 @@ object FileKinds {
         FileKind.CODE -> "代码"
         FileKind.PDF -> "PDF"
         FileKind.IMAGE -> "图片"
+        FileKind.VIDEO -> "视频"
         FileKind.DOCX -> "Word 文档"
         FileKind.OFFICE_OTHER -> "Office 文档"
         FileKind.ARCHIVE -> "压缩包"

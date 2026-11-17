@@ -62,28 +62,85 @@ object Notifier {
     // 2002 曾用于子智能体通知，已停用且不复用，避免旧通知被误认成新类别
     private const val ID_REPLY = 2001
     private const val ID_SCHEDULE = 2003
+    /** 提问通知：等待用户作答期间常驻，提交、超时或回到前台后取消。 */
+    private const val ID_QUESTION = 2004
 
-    /** 折叠态正文最多这么多字（通知栏一行放不下更多），完整内容走 BigText。 */
+    /** 工具主动提醒：与回合完成通知分开，避免相互覆盖。 */
+    private const val ID_USER = 2005
+
+    /** 折叠态正文最多显示的字数（通知栏一行无法容纳更多），完整内容由 BigText 展示。 */
     private const val PREVIEW_CHARS = 120
 
     /** 渠道仅需创建一次；用户手动删除渠道后无法重建，属于系统行为，不做补救。 */
     @Volatile
     private var channelReady = false
 
-    /** AI 回复完成。 */
+    /** AI 回复完成（X02）：id 按会话分配，多会话并行收尾各出各的通知，同会话只留最新一条。 */
     fun notifyReply(context: Context, title: String, text: String, sessionId: String = "") {
-        post(context, ID_REPLY, title, text, sessionId)
+        if (sessionId.isBlank()) {
+            post(context, ID_REPLY, title, text, sessionId, group = null)
+        } else {
+            post(context, replyIdOf(sessionId), title, text, sessionId, group = sessionId)
+        }
     }
+
+    /**
+     * 回复通知的会话维度 id（X02）：`5001 + (会话 id 稳定散列 % 500)`，即 5001–5500。
+     *
+     * id 空间注释（改动 id 分配前先读）：1001＝前台服务常驻；2001＝无会话归属的回复；
+     * 2003–2199＝定时任务轮转；2004＝提问；2005＝工具提醒；5001–5500＝按会话的回复通知。
+     * 选 5001 起是为了与上述区间都不重叠。散列冲突概率低但非零：两条会话散列同槽时
+     * 退化为互相覆盖，与引入会话维度之前的行为一致；要求绝对不冲突需自增槽位表，代价是多一份映射。
+     */
+    private fun replyIdOf(sessionId: String): Int =
+        ID_REPLY_BASE + (sessionId.hashCode().mod(REPLY_ID_SPAN))
+
+    private const val ID_REPLY_BASE = 5001
+    private const val REPLY_ID_SPAN = 500
 
     /**
      * 定时 / 计划任务触发。
      *
      * 每次分配新 id：固定 id 会使后一条通知覆盖前一条，用户尚未查看的内容将无法再看到。
-     * id 在 3001–3199 间轮转，与前台服务（1001）、回复（2001）均不冲突。
+     * id 在 2003–2199 之间轮转，与前台服务（1001）、回复（2001）均不冲突。
      */
     fun notifySchedule(context: Context, title: String, text: String, sessionId: String = "") {
         post(context, nextScheduleId(), title, text, sessionId)
     }
+
+    /**
+     * 工具主动提醒。
+     *
+     * 仅在应用不在前台时调用；固定 id 使同一类提醒只保留最新一条。
+     */
+    fun notifyUser(context: Context, title: String, text: String, sessionId: String = "") {
+        post(context, ID_USER, title, text, sessionId)
+    }
+
+    /**
+     * 提问待作答。
+     *
+     * 正文应包含问题摘要与可选项；点击回到对应会话的提问卡片。
+     */
+    fun notifyQuestion(context: Context, title: String, text: String, sessionId: String = "") {
+        post(context, ID_QUESTION, title, text, sessionId)
+    }
+
+    /** 取消指定通知；不存在时无副作用。 */
+    fun cancel(context: Context, id: Int) {
+        runCatching {
+            val manager = context.applicationContext
+                .getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                ?: return
+            manager.cancel(id)
+        }
+    }
+
+    /** 提问通知的 id；界面在提交或超时后据此取消。 */
+    fun questionId(): Int = ID_QUESTION
+
+    /** 当前是否允许发送系统通知。 */
+    fun isAllowed(context: Context): Boolean = canNotify(context.applicationContext, "权限检查")
 
     private val scheduleSeq = java.util.concurrent.atomic.AtomicInteger(ID_SCHEDULE)
 
@@ -101,8 +158,10 @@ object Notifier {
      *
      * 整体使用 runCatching：通知失败（权限被撤回、厂商定制）不得导致 Agent 循环崩溃；
      * 通知仅为附加提醒，丢失不影响回合结果。
+     *
+     * [group] 非空时设置通知分组（X02）：同组通知在通知栏折叠展示，不同会话各自成组互不覆盖。
      */
-    private fun post(context: Context, id: Int, title: String, text: String, sessionId: String) {
+    private fun post(context: Context, id: Int, title: String, text: String, sessionId: String, group: String? = null) {
         val app = context.applicationContext
         if (!canNotify(app, title)) return
         runCatching {
@@ -110,7 +169,7 @@ object Notifier {
                 ?: return
             ensureChannel(manager)
             val body = text.trim()
-            val notification = NotificationCompat.Builder(app, CHANNEL_ID)
+            val builder = NotificationCompat.Builder(app, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle(title)
                 .setContentText(oneLine(body))
@@ -121,8 +180,9 @@ object Notifier {
                 .setCategory(NotificationCompat.CATEGORY_STATUS)
                 // 锁屏可见：定时任务常在后台完成，用户需要不解锁也能看到结果摘要
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .build()
-            manager.notify(id, notification)
+            // 会话维度的通知进会话自己的分组：多条会话并行收尾时，通知栏各出各的，不互相顶掉
+            if (group != null) builder.setGroup(group)
+            manager.notify(id, builder.build())
             FileLog.log(TAG, "通知[" + id + "] " + title)
         }.onFailure { FileLog.log(TAG, "通知失败：" + it) }
     }
@@ -198,9 +258,8 @@ object Notifier {
      * 用于按时间淘汰，避免通知长期累积把偏好越堆越大。登记失败只表示少了跳转能力，
      * 通知本身照发，因此用 runCatching 兜住。
      *
-     * 用 commit 而非 apply 同步落盘：定时任务由闹钟在进程刚被拉起时执行，回合结束发完通知后
-     * 进程可能马上被系统回收；apply 的异步写在这条路径上有丢令牌的可能，表现为点通知只回到
-     * 默认界面。这里只在发通知时写一次、内容只有几十字节，阻塞代价可以忽略。
+     * 用 apply 异步落盘，不阻塞发通知的主线程：令牌一次性且短期有效，进程在写盘前被杀最多丢失
+     * 一次跳转能力，通知本身照发；这里只是在发通知时写一次、内容只有几十字节，异步写足够。
      */
     private fun issueSessionToken(context: Context, sessionId: String): String? {
         if (sessionId.isBlank()) return null
@@ -217,7 +276,7 @@ object Notifier {
                     .take(all.size - TOKEN_MAX + 1)
                     .forEach { editor.remove(it.key) }
             }
-            editor.commit()
+            editor.apply()
             token
         }.getOrNull()
     }
@@ -228,14 +287,15 @@ object Notifier {
      * 兑换即删除：同一条通知被点第二次、或调用方用旧令牌重放，都只会得到 null。
      * 任何异常都按「没有目标会话」处理，不能让可疑参数把启动流程带崩。
      *
-     * 删除同样用 commit：作废必须落盘，否则进程在删除后立刻被杀，旧令牌会留到下一次启动仍可用。
+     * 删除同样用 apply 异步作废，避免兑换路径（启动阶段、主线程）同步刷盘；
+     * 进程若在写盘前被杀，可能留下一条旧令牌，但令牌一次性且短期有效，风险可接受。
      */
     fun consumeSessionToken(context: Context, token: String?): String? {
         if (token.isNullOrBlank()) return null
         return runCatching {
             val prefs = context.getSharedPreferences(TOKEN_PREFS, Context.MODE_PRIVATE)
             val value = prefs.getString(token, null) ?: return null
-            prefs.edit().remove(token).commit()
+            prefs.edit().remove(token).apply()
             value.substringAfter('|', "").takeIf { it.isNotBlank() }
         }.getOrNull()
     }

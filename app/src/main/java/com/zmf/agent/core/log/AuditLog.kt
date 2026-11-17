@@ -51,10 +51,18 @@ object AuditLog {
      * @param fields 键值对；值里的 `|` 会被替换掉，保证一行可解析
      */
     fun record(context: Context, event: String, vararg fields: Pair<String, String>) {
+        recordWithAgent(context, event, "", *fields)
+    }
+
+    /**
+     * 带子智能体归属的审计事件（P31）：高危动作由子智能体发起时，`agent=…` 紧跟 event 之后。
+     */
+    fun recordWithAgent(context: Context, event: String, agent: String, vararg fields: Pair<String, String>) {
         if (logFile == null) init(context)
         val line = buildString {
             append(formatTime())
             append(" | event=").append(clean(event))
+            if (agent.isNotEmpty()) append(" | agent=").append(clean(agent))
             for ((key, value) in fields) {
                 if (value.isEmpty()) continue
                 append(" | ").append(clean(key)).append('=').append(clean(value))

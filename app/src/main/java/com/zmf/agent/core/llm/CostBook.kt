@@ -55,7 +55,8 @@ object DeepSeekPriceProvider : ModelPriceProvider {
  * 计费入口：仅识别已注册的供应商；未注册或无价目的模型返回 null。
  *
  * 峰谷：以官方口径为准，北京时间周一至周五 09:00–12:00、14:00–18:00 为高峰，
- * 其余时段（含周末）为空闲，按高峰价的一半计；法定节假日尚未按官方口径排除。
+ * 其余时段（含周末与法定节假日）为空闲，按高峰价的一半计。
+ * 节假日判定交给 [HolidayCalendar]；表未覆盖的年份退回「周末即空闲」的纯时段口径。
  */
 object CostBook {
 
@@ -108,12 +109,20 @@ object CostBook {
     /**
      * 该时间点是否处于高峰时段（北京时间周一至周五 09:00–12:00、14:00–18:00）。
      *
-     * 官方口径还排除中国法定节假日；本实现不含节假日表，节假日当天按工作日计算。
+     * 三档判定顺序：
+     * 1. 法定节假日 → 全天空闲（节日连休、以及节日里的周末都算）；
+     * 2. 周末 → 空闲，但**调休补班日**例外，那天按工作日算；
+     * 3. 其余按工作日时段判定。
+     *
+     * 表外年份不做推测：只按周末与时段判断，不会整年落进空闲价。
      */
     fun isPeak(atMillis: Long): Boolean {
         val time = Instant.ofEpochMilli(atMillis).atZone(zone)
+        val date = time.toLocalDate()
+        if (HolidayCalendar.isHoliday(date)) return false
         val day = time.dayOfWeek
-        if (day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY) return false
+        val weekend = day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY
+        if (weekend && !HolidayCalendar.isMakeupWorkday(date)) return false
         val minutes = time.hour * 60 + time.minute
         return (minutes in 9 * 60 until 12 * 60) || (minutes in 14 * 60 until 18 * 60)
     }

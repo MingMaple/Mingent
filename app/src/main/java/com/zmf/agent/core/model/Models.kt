@@ -16,6 +16,35 @@ const val ORIGIN_SCHEDULE = "schedule"
 /** 唤醒来源：后台任务结算通知。只给模型读，界面不渲染成用户气泡。 */
 const val ORIGIN_JOB = "job"
 
+/** 唤醒来源：其他会话经助手工具 peer 投递。与 [ORIGIN_SCHEDULE] 不同，不计入轮次。 */
+const val ORIGIN_PEER = "peer"
+
+/**
+ * 唤醒来源：子智能体结论的系统转交通知（D2）。
+ *
+ * 与 [ORIGIN_JOB] 同型：界面按「子智能体结论回传」触发行展示，不画成用户气泡，
+ * 也不计入轮次；通知正文以固定抬头开头，模型据此识别「这是转交的结论，不是用户发言」。
+ */
+const val ORIGIN_SUBAGENT = "subagent"
+
+/**
+ * 唤醒来源：P32 的崩溃恢复中断标记。进程被杀时未收尾的回合，重启后由恢复路径补一条
+ * 合成 closer（DSH 口径：补一致，不续执行）；正文告知模型「未结算的工具结果未知，只重试
+ * 只读或幂等操作」。界面按触发行展示，不计入轮次。
+ */
+const val ORIGIN_RECOVERY = "recovery"
+
+/**
+ * 用户中止回合时补写的合成工具结果里的内部原因：调用已派发（开始执行）但没有返回。
+ *
+ * 与 [ABORTED_BEFORE_DISPATCH] 一起作为可检索的内部标识写在结果正文里；
+ * 模型据此区分「副作用可能已经发生」与「根本没有执行」。
+ */
+const val ABORTED_IN_FLIGHT = "ABORTED_IN_FLIGHT"
+
+/** 用户中止回合时补写的合成工具结果里的内部原因：调用尚未派发（未开始执行）。 */
+const val ABORTED_BEFORE_DISPATCH = "ABORTED_BEFORE_DISPATCH"
+
 /**
  * 会话里的一条消息，user / assistant / tool / system 四种角色共用。
  *
@@ -52,6 +81,13 @@ data class ChatMessage(
      */
     val imageDataUrls: List<String> = emptyList(),
     /**
+     * 本回合由 present 声明并通过校验的产物；[ProducedArtifact.path] 为工作区相对路径或绝对路径。
+     *
+     * 与 [images] 不同：产物涵盖图片、视频、文档等全部媒体，只有显式调用 present 才会记录；
+     * 界面据此显示气泡后缀与预览入口。
+     */
+    val produced: List<ProducedArtifact> = emptyList(),
+    /**
      * 这一轮问上去的输入 tokens。
      *
      * 仅写在**本轮最后一条** assistant 消息上：一轮中每次工具调用后都会再次请求模型，
@@ -75,7 +111,7 @@ data class ChatMessage(
      * 实际只是该服务商未提供该项。
      */
     val usageCacheReported: Boolean = false,
-    /** 未缓存输入（服务商口径已归一化）：面板上「未缓存输入」那一行就用它。 */
+    /** 未缓存输入（服务商口径已归一化）：面板的「未缓存输入」行即取此值。 */
     val uncachedInputTokens: Int = 0,
     /** 写入缓存的 tokens；null = 这家服务商没有这一项，面板上不显示这一行。 */
     val cacheWriteTokens: Int? = null,
@@ -98,13 +134,38 @@ data class ChatMessage(
      */
     val programmatic: Boolean = false,
     /**
-     * 唤醒来源：[ORIGIN_USER]（用户手动发送）、[ORIGIN_SCHEDULE]（定时任务）或
-     * [ORIGIN_JOB]（后台任务结算）。
+     * 唤醒来源：[ORIGIN_USER]（用户手动发送）、[ORIGIN_SCHEDULE]（定时任务）、
+     * [ORIGIN_JOB]（后台任务结算）、[ORIGIN_PEER]（其他会话经 peer 工具投递）
+     * 或 [ORIGIN_SUBAGENT]（子智能体结论的系统转交）。
      *
-     * 只影响后台统计口径：定时任务与普通任务一样计入轮次，后台任务结算不计；
-     * 两者都会置 [programmatic] = true——无人值守时不构成高危操作授权。
+     * 只影响后台统计口径：定时任务与普通任务一样计入轮次，后台任务结算、peer 投递与
+     * 子智能体结论通知不计；后三者都会置 [programmatic] = true——无人值守时不构成高危操作授权。
      */
     val origin: String = ORIGIN_USER,
+    /**
+     * 这条 assistant 消息是不是被用户中止的回合留下的半截内容。
+     *
+     * 只写在被中止回合的最后一条 assistant 上：正文照常保留，界面据此在消息尾部追加「已停止」。
+     * 随消息落盘；旧会话没有该键，读取为 false。
+     */
+    val interrupted: Boolean = false,
+    /**
+     * 本回合终态失败的说明（自动重试已用尽 / 不可重试）。
+     *
+     * 用内容为空的 assistant 消息承载：界面在消息流末尾画「本轮运行失败」节点（与 DSH 的
+     * turn-error 同口径），而请求视图会丢弃空 assistant，模型不会看到这条记录。
+     * 随消息落盘；旧会话没有该键，读取为 null。
+     */
+    val errorText: String? = null,
+    /** 与 [errorText] 配套的稳定分类码（AUTH / RATE_LIMIT / SERVER ...），错误节点右侧展示。 */
+    val errorCode: String? = null,
+    /**
+     * 这条 tool 消息是不是「用户中止后补写的合成结果」（不是工具的真实输出）。
+     *
+     * 界面据此把工具卡标为「已中止」，而不是「完成」或永久停在「执行中…」。
+     * 随消息落盘；旧会话没有该键，读取为 false。
+     */
+    val toolAborted: Boolean = false,
     /**
      * 这条 user 消息发出时附带的「运行时快照」正文（权限档 / 工作区 / 计划模式 / 时间）。
      *
@@ -119,7 +180,7 @@ data class ChatMessage(
      * 后台统计口径里的「一轮」：真人输入，以及定时系统唤醒的任务。
      *
      * 「定时任务当普通任务处理、只是唤醒来源不同」——统计上也按同一口径计轮次；
-     * 其他 App 代发（计划页按钮、后台任务结算唤醒）仍不算。
+     * 其他 App 代发（计划页按钮、后台任务结算、peer 投递、子智能体结论通知）仍不算。
      */
     val countsAsRound: Boolean
         get() = role == "user" && (!programmatic || origin == ORIGIN_SCHEDULE)
@@ -127,3 +188,11 @@ data class ChatMessage(
 
 /** 权限档：只读、工作区、完全；高低顺序见 tools 包的 rank()，不应依赖枚举声明顺序。 */
 enum class PermissionLevel { READ_ONLY, WORKSPACE, FULL }
+
+/**
+ * 一条产物记录。
+ *
+ * [kind] 取文件类别的稳定标识（image／video／pdf／docx 等），[source] 固定为 `present`，
+ * 二者只服务显示与排查。
+ */
+data class ProducedArtifact(val path: String, val kind: String, val source: String)

@@ -71,7 +71,7 @@ object PlanStore {
 
     // ---- 计划正文（按会话，可存多份）----
 
-    /** 读取某会话的全部计划，顺序为创建顺序（新增的在末位）。无记录、空文件或损坏 JSON 均返回空列表，不抛出异常。涉及文件 IO，调用方应置于 IO 线程。 */
+    /** 读取某会话的全部计划，顺序为创建顺序（新增项在末尾）。无记录、空文件或损坏 JSON 均返回空列表，不抛出异常。涉及文件 IO，调用方应置于 IO 线程。 */
     @Synchronized
     fun loadPlans(context: Context, sessionId: String): List<PlanDoc> {
         if (sessionId.isBlank()) return emptyList()

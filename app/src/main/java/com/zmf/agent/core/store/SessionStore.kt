@@ -5,6 +5,7 @@ import com.zmf.agent.core.AppPaths
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ORIGIN_USER
+import com.zmf.agent.core.model.ProducedArtifact
 import com.zmf.agent.core.model.ToolCall
 import org.json.JSONArray
 import org.json.JSONObject
@@ -12,6 +13,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 一条会话：多会话功能的落盘单位。
@@ -108,7 +110,7 @@ data class ChatSession(
     /**
      * 运行根所在的存储单元 id。
      *
-     * 会话不再保存目录路径，也不保存 cwd：分组（[workspaceId]）与运行根彻底分开，
+     * 会话不保存工作区的绝对路径：分组（[workspaceId]）与运行根彻底分开，
      * 因此把会话移到别的工作区仍可指向原目录，工作区改路径也不会留下两份路径。
      * 旧文件无此键，读取为空串，由迁移按所属工作区补齐；补不齐时按默认存储单元处理。
      */
@@ -120,7 +122,27 @@ data class ChatSession(
     /** 创建时快照的权限档（`read-only` / `workspace-write` / `danger-full-access`）。空串表示尚未写入。 */
     val permissionPreset: String = "",
     /** 创建时快照的思考强度（`off` / `low` / `high` / `max`）。空串表示尚未写入；`off` 即不发送思考参数。 */
-    val reasoningEffort: String = ""
+    val reasoningEffort: String = "",
+    /**
+     * P32：回合开合标记。回合开局置 true、收尾置 false；启动读到 true 说明上次进程被杀时
+     * 回合未收尾，恢复路径据此在正文末尾补一条中断标记（DSH 的合成 closer 口径）。
+     * 旧数据缺省为 false。
+     */
+    val turnOpen: Boolean = false,
+    /**
+     * X06：本会话累计轮数（每次追加过用户消息的回合收尾时 +1；迁移时从消息回算）。
+     * 界面状态行统一读该字段，不再从消息列表派生历史累计；旧数据缺省为 0。
+     */
+    val turns: Int = 0,
+    /**
+     * X06：本会话累计的回合墙钟毫秒（每次回合收尾按「回合开始到收尾」累加一次）。旧数据缺省为 0。
+     */
+    val wallMs: Long = 0,
+    /**
+     * 消息条数快照：事件流的 meta 里随每次落盘刷新。列表页/索引场景没有正文列表，
+     * 「是否已经说过话」这类判定改读该字段，不必解压会话文件。
+     */
+    val msgCount: Int = 0
 ) {
     /**
      * 是否已「唤醒」：至少产生过一条正文，或确实发生过一次请求。
@@ -128,11 +150,13 @@ data class ChatSession(
      * 不能只看 [blank]：旧版本落盘没有这个键，默认 false，于是历史里会留下
      * 「0 消息、0 轮」的空壳会话。这类会话与新建未发言一样，不该出现在洞察统计里，
      * 也不该提供会话菜单。用「有没有非空正文」判断对旧数据同样成立；
+     * 懒加载/索引场景正文可能尚未折入内存，[msgCount] 与用量字段是等价判据；
      * 少数只保留用量不含消息的会话（如导入后裁剪）再用 requests / tokens 兜底。
      */
     val awakened: Boolean
         get() = !blank && (
             messages.any { it.content.isNotBlank() } ||
+                msgCount > 0 ||
                 requests > 0 || promptTokens > 0 || completionTokens > 0
             )
 }
@@ -283,10 +307,23 @@ fun ChatSession.foldUsage(delta: SessionUsageDelta): ChatSession {
 }
 
 /**
- * 会话落盘。
+ * 会话落盘（D1）：每会话一个 `<id>.jsonl` 事件流文件（仅追加、zstd 帧拼接、帧级校验），
+ * 外加一份 `sessions.idx.json` 索引供列表页快读。
  *
- * 仅使用一个 JSON 文件整体覆盖写：会话数量由用户手动创建，量级为几十条，
- * 无需数据库，也避免引入新依赖。写失败只记日志，不抛出异常，存盘不得导致对话中断。
+ * **公开签名保持不变**（D1.3-H 的 28 个调用文件核对）：
+ * `load` / `save` / `saveMerged` / `appendMessages` / `addUsage` / `removeSession` / `newSession` /
+ * `forked` / `fallbackTitle` / `normalizeTitle` / `relativeTime` 全部保留，语义边界如下（与单测一致）：
+ *
+ * 1. `save(list)` ＝ 逐会话 upsert（新增文件 / 追加新消息 / meta 变更），**不删**；
+ * 2. `saveMerged(list)` ＝ 同 `save`（旧整写时代的磁盘合并逻辑删除：每会话独立文件后无「覆盖他人」问题）；
+ * 3. `removeSession(id)` ＝ 删文件＋删索引；
+ * 4. `appendMessages` ＝ 追加 `msg`（无读改写整表）；
+ * 5. `addUsage` ＝ meta patch；
+ * 6. `save` 收到「比磁盘更短」的消息列表时**不截断**，记一行「忽略疑似过期快照」日志
+ *    （`save` 的调用方从不做截断；截断只发生在界面回滚路径，走 [saveAuthoritative]）。
+ *
+ * 迁移未完成（`.migrated` 标记不存在）时本类整体降级为旧的单文件整写行为：
+ * 迁移失败不丢数据，下次启动重试（D1.4）。
  */
 object SessionStore {
 
@@ -302,6 +339,15 @@ object SessionStore {
     private const val DANGLING_TOOL_RESULT =
         "工具结果未知：App 在执行这个工具时退出了，没有拿到结果。" +
             "先核实它是否已经生效（文件是否已改、命令是否有副作用），再决定要不要重试；不要直接重跑有副作用的操作。"
+
+    /** 旧版失败正文的固定抬头（319 之前把失败说明写成了普通 assistant 正文）。 */
+    private const val LEGACY_ERROR_PREFIX = "请求失败"
+
+    /**
+     * 旧失败正文的长度上限：超过视为用户/模型的真实内容，不当错误节点处理。
+     * 真正的失败说明都是短句；设上限是为了避免把「用户在问请求失败怎么排查」这类正文吞掉。
+     */
+    private const val LEGACY_ERROR_MAX_CHARS = 2000
 
     private const val KEY_SESSIONS = "sessions"
     private const val KEY_ID = "id"
@@ -348,6 +394,11 @@ object SessionStore {
     // 工具结果成败：产物卡据此判断文件是否真的写入成功，不依赖回执文案
     private const val KEY_TOOL_OK = "toolOk"
     private const val KEY_IMAGES = "images"
+    // 本回合产物：图片、视频、文档等；与 images 分开保存，来源与类别随之落盘
+    private const val KEY_PRODUCED = "produced"
+    private const val KEY_PRODUCED_PATH = "path"
+    private const val KEY_PRODUCED_KIND = "kind"
+    private const val KEY_PRODUCED_SOURCE = "source"
     private const val KEY_CREATED_AT = "createdAt"
     // 单条消息自身的用量（气泡中的「用量 X tok」）：与会话级 promptTokens 含义不同，
     // 键名有意区分，避免后续将其按同一字段读取
@@ -367,6 +418,62 @@ object SessionStore {
     private const val KEY_MSG_PROGRAMMATIC = "programmatic"
     // 唤醒来源：用户 / 定时任务；只影响后台统计口径（见 ChatMessage.origin）
     private const val KEY_MSG_ORIGIN = "origin"
+    // 被用户中止的 assistant 半截内容（见 ChatMessage.interrupted）：旧文件无此键，读取为 false
+    private const val KEY_MSG_INTERRUPTED = "interrupted"
+    // 中止后补写的合成工具结果（见 ChatMessage.toolAborted）：旧文件无此键，读取为 false
+    private const val KEY_MSG_TOOL_ABORTED = "toolAborted"
+    // 回合终态失败（见 ChatMessage.errorText / errorCode）：旧文件无这些键，读取为 null
+    private const val KEY_MSG_ERROR = "errorText"
+    private const val KEY_MSG_ERROR_CODE = "errorCode"
+    // P32 / X06 / D1 索引所需的新字段：旧文件无这些键，读取为缺省值
+    private const val KEY_TURN_OPEN = "turnOpen"
+    private const val KEY_TURNS = "turns"
+    private const val KEY_WALL_MS = "wallMs"
+    private const val KEY_MSG_COUNT = "msgCount"
+
+    /**
+     * 缺省值表：上述键等于缺省值时不会写入 JSON（旧文件不因升级增大）。
+     * 差分补丁必须补出缺省值再比较，否则「布尔翻回默认」「计数归零」
+     * 这类变化永远不会落盘（历史问题：新建会话发送首条消息后 blank/listed 仍是旧值）。
+     * 只列出本类自己管理的键；未来版本新增而本版本不认识的键不在此表，保持原样。
+     */
+    private val DEFAULT_FIELDS: Map<String, Any> = mapOf(
+        KEY_ARCHIVED to false,
+        KEY_PINNED to false,
+        KEY_WORKSPACE_ID to JSONObject.NULL,
+        KEY_STORAGE_ID to "",
+        KEY_BLANK to false,
+        KEY_LISTED to true,
+        KEY_PERMISSION to "",
+        KEY_EFFORT to "",
+        KEY_PROMPT_TOKENS to 0,
+        KEY_COMPLETION_TOKENS to 0,
+        KEY_REQUESTS to 0,
+        KEY_STEPS to 0,
+        KEY_TOOL_CALL_COUNT to 0,
+        KEY_MODEL_MILLIS to 0L,
+        KEY_TOOL_MILLIS to 0L,
+        KEY_LAST_TURN_MODEL_MILLIS to 0L,
+        KEY_LAST_TURN_COMPLETION to 0,
+        KEY_CACHE_HIT_TOKENS to 0,
+        KEY_CACHE_MISS_TOKENS to 0,
+        KEY_TTFT_MILLIS to 0L,
+        KEY_TTFT_COUNT to 0,
+        KEY_GEN_MILLIS to 0L,
+        KEY_GEN_TOKENS to 0,
+        KEY_COMPOSITION to JSONObject.NULL,
+        KEY_REASONING_MILLIS to 0L,
+        KEY_TEXT_MILLIS to 0L,
+        KEY_TOOL_ARG_MILLIS to 0L,
+        KEY_CONTEXT_SUMMARY to "",
+        KEY_SUMMARY_UP_TO to 0,
+        KEY_LAST_SUMMARY_AT to 0L,
+        KEY_INHERITED_USAGE to JSONObject.NULL,
+        KEY_TURN_OPEN to false,
+        KEY_TURNS to 0,
+        KEY_WALL_MS to 0L,
+        KEY_MSG_COUNT to 0
+    )
 
     private const val MINUTE = 60_000L
     private const val HOUR = 60L * MINUTE
@@ -379,11 +486,405 @@ object SessionStore {
     /** 落盘位置：filesDir/appdata/sessions.json（首次读时由 [AppPaths] 从旧位置迁过来）。 */
     private fun storeFile(context: Context): File = AppPaths.dataFile(context, FILE_NAME)
 
+    // ---- D1：JSONL 模式与进程内缓存 ----
+
+    /** 折叠结果缓存：按 (文件长度, mtime) 失效，命中时免去整份解压。 */
+    private class FoldCache(val fold: SessionLog.Fold, val len: Long, val mtime: Long)
+
+    private val cache = ConcurrentHashMap<String, FoldCache>()
+
+    private fun sessionsDir(context: Context): File = AppPaths.sessionsDir(context)
+
+    private fun sessionFile(context: Context, id: String): File =
+        File(sessionsDir(context), id + ".jsonl")
+
+    /** JSONL 模式开关：迁移标记存在即生效；否则整体沿用旧的单文件整写。 */
+    private fun jsonlMode(context: Context): Boolean =
+        File(sessionsDir(context), SessionLog.MIGRATED_MARKER).isFile
+
+    /** 取一份会话的折叠结果：缓存按 (len, mtime) 命中，未命中（或文件被外部改过）时重新折叠。 */
+    private fun foldOf(context: Context, id: String): SessionLog.Fold? {
+        val file = sessionFile(context, id)
+        if (!file.isFile) {
+            cache.remove(id)
+            return null
+        }
+        val len = file.length()
+        val mtime = file.lastModified()
+        val hit = cache[id]
+        if (hit != null && hit.len == len && hit.mtime == mtime) return hit.fold
+        val fold = SessionLog.read(file) ?: run {
+            cache.remove(id)
+            return null
+        }
+        cache[id] = FoldCache(fold, file.length(), file.lastModified())
+        return fold
+    }
+
+    private fun sessionFromFold(fold: SessionLog.Fold): ChatSession? =
+        sessionFromFields(fold.fields, fold.chatMessages)
+
     // ---- 对外 ----
 
     /** 读取全部会话；文件不存在、内容为空或 JSON 损坏时一律返回空列表，不抛出异常。 */
     @Synchronized
     fun load(context: Context): List<ChatSession> {
+        if (!jsonlMode(context)) return legacyLoad(context).map { cleanLegacyErrorsInMemory(it) }
+        val files = sessionsDir(context).listFiles { f -> f.isFile && f.name.endsWith(".jsonl") }
+            ?.sortedBy { it.name }
+            ?: return emptyList()
+        val out = ArrayList<ChatSession>(files.size)
+        for (file in files) {
+            val id = file.name.removeSuffix(".jsonl")
+            val fold = foldOf(context, id) ?: continue
+            val session = sessionFromFold(fold) ?: continue
+            out.add(cleanLegacyErrors(context, healBlank(session)))
+        }
+        return out.sortedByDescending { it.updatedAt }
+    }
+
+    /**
+     * 列表页快读（D1.3-F 随机读保护）：只读索引 `sessions.idx.json`，不解压任何会话文件。
+     * 索引缺失/过期时 [SessionIndex] 自行重建（兜底路径）。旧格式模式退回全量 [load]。
+     */
+    fun loadSummaries(context: Context): List<ChatSession> {
+        if (!jsonlMode(context)) return load(context)
+        return SessionIndex.summaries(context).map { healBlank(it.session) }
+    }
+
+    /** 读单条会话（正文懒加载用）：只解压这一个文件；不存在或损坏返回 null。 */
+    fun loadOne(context: Context, id: String): ChatSession? {
+        if (!jsonlMode(context)) return load(context).firstOrNull { it.id == id }
+        val fold = foldOf(context, id) ?: return null
+        return sessionFromFold(fold)?.let { cleanLegacyErrors(context, healBlank(it)) }
+    }
+
+    /**
+     * 空白会话指「还没发出第一条消息的空壳」。若它已经带了消息（定时任务写入，或旧版
+     * 差分漏写 blank/listed 留下的存量数据），就不再是空白态，必须转正并列入侧边栏；
+     * 否则结果与通知都在，用户却在工作区里找不到这条会话。
+     *
+     * 列表页走索引快读时消息正文尚未加载，因此同时检查 [ChatSession.msgCount]。
+     */
+    internal fun healBlank(session: ChatSession): ChatSession =
+        if (session.blank && (session.messages.isNotEmpty() || session.msgCount > 0)) {
+            session.copy(blank = false, listed = true)
+        } else {
+            session
+        }
+
+    // ---- 旧失败正文 → turn-error 节点 ----
+
+    /**
+     * 把 319 之前写进普通 assistant 正文的失败说明改写成 turn-error 节点（纯函数，单测覆盖）。
+     *
+     * 旧数据形如「请求失败（HTTP 429）：请求失败，请检查网络」：正文为空显示成空气泡，
+     * 新结构则是「空正文 + [ChatMessage.errorText] + [ChatMessage.errorCode]」。
+     * 命中判据见 [isLegacyErrorBody]；不满足的消息原样返回，列表不变时复用原对象。
+     */
+    internal fun cleanLegacyTurnErrors(messages: List<ChatMessage>): Pair<List<ChatMessage>, Boolean> {
+        var changed = false
+        val out = ArrayList<ChatMessage>(messages.size)
+        for (message in messages) {
+            // 319 已写成错误节点，但 errorText 里仍带「请求失败：请求失败…」重复前缀
+            val errorText = message.errorText
+            if (errorText != null && message.content.isEmpty() && message.toolCalls.isEmpty()) {
+                val normalized = legacyErrorText(errorText)
+                if (normalized != errorText) {
+                    changed = true
+                    out.add(message.copy(errorText = normalized))
+                } else {
+                    out.add(message)
+                }
+                continue
+            }
+            if (!isLegacyErrorBody(message)) {
+                out.add(message)
+                continue
+            }
+            changed = true
+            out.add(
+                message.copy(
+                    content = "",
+                    errorText = legacyErrorText(message.content),
+                    errorCode = "UNKNOWN"
+                )
+            )
+        }
+        return if (changed) out to true else messages to false
+    }
+
+    /** 旧失败正文的判定：只看「空错误节点 + 无工具调用/思考 + 短正文以请求失败开头」。 */
+    private fun isLegacyErrorBody(message: ChatMessage): Boolean =
+        message.role == "assistant" &&
+            message.errorText == null &&
+            message.toolCalls.isEmpty() &&
+            message.reasoningContent.isNullOrEmpty() &&
+            message.content.length < LEGACY_ERROR_MAX_CHARS &&
+            message.content.trimStart().startsWith(LEGACY_ERROR_PREFIX)
+
+    /**
+     * 失败的说明正文：去掉与抬头重复的「请求失败」。
+     *
+     * 「请求失败：请求失败，请检查网络」→「请检查网络」；
+     * 带状态码的「请求失败（HTTP 429）：请求失败…」保留括号里的状态码，只去重后半段；
+     * 没有重复时保留原文（不凭空改写提供方文案）。
+     */
+    internal fun legacyErrorText(content: String): String {
+        val text = content.trim()
+        val colon = text.indexOfFirst { it == '：' || it == ':' }
+        if (colon <= 0) return text
+        val head = text.substring(0, colon).trim()
+        val rest = text.substring(colon + 1).trimStart()
+        if (!head.startsWith(LEGACY_ERROR_PREFIX) || !rest.startsWith(LEGACY_ERROR_PREFIX)) return text
+        val tail = rest.removePrefix(LEGACY_ERROR_PREFIX).trimStart()
+            .trimStart('：', ':', '，', ',', '、', ' ', '\t', '\n')
+        if (tail.isEmpty()) return text
+        return if (head == LEGACY_ERROR_PREFIX) tail else head + "：" + tail
+    }
+
+    /**
+     * 读取路径（[load] / [loadOne]）的清洗：有改动时写回 `msg.upd` 并返回清洗后的会话。
+     *
+     * 幂等：清洗后的消息带 errorText，第二次读取不再命中。
+     * 写盘失败只记日志（best-effort），本次读取仍按清洗结果展示，下次启动重试。
+     */
+    private fun cleanLegacyErrors(context: Context, session: ChatSession): ChatSession {
+        val (messages, changed) = cleanLegacyTurnErrors(session.messages)
+        if (!changed) return session
+        val cleaned = session.copy(messages = messages)
+        runCatching { upsert(context, cleaned, allowTruncate = false) }
+            .onFailure { FileLog.log(TAG, "旧错误节点清洗写盘失败：" + session.id + "：" + it) }
+        return cleaned
+    }
+
+    /** 旧整写降级路径只做内存清洗：此时 upsert 会写出 JSONL，反而绕开旧文件，因此不写盘。 */
+    private fun cleanLegacyErrorsInMemory(session: ChatSession): ChatSession {
+        val (messages, changed) = cleanLegacyTurnErrors(session.messages)
+        return if (changed) session.copy(messages = messages) else session
+    }
+
+    /** 整表落盘：逐会话 upsert（D1.3-H 语义 1），不删。失败只记日志。 */
+    @Synchronized
+    fun save(context: Context, sessions: List<ChatSession>) {
+        if (!jsonlMode(context)) {
+            legacySave(context, sessions)
+            return
+        }
+        for (session in sessions) upsert(context, session, allowTruncate = false)
+    }
+
+    /** 与 [save] 同义（D1.3-H 语义 2）：事件流下每会话独立追加，不存在「后写覆盖先写」。 */
+    @Synchronized
+    fun saveMerged(context: Context, mine: List<ChatSession>) {
+        if (!jsonlMode(context)) {
+            legacySaveMerged(context, mine)
+            return
+        }
+        save(context, mine)
+    }
+
+    /**
+     * 以内存快照为准落盘（允许截断）：界面回滚 / 删除消息 / 编辑重发路径专用。
+     *
+     * [save] 收到更短的列表只会「忽略疑似过期快照」；只有本方法会把磁盘长出的尾部
+     * 用 `trunc` 补偿事件裁掉——两条入口的分工即 D1.3-H 语义 6 的「截断走独立 API」。
+     */
+    @Synchronized
+    fun saveAuthoritative(context: Context, session: ChatSession) {
+        if (!jsonlMode(context)) {
+            legacyReplace(context, session)
+            return
+        }
+        upsert(context, session, allowTruncate = true)
+    }
+
+    /**
+     * P32：只改 turnOpen 标记（回合开局 / 收尾各一次）。meta-only patch，不碰消息。
+     */
+    @Synchronized
+    fun setTurnOpen(context: Context, id: String, open: Boolean) {
+        if (!jsonlMode(context)) {
+            val all = load(context)
+            val merged = all.map { if (it.id == id) it.copy(turnOpen = open) else it }
+            if (merged != all) legacySave(context, merged)
+            return
+        }
+        val file = sessionFile(context, id)
+        val fold = foldOf(context, id) ?: return
+        val disk = sessionFromFold(fold) ?: return
+        if (disk.turnOpen == open) return
+        val events = listOf(
+            SessionLog.metaEvent(0, System.currentTimeMillis(), JSONObject().put(KEY_TURN_OPEN, open))
+        )
+        if (SessionLog.appendEvents(file, fold, events)) {
+            cache[id] = FoldCache(fold, file.length(), file.lastModified())
+            refreshIndex(context, id)
+        } else {
+            cache.remove(id)
+        }
+    }
+
+    /**
+     * 从磁盘真正删除一条会话（D1.3-H 语义 3）：删文件＋删缓存＋删索引。
+     *
+     * 事件流下 `save` 不再具备「列表里没有即删除」的语义，删除必须走这里。
+     */
+    @Synchronized
+    fun removeSession(context: Context, id: String) {
+        if (!jsonlMode(context)) {
+            legacyRemoveSession(context, id)
+            return
+        }
+        cache.remove(id)
+        runCatching { sessionFile(context, id).delete() }
+            .onFailure { FileLog.log(TAG, "删除会话文件失败：" + id + "：" + it) }
+        SessionIndex.remove(context, id)
+        FileLog.log(TAG, "删除会话文件：" + id)
+    }
+
+    /**
+     * 向指定会话末尾追加消息（定时任务使用）；会话不存在时返回 false。
+     *
+     * 与旧实现的区别：不再整表读改写——按磁盘折叠结果直接追加 `msg` 事件并写 meta patch。
+     */
+    @Synchronized
+    fun appendMessages(
+        context: Context,
+        sessionId: String,
+        added: List<ChatMessage>,
+        usage: SessionUsageDelta = SessionUsageDelta(),
+        titleIfBlank: String = ""
+    ): Boolean {
+        if (!jsonlMode(context)) {
+            return legacyAppendMessages(context, sessionId, added, usage, titleIfBlank)
+        }
+        if (added.isEmpty() && usage.isEmpty) return true
+        val fold = foldOf(context, sessionId) ?: return false
+        val disk = sessionFromFold(fold) ?: return false
+        val updated = disk.foldUsage(usage).copy(
+            messages = disk.messages + added,
+            updatedAt = System.currentTimeMillis(),
+            // 后台首次写入时补标题：新会话在界面上不显示空标题
+            title = if (disk.title.isBlank() && titleIfBlank.isNotBlank()) titleIfBlank else disk.title
+        )
+        upsert(context, updated, allowTruncate = false)
+        return true
+    }
+
+    /**
+     * 只把用量并入会话，不动消息、不动 `updatedAt`。
+     *
+     * 用于「花了钱但没有产出」的执行（例如定时任务本轮请求失败）：会话卡片上的
+     * Token / 耗时应当反映真实消耗，但没有新消息，不能把会话顶到列表最前。
+     * id 不存在时返回 false。
+     */
+    @Synchronized
+    fun addUsage(context: Context, sessionId: String, usage: SessionUsageDelta): Boolean {
+        if (!jsonlMode(context)) return legacyAddUsage(context, sessionId, usage)
+        if (usage.isEmpty) return false
+        val fold = foldOf(context, sessionId) ?: return false
+        val disk = sessionFromFold(fold) ?: return false
+        upsert(context, disk.foldUsage(usage), allowTruncate = false)
+        return true
+    }
+
+    // ---- D1：内部写路径 ----
+
+    /**
+     * 统一 upsert：meta patch（只写变化键）+ 消息差异事件（D1.3-C）。
+     *
+     * [allowTruncate] = false 时磁盘更长的尾部保留（内存尾部记「忽略疑似过期快照」）；
+     * = true 时写 `trunc(keep=L)` 补偿事件再追加新尾部（回滚路径）。
+     */
+    private fun upsert(context: Context, session: ChatSession, allowTruncate: Boolean) {
+        val file = sessionFile(context, session.id)
+        val fold = foldOf(context, session.id)
+        if (fold == null) {
+            // 新会话（或旧文件已损坏移除）：整份写入
+            if (SessionLog.writeFull(file, session)) {
+                val fresh = SessionLog.read(file)
+                if (fresh != null) cache[session.id] = FoldCache(fresh, file.length(), file.lastModified())
+                refreshIndex(context, session.id)
+            } else {
+                FileLog.log(TAG, "会话整份写入失败：" + session.id)
+            }
+            return
+        }
+        val disk = sessionFromFold(fold) ?: return
+        val events = ArrayList<JSONObject>()
+        val at = System.currentTimeMillis()
+        // 1) meta patch：只写变化键
+        val newFields = sessionFieldsToJson(session)
+        val patch = metaPatch(fold.fields, newFields)
+        if (patch.length() > 0) events.add(SessionLog.metaEvent(0, at, patch))
+        // 2) 消息差异
+        val diff = SessionLog.diffEvents(disk.messages, session.messages, allowTruncate)
+        if (diff == null) {
+            // save 不允许截断：磁盘更长的尾部保留，本次只应用 meta
+            FileLog.log(
+                TAG,
+                "忽略疑似过期快照（会话 " + session.id + "：内存 " + session.messages.size +
+                    " 条，磁盘 " + disk.messages.size + " 条）"
+            )
+        } else {
+            events.addAll(diff)
+        }
+        if (events.isEmpty()) return
+        if (SessionLog.appendEvents(file, fold, events)) {
+            cache[session.id] = FoldCache(fold, file.length(), file.lastModified())
+            refreshIndex(context, session.id)
+        } else {
+            // 写盘失败：缓存作废，下次读盘重新折叠（折回磁盘真实状态）
+            cache.remove(session.id)
+            FileLog.log(TAG, "会话事件追加失败，缓存作废：" + session.id)
+        }
+    }
+
+    /** 把刚写过的一条会话合并进索引（内存条目读改写，不触发重建）。 */
+    private fun refreshIndex(context: Context, id: String) {
+        val cached = cache[id] ?: return
+        val session = sessionFromFold(cached.fold) ?: return
+        val entries = SessionIndex.readRaw(context).filterNot { it.session.id == id }
+        SessionIndex.save(context, entries + SessionIndex.Entry(session, sessionFile(context, id).length()))
+    }
+
+    /**
+     * 计算 meta 差分。
+     *
+     * 两侧都按 [DEFAULT_FIELDS] 补齐缺省值再比较：只看新字段会漏掉「回到缺省值」的键，
+     * 导致 blank/listed/archived 等布尔与字符串无法翻回默认，重启后读到旧状态。
+     */
+    internal fun metaPatch(foldFields: JSONObject, newFields: JSONObject): JSONObject {
+        val patch = JSONObject()
+        val keys = LinkedHashSet<String>()
+        for (key in newFields.keys()) keys.add(key)
+        for (key in foldFields.keys()) {
+            if (DEFAULT_FIELDS.containsKey(key)) keys.add(key)
+        }
+        for (key in keys) {
+            val old = if (foldFields.has(key)) foldFields.opt(key) else DEFAULT_FIELDS[key]
+            val value = if (newFields.has(key)) newFields.opt(key) else DEFAULT_FIELDS[key]
+            if (!sameValue(old, value)) patch.put(key, value)
+        }
+        return patch
+    }
+
+    /** 数值比较用 double：org.json 解析回的小整数是 Integer，与新写入的 Long 比较会不相等。 */
+    private fun sameValue(a: Any?, b: Any?): Boolean = when {
+        isJsonNull(a) && isJsonNull(b) -> true
+        isJsonNull(a) || isJsonNull(b) -> false
+        a is Number && b is Number -> a.toDouble() == b.toDouble()
+        a is JSONObject && b is JSONObject -> a.toString() == b.toString()
+        else -> a == b
+    }
+
+    /** 键不存在（null）与显式 JSON null 同义，比较时归一。 */
+    private fun isJsonNull(value: Any?): Boolean = value == null || value === JSONObject.NULL
+
+    // ---- 旧格式路径（迁移失败时的降级，行为与 D1 之前完全一致）----
+
+    private fun legacyLoad(context: Context): List<ChatSession> {
         val file = storeFile(context)
         if (!file.exists() || file.length() == 0L) return emptyList()
         return try {
@@ -395,24 +896,11 @@ object SessionStore {
         }
     }
 
-    /**
-     * 空白会话指「还没发出第一条消息的空壳」。若它已经带了消息（目前只可能是定时任务写入的），
-     * 就不再是空白态，必须转正并列入侧边栏；否则结果与通知都在，用户却在工作区里找不到这条会话
-     * （2026-11-09 06:57 新闻早报：消息写入成功，会话仍是 blank 且未列出）。
-     */
-    private fun healBlank(session: ChatSession): ChatSession =
-        if (session.blank && session.messages.isNotEmpty()) {
-            session.copy(blank = false, listed = true)
-        } else {
-            session
-        }
-
-    /** 整体覆盖写；失败只记日志。先写 .tmp 再 rename，避免写入中断后残留损坏文件。 */
-    @Synchronized
-    fun save(context: Context, sessions: List<ChatSession>) {
+    /** 旧格式整写；先写 .tmp 再 rename，避免写入中断后残留损坏文件。 */
+    private fun legacySave(context: Context, sessions: List<ChatSession>) {
         try {
             val array = JSONArray()
-            for (session in sessions) array.put(sessionToJson(session))
+            for (session in sessions) array.put(legacySessionJson(session))
             val root = JSONObject()
             root.put(KEY_SESSIONS, array)
             val json = root.toString()
@@ -431,118 +919,105 @@ object SessionStore {
         }
     }
 
-    /**
-     * 从磁盘真正删除一条会话。
-     *
-     * 仅从内存列表移除不够：[saveMerged] 会将「磁盘存在、内存不存在」的会话视为其他来源新增而保留，
-     * 导致已删除的会话在返回主页后重新出现。
-     */
-    @Synchronized
-    fun removeSession(context: Context, id: String) {
-        val all = load(context)
-        val kept = all.filterNot { it.id == id }
-        if (kept.size != all.size) save(context, kept)
+    private fun legacySessionJson(session: ChatSession): JSONObject {
+        val obj = sessionFieldsToJson(session)
+        val array = JSONArray()
+        for (message in session.messages) array.put(messageToJson(message))
+        obj.put(KEY_MESSAGES, array)
+        return obj
     }
 
-    /**
-     * 向指定会话末尾追加消息（定时任务使用）；会话不存在时返回 false。
-     *
-     * 与 [saveMerged] 的区别：此处仅修改目标会话，不参与整表合并；
-     * 后台追加的是新消息，不存在与界面争用同一份快照的问题。
-     */
-    @Synchronized
-    fun appendMessages(
+    /** 旧格式下的整条替换（saveAuthoritative 的降级路径）。 */
+    private fun legacyReplace(context: Context, session: ChatSession) {
+        val all = legacyLoad(context)
+        val exists = all.any { it.id == session.id }
+        val merged = if (exists) {
+            all.map { if (it.id == session.id) session else it }
+        } else {
+            all + session
+        }
+        legacySave(context, merged)
+    }
+
+    /** 旧格式下的合并落盘（saveMerged 的降级路径）：mine 覆盖同 id，磁盘其余会话保留。 */
+    private fun legacySaveMerged(context: Context, mine: List<ChatSession>) {
+        if (mine.isEmpty()) return
+        val all = legacyLoad(context)
+        val merged = ArrayList<ChatSession>(all.size + mine.size)
+        for (session in all) {
+            merged.add(mine.firstOrNull { it.id == session.id } ?: session)
+        }
+        for (session in mine) {
+            if (merged.none { it.id == session.id }) merged.add(session)
+        }
+        legacySave(context, merged)
+    }
+
+    private fun legacyRemoveSession(context: Context, id: String) {
+        val all = legacyLoad(context)
+        val kept = all.filterNot { it.id == id }
+        if (kept.size != all.size) legacySave(context, kept)
+    }
+
+    private fun legacyAppendMessages(
         context: Context,
         sessionId: String,
         added: List<ChatMessage>,
-        usage: SessionUsageDelta = SessionUsageDelta()
+        usage: SessionUsageDelta,
+        titleIfBlank: String
     ): Boolean {
-        val all = load(context)
+        val all = legacyLoad(context)
         val index = all.indexOfFirst { it.id == sessionId }
         if (index < 0) return false
         val old = all[index]
         val merged = all.toMutableList()
         merged[index] = old.foldUsage(usage).copy(
             messages = old.messages + added,
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            title = if (old.title.isBlank() && titleIfBlank.isNotBlank()) titleIfBlank else old.title
         )
-        save(context, merged)
+        legacySave(context, merged)
         return true
     }
 
-    /**
-     * 只把用量并入会话，不动消息、不动 `updatedAt`。
-     *
-     * 用于「花了钱但没有产出」的执行（例如定时任务本轮请求失败）：会话卡片上的
-     * Token / 耗时应当反映真实消耗，但没有新消息，不能把会话顶到列表最前。
-     * id 不存在时返回 false。
-     */
-    @Synchronized
-    fun addUsage(context: Context, sessionId: String, usage: SessionUsageDelta): Boolean {
+    private fun legacyAddUsage(context: Context, sessionId: String, usage: SessionUsageDelta): Boolean {
         if (usage.isEmpty) return false
-        val all = load(context)
+        val all = legacyLoad(context)
         val index = all.indexOfFirst { it.id == sessionId }
         if (index < 0) return false
         val merged = all.toMutableList()
         merged[index] = all[index].foldUsage(usage)
-        save(context, merged)
+        legacySave(context, merged)
         return true
+    }
+
+    // ---- 备份导入接驳 ----
+
+    /**
+     * 备份导入每会话 JSONL 文件（`data/sessions` 目录下的 *.jsonl）之后调用：清缓存、作废索引、确保迁移标记存在
+     * （导入的 JSONL 从此是权威数据）。旧版 `sessions.json` 的导入走 [reimportLegacySessions]。
+     */
+    @Synchronized
+    fun onSessionsImported(context: Context) {
+        cache.clear()
+        SessionIndex.invalidate(context)
+        val marker = File(sessionsDir(context), SessionLog.MIGRATED_MARKER)
+        if (!marker.isFile) SessionLog.migrateIfNeeded(context)
     }
 
     /**
-     * 与磁盘合并后落盘：**只增不丢**。
-     *
-     * 会话采用整份 JSON 覆盖写，界面与后台（定时任务）各自持有内存快照，后写入者会覆盖对方数据；
-     * 实际影响包括：定时任务的追问被界面写回的旧快照覆盖，迭代计数发生回退，
-     * 新建或删除其他会话也会影响目标会话。
-     *
-     * 合并规则：
-     * 1. 磁盘存在、内存不存在 → 保留磁盘数据（后台新建的会话不得被界面覆盖）；
-     * 2. 一方为另一方的**前缀** → 取较长者（后追加的消息不丢失）；
-     * 3. 双方均有修改（分叉） → 取消息较多者，数量相同时取 updatedAt 较新者。
+     * 备份导入旧版 `data/sessions.json` 之后当场迁移（D1.3-G）：导入内容覆盖同名会话文件，
+     * 迁移成功才生效；失败时保留现状并写日志（下次启动重试）。
      */
     @Synchronized
-    fun saveMerged(context: Context, mine: List<ChatSession>) {
-        val disk = load(context).associateBy { it.id }
-        val result = LinkedHashMap<String, ChatSession>()
-        for (session in mine) {
-            val other = disk[session.id]
-            result[session.id] = if (other == null) session else pickLonger(session, other)
-        }
-        for ((id, session) in disk) {
-            if (!result.containsKey(id)) result[id] = session
-        }
-        save(context, result.values.toList())
+    fun reimportLegacySessions(context: Context) {
+        cache.clear()
+        SessionIndex.invalidate(context)
+        File(sessionsDir(context), SessionLog.MIGRATED_MARKER).delete()
+        SessionLog.migrateIfNeeded(context, overwrite = true)
     }
 
-    /** 同 id 两条会话的选取规则：[a] 为内存版本，[b] 为磁盘版本。 */
-    private fun pickLonger(a: ChatSession, b: ChatSession): ChatSession {
-        val winner = when {
-            b.messages.size > a.messages.size && isPrefix(a.messages, b.messages) -> b
-            a.messages.size > b.messages.size && isPrefix(b.messages, a.messages) -> a
-            a.updatedAt >= b.updatedAt -> a
-            else -> b
-        }
-        // 标题、工作区等元信息取有值的一方：避免合并时将后台生成的标题置为空值
-        val other = if (winner === a) b else a
-        return winner.copy(
-            title = winner.title.ifBlank { other.title },
-            workspaceId = winner.workspaceId ?: other.workspaceId,
-            storageId = winner.storageId.ifEmpty { other.storageId },
-            // 空白态取合取、可见性取析取：任一方已发出首轮消息即视为已转正，任一方已显示即保持显示
-            blank = winner.blank && other.blank,
-            listed = winner.listed || other.listed,
-            permissionPreset = winner.permissionPreset.ifEmpty { other.permissionPreset },
-            reasoningEffort = winner.reasoningEffort.ifEmpty { other.reasoningEffort }
-        )
-    }
-
-    /** [shorter] 是否为 [longer] 的前缀（逐条 == 比较；ChatMessage 为 data class）。 */
-    private fun isPrefix(shorter: List<ChatMessage>, longer: List<ChatMessage>): Boolean {
-        if (shorter.size > longer.size) return false
-        for (i in shorter.indices) if (shorter[i] != longer[i]) return false
-        return true
-    }
+    // ---- 新建 / 分叉 / 标题 ----
 
     /**
      * 新建一条空会话。id 使用毫秒时间戳（同一毫秒内连续创建时自增，避免重复）。
@@ -609,6 +1084,8 @@ object SessionStore {
             ttftCount = base.ttftCount,
             genMillis = base.genMillis,
             genTokens = base.genTokens,
+            turns = base.turns,
+            wallMs = base.wallMs,
             inheritedUsage = InheritedUsage(
                 promptTokens = base.promptTokens,
                 completionTokens = base.completionTokens,
@@ -708,7 +1185,11 @@ object SessionStore {
 
     // ---- 序列化 ----
 
-    private fun sessionToJson(session: ChatSession): JSONObject {
+    /**
+     * 会话字段（**不含** messages 数组）落盘：供旧格式整写与事件流的 meta 帧共用。
+     * 未与缺省值不同的键不写入，旧文件不会因升级而增大。
+     */
+    internal fun sessionFieldsToJson(session: ChatSession): JSONObject {
         val obj = JSONObject()
         obj.put(KEY_ID, session.id)
         obj.put(KEY_TITLE, session.title)
@@ -759,10 +1240,95 @@ object SessionStore {
         if (!session.inheritedUsage.isEmpty) {
             obj.put(KEY_INHERITED_USAGE, inheritedUsageToJson(session.inheritedUsage))
         }
-        val array = JSONArray()
-        for (message in session.messages) array.put(messageToJson(message))
-        obj.put(KEY_MESSAGES, array)
+        // P32 / X06 / msgCount：与缺省值不同才写入
+        if (session.turnOpen) obj.put(KEY_TURN_OPEN, true)
+        if (session.turns != 0) obj.put(KEY_TURNS, session.turns)
+        if (session.wallMs != 0L) obj.put(KEY_WALL_MS, session.wallMs)
+        // 消息条数以调用方给的 messages 列表为准（事件流下与消息事件同步推进）
+        if (session.messages.isNotEmpty()) obj.put(KEY_MSG_COUNT, session.messages.size)
+        else if (session.msgCount != 0) obj.put(KEY_MSG_COUNT, session.msgCount)
         return obj
+    }
+
+    /** 从「字段 JSON + 消息列表」拼回会话记录（事件流折叠结果与索引条目共用）。 */
+    internal fun sessionFromFields(fields: JSONObject, messages: List<ChatMessage>): ChatSession? {
+        val id = fields.optString(KEY_ID, "")
+        if (id.isEmpty()) return null
+        return ChatSession(
+            id = id,
+            title = fields.optString(KEY_TITLE, ""),
+            messages = messages,
+            updatedAt = fields.optLong(KEY_UPDATED_AT, 0L),
+            archived = fields.optBoolean(KEY_ARCHIVED, false),
+            pinned = fields.optBoolean(KEY_PINNED, false),
+            workspaceId = fields.stringOrNull(KEY_WORKSPACE_ID),
+            storageId = fields.optString(KEY_STORAGE_ID, ""),
+            blank = fields.optBoolean(KEY_BLANK, false),
+            listed = fields.optBoolean(KEY_LISTED, true),
+            permissionPreset = fields.optString(KEY_PERMISSION, ""),
+            reasoningEffort = fields.optString(KEY_EFFORT, ""),
+            promptTokens = fields.optInt(KEY_PROMPT_TOKENS, 0),
+            completionTokens = fields.optInt(KEY_COMPLETION_TOKENS, 0),
+            requests = fields.optInt(KEY_REQUESTS, 0),
+            steps = fields.optInt(KEY_STEPS, 0),
+            toolCalls = fields.optInt(KEY_TOOL_CALL_COUNT, 0),
+            modelMillis = fields.optLong(KEY_MODEL_MILLIS, 0L),
+            toolMillis = fields.optLong(KEY_TOOL_MILLIS, 0L),
+            lastTurnModelMillis = fields.optLong(KEY_LAST_TURN_MODEL_MILLIS, 0L),
+            lastTurnCompletionTokens = fields.optInt(KEY_LAST_TURN_COMPLETION, 0),
+            cacheHitTokens = fields.optInt(KEY_CACHE_HIT_TOKENS, 0),
+            cacheMissTokens = fields.optInt(KEY_CACHE_MISS_TOKENS, 0),
+            ttftMillis = fields.optLong(KEY_TTFT_MILLIS, 0L),
+            ttftCount = fields.optInt(KEY_TTFT_COUNT, 0),
+            genMillis = fields.optLong(KEY_GEN_MILLIS, 0L),
+            genTokens = fields.optInt(KEY_GEN_TOKENS, 0),
+            composition = compositionFromJson(fields.optJSONObject(KEY_COMPOSITION)),
+            reasoningMillis = fields.optLong(KEY_REASONING_MILLIS, 0L),
+            textMillis = fields.optLong(KEY_TEXT_MILLIS, 0L),
+            toolArgMillis = fields.optLong(KEY_TOOL_ARG_MILLIS, 0L),
+            contextSummary = fields.optString(KEY_CONTEXT_SUMMARY, ""),
+            summaryUpTo = fields.optInt(KEY_SUMMARY_UP_TO, 0),
+            lastSummaryAt = fields.optLong(KEY_LAST_SUMMARY_AT, 0L),
+            inheritedUsage = fields.optJSONObject(KEY_INHERITED_USAGE)
+                ?.let { inheritedUsageFromJson(it) }
+                ?: InheritedUsage(),
+            turnOpen = fields.optBoolean(KEY_TURN_OPEN, false),
+            turns = fields.optInt(KEY_TURNS, 0),
+            wallMs = fields.optLong(KEY_WALL_MS, 0L),
+            // 正文在场时以正文条数为准；索引条目（无正文）读 msgCount 字段
+            msgCount = if (messages.isNotEmpty()) messages.size else fields.optInt(KEY_MSG_COUNT, 0)
+        )
+    }
+
+    /** 从一份完整 JSON（含 messages）解析会话；供旧格式读盘与索引条目（messages 缺省为空）共用。 */
+    internal fun sessionFromJson(obj: JSONObject): ChatSession? {
+        val messages = ArrayList<ChatMessage>()
+        val messageArray = obj.optJSONArray(KEY_MESSAGES)
+        if (messageArray != null) {
+            for (j in 0 until messageArray.length()) {
+                val item = messageArray.optJSONObject(j) ?: continue
+                messageFromJson(item)?.let { messages.add(it) }
+            }
+        }
+        // 读盘时修复一次「有调用无结果」：进程在工具执行中终止会留下此类记录（见 repairDanglingToolCalls）
+        val repaired = repairDanglingToolCalls(messages)
+        return sessionFromFields(obj, repaired)
+    }
+
+    /** 旧格式整文件解析（迁移器与降级读盘共用）；调用方负责空串检查。 */
+    internal fun parseSessionsJson(text: String): List<ChatSession> = parse(text)
+
+    private fun parse(text: String): List<ChatSession> {
+        val root = JSONObject(text)
+        val array = root.optJSONArray(KEY_SESSIONS) ?: return emptyList()
+        val sessions = ArrayList<ChatSession>(array.length())
+        for (i in 0 until array.length()) {
+            val obj = array.optJSONObject(i) ?: continue
+            // id 为会话唯一标识，缺失时无法切换或删除，直接丢弃
+            if (obj.optString(KEY_ID, "").isEmpty()) continue
+            sessionFromJson(obj)?.let { sessions.add(it) }
+        }
+        return sessions
     }
 
     /** 分叉继承基线落盘：键名复用会话级的同名字段，读取时可直接对应。 */
@@ -836,7 +1402,7 @@ object SessionStore {
      * 可空字段（reasoning / toolCallId / toolName）为空时**不写入该键**：
      * org.json 的 optString 遇到 JSON null 会返回字符串 "null"，因此不写入，读取时用 has() 判断。
      */
-    private fun messageToJson(message: ChatMessage): JSONObject {
+    internal fun messageToJson(message: ChatMessage): JSONObject {
         val obj = JSONObject()
         obj.put(KEY_ROLE, message.role)
         obj.put(KEY_CONTENT, message.content)
@@ -865,6 +1431,18 @@ object SessionStore {
             for (path in message.images) images.put(path)
             obj.put(KEY_IMAGES, images)
         }
+        if (message.produced.isNotEmpty()) {
+            val produced = JSONArray()
+            for (item in message.produced) {
+                produced.put(
+                    JSONObject()
+                        .put(KEY_PRODUCED_PATH, item.path)
+                        .put(KEY_PRODUCED_KIND, item.kind)
+                        .put(KEY_PRODUCED_SOURCE, item.source)
+                )
+            }
+            obj.put(KEY_PRODUCED, produced)
+        }
         // 仅在存在数值时写入：旧版本落盘无这两个键，读取为 0 表示未统计
         if (message.promptTokens != 0) obj.put(KEY_MSG_PROMPT, message.promptTokens)
         if (message.completionTokens != 0) obj.put(KEY_MSG_COMPLETION, message.completionTokens)
@@ -880,6 +1458,12 @@ object SessionStore {
         if (message.programmatic) obj.put(KEY_MSG_PROGRAMMATIC, true)
         // 仅写入非默认来源：旧版本无此键，读取为「用户手动发送」
         if (message.origin != ORIGIN_USER) obj.put(KEY_MSG_ORIGIN, message.origin)
+        // 仅写入 true：旧版本无此键，读取为 false（未被中止 / 真实工具输出）
+        if (message.interrupted) obj.put(KEY_MSG_INTERRUPTED, true)
+        if (message.toolAborted) obj.put(KEY_MSG_TOOL_ABORTED, true)
+        // 回合终态失败节点：正文为空的 assistant 消息，仅这两个键承载信息
+        message.errorText?.takeIf { it.isNotEmpty() }?.let { obj.put(KEY_MSG_ERROR, it) }
+        message.errorCode?.takeIf { it.isNotEmpty() }?.let { obj.put(KEY_MSG_ERROR_CODE, it) }
         obj.put(KEY_CREATED_AT, message.createdAt)
         return obj
     }
@@ -931,80 +1515,7 @@ object SessionStore {
         return out
     }
 
-    private fun parse(text: String): List<ChatSession> {
-        val root = JSONObject(text)
-        val array = root.optJSONArray(KEY_SESSIONS) ?: return emptyList()
-        val sessions = ArrayList<ChatSession>(array.length())
-        for (i in 0 until array.length()) {
-            val obj = array.optJSONObject(i) ?: continue
-            val id = obj.optString(KEY_ID, "")
-            // id 为会话唯一标识，缺失时无法切换或删除，直接丢弃
-            if (id.isEmpty()) continue
-            val messages = ArrayList<ChatMessage>()
-            val messageArray = obj.optJSONArray(KEY_MESSAGES)
-            if (messageArray != null) {
-                for (j in 0 until messageArray.length()) {
-                    val item = messageArray.optJSONObject(j) ?: continue
-                    messageFromJson(item)?.let { messages.add(it) }
-                }
-            }
-            // 读盘时修复一次「有调用无结果」：进程在工具执行中终止会留下此类记录（见 repairDanglingToolCalls）
-            val repaired = repairDanglingToolCalls(messages)
-            sessions.add(
-                ChatSession(
-                    id = id,
-                    title = obj.optString(KEY_TITLE, ""),
-                    messages = repaired,
-                    updatedAt = obj.optLong(KEY_UPDATED_AT, 0L),
-                    // 旧文件无 archived / pinned，由 optBoolean 默认值处理，不会崩溃
-                    archived = obj.optBoolean(KEY_ARCHIVED, false),
-                    pinned = obj.optBoolean(KEY_PINNED, false),
-                    // 旧文件无 workspaceId，无此键即为 null（未分类）
-                    workspaceId = obj.stringOrNull(KEY_WORKSPACE_ID),
-                    // 旧文件无这五项：存储单元留空由迁移补齐，空白与可见性取缺省值，权限与强度留空
-                    storageId = obj.optString(KEY_STORAGE_ID, ""),
-                    blank = obj.optBoolean(KEY_BLANK, false),
-                    listed = obj.optBoolean(KEY_LISTED, true),
-                    permissionPreset = obj.optString(KEY_PERMISSION, ""),
-                    reasoningEffort = obj.optString(KEY_EFFORT, ""),
-                    // 旧文件无这些计数，由 optInt 默认值处理，读取为 0
-                    promptTokens = obj.optInt(KEY_PROMPT_TOKENS, 0),
-                    completionTokens = obj.optInt(KEY_COMPLETION_TOKENS, 0),
-                    requests = obj.optInt(KEY_REQUESTS, 0),
-                    steps = obj.optInt(KEY_STEPS, 0),
-                    toolCalls = obj.optInt(KEY_TOOL_CALL_COUNT, 0),
-                    // 旧文件无耗时，由 optLong 默认值处理：读取为 0
-                    modelMillis = obj.optLong(KEY_MODEL_MILLIS, 0L),
-                    toolMillis = obj.optLong(KEY_TOOL_MILLIS, 0L),
-                    lastTurnModelMillis = obj.optLong(KEY_LAST_TURN_MODEL_MILLIS, 0L),
-                    lastTurnCompletionTokens = obj.optInt(KEY_LAST_TURN_COMPLETION, 0),
-                    // 缓存与速度：旧文件无这些键，读取为 0（表示无数据，界面显示「—」）
-                    cacheHitTokens = obj.optInt(KEY_CACHE_HIT_TOKENS, 0),
-                    cacheMissTokens = obj.optInt(KEY_CACHE_MISS_TOKENS, 0),
-                    ttftMillis = obj.optLong(KEY_TTFT_MILLIS, 0L),
-                    ttftCount = obj.optInt(KEY_TTFT_COUNT, 0),
-                    genMillis = obj.optLong(KEY_GEN_MILLIS, 0L),
-                    genTokens = obj.optInt(KEY_GEN_TOKENS, 0),
-                    // 构成与生成细分：旧文件无这些键，读取为空或 0（界面显示「—」）
-                    composition = compositionFromJson(obj.optJSONObject(KEY_COMPOSITION)),
-                    reasoningMillis = obj.optLong(KEY_REASONING_MILLIS, 0L),
-                    textMillis = obj.optLong(KEY_TEXT_MILLIS, 0L),
-                    toolArgMillis = obj.optLong(KEY_TOOL_ARG_MILLIS, 0L),
-                    // 旧文件无摘要三项，由 optString、optInt、optLong 默认值处理：无摘要时为空串与 0
-                    contextSummary = obj.optString(KEY_CONTEXT_SUMMARY, ""),
-                    summaryUpTo = obj.optInt(KEY_SUMMARY_UP_TO, 0),
-                    lastSummaryAt = obj.optLong(KEY_LAST_SUMMARY_AT, 0L),
-                    // 旧文件无分叉基线：读取为空值（普通会话，减 0 等同于不扣除）
-                    inheritedUsage = obj.optJSONObject(KEY_INHERITED_USAGE)
-                        ?.let { inheritedUsageFromJson(it) }
-                        ?: InheritedUsage()
-                )
-            )
-        }
-        return sessions
-    }
-
-    private fun messageFromJson(obj: JSONObject): ChatMessage? {
+    internal fun messageFromJson(obj: JSONObject): ChatMessage? {
         val role = obj.optString(KEY_ROLE, "")
         if (role.isEmpty()) return null
         val calls = ArrayList<ToolCall>()
@@ -1032,6 +1543,7 @@ object SessionStore {
             toolOk = if (obj.has(KEY_TOOL_OK)) obj.optBoolean(KEY_TOOL_OK, false) else null,
             // 旧版本落盘无 images，stringList 返回空列表，旧会话可正常打开
             images = obj.stringList(KEY_IMAGES),
+            produced = obj.producedList(KEY_PRODUCED),
             promptTokens = obj.optInt(KEY_MSG_PROMPT, 0),
             completionTokens = obj.optInt(KEY_MSG_COMPLETION, 0),
             cachedTokens = obj.optInt(KEY_MSG_CACHED, 0),
@@ -1051,6 +1563,12 @@ object SessionStore {
             programmatic = obj.optBoolean(KEY_MSG_PROGRAMMATIC, false),
             // 旧会话无此键：默认「用户手动发送」，统计口径与旧版本一致
             origin = obj.optString(KEY_MSG_ORIGIN, ORIGIN_USER),
+            // 旧会话无此键：false = 不是被中止的半截内容 / 不是合成的中止结果
+            interrupted = obj.optBoolean(KEY_MSG_INTERRUPTED, false),
+            toolAborted = obj.optBoolean(KEY_MSG_TOOL_ABORTED, false),
+            // 旧会话无这两个键：读取为 null，界面不画错误节点
+            errorText = obj.optString(KEY_MSG_ERROR, "").takeIf { it.isNotEmpty() },
+            errorCode = obj.optString(KEY_MSG_ERROR_CODE, "").takeIf { it.isNotEmpty() },
             createdAt = obj.optLong(KEY_CREATED_AT, System.currentTimeMillis())
         )
     }
@@ -1065,6 +1583,25 @@ object SessionStore {
         for (i in 0 until array.length()) {
             val value = array.optString(i, "")
             if (value.isNotEmpty() && value != "null") result.add(value)
+        }
+        return result
+    }
+
+    /** 读取产物列表；键不存在或元素缺路径时跳过。 */
+    private fun JSONObject.producedList(key: String): List<ProducedArtifact> {
+        val array = optJSONArray(key) ?: return emptyList()
+        val result = ArrayList<ProducedArtifact>(array.length())
+        for (i in 0 until array.length()) {
+            val item = array.optJSONObject(i) ?: continue
+            val path = item.optString(KEY_PRODUCED_PATH, "")
+            if (path.isEmpty()) continue
+            result.add(
+                ProducedArtifact(
+                    path = path,
+                    kind = item.optString(KEY_PRODUCED_KIND, ""),
+                    source = item.optString(KEY_PRODUCED_SOURCE, "")
+                )
+            )
         }
         return result
     }

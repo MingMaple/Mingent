@@ -43,6 +43,31 @@ class CostBookTest {
     }
 
     @Test
+    fun legalHolidayIsOffPeakAllDay() {
+        // 2026 春节 2 月 15 日至 23 日：连休里的工作日时段同样按空闲价
+        assertFalse(CostBook.isPeak(at("2026-02-17T10:00")))
+        assertFalse(CostBook.isPeak(at("2026-02-20T15:00")))
+        // 国庆 10 月 1 日至 7 日
+        assertFalse(CostBook.isPeak(at("2026-10-02T15:00")))
+    }
+
+    @Test
+    fun makeupWorkdayChargesPeak() {
+        // 2026-02-14 是周六，但为春节调休上班日：按工作日时段计
+        assertTrue(CostBook.isPeak(at("2026-02-14T10:00")))
+        assertFalse(CostBook.isPeak(at("2026-02-14T12:30")))
+    }
+
+    @Test
+    fun uncoveredYearFallsBackToWeekdayRule() {
+        // 2027 未收录：工作日按时段，周末仍空闲，不会整年落进半价
+        assertTrue(CostBook.isPeak(at("2027-03-01T10:00")))
+        assertFalse(CostBook.isPeak(at("2027-03-06T10:00")))
+        assertTrue(HolidayCalendar.covers(2026))
+        assertFalse(HolidayCalendar.covers(2027))
+    }
+
+    @Test
     fun newsTaskMatchesOfficialBill() {
         // 2026-11-12 06:57 的「新闻」任务：官方口径 34 次请求、704,625 tokens、¥0.39
         val tokens = CostBook.costOf(

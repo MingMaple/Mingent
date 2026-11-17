@@ -21,7 +21,7 @@ import kotlin.math.sqrt
  * 复制原因：模型只能通过 read_file 读取工作区内的相对路径，无法获取也无法使用 content:// 形式的 Uri。
  * 复制到 <工作区>/uploads/ 下后，relPath 可直接用于 read_file。
  *
- * 两项约束：单文件上限 50MB（超出即中止，不残留不完整文件）；
+ * 两项约束：不设大小上限（与参考实现一致：普通附件不做准入限制），只要求目标存储有足够空间；
  * 落盘先写 `.part` 再 rename，中途失败或进程终止均不会残留看似可用的损坏文件。
  */
 object UploadStore {
@@ -31,14 +31,14 @@ object UploadStore {
     /** 上传目录（相对工作区根；relPath 一律用正斜杠）。 */
     const val DIR = "uploads"
 
-    /** 单文件上限 50MB；分享入口的普通文件也按这一口径拦截。 */
-    const val MAX_BYTES = 50L * 1024L * 1024L
+    /** 落盘前要求的最小剩余空间：不设单文件上限，但不能把磁盘写满。 */
+    const val MIN_FREE_BYTES = 64L * 1024L * 1024L
 
     /**
      * 图片归一化的总像素预算：2048×2048（约 419 万像素），与 DSH 同口径。
      *
-     * 按「总像素」而不是「最长边」限制：16:9 照片与正方形图都能吃满预算，
-     * 不会出现 1568px 一刀切把 1569px 的图直接砍半的情况。
+     * 按「总像素」而不是「最长边」限制：16:9 照片与正方形图均可占满预算，
+     * 不会出现按 1568px 统一裁切、把 1569px 的图降为一半的情况。
      */
     private const val IMAGE_MAX_PIXELS = 2048L * 2048L
 
@@ -72,6 +72,7 @@ object UploadStore {
     fun import(context: Context, uri: Uri, workspaceRoot: File): Result<Imported> {
         var part: File? = null
         return try {
+            if (!isAcceptableSource(context, uri)) throw UploadFailure(SOURCE_REJECTED)
             val dir = File(workspaceRoot, DIR)
             if (!dir.exists()) dir.mkdirs()
             // 重名不覆盖：若已存在 myslides.pdf，则依次尝试 myslides-1.pdf、myslides-2.pdf……
@@ -91,7 +92,10 @@ object UploadStore {
                         if (read < 0) break
                         // 边写边计字节：超过上限立刻中止，不把整个大文件落完再判断
                         size += read
-                        if (size > MAX_BYTES) throw UploadFailure("文件超过 50MB，请选择更小的文件。")
+                        // 不按大小拒绝：参考实现的普通附件不设准入上限，这里只兜「写满磁盘」
+                        if (dir.usableSpace < size + MIN_FREE_BYTES) {
+                            throw UploadFailure("存储空间不足，无法写入这个文件。")
+                        }
                         sink.write(buffer, 0, read)
                     }
                     sink.flush()
@@ -117,7 +121,7 @@ object UploadStore {
      * 把 [uri] 指向的图片归一化后存进 [workspaceRoot]/uploads/（与 DSH 同一套口径）。
      *
      * 三条规则：
-     * 1. **能不动就不动**：静态 PNG/WebP、无旋转、总像素与字节都在预算内的，原字节透传，
+     * 1. **满足条件即原样透传**：静态 PNG/WebP、无旋转、总像素与字节都在预算内的，原字节透传，
      *    不重编码（避免二次有损、也避免把透明图转成不透明的 JPEG）。
      * 2. **超预算才处理**：总像素 ≤ [IMAGE_MAX_PIXELS]、最长边 ≤ [IMAGE_MAX_DIM]，
      *    不放大；透明图统一压 WebP（保 alpha），其余压 JPEG。
@@ -128,6 +132,7 @@ object UploadStore {
     fun importImage(context: Context, uri: Uri, workspaceRoot: File): Result<Imported> {
         var part: File? = null
         return try {
+            if (!isAcceptableSource(context, uri)) throw UploadFailure(SOURCE_REJECTED)
             val dir = File(workspaceRoot, DIR)
             if (!dir.exists()) dir.mkdirs()
             val encoded = normalizeImage(context, uri)
@@ -287,7 +292,7 @@ object UploadStore {
      * 图片归一化的唯一实现（与 DSH 同口径）。
      *
      * 解码分两段：先用 inSampleSize 按 2 的幂粗降（省内存），再精确缩放到目标尺寸。
-     * 只用 inSampleSize 的话，1569px 这种略超预算的图会被直接砍成 785px；两段式不会浪费分辨率。
+     * 只用 inSampleSize 的话，1569px 这种略超预算的图会被直接降到 785px；两段式不会浪费分辨率。
      */
     private fun normalizeImage(context: Context, uri: Uri): Encoded {
         // 部分来源（file:// 分享、个别文件管理器）取不到 MIME，回退到按扩展名判断；
@@ -363,7 +368,7 @@ object UploadStore {
     /**
      * 采样率：取「解码后仍不小于目标尺寸」的最大 2 的幂。
      *
-     * 解码位图约为目标像素的 1~4 倍，既不浪费太多内存，也不会像最长边一刀切那样把小图砍半。
+     * 解码位图约为目标像素的 1~4 倍，既不浪费太多内存，也不会像按最长边统一缩放那样把小图降为一半。
      */
     private fun sampleSize(width: Int, height: Int, targetW: Int, targetH: Int): Int {
         var sample = 1
@@ -493,7 +498,7 @@ object UploadStore {
         }
     }
 
-    /** 显示名：provider 的 DISPLAY_NAME 优先，取不到退回 Uri 末段，再不行就叫 "file"。 */
+    /** 显示名：provider 的 DISPLAY_NAME 优先，取不到退回 Uri 末段，仍取不到时使用 "file"。 */
     private fun displayName(context: Context, uri: Uri): String {
         val fromProvider = runCatching {
             context.contentResolver
@@ -521,11 +526,42 @@ object UploadStore {
     /** 可直接展示给用户的失败原因；其他异常统一包装，避免把系统错误串显示在界面上。 */
     private class UploadFailure(message: String, cause: Throwable? = null) : IOException(message, cause)
 
+    /**
+     * 是否受理这个出处。
+     *
+     * - `content://`：拒绝本应用自己的 provider（`content://<本包>.files/...`），其余放行——
+     *   系统文件选择器、相册与第三方应用分享给的都是这种；
+     * - `file://`：只要路径存在且本进程可读就放行（已放宽：不论文件在共享存储
+     *   还是应用私有目录，只要用户能从系统分享栏选中本应用，就应当能接收）。目标不可读时
+     *   后续读取本就失败，这里先拦一道，界面文案仍是「来源不支持」。
+     *
+     * 放宽的代价已记录：外部应用可以给出指向本包私有数据的 `file://`，本应用会以自身身份读取并
+     * 复制进工作区，内容随后可能随消息发给模型。`content://` 对本包 provider 的拒绝保留为第二道。
+     */
+    private fun isAcceptableSource(context: Context, uri: Uri): Boolean {
+        when (uri.scheme) {
+            "content" -> {
+                val authority = uri.authority ?: return false
+                val pkg = context.packageName
+                return authority != pkg && !authority.startsWith(pkg + ".")
+            }
+            "file" -> {
+                val path = uri.path ?: return false
+                val target = runCatching { java.io.File(path) }.getOrNull() ?: return false
+                return target.isFile && target.canRead()
+            }
+            else -> return false
+        }
+    }
+
+    /** 出处被拒时给用户看的一句话：说明能做什么，而不是只说不许。 */
+    private const val SOURCE_REJECTED = "这个来源不支持导入，请从文件选择器或系统分享里选择文件。"
+
     /** 目录内重名时增加序号，保留扩展名：base-1.ext、base-2.ext…… */
     private fun uniqueName(dir: File, name: String): String {
         if (!File(dir, name).exists()) return name
         val dot = name.lastIndexOf('.')
-        // 以点开头的隐藏文件没有「主名 + 扩展名」可分，整体当主名
+        // 以点开头的隐藏文件没有「主名 + 扩展名」之分，整体作为主名
         val base = if (dot > 0) name.substring(0, dot) else name
         val ext = if (dot > 0) name.substring(dot) else ""
         var index = 1

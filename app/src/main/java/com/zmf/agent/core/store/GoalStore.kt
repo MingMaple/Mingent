@@ -6,14 +6,22 @@ import com.zmf.agent.core.log.FileLog
 import org.json.JSONObject
 import java.io.File
 
-/** 目标的三个阶段：进行中 / 已暂停 / 已完成。 */
-enum class GoalPhase { ACTIVE, PAUSED, DONE }
+/**
+ * 目标的阶段：进行中 / 已暂停 / 待用户处理 / 已完成。
+ *
+ * [NEEDS_USER] 由「连续三次 blocked」转入：目标仍存在，但只能由用户在界面上恢复，
+ * 模型不得自行续跑，也不得用 resume 解除。
+ */
+enum class GoalPhase { ACTIVE, PAUSED, NEEDS_USER, DONE }
 
 /**
  * 一条长期目标。
  *
  * objective 是目标正文（面向用户描述的语句）；rounds 由 AgentLoop 每自动续跑一轮递增 1，
  * 持久化保留以便切换会话后仍可获知已执行轮次；note 是进度附注，完成时作为结论。
+ *
+ * [revision] 每次落盘递增，供模型做「读—改」时的精确比对；[blockedStreak] 是连续 blocked 次数，
+ * 成功 edit / complete 或用户恢复后清零。
  */
 data class Goal(
     val objective: String,
@@ -21,13 +29,16 @@ data class Goal(
     val rounds: Int = 0,
     val note: String = "",
     val createdAt: Long = 0L,
-    val updatedAt: Long = 0L
+    val updatedAt: Long = 0L,
+    val revision: Int = 0,
+    val blockedStreak: Int = 0
 )
 
 /** 阶段的中文名：工具回给模型的文本和页面上的状态行共用一套词，避免两处各写一份。 */
 fun GoalPhase.label(): String = when (this) {
     GoalPhase.ACTIVE -> "进行中"
     GoalPhase.PAUSED -> "已暂停"
+    GoalPhase.NEEDS_USER -> "待用户处理"
     GoalPhase.DONE -> "已完成"
 }
 
@@ -54,6 +65,8 @@ object GoalStore {
     private const val KEY_NOTE = "note"
     private const val KEY_CREATED_AT = "createdAt"
     private const val KEY_UPDATED_AT = "updatedAt"
+    private const val KEY_REVISION = "revision"
+    private const val KEY_BLOCKED_STREAK = "blockedStreak"
 
     /** 落盘位置：filesDir/appdata/goals.json（首次读时由 [AppPaths] 从旧位置迁过来）。 */
     private fun storeFile(context: Context): File = AppPaths.dataFile(context, FILE_NAME)
@@ -66,7 +79,7 @@ object GoalStore {
     /**
      * 读某会话的目标。
      *
-     * - 文件不存在 / 空 / JSON 坏掉 → null，不抛；
+     * - 文件不存在 / 空 / JSON 损坏 → null，不抛；
      * - 这一会话没建过目标 → null；
      * - 没有正文的条目当没有（只剩空壳的目标在界面上没法看，也没法让模型推进）。
      */
@@ -93,7 +106,9 @@ object GoalStore {
             rounds = obj.optInt(KEY_ROUNDS, 0).coerceAtLeast(0),
             note = text(obj, KEY_NOTE),
             createdAt = obj.optLong(KEY_CREATED_AT, 0L),
-            updatedAt = obj.optLong(KEY_UPDATED_AT, 0L)
+            updatedAt = obj.optLong(KEY_UPDATED_AT, 0L),
+            revision = obj.optInt(KEY_REVISION, 0).coerceAtLeast(0),
+            blockedStreak = obj.optInt(KEY_BLOCKED_STREAK, 0).coerceAtLeast(0)
         )
     }
 
@@ -102,29 +117,47 @@ object GoalStore {
      *
      * createdAt 仅在首次写入时补齐，updatedAt 每次写入均更新为当前时刻：
      * 页面据此判断目标的最近更新间隔，由调用方自行填写容易遗漏或产生错误。
+     *
+     * [Goal.revision] 由本方法统一递增（盘上旧值 + 1），调用方传入的值不参与计算：
+     * 这样界面上改正文、AgentLoop 推进轮次、工具改阶段都会推进 revision，
+     * 模型带着旧 revision 的修改请求必然被拒绝，不会静默覆盖别人的改动。
+     *
+     * @return 实际落盘的目标（含新 revision）；正文为空而未写入时返回 null。
      */
     @Synchronized
-    fun save(context: Context, sessionId: String, goal: Goal) {
+    fun save(context: Context, sessionId: String, goal: Goal): Goal? {
         val objective = goal.objective.trim()
         if (objective.isEmpty()) {
             FileLog.log(TAG, "目标正文为空，不落盘")
-            return
+            return null
         }
         val now = System.currentTimeMillis()
+        val file = storeFile(context)
+        val root = readRoot(file)
+        val key = sessionKey(sessionId)
+        val previousRevision = root.optJSONObject(key)
+            ?.let { it.optInt(KEY_REVISION, 0).coerceAtLeast(0) }
+            ?: 0
         val stamped = goal.copy(
             objective = objective,
             rounds = goal.rounds.coerceAtLeast(0),
             createdAt = if (goal.createdAt > 0L) goal.createdAt else now,
-            updatedAt = now
+            updatedAt = now,
+            revision = previousRevision + 1,
+            blockedStreak = goal.blockedStreak.coerceAtLeast(0)
         )
         try {
-            val file = storeFile(context)
-            val root = readRoot(file)
-            root.put(sessionKey(sessionId), toJson(stamped))
+            root.put(key, toJson(stamped))
             writeRoot(file, root)
-            FileLog.log(TAG, "保存目标（" + stamped.phase.label() + "，第 " + stamped.rounds + " 轮）：" + objective.take(60))
+            FileLog.log(
+                TAG,
+                "保存目标（" + stamped.phase.label() + "，第 " + stamped.rounds +
+                    " 轮，revision " + stamped.revision + "）：" + objective.take(60)
+            )
+            return stamped
         } catch (e: Exception) {
             FileLog.log(TAG, "保存目标失败：" + (e.message ?: e.javaClass.simpleName))
+            return null
         }
     }
 
@@ -147,6 +180,7 @@ object GoalStore {
     /** 阶段名 → 枚举；无法识别的取值（旧文件或手工修改）一律按 ACTIVE，避免目标停留在无效状态。 */
     private fun parsePhase(raw: String): GoalPhase = when (raw.trim().uppercase()) {
         GoalPhase.PAUSED.name -> GoalPhase.PAUSED
+        GoalPhase.NEEDS_USER.name -> GoalPhase.NEEDS_USER
         GoalPhase.DONE.name -> GoalPhase.DONE
         else -> GoalPhase.ACTIVE
     }
@@ -158,6 +192,8 @@ object GoalStore {
         .put(KEY_NOTE, goal.note)
         .put(KEY_CREATED_AT, goal.createdAt)
         .put(KEY_UPDATED_AT, goal.updatedAt)
+        .put(KEY_REVISION, goal.revision)
+        .put(KEY_BLOCKED_STREAK, goal.blockedStreak)
 
     /**
      * 读字符串字段：缺字段 / 显式 null / 字符串 "null" 一律当空串。
@@ -170,7 +206,7 @@ object GoalStore {
     }
 
     /**
-     * 读整个文件当 root；文件坏掉就当空对象。
+     * 读整个文件作为 root；文件损坏时按空对象处理。
      *
      * 此处有意丢弃其他会话的数据：损坏文件本来就没有可信内容，从空表重写优于让本次写入失败。
      */
