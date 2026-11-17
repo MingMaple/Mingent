@@ -1,5 +1,5 @@
-// 注意：.kts 里的 `java` 会先解析成 java 扩展，写全限定名的 java.util.Properties 反而报 Unresolved，
-// 所以必须在脚本最前面 import 进来
+// 说明：.kts 中的 `java` 会先解析为 java 扩展，写全限定名 java.util.Properties 反而报 Unresolved，
+// 因此必须在脚本最前面 import
 import java.util.Properties
 
 plugins {
@@ -40,12 +40,12 @@ android {
         targetSdk = 28
         // 版本规则（2026-10-26 定）：首位/中位由用户定（助手可推荐），末位由助手按改动程度自行 +1；
         // 每次打包 versionCode 必须 +1（跨 versionName 也不重置），否则覆盖安装会因「版本未升高」被系统直接拒掉
-        versionCode = 252
-        versionName = "1.3.6"
+        versionCode = 327
+        versionName = "1.3.7"
     }
 
     signingConfigs {
-        // 只有真 key 存在时才建这条配置：没有就完全不声明，免得把它当默认值带进开源仓库
+        // 仅在正式密钥存在时创建该配置；缺失时完全不声明，避免其作为默认值进入开源仓库
         if (hasReleaseKey) {
             create("release") {
                 storeFile = releaseKeystore
@@ -57,7 +57,7 @@ android {
     }
 
     buildTypes {
-        // 调试包也用真 key：和正式包同签名才能互相覆盖安装，省掉每次卸载
+        // 调试包同样使用正式密钥：签名与正式包一致才能互相覆盖安装，无需每次卸载
         val appSigning = if (hasReleaseKey) {
             signingConfigs.getByName("release")
         } else {
@@ -75,8 +75,8 @@ android {
             signingConfig = appSigning
         }
 
-        // 共存版（正式用途）：和 release 同配置（非 debuggable、不混淆），但包名/名字带 dev，
-        // 可与正式版同装。debug 构建是 debuggable 的，跑动效会明显更卡，不能拿它评性能。
+        // 共存版（正式用途）：与 release 同配置（非 debuggable、不混淆），但包名与名称带 dev，
+        // 可与正式版同装。debug 构建为 debuggable，动效明显更卡顿，不能用于性能评估。
         create("coexist") {
             initWith(getByName("release"))
             applicationIdSuffix = ".dev"
@@ -135,6 +135,16 @@ dependencies {
     // Shizuku：借 shell(uid 2000) 通道做权限授予；provider 由 Manifest 里的 ShizukuProvider 提供
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+    // zstd-jni：会话事件流的帧压缩与校验（D1）。
+    // 该坐标同时发布 jar（桌面原生库）与 aar（jni/{arm64-v8a,armeabi-v7a,x86,x86_64}），
+    // POM packaging 是 jar 且无 Gradle 模块元数据：不显式指定 artifact type 时
+    // Android 工程会解析到 jar（实测 1.5.7-28 确实下载了 jar），APK 内没有原生库，运行时加载即崩。
+    // 因此主实现强制取 aar；本地单元测试跑在桌面 JVM 上，需要另引 jar 取桌面原生库。
+    implementation(libs.zstd.jni) { artifact { type = "aar" } }
+    testImplementation(libs.zstd.jni) { artifact { type = "jar" } }
+    // org.json 在 android.jar 里只是桩（方法体直接抛异常）：单元测试需要真实现
+    // 才能覆盖会话事件流的 JSON 编解码（迁移幂等、补偿事件等测试都依赖它）。
+    testImplementation("org.json:json:20240303")
     implementation(project(":terminal"))
 
     implementation(platform(libs.androidx.compose.bom))
@@ -164,13 +174,13 @@ val checkArchitecture by tasks.registering {
         val importRe = Regex("""^\s*import\s+([\w.]+)""", RegexOption.MULTILINE)
 
         // 注意：包名可能正好是层根（如 com.zmf.agent.uikit，没有尾部点），
-        // 只用 startsWith("com.zmf.agent.uikit.") 会漏掉这类文件——测试探针就是这么漏过去的
+        // 仅用 startsWith("com.zmf.agent.uikit.") 会漏掉这类文件——此前的测试探针即由此漏检
         fun layerOf(pkg: String?): String? {
             if (pkg == null || !pkg.startsWith("com.zmf.agent.")) return null
             val rest = pkg.removePrefix("com.zmf.agent.")
             return when {
-                // core 也是层：它是数据与工具的容器，谁都依赖它，它不依赖任何人。
-                // 早先漏掉这一支，core.log / core.AppPaths 会被误判成「老目录」，infra 一引用就报违规。
+                // core 也是层：它是数据与工具的容器，所有层都依赖它，它不依赖任何层。
+                // 早期漏掉这一分支，core.log / core.AppPaths 会被误判为「老目录」，infra 一引用即报违规。
                 rest == "core" || rest.startsWith("core.") -> "core"
                 rest == "uikit" || rest.startsWith("uikit.") -> "uikit"
                 rest == "infra" || rest.startsWith("infra.") -> "infra"
@@ -210,7 +220,7 @@ val checkArchitecture by tasks.registering {
             val rel = f.relativeTo(srcRoot).toString().replace('\\', '/')
 
             // 规则 6：vendored 终端只能从 infra 进。这条对所有文件生效，不豁免老目录——
-            // 反正是「谁都不许」的硬边界，没有存量需要迁移。
+            // 该边界对所有层一律禁止，不存在需要迁移的存量。
             for (m in importRe.findAll(text)) {
                 val imp = m.groupValues[1]
                 if (imp.startsWith("com.ai.assistance.operit.") && !pkg.startsWith("com.zmf.agent.infra.")) {
