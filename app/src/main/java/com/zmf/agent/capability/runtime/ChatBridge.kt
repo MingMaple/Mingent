@@ -61,7 +61,7 @@ object ChatBridge {
 
     /**
      * 小窗发送一条消息。
-     * 流式生成期间（isStreaming）实现方会直接返回，不打断正在生成的回复；
+     * 实现方走与主页相同的繁忙通道：生成中按「插话 / 排队」设置处理，消息不会丢失；
      * 此处仅做空串过滤与异常兜底，避免小窗导致服务异常。
      */
     fun send(text: String) {
@@ -89,6 +89,16 @@ object ChatBridge {
         val target = current() ?: return
         runCatching { target.switchSession(id) }
             .onFailure { FileLog.log("float", "小窗切换会话失败：" + it) }
+    }
+
+    /** 当前会话是否在生成：读取实现方的 Compose 状态，小窗随相位变化自动重组。 */
+    fun streaming(): Boolean = runCatching { current()?.streaming() }.getOrNull() ?: false
+
+    /** 小窗停止当前回合：与主页停止键走同一个入口。 */
+    fun stop() {
+        val target = current() ?: return
+        runCatching { target.stop() }
+            .onFailure { FileLog.log("float", "小窗停止失败：" + it) }
     }
 
     /**

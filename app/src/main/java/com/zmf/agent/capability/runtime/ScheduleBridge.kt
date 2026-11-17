@@ -24,9 +24,11 @@ data class ScheduleSpec(
     val workspaceId: String? = null
 )
 
-/** 定时任务的只读快照，供 schedule_list 与创建后的回执使用。 */
+/** 定时任务的只读快照，供 scheduled_task_view 与创建后的回执使用。 */
 data class ScheduleInfo(
     val id: String,
+    /** 记录版本号；与 [ScheduleTask.revision] 同源，用于并发修改检测。 */
+    val revision: Long,
     val title: String,
     val prompt: String,
     val kind: String,
@@ -39,6 +41,51 @@ data class ScheduleInfo(
     val nextAt: Long,
     val lastRunAt: Long
 )
+
+/**
+ * 定时任务的部分修改。
+ *
+ * 所有字段均可空：null 表示该字段保持不变。字段语义与 [ScheduleSpec] 一致，
+ * 其中 [target] 取 session / workspace_new / default_new，与创建时同一套取值。
+ */
+data class SchedulePatch(
+    val title: String? = null,
+    val prompt: String? = null,
+    val kind: String? = null,
+    /** "HH:mm"；daily 与 once 使用。 */
+    val time: String? = null,
+    /** "yyyy-MM-dd"；仅 once 使用。 */
+    val date: String? = null,
+    /** 仅 once：从现在起多少分钟后触发，与 [time] 二选一。 */
+    val inMinutes: Int? = null,
+    /** 仅 every：间隔分钟数。 */
+    val everyMinutes: Int? = null,
+    val target: String? = null,
+    val sessionId: String? = null,
+    val workspaceId: String? = null,
+    val enabled: Boolean? = null
+)
+
+/** 修改定时任务的结果；失败一律以可读原因返回，不抛出异常。 */
+sealed interface ScheduleUpdate {
+    /** 已写入；[info] 为落盘后的快照。 */
+    data class Ok(val info: ScheduleInfo) : ScheduleUpdate
+
+    /** 该 id 不存在。 */
+    data object NotFound : ScheduleUpdate
+
+    /** 期望版本与当前记录不一致；[current] 为当前快照。 */
+    data class Conflict(val current: ScheduleInfo) : ScheduleUpdate
+
+    /** 规则不合法；[reason] 为可读原因。 */
+    data class BadRule(val reason: String) : ScheduleUpdate
+
+    /** 目标会话或目标工作区不存在；[reason] 为可读原因。 */
+    data class TargetMissing(val reason: String) : ScheduleUpdate
+
+    /** 一次性任务的时刻已过。 */
+    data object PastTime : ScheduleUpdate
+}
 
 /**
  * 定时任务 ↔ 会话状态的窄口。
@@ -68,6 +115,14 @@ object ScheduleBridge {
 
         /** 删除一条并取消闹钟；不存在时返回 false。 */
         fun delete(id: String): Boolean
+
+        /**
+         * 按补丁修改一条任务并重排闹钟。
+         *
+         * [expectedRevision] 非空时先比对版本：不一致即返回 [ScheduleUpdate.Conflict]，
+         * 不写入任何字段，避免以旧快照覆盖其他入口刚完成的修改。
+         */
+        fun update(id: String, patch: SchedulePatch, expectedRevision: Long?): ScheduleUpdate
     }
 
     @Volatile
@@ -107,5 +162,11 @@ object ScheduleBridge {
     fun delete(id: String): Boolean {
         val port = bound ?: return false
         return runCatching { port.delete(id) }.getOrDefault(false)
+    }
+
+    /** 修改定时任务；未注册时按「不存在」处理。 */
+    fun update(id: String, patch: SchedulePatch, expectedRevision: Long? = null): ScheduleUpdate {
+        val port = bound ?: return ScheduleUpdate.NotFound
+        return port.update(id, patch, expectedRevision)
     }
 }

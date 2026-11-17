@@ -4,7 +4,7 @@ package com.zmf.agent.capability.prompt
  * 系统提示词的一段。
  *
  * [order] 决定拼接顺序（小的在前）：system 是请求里最稳定的前缀，顺序固定才能命中 provider 的
- * prompt cache；新增的段应尽量排在后面，避免插入已有段之前导致缓存整体失效。
+ * prompt cache；新增的段应尽量置于末尾，避免插入已有段之前导致缓存整体失效。
  * [name] 只给日志和排查用（哪段太长、哪段这次没出），不会进提示词正文。
  */
 data class PromptSection(val order: Int, val name: String, val text: String)

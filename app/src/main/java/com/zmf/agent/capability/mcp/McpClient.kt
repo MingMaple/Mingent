@@ -52,7 +52,7 @@ class McpClient(private val server: McpServer) : McpTransport {
     @Volatile
     private var sseEndpoint: String? = null
 
-    /** JSON-RPC 请求 id 自增；initialize 用 1，后面顺延。 */
+    /** JSON-RPC 请求 id 自增；initialize 取值 1，其后顺延递增。 */
     private val requestIds = AtomicInteger(0)
 
     // ---- 对外 ----
@@ -199,7 +199,7 @@ class McpClient(private val server: McpServer) : McpTransport {
     /**
      * 统一解析响应正文：
      * 1. 先按纯 JSON 试（绝大多数情况）；
-     * 2. 不行再按 SSE 事件流拆（只看 data: 行，挑第一条带 result/error 的 JSON-RPC 响应）。
+     * 2. 失败时再按 SSE 事件流解析（仅看 data: 行，取第一条带 result/error 的 JSON-RPC 响应）。
      */
     private fun parseBody(text: String): JSONObject? {
         val body = text.trim()

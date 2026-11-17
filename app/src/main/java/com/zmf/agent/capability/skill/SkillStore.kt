@@ -83,7 +83,7 @@ object SkillStore {
     /**
      * 只给提示词用的轻量目录：名字 + 描述（截 500 字符）。
      *
-     * 有 whenToUse 时接在描述后面：它比描述更直接地回答「什么情况下该用」，
+     * 有 whenToUse 时接在描述之后：它比描述更直接地回答「什么情况下该用」，
      * 模型据此判断要不要加载正文，比只看描述更准。
      */
     fun catalog(context: Context): List<Pair<String, String>> =
@@ -232,7 +232,7 @@ object SkillStore {
         val existing = key?.takeIf { it.isNotBlank() }?.let { find(context, it) }
         val id = existing?.id ?: sanitizeId(trimmedName)
         require(id.isNotEmpty()) { "名称里至少要有一个字母或数字" }
-        // 更新时允许改名：新名字若已被另一个技能占用，不能悄悄制造两个同名技能
+        // 更新时允许改名：新名称若已被其他技能占用，不得产生两个同名技能
         if (existing != null && !overwrite) {
             val clash = find(context, trimmedName)
             if (clash != null && clash.id != existing.id) {
@@ -392,7 +392,7 @@ object SkillStore {
                 }
                 continue
             }
-            // 列表：值为空且后面跟若干「- item」
+            // 列表：值为空且其后为若干「- item」
             if (rawValue.isEmpty()) {
                 val items = ArrayList<String>()
                 var j = i + 1

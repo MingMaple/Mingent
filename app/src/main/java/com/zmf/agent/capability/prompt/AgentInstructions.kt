@@ -16,7 +16,7 @@ import java.io.File
 object AgentInstructions {
 
     /**
-     * 一次读到的东西。
+     * 一次读取得到的指令内容。
      *
      * [displayPath] 是给模型看的相对名字（多文件用逗号拼接），
      * [hash] 仅用于判断「与上次注入的是否为同一份」，不展示给模型。

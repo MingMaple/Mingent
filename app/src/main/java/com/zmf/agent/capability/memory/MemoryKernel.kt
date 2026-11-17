@@ -459,7 +459,7 @@ object MemoryKernel {
         is ShellResult.Ok -> fallback
     }
 
-    /** 把隐藏执行的失败态翻译成「卡在哪一步 + 怎么办」。 */
+    /** 把隐藏执行的失败态翻译成「失败于第几步 + 处理建议」。 */
     private fun describeExecFailure(result: ShellResult, prootLibRoot: String): String {
         val reason = when (result) {
             is ShellResult.ShellNotReady ->
@@ -471,7 +471,7 @@ object MemoryKernel {
                     "隐藏执行通道未能启动：" + result.detail.ifBlank { "原因未知" }
                 else -> result.detail.ifBlank { "状态 " + result.reason }
             }
-            // 成功态不该走到这里；真走到了说明调用处判断写反了，留一句话便于定位
+            // 成功态不应进入此分支；若进入则说明调用处判断有误，保留说明便于定位
             is ShellResult.Ok -> "未预期的成功状态（调用处判断有误）"
         }
         val preview = when (result) {

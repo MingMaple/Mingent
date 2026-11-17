@@ -1,9 +1,13 @@
 package com.zmf.agent.capability.jobs
 
+import android.content.Context
+import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.infra.terminal.TerminalApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * 后台任务的进程内注册表。
@@ -27,7 +31,13 @@ object JobRegistry {
     /** 单个任务的内存输出环上限：超出时丢弃最旧内容，防止单个高频输出命令耗尽内存。 */
     private const val MAX_RING_BYTES = 256 * 1024
 
-    private const val MAX_JOBS = 64
+    /**
+     * 每个 owner（会话）最多同时挂着的任务数，对齐 DSH 的 `maxConcurrentJobsPerOwner = 10`。
+     *
+     * 上限的单位是 owner 而不是进程：A 会话堆满 10 条只影响 A，B 的任务既不被淘汰也不被顶掉。
+     * 进程级不设硬闸（多条会话并行是既定能力），只在每次新建时记一行总数日志，便于排查内存。
+     */
+    private const val MAX_JOBS_PER_OWNER = 10
 
     private val lock = Any()
 
@@ -40,6 +50,9 @@ object JobRegistry {
 
     /** 全部任务；LinkedHashMap 记住创建顺序，`job_list` 按它输出。 */
     private val jobs = LinkedHashMap<String, Entry>()
+
+    /** 当前运行中的任务数（X09 内存采样的活动判定与留证用）：锁内取值，O(n) 但 n 极小。 */
+    fun runningCount(): Int = synchronized(lock) { jobs.values.count { it.status == Status.RUNNING } }
 
     /**
      * 结算版本号：每有一个任务结束（completed / killed / failed）就 +1。
@@ -71,10 +84,38 @@ object JobRegistry {
         val killRequested: Boolean = false
     )
 
-    /** 启动一个任务。返回任务 id；会话归属由 [sessionId] 指定。 */
-    fun begin(sessionId: String, kind: String, label: String): String {
+    /**
+     * 启动一个任务。返回任务 id；会话归属由 [sessionId] 指定。
+     *
+     * 每个会话最多 [MAX_JOBS_PER_OWNER] 条**运行中**任务，满了直接返回 null（调用方给出明确拒绝，
+     * 不静默顶掉别人的任务）。淘汰只在本会话内进行，且只淘汰已结算的旧条目——运行中的任务
+     * 无论多旧都不动。
+     */
+    fun begin(sessionId: String, kind: String, label: String): String? {
         val id = kind + "-" + shortId()
         synchronized(lock) {
+            // 会话重新投入使用：解除「删除 / 归档时登记的通知静默」，新任务的完成通知照常送达
+            mutedSessions.remove(sessionId)
+            val mine = jobs.values.filter { it.sessionId == sessionId }
+            val running = mine.count { it.status == Status.RUNNING }
+            if (running >= MAX_JOBS_PER_OWNER) {
+                FileLog.log(
+                    "jobs",
+                    "会话 " + sessionId + " 的后台任务已达上限 " + MAX_JOBS_PER_OWNER +
+                        " 条，拒绝新建；全局共 " + jobs.size + " 条"
+                )
+                return null
+            }
+            // 本会话的旧条目超过上限时，只收掉已结算的那几条；运行中的一条都不动
+            if (mine.size >= MAX_JOBS_PER_OWNER) {
+                var excess = mine.size - MAX_JOBS_PER_OWNER + 1
+                for (e in mine) {
+                    if (excess <= 0) break
+                    if (e.status == Status.RUNNING) continue
+                    jobs.remove(e.id)
+                    excess--
+                }
+            }
             jobs[id] = Entry(
                 id = id,
                 kind = kind,
@@ -86,13 +127,11 @@ object JobRegistry {
                 note = "",
                 deliveredBytes = 0
             )
-            // 超过上限时淘汰最旧的任务：优先淘汰已结算的，全部运行中时才淘汰最旧的一条
-            while (jobs.size > MAX_JOBS) {
-                val oldest = jobs.values.firstOrNull { it.status != Status.RUNNING }
-                    ?: jobs.values.firstOrNull()
-                    ?: break
-                jobs.remove(oldest.id)
-            }
+            FileLog.log(
+                "jobs",
+                "新建后台任务 " + id + "（会话 " + sessionId + "）：本会话 " + (running + 1) +
+                    " 条运行中，全局 " + jobs.size + " 条"
+            )
         }
         return id
     }
@@ -130,6 +169,43 @@ object JobRegistry {
         if (e.status != Status.RUNNING) return false
         jobs[id] = e.copy(killRequested = true, note = reason.trim())
         true
+    }
+
+    /**
+     * 按会话终止全部后台任务（会话删除 / 归档时调用）。
+     *
+     * 与 `job_kill` 走同一条路径：先标记「已请求取消」并记下原因，再向各自的进程组发送终止信号，
+     * 进程退出后由监视协程按 killed 结算。只作用于该会话的任务，其他会话不受影响。
+     *
+     * 已删除 / 已归档的会话不再接收完成通知：本会话的待通知条目一并清空，此后再结算的任务
+     * 也不会入队（见 [settle]；该会话重新起任务时由 [begin] 解除静默）。
+     *
+     * @return 实际标记终止的任务数
+     */
+    fun killSession(context: Context, sessionId: String, reason: String): Int {
+        if (sessionId.isBlank()) return 0
+        val running = synchronized(lock) {
+            mutedSessions += sessionId
+            jobs.values.filter { it.sessionId == sessionId && it.status == Status.RUNNING }.map { it.id }
+        }
+        val marked = running.filter { requestKill(it, reason) }
+        // 先登记静默再清理队列：晚于标记的结算不会再入队，早于标记的条目在这里被摘掉
+        synchronized(lock) {
+            pendingNotify.removeAll { id -> jobs[id]?.sessionId == sessionId }
+        }
+        if (marked.isEmpty()) return 0
+        FileLog.log(
+            "jobs",
+            "会话 " + sessionId + " 已关闭，终止后台任务 " + marked.size + " 条：" + marked.joinToString(", ")
+        )
+        val appContext = context.applicationContext
+        for (id in marked) {
+            scope.launch {
+                TerminalApi.killJob(appContext, id)
+                TerminalApi.releaseJobChannel(appContext, id)
+            }
+        }
+        return marked.size
     }
 
     /**
@@ -177,13 +253,22 @@ object JobRegistry {
             jobs[id] = e.copy(status = finalStatus, note = finalNote)
             // 结算即入「待通知」队列：由 AgentLoop 每轮开始（或空闲唤醒）取走并注入一条完成通知，
             // 每个结算恰好通知一次。这里记的是「结算结果」，不记状态机历史。
-            pendingNotify += id
+            // 会话已删除 / 已归档时不再入队，避免通知写回不再有人读取的会话。
+            if (e.sessionId !in mutedSessions) pendingNotify += id
         }
         finishedVersion.value += 1
     }
 
     /** 待通知的任务 id 队列（按结算先后）。 */
     private val pendingNotify = ArrayList<String>()
+
+    /**
+     * 已删除 / 已归档会话：任务结算后不再进入待通知队列。
+     *
+     * 只做通知过滤，不参与取消——取消仍由 [requestKill] 与进程信号完成。
+     * [begin] 为该会话新建任务时移除标记，恢复后的会话照常收到通知。
+     */
+    private val mutedSessions = HashSet<String>()
 
     /**
      * 取走本会话「待通知」的任务，并清空。返回的每项是「任务快照」，用于拼通知文案。

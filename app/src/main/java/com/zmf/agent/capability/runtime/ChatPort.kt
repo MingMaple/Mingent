@@ -43,4 +43,10 @@ interface ChatPort {
 
     /** 在小窗中点击某条会话：切换至该会话（实现方负责落盘与消息表替换）。 */
     fun switchSession(id: String)
+
+    /** 当前会话是否仍在生成（含中止中）：小窗据此在输入条上显示停止键。 */
+    fun streaming(): Boolean
+
+    /** 小窗停止当前会话的回合；与主页停止键同一入口、同一相位。 */
+    fun stop()
 }

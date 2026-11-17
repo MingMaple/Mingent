@@ -6,7 +6,7 @@ import android.content.Context
  * 系统提示词相关的用户设置（和权限档、API 配置共用 app_prefs）。
  *
  * 三个键各管一件事：
- * - prompt_extra：附加指令，拼在默认提示词后面；
+ * - prompt_extra：附加指令，拼接于默认提示词之后；
  * - prompt_system_override：整份覆盖，非空时默认提示词一条都不出；
  * - prompt_skills_enabled：是否把 Skill 目录写进提示词。
  */
@@ -17,7 +17,7 @@ object PromptStore {
     private const val KEY_OVERRIDE = "prompt_system_override"
     private const val KEY_SKILLS_ENABLED = "prompt_skills_enabled"
 
-    /** 用户附加指令；没设置过就是空串。 */
+    /** 用户附加指令；未设置时为空串。 */
     fun loadExtra(context: Context): String =
         prefs(context).getString(KEY_EXTRA, "").orEmpty()
 

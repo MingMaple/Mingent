@@ -4,7 +4,7 @@ import android.content.Context
 import com.zmf.agent.capability.config.ApiConfig
 import com.zmf.agent.capability.permission.PermissionStore
 import com.zmf.agent.capability.runtime.ChatBridge
-import com.zmf.agent.capability.tools.file.TrashStore
+import com.zmf.agent.capability.tools.file.support.TrashStore
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.SessionPreference
 import com.zmf.agent.core.model.wireName
@@ -15,7 +15,6 @@ import com.zmf.agent.core.store.Storage
 import com.zmf.agent.core.store.StorageKind
 import com.zmf.agent.core.store.StorageStore
 import com.zmf.agent.core.store.WorkSpace
-import com.zmf.agent.core.store.WorkSpaceStore
 import java.io.File
 
 /**

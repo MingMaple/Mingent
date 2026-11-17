@@ -4,16 +4,17 @@ import com.zmf.agent.core.llm.ApiDefaults
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.capability.tools.displayName
+import com.zmf.agent.capability.tools.plugin.ToolPlugins
 
 /**
  * 提示词组装器，分成两层，越稳的越靠前：
  *
  * - **稳定层** [buildStable]：进 system。同一会话内逐字节不变，依次为身份、环境、权限事实、边界、
- *   工具总则、沙箱与删除、沟通、记忆、计划确认、Skill 目录、用户附加指令。它位于请求最前缀，
+ *   工具总则、沙箱与删除、沟通、记忆、计划确认、各工具规则、Skill 目录、用户附加指令。它位于请求最前缀，
  *   只有逐字节不变才能命中 provider 的前缀缓存。
  * - **运行时快照** [buildRuntimeSnapshot]：不进 system，拼在**请求最末尾**（当前用户消息之后）。
  *   权限档、工作区路径、计划模式、当前时间、会话摘要这些会变的都在这里，并用一句
- *   「以下为最新状态，覆盖此前所有状态」把它和前面的历史隔开。
+ *   「以下为最新状态，覆盖此前所有状态」将其与此前的历史隔开。
  *
  * 为什么这样切：DeepSeek 的缓存按「缓存前缀单元」完整匹配，system 位于最前缀。若把分钟级的
  * 「当前时间」拼在第 2 段，用户稍后再发一句，system 即发生变化，整个请求连同全部历史都不命中缓存。
@@ -83,6 +84,8 @@ object PromptBuilder {
         sections += PromptSection(PromptOrders.MEMORY, "记忆", DefaultPrompts.MEMORY_RULES)
         // 常驻段：无论是否处于计划模式，「在对话中表示同意」均不等于「授权执行」
         sections += PromptSection(PromptOrders.PLAN_RULES, "计划确认", DefaultPrompts.PLAN_RULES)
+        // 各工具的专有规则：由单工具插件提供，顺序按工具名固定，便于增删工具而不改动本文件
+        sections += ToolPlugins.promptSections()
          // 计划模式段**不进 system**：请求走 OpenAI 兼容 chat/completions，
          // 未验证「user 之后插入第二条 system」是否被接受，因此改用等价方案：
          // 规则文本由运行时快照承载（仅在开启时出现，关闭时不输出任何内容）。
@@ -141,7 +144,7 @@ object PromptBuilder {
      * 压缩检查点的包裹与抬头：检查点以一条合成 user 消息的形式插在历史之前。
      *
      * 位置：紧跟在 system / 工作区指令之后、历史原文之前，也就是「第一个可动消息」的位置。
-     * 这样 system + 检查点成为**永久复用的前缀**，只有它后面的原文会随着新消息增长。
+     * 这样 system + 检查点成为**永久复用的前缀**，仅其后的原文会随着新消息增长。
      */
     const val CHECKPOINT_OPEN = "<compacted-summary>"
     const val CHECKPOINT_CLOSE = "</compacted-summary>"
@@ -162,7 +165,7 @@ object PromptBuilder {
      * 这两条都是「时间感知」最基础的缺口。每次请求前现取，时间始终是发请求那一刻的。
      *
      * 聊天页与定时任务共用同一份格式：定时任务由闹钟在后台冷启动，若快照缺少这一行，
-     * 模型只能从历史里最后一条答复推断「今天是哪一天」，会把上一轮的早报再写一遍。
+     * 模型只能从历史里最后一条答复推断「今天是哪一天」，会重复输出上一轮的早报。
      */
     fun nowText(): String {
         val fmt = java.text.SimpleDateFormat(
@@ -258,7 +261,7 @@ object PromptBuilder {
     }
 
     /**
-     * 设备段（稳定）：只讲「这是什么设备」，不讲路径与时间：那两个每分钟/每次换工作区就变。
+     * 设备段（稳定）：只说明「这是什么设备」，不涉及路径与时间：后两者随分钟与工作区变化。
      *
      * 模型最常见的误解是「这不是 x86 服务器」，因此必须点明 PRoot 与宿主机存储的关系。
      */

@@ -1,11 +1,13 @@
 package com.zmf.agent.capability.subagent
 
 import kotlinx.coroutines.flow.MutableStateFlow
+import java.util.UUID
 
 /**
  * 子智能体的内存登记表，只服务主页右上角的「子任务」面板。
  *
- * 不落盘、不分会话，也不参与成败判定：SubAgentRunner 负责写入，ChatScreen 订阅 [version] 后读取快照，仅用于展示。
+ * 不落盘；记录带发起会话 id（[Entry.sessionId]），面板按会话过滤（[snapshot] 带参重载），
+ * 也不参与成败判定：SubAgentRunner 负责写入，ChatScreen 订阅 [version] 后读取快照，仅用于展示。
  * 写入发生在 IO 协程、读取发生在 Compose 主线程，因此整张表由一把锁保护，对外仅提供不可变快照，
  * 读取结果始终一致（不会出现面板中某条记录仅更新一半的情况）。
  */
@@ -32,6 +34,8 @@ object SubAgentRegistry {
     /** 一条子任务的登记信息。 */
     data class Entry(
         val id: String,
+        /** 发起该子智能体的会话 id；空串表示调用方未提供会话。仅用于按会话筛选，不改变执行机制。 */
+        val sessionId: String = "",
         val description: String,
         /** [RUNNING] / [DONE] / [FAILED]。 */
         val state: String,
@@ -74,25 +78,29 @@ object SubAgentRegistry {
     private var seq = 0
 
     /** 登记一条「运行中」，返回它在面板里的 id。 */
-    fun begin(description: String, multiTurn: Boolean = false): String = synchronized(lock) {
-        seq++
-        val id = "sa" + seq
-        val now = System.currentTimeMillis()
-        entries = entries + Entry(
-            id = id,
-            description = description,
-            state = RUNNING,
-            rounds = 0,
-            startedAt = now,
-            finishedAt = 0L,
-            result = "",
-            error = "",
-            multiTurn = multiTurn,
-            updatedAt = now
-        )
-        bump()
-        id
-    }
+    fun begin(description: String, multiTurn: Boolean = false, sessionId: String = ""): String =
+        synchronized(lock) {
+            seq++
+            // id 规则（P24）：sa-<序号>-<随机段>。序号保证可读与排序；随机段防止其他来源猜测/枚举
+            // 存活子智能体的 id——跨会话归属由 SubAgentRunner.resume 的 sessionId 比对承担，随机段是第二道防线。
+            val id = "sa-" + seq + "-" + UUID.randomUUID().toString().take(8)
+            val now = System.currentTimeMillis()
+            entries = entries + Entry(
+                id = id,
+                sessionId = sessionId,
+                description = description,
+                state = RUNNING,
+                rounds = 0,
+                startedAt = now,
+                finishedAt = 0L,
+                result = "",
+                error = "",
+                multiTurn = multiTurn,
+                updatedAt = now
+            )
+            bump()
+            id
+        }
 
     /** 这条记录是否可续聊：记录不存在或不是多轮，一律返回 false。 */
     fun canContinue(id: String): Boolean = find(id)?.multiTurn == true
@@ -115,6 +123,31 @@ object SubAgentRegistry {
         val now = System.currentTimeMillis()
         replace(id) { entry ->
             entry.copy(state = FAILED, finishedAt = now, error = error.take(RESULT_LIMIT), updatedAt = now)
+        }
+    }
+
+    /**
+     * 父回合被停止时的连带收尾：只把仍在运行的记录改成失败。
+     *
+     * 与 [fail] 的区别是幂等且不覆盖已收尾的记录——停止发生在收尾之后时，
+     * 那条已经拿到的结论必须保持 done，不能被迟到的停止改写成失败。
+     */
+    fun stop(id: String, reason: String) {
+        val now = System.currentTimeMillis()
+        synchronized(lock) {
+            val index = entries.indexOfFirst { it.id == id }
+            if (index < 0) return
+            val entry = entries[index]
+            if (entry.state != RUNNING) return
+            entries = entries.toMutableList().also {
+                it[index] = entry.copy(
+                    state = FAILED,
+                    finishedAt = now,
+                    error = reason.take(RESULT_LIMIT),
+                    updatedAt = now
+                )
+            }
+            bump()
         }
     }
 
@@ -161,8 +194,17 @@ object SubAgentRegistry {
         return if (firstUser == null) tail else listOf(firstUser) + tail.filter { it !== firstUser }
     }
 
-    /** 当前全量快照（按创建顺序，新记录在末尾；排序由面板决定）。 */
+    /** 当前全量快照（按创建顺序，新记录在末尾；排序由面板决定）。诊断/日志用途。 */
     fun snapshot(): List<Entry> = entries
+
+    /**
+     * 指定会话的快照（P25）：只返回该会话发起的记录。
+     * sessionId 为空串的旧记录（调用方未提供会话）不归属任何会话，任何会话面板都不显示。
+     */
+    fun snapshot(sessionId: String): List<Entry> {
+        if (sessionId.isBlank()) return emptyList()
+        return entries.filter { it.sessionId == sessionId }
+    }
 
     /** 丢掉所有已结束的记录，只留运行中的。 */
     fun clearFinished() {
@@ -175,6 +217,25 @@ object SubAgentRegistry {
             }
         }
     }
+
+    /**
+     * 丢弃指定会话的登记条目（X10 会话删除的级联清理）：面板不再为已删会话显示子智能体。
+     * 仍在运行中的子智能体也一并移除——发起会话已不存在，其结论无处回写，
+     * 协程随回合取消结束，面板里不留孤儿。
+     */
+    fun clearSession(sessionId: String) {
+        if (sessionId.isBlank()) return
+        synchronized(lock) {
+            val next = entries.filterNot { it.sessionId == sessionId }
+            if (next.size != entries.size) {
+                entries = next
+                bump()
+            }
+        }
+    }
+
+    /** 当前运行中的子智能体数（X09 内存采样的活动判定与留证用）。 */
+    fun runningCount(): Int = entries.count { it.state == RUNNING }
 
     /** 版本号仅在同一把锁内递增：所有写入路径均已由锁串行化，不会遗漏或重复。 */
     private fun bump() {

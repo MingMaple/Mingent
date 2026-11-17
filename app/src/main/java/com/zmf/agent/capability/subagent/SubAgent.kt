@@ -14,11 +14,15 @@ import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
+import com.zmf.agent.capability.tools.shell.terminal.TerminalTool
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 子智能体需要的两个外部依赖：provider 与 registry。
@@ -45,7 +49,7 @@ data class SubAgentOutcome(val id: String, val answer: String, val ok: Boolean)
  * 子智能体：使用一份全新的 messages 运行独立的小循环，仅将最终结论返回父会话。
  *
  * 与父会话完全隔离：不渲染界面、不共享历史、不弹出权限确认；工具仍按父会话的权限档过滤。
- * 并发限制为 [MAX_ACTIVE]：无法获取时立即失败，由模型等待已有子任务结束后重试。
+ * 并发限制为**每会话 [MAX_PER_SESSION] 个**（D4）：满额立即失败不排队，其他会话的配额互不影响。
  * 运行进度与对话记录同时写入 [SubAgentRegistry]（面板读取它，[resume] 据此续聊）。
  */
 object SubAgentRunner {
@@ -56,8 +60,8 @@ object SubAgentRunner {
     /** 单个子智能体的总超时（10 分钟）。 */
     const val TIMEOUT_MS = 10 * 60 * 1000
 
-    /** 同时运行的子智能体最大数量。 */
-    const val MAX_ACTIVE = 2
+    /** 每个会话同时运行的子智能体最大数量（D4：对齐 DSH 每 activation 树 8）。 */
+    const val MAX_PER_SESSION = 8
 
     /** 交回父会话的结论最大字符数，超出时截断。 */
     const val MAX_RESULT_CHARS = 8000
@@ -69,10 +73,90 @@ object SubAgentRunner {
 
     /** 并发闸拒绝的文案：新建与续聊共用，调用方原样交回模型。 */
     private val LIMIT_TEXT =
-        "同时运行的子智能体已达上限（" + MAX_ACTIVE + " 个），请等现有子智能体结束后再试"
+        "[E_LIMIT] 本会话同时运行的子智能体已达上限（" + MAX_PER_SESSION + " 个）；等其中某个结束后再试"
 
-    /** 并发限制：使用 tryAcquire，无法获取时不排队，直接失败。 */
-    private val semaphore = Semaphore(MAX_ACTIVE)
+    /**
+     * 每会话并发计数（D4）：键为父会话 id，值为该会话当前在跑的子智能体数。
+     * 满额 tryAcquire 返回 false 直接拒绝，不排队；跨会话互不影响。
+     */
+    private val active = ConcurrentHashMap<String, AtomicInteger>()
+
+    /** 尝试为会话占一个并发名额；满额返回 false（不排队）。 */
+    private fun tryAcquire(sessionId: String): Boolean {
+        val counter = active.computeIfAbsent(sessionId.ifBlank { "default" }) { AtomicInteger(0) }
+        val now = counter.getAndIncrement()
+        if (now >= MAX_PER_SESSION) {
+            counter.decrementAndGet()
+            FileLog.log(
+                TAG,
+                "并发闸已满（会话 " + sessionId.ifBlank { "default" } + " 已有 " + MAX_PER_SESSION +
+                    " 个在跑），拒绝本次请求"
+            )
+            return false
+        }
+        FileLog.log(
+            TAG,
+            "并发名额获取：会话 " + sessionId.ifBlank { "default" } + "，当前在跑 " + (now + 1) + "/" + MAX_PER_SESSION
+        )
+        return true
+    }
+
+    /** 释放会话的并发名额；计数归零时移除条目，避免 map 无限增长。 */
+    private fun release(sessionId: String) {
+        val key = sessionId.ifBlank { "default" }
+        val counter = active[key] ?: return
+        val now = counter.decrementAndGet()
+        if (now < 0) counter.set(0) // 防御：出现负数时归零
+        if (counter.get() <= 0) active.remove(key, counter)
+    }
+
+    /** 会话删除时清掉其并发计数（正在跑的协程不受影响，只重置计数）。 */
+    fun forgetSession(sessionId: String) {
+        if (active.remove(sessionId.ifBlank { "default" }) != null) {
+            FileLog.log(TAG, "会话已删除，清理子智能体并发计数：" + sessionId.ifBlank { "default" })
+        }
+    }
+
+    /**
+     * 运行中的子智能体协程（id → Job）：停止会话时据此连带中止，而不只依赖父回合 Job 的取消传播。
+     *
+     * 传播依赖子协程在挂起点响应取消；一旦它正卡在不可协作的阻塞调用里（例如等 shell 输出），
+     * 取消就只能等到那次调用返回。登记 Job 后，停止路径可以先把面板与实际通道收尾。
+     */
+    private val runningJobs = ConcurrentHashMap<String, Job>()
+
+    /** 记下这次执行所在的协程；取不到 Job 时不记（不影响执行本身）。 */
+    private suspend fun track(id: String) {
+        currentCoroutineContext()[Job]?.let { runningJobs[id] = it }
+    }
+
+    private fun untrack(id: String) {
+        runningJobs.remove(id)
+    }
+
+    /**
+     * 某会话的回合被用户停止时，连带中止它正在跑的子智能体（对齐 DSH：父 activation 拆除即取消子代理并释放其 shell）。
+     *
+     * 顺序固定为「标记已停止 → 取消协程 → 释放该子智能体自己的终端通道」：标记保证面板立刻不再转圈，
+     * 通道释放会让卡在 shell 读取上的调用当场返回。只处理本会话名下的记录，其它会话不受影响；
+     * 已入队的结论属于父会话的正常事实，这里不删（P11）。
+     */
+    fun cancelSession(context: Context, sessionId: String, reason: String = "已停止"): Int {
+        if (sessionId.isBlank()) return 0
+        val targets = SubAgentRegistry.snapshot(sessionId).filter { it.state == SubAgentRegistry.RUNNING }
+        if (targets.isEmpty()) return 0
+        for (entry in targets) {
+            SubAgentRegistry.stop(entry.id, reason)
+            runningJobs.remove(entry.id)?.cancel()
+            TerminalTool.releaseSubAgentChannel(context, sessionId, entry.id)
+        }
+        FileLog.log(
+            TAG,
+            "父回合停止，连带中止子智能体 " + targets.size + " 个：" + targets.joinToString(",") { it.id },
+            sessionId = sessionId
+        )
+        return targets.size
+    }
 
     /** 子智能体的系统提示词：它是独立执行者，不是聊天对象。 */
     private const val CHILD_SYSTEM = "你是子智能体，独立完成父会话指派给你的调研/实现任务。\n" +
@@ -103,14 +187,21 @@ object SubAgentRunner {
         model: String? = null,
         multiTurn: Boolean = false
     ): SubAgentOutcome {
-        if (!semaphore.tryAcquire()) {
-            FileLog.log(TAG, "并发闸已满（上限 " + MAX_ACTIVE + "），拒绝：「" + description.take(60) + "」")
+        if (!tryAcquire(sessionId)) {
+            FileLog.log(TAG, "拒绝新建：「" + description.take(60) + "」，会话 " + sessionId.ifBlank { "default" })
             return SubAgentOutcome("", LIMIT_TEXT, false)
         }
         // 获取名额后才登记：被并发限制拒绝的请求不占用面板条目
-        val id = SubAgentRegistry.begin(description, multiTurn)
+        val id = SubAgentRegistry.begin(description, multiTurn, sessionId)
+        track(id)
         try {
-            FileLog.log(TAG, "启动子智能体「" + description.take(80) + "」，会话 " + sessionId.ifBlank { "default" })
+            // P31：会话与子智能体归属随行——按 sid / sa 可分别筛出会话与子任务全过程
+            FileLog.log(
+                TAG,
+                "启动子智能体「" + description.take(80) + "」",
+                sessionId = sessionId,
+                agentId = id
+            )
             val answer = withTimeout(TIMEOUT_MS.toLong()) {
                 execute(
                     context = context,
@@ -134,10 +225,17 @@ object SubAgentRunner {
                 return SubAgentOutcome(id, answer, false)
             }
             SubAgentRegistry.finish(id, answer)
+            // D2：成功结论转交父会话（失败不转交，避免父会话收到重复的失败报告）
+            SubAgentNotices.enqueue(sessionId, description, answer)
             return SubAgentOutcome(id, answer, true)
         } catch (e: TimeoutCancellationException) {
             val reason = "超时（超过 " + (TIMEOUT_MS / 60000) + " 分钟仍未完成）"
-            FileLog.log(TAG, "子智能体超时（" + TIMEOUT_MS / 60000 + " 分钟）：「" + description.take(60) + "」")
+            FileLog.log(
+                TAG,
+                "子智能体超时（" + TIMEOUT_MS / 60000 + " 分钟）：「" + description.take(60) + "」",
+                sessionId = sessionId,
+                agentId = id
+            )
             SubAgentRegistry.fail(id, reason)
             return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
         } catch (e: CancellationException) {
@@ -146,11 +244,20 @@ object SubAgentRunner {
             throw e
         } catch (e: Exception) {
             val reason = e.message ?: e.javaClass.simpleName
-            FileLog.log(TAG, "子智能体异常：" + reason)
+            FileLog.log(
+                TAG,
+                "子智能体异常：" + reason,
+                sessionId = sessionId,
+                agentId = id
+            )
             SubAgentRegistry.fail(id, reason)
             return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
         } finally {
-            semaphore.release()
+            // 对齐 DSH「owner 拆除即终止 shell」：子智能体结束后立即释放它自己的终端通道，
+            // 不把一条空闲 shell 留给下一条命令（未用过终端的子智能体不会产生日志行）
+            untrack(id)
+            TerminalTool.releaseSubAgentChannel(context, sessionId, id)
+            release(sessionId)
         }
     }
 
@@ -192,7 +299,11 @@ object SubAgentRunner {
                 context = context,
                 permission = permission,
                 workspaceRoot = workspaceRoot,
-                sessionId = sessionId
+                sessionId = sessionId,
+                // 子智能体没有交互界面：依赖用户当场作答的工具据此拒绝
+                isSubAgent = true,
+                // 终端据此为每个子智能体分一条独立执行通道
+                agentId = id
             ),
             ui = RegistryUi(id)
         )
@@ -204,7 +315,12 @@ object SubAgentRunner {
             .orEmpty()
             .trim()
         if (answer.isEmpty()) {
-            FileLog.log(TAG, "子智能体没有产出结论：「" + description.take(60) + "」")
+            FileLog.log(
+                TAG,
+                "子智能体没有产出结论：「" + description.take(60) + "」",
+                sessionId = sessionId,
+                agentId = id
+            )
             return FAIL_PREFIX + "没有产出任何结论"
         }
         return truncate(answer)
@@ -228,18 +344,28 @@ object SubAgentRunner {
     ): SubAgentOutcome {
         val entry = SubAgentRegistry.find(id)
             ?: return SubAgentOutcome(id, "子智能体不存在（App 重启后子智能体不保留）", false)
+        // P24 归属校验：子智能体只属于创建它的会话，其他会话（包括 peer 会话）不得续聊。
+        // 顺序固定：归属先于配额，避免先占名额后发现归属不对。旧记录无会话标记（空串）时不拦截。
+        if (entry.sessionId.isNotEmpty() && entry.sessionId != sessionId) {
+            FileLog.log(
+                TAG,
+                "归属拒绝：子智能体 " + id + " 属于会话 " + entry.sessionId + "，请求来自会话 " + sessionId.ifBlank { "default" }
+            )
+            return SubAgentOutcome(id, "[E_OWNER] 该子智能体不属于当前会话", false)
+        }
         if (!entry.multiTurn) {
             return SubAgentOutcome(id, "该子智能体是单轮的，执行完不再接受消息", false)
         }
         if (entry.state == SubAgentRegistry.RUNNING) {
             return SubAgentOutcome(id, "该子智能体正在运行，等它结束再发", false)
         }
-        if (!semaphore.tryAcquire()) {
-            FileLog.log(TAG, "并发闸已满（上限 " + MAX_ACTIVE + "），拒绝续聊：" + id)
+        if (!tryAcquire(sessionId)) {
+            FileLog.log(TAG, "拒绝续聊：" + id + "，会话 " + sessionId.ifBlank { "default" })
             return SubAgentOutcome(id, LIMIT_TEXT, false)
         }
         try {
             SubAgentRegistry.markRunning(id)
+            track(id)
             FileLog.log(TAG, "续聊子智能体 " + id + "，会话 " + sessionId.ifBlank { "default" })
             // 沿用登记时的模型：中途更换模型会使其前后行为明显不一致
             val useModel = entry.model.takeIf { it.isNotBlank() } ?: ApiConfig.loadModel(context)
@@ -267,7 +393,9 @@ object SubAgentRunner {
                         context = context,
                         permission = permission,
                         workspaceRoot = workspaceRoot,
-                        sessionId = sessionId
+                        sessionId = sessionId,
+                        isSubAgent = true,
+                        agentId = id
                     ),
                     ui = RegistryUi(id)
                 )
@@ -288,10 +416,12 @@ object SubAgentRunner {
                 listOf(SubAgentTurn(role = "user", text = text), SubAgentTurn(role = "assistant", text = result))
             )
             SubAgentRegistry.finish(id, result)
+            // D2：续聊结论同样转交父会话（失败不转交）
+            SubAgentNotices.enqueue(sessionId, entry.description, result)
             return SubAgentOutcome(id, result, true)
         } catch (e: TimeoutCancellationException) {
             val reason = "超时（超过 " + (TIMEOUT_MS / 60000) + " 分钟仍未完成）"
-            FileLog.log(TAG, "续聊超时：" + id)
+            FileLog.log(TAG, "续聊超时：会话 " + sessionId.ifBlank { "default" } + " 子智能体 " + id)
             SubAgentRegistry.fail(id, reason)
             return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
         } catch (e: CancellationException) {
@@ -299,11 +429,14 @@ object SubAgentRunner {
             throw e
         } catch (e: Exception) {
             val reason = e.message ?: e.javaClass.simpleName
-            FileLog.log(TAG, "续聊异常：" + reason)
+            FileLog.log(TAG, "续聊异常：会话 " + sessionId.ifBlank { "default" } + " 子智能体 " + id + "：" + reason)
             SubAgentRegistry.fail(id, reason)
             return SubAgentOutcome(id, FAIL_PREFIX + reason, false)
         } finally {
-            semaphore.release()
+            // 续聊与新建同口径：这次执行结束后释放它自己的终端通道
+            untrack(id)
+            TerminalTool.releaseSubAgentChannel(context, sessionId, id)
+            release(sessionId)
         }
     }
 

@@ -20,14 +20,14 @@ data class ContextPolicy(
      * 闸门①：估算 tokens / 上下文窗口达到这个比例就摘要（0.1..0.95）。
      *
      * 默认 0.4：DeepSeek 是 1M 窗口，0.4 约等于 419k tokens 才摘要，
-     * 太早摘要会白花一次模型请求，太晚又接近上限，40% 是留足余量的水位线。
+     * 太早摘要会多消耗一次模型请求，太晚又接近上限，40% 是留足余量的水位线。
      */
     val triggerRatio: Float = DEFAULT_TRIGGER_RATIO,
     /** 闸门②开关：关掉就只按比例触发（长对话里对「条数」不敏感时用）。 */
     val triggerByCount: Boolean = true,
     /** 闸门②：自上次摘要后新增的 user 消息数达到这个数就摘要（1..20）。 */
     val triggerCount: Int = DEFAULT_TRIGGER_COUNT,
-    /** 保留轮数的下限（2..20）：预算再小，也至少留这么多轮原文；摘要失败时的兜底窗口同它。 */
+    /** 保留轮数的下限（2..20）：预算再小也至少保留该轮数的原文；摘要失败时的兜底窗口与此相同。 */
     val fallbackKeepRounds: Int = DEFAULT_KEEP_ROUNDS,
     /**
      * 逐字保留近期历史的预算比例（作用于窗口减去输出预留下的可用量）。
@@ -269,6 +269,45 @@ fun validSummaryUpTo(messages: List<ChatMessage>, saved: Int): Int {
 }
 
 /**
+ * 请求视图的工具配对清洗：丢弃空 assistant 占位、孤立的 tool 消息，以及「有 tool_calls 但结果不完整」的整组。
+ *
+ * 主请求视图（AgentLoop 的 sanitized）与摘要前缀共用这一份实现。两处若各写一遍，判断一旦分叉，
+ * 摘要请求就会重放主请求早已丢弃的半组工具调用，被服务端以 HTTP 400
+ * 「assistant message with 'tool_calls' must be followed by tool messages」拒绝。
+ */
+fun List<ChatMessage>.sanitizeToolPairing(): List<ChatMessage> {
+    val out = ArrayList<ChatMessage>(size)
+    var i = 0
+    while (i < size) {
+        val m = this[i]
+        when {
+            m.role == "tool" -> i++
+            m.role == "assistant" && m.content.isBlank() && m.toolCalls.isEmpty() -> i++
+            m.role == "assistant" && m.toolCalls.isNotEmpty() -> {
+                var j = i + 1
+                val results = ArrayList<ChatMessage>()
+                while (j < size && this[j].role == "tool") {
+                    results.add(this[j])
+                    j++
+                }
+                val got = results.mapNotNull { it.toolCallId }.toSet()
+                // 整组保留或整组丢弃：拆开 assistant(tool_calls) 与它的 tool 结果必然触发 400
+                if (m.toolCalls.all { it.id in got }) {
+                    out.add(m)
+                    out.addAll(results)
+                }
+                i = j
+            }
+            else -> {
+                out.add(m)
+                i++
+            }
+        }
+    }
+    return out
+}
+
+/**
  * 请求视图的「兜底裁轮」。
  *
  * 正常路径的请求视图是「摘要 + summaryUpTo 之后的原文」（见 AgentLoop）；
@@ -357,6 +396,44 @@ object ContextCompactor {
         val budget = ContextStore.retainBudgetTokens(policy, windowTokens, outputReserveTokens)
         val byBudget = tailStartByBudget(history, budget)
         return minOf(byRounds, byBudget)
+    }
+
+    /**
+     * 摘要区间的末端安全对齐：区间 [start, end) 若停在未闭合的工具组上，按整轮前移到轮首。
+     *
+     * 触发条件（任一）：末条是带 `tool_calls` 的 assistant（结果落在区间之外）；
+     * 末条是 tool，但其前置工具组的结果条数或 `tool_call_id` 不完整。
+     * 这类历史来自回合被中断、插话落在工具结果之前或工具组只回来一部分。
+     *
+     * 返回的新末端必然是 user 边界（区间内找不到 user 时返回 [start]，表示本次没有可摘要的部分）。
+     * 只移动区间末端，不拆分 `assistant(tool_calls)+tool` 的配对。
+     */
+    fun summaryEndAligned(history: List<ChatMessage>, start: Int, end: Int): Int {
+        var e = end.coerceIn(start.coerceAtLeast(0), history.size)
+        while (e > start) {
+            if (!endsWithOpenToolGroup(history, e)) break
+            val roundStart = (e - 1 downTo start).firstOrNull { history[it].role == "user" } ?: return start
+            if (roundStart <= start) return start
+            e = roundStart
+        }
+        return e
+    }
+
+    /** 区间末尾是否停在「未闭合的工具组」上：末条为 assistant(tool_calls)，或 tool 结果无法配平前置调用。 */
+    private fun endsWithOpenToolGroup(history: List<ChatMessage>, end: Int): Boolean {
+        val last = history[end - 1]
+        if (last.role == "assistant") return last.toolCalls.isNotEmpty()
+        if (last.role != "tool") return false
+        val got = HashSet<String>()
+        var k = end - 1
+        while (k >= 0 && history[k].role == "tool") {
+            history[k].toolCallId?.let { got.add(it) }
+            k--
+        }
+        if (k < 0) return true
+        val owner = history[k]
+        if (owner.role != "assistant" || owner.toolCalls.isEmpty()) return true
+        return !owner.toolCalls.all { it.id in got }
     }
 
     /** 前缀 [0, start) 里有几轮：按 user 数算，开头没有 user 的脏数据按一轮算。 */

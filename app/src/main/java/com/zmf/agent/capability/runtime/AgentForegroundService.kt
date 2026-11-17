@@ -51,6 +51,8 @@ class AgentForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
+        // X09：内存采样随前台服务启停——服务存活期间参与采样，与服务外的界面触发方互不影响
+        MemoryMonitor.start(MemoryMonitor.OWNER_SERVICE)
         // minSdk 26，通知渠道 API 可直接使用，无需判断版本
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
@@ -75,6 +77,7 @@ class AgentForegroundService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        MemoryMonitor.stop(MemoryMonitor.OWNER_SERVICE)
         // 此处不调用 stopSelf：用户关闭开关时由 stopService 停止，系统回收时由 START_STICKY 重建
         super.onDestroy()
     }

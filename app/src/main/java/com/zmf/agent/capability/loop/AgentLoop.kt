@@ -3,11 +3,13 @@ package com.zmf.agent.capability.loop
 import com.zmf.agent.capability.context.ContextCompactor
 import com.zmf.agent.capability.context.ContextPolicy
 import com.zmf.agent.capability.context.ToolResultPruner
+import com.zmf.agent.capability.context.sanitizeToolPairing
 import com.zmf.agent.capability.prompt.AgentInstructions
 import com.zmf.agent.capability.prompt.PromptBuilder
 import com.zmf.agent.capability.prompt.PromptInput
 import com.zmf.agent.infra.llm.ChatRequest
 import com.zmf.agent.infra.llm.LlmEvent
+import com.zmf.agent.infra.llm.LlmFailureCodes
 import com.zmf.agent.infra.llm.LlmProvider
 import com.zmf.agent.infra.llm.ToolSpec
 import com.zmf.agent.infra.llm.UsageBuckets
@@ -15,7 +17,10 @@ import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.capability.tools.displayName
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ORIGIN_JOB
+import com.zmf.agent.core.model.ORIGIN_RECOVERY
+import com.zmf.agent.core.model.ORIGIN_SUBAGENT
 import com.zmf.agent.core.model.ToolCall
+import com.zmf.agent.capability.subagent.SubAgentNotices
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
@@ -23,6 +28,7 @@ import com.zmf.agent.capability.tools.spill.SpillStore
 import com.zmf.agent.capability.jobs.JobRegistry
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /** 循环过程中的界面回调；AgentLoop 本身不碰 Compose。 */
@@ -43,6 +49,23 @@ interface AgentUi {
     fun onError(message: String)
 
     /**
+     * 终态失败：一次请求在自动重试全部用尽（或本就不该重试）后失败，回合即将收尾。
+     *
+     * [code] 是稳定分类（见 LlmFailureCodes），界面把失败写进消息流内的错误节点时一并落盘。
+     * 默认转给 [onError]，未接错误节点的调用方（定时任务 / 子智能体）行为不变。
+     */
+    fun onFailure(code: String, message: String) {
+        onError(message)
+    }
+
+    /**
+     * 自动重试排期：null = 重试结束（成功、放弃或被取消）。
+     *
+     * 只用于界面的倒计时节点；默认空实现，后台路径不显示重试状态。
+     */
+    fun onModelRetry(info: ModelRetryInfo?) {}
+
+    /**
      * 一次回复的时间统计（毫秒）：模型流累计 + 工具执行累计，循环结束时回调一次。
      *
      * 提供默认空实现：定时任务与子智能体无需计时，不应被迫实现空方法。
@@ -59,8 +82,21 @@ interface AgentUi {
     fun onOutputTiming(timing: OutputTiming) {}
 }
 
-/** 输出侧统计；[ttftCount] 为请求次数，[ttftMillis] 为这些请求的首字等待之和。 */
-data class OutputTiming(
+/**
+ * 一次自动重试的排期信息，供界面画倒计时节点（与 DSH 的 model-retry 节点同口径）。
+ *
+ * [retry] 从 1 起：第 1 次重试表示原始请求失败后的第一次重发。
+ * [delayMs] 是本次等待时长（优先 Retry-After，否则本地指数退避）。
+ */
+data class ModelRetryInfo(
+    val retry: Int,
+    val maxRetries: Int,
+    val delayMs: Long,
+    val failureCode: String,
+    val failureMessage: String
+)
+
+/** 输出侧统计；[ttftCount] 为请求次数，[ttftMillis] 为这些请求的首字等待之和。 */data class OutputTiming(
     val ttftMillis: Long = 0,
     val ttftCount: Int = 0,
     val genMillis: Long = 0,
@@ -157,6 +193,9 @@ class AgentLoop(
      */
     private var lastFailureRaw = ""
 
+    /** 与 [lastFailure] 配套的稳定分类（AUTH / RATE_LIMIT / SERVER ...），由提供方给出。 */
+    private var lastFailureCode = ""
+
     private companion object {
         /**
          * 交计划的工具名。
@@ -184,6 +223,15 @@ class AgentLoop(
         const val WRAP_UP_PROMPT =
             "本轮工具调用次数已达上限。请直接基于上文已经获取到的信息给出最终答复，" +
                 "不要再调用任何工具；若信息确实不足，请在答复中说明缺少哪部分信息。"
+
+        /**
+         * 自动重试参数，与 DSH 的默认策略逐项一致：
+         * 最多 5 次、初始 500ms、指数翻倍、上限 10s、±10% 抖动；优先采用服务端 Retry-After。
+         */
+        const val RETRY_MAX = 5
+        const val RETRY_INITIAL_DELAY_MS = 500L
+        const val RETRY_MAX_DELAY_MS = 10_000L
+        const val RETRY_JITTER_RATIO = 0.1
     }
 
     /** 上一次请求的前缀指纹（system 长度 / 摘要 + 工具表摘要）：变化时记录一行 [cache] 日志。 */
@@ -313,6 +361,25 @@ class AgentLoop(
                             " 个后台任务已结算"
                     )
                 }
+                // D2 子智能体结论转交：与后台任务的繁忙注入并列，下一轮开头取走并追加为
+                // 代发 user 消息（origin=ORIGIN_SUBAGENT）。界面画成「子智能体结论回传」触发行，不计轮次。
+                val notices = SubAgentNotices.drain(toolContext.sessionId)
+                if (notices.isNotEmpty()) {
+                    for (notice in notices) {
+                        messages.add(
+                            ChatMessage(
+                                role = "user",
+                                content = notice,
+                                programmatic = true,
+                                origin = ORIGIN_SUBAGENT
+                            )
+                        )
+                    }
+                    FileLog.log(
+                        "subagent",
+                        "结论转交：会话 " + toolContext.sessionId + " 共 " + notices.size + " 条子智能体结论进上下文"
+                    )
+                }
                 var assistantIndex = messages.size
                 messages.add(ChatMessage(role = "assistant", content = ""))
                 var completed =
@@ -340,7 +407,7 @@ class AgentLoop(
                 if (!completed) {
                     // 无法恢复（未接线 / 未开启压缩 / 压缩无效）或重发仍失败：原样返回提供方信息，
                     // 不包装为「压缩失败」，也不吞没：用户需要看到提供方的原始说明
-                    if (lastFailure.isNotEmpty()) ui.onError(lastFailure)
+                    if (lastFailure.isNotEmpty()) ui.onFailure(lastFailureCode, lastFailure)
                     return round
                 }
                 val calls = messages.getOrNull(assistantIndex)?.toolCalls.orEmpty()
@@ -352,44 +419,83 @@ class AgentLoop(
                 // 结果按顺序插在 assistant 之后，插话自然留在最后——下一次请求先读工具结果、再读插话，
                 // 与 DSH 的「插话投递到下一步」一致，且不会把工具调用与结果拆开（拆开就是 400）。
                 var toolInsertAt = assistantIndex + 1
-                for (call in calls) {
-                    ui.onToolStarted(call)
-                    toolCalls++
-                    if (call.name == PLAN_TOOL) producedPlan = true
-                    // 屏障②：执行有副作用的工具之前落盘。
-                    // 仅为「已派发」保留证据：若在工具执行中崩溃，重载后能看到该调用并补一条「结果未知」，
-                    // 而非让模型误判未执行或已执行。只读工具不写盘，避免无效 IO。
-                    if (registry.mutates(call)) checkpoint(onCheckpoint, "before-tool:" + call.name)
-                    val toolStartedAt = System.nanoTime()
-                    val raw = withContext(Dispatchers.IO) { registry.execute(call, toolContext) }
-                    toolMillis += (System.nanoTime() - toolStartedAt) / 1_000_000
-                    // 超长输出不整段写入上下文：落盘后仅返回「头 + 省略 + 尾 + 文件路径」，
-                    // 模型需要细节时再用 read_file 分页读取。
-                    val result = if (raw.ok) {
-                        val spilled = withContext(Dispatchers.IO) {
-                            SpillStore.process(toolContext.context, toolContext.sessionId, call.name, raw.text)
-                        }
-                        if (spilled.spilled) ToolResult.Ok(spilled.text) else raw
-                    } else {
-                        raw
+                // 工具回传的图片：先收集，等本批工具结果全部写入后再统一追加。
+                // 图片以独立的 user 消息回传模型，若夹在 tool 消息之间会打断 tool_calls 与结果的配对。
+                val imageFollowUps = ArrayList<ChatMessage>()
+                // 工具并发边界（与 DSH 的 executionMode 同口径）：只有声明并发安全且本次不写盘的
+                // 调用可重叠（当前为子智能体类），其余每个调用独占一段、构成屏障。
+                // 消息仍只由本协程按模型顺序回注，配对与顺序不因并发改变。
+                for (batch in ToolBatch.plan(calls) { registry.parallelSafe(it) }) {
+                    for (call in batch.calls) {
+                        ui.onToolStarted(call)
+                        toolCalls++
+                        if (call.name == PLAN_TOOL) producedPlan = true
+                        // 屏障②：执行有副作用的工具之前落盘。
+                        // 仅为「已派发」保留证据：若在工具执行中崩溃，重载后能看到该调用并补一条「结果未知」，
+                        // 而非让模型误判未执行或已执行。只读工具不写盘，避免无效 IO。
+                        if (registry.mutates(call)) checkpoint(onCheckpoint, "before-tool:" + call.name)
                     }
-                    FileLog.log(
-                        "tool",
-                        call.name + " " + (if (result.ok) "ok" else "fail") +
-                            " args=" + call.arguments.take(300) + " -> " + result.text.take(300)
-                    )
-                    ui.onToolFinished(call, result)
-                    messages.add(
-                        toolInsertAt++,
-                        ChatMessage(
-                            role = "tool",
-                            content = result.text,
-                            toolCallId = call.id,
-                            toolName = call.name,
-                            toolOk = result.ok
+                    // 工具耗时按段墙钟计：并发段只算一次重叠区间，避免把并行时长累加成多份
+                    val toolStartedAt = System.nanoTime()
+                    val results = executeToolBatch(batch) { call ->
+                        withContext(Dispatchers.IO) { registry.execute(call, toolContext) }
+                    }
+                    toolMillis += (System.nanoTime() - toolStartedAt) / 1_000_000
+                    for ((index, call) in batch.calls.withIndex()) {
+                        val raw = results[index]
+                        // 超长输出不整段写入上下文：落盘后仅返回「头 + 省略 + 尾 + 文件路径」，
+                        // 模型需要细节时再用 read_file 分页读取。
+                        val result = if (raw.ok) {
+                            val spilled = withContext(Dispatchers.IO) {
+                                SpillStore.process(toolContext.context, toolContext.sessionId, call.name, raw.text)
+                            }
+                            if (spilled.spilled) {
+                                // 仅替换正文：图片字段属于本次结果，不得因文本落盘而丢失
+                                if (raw is ToolResult.Ok) raw.copy(text = spilled.text)
+                                else ToolResult.Ok(spilled.text)
+                            } else {
+                                raw
+                            }
+                        } else {
+                            raw
+                        }
+                        FileLog.log(
+                            "tool",
+                            call.name + " " + (if (result.ok) "ok" else "fail") +
+                                " args=" + call.arguments.take(300) + " -> " + result.text.take(300),
+                            sessionId = toolContext.sessionId
                         )
-                    )
+                        ui.onToolFinished(call, result)
+                        messages.add(
+                            toolInsertAt++,
+                            ChatMessage(
+                                role = "tool",
+                                content = result.text,
+                                toolCallId = call.id,
+                                toolName = call.name,
+                                toolOk = result.ok
+                            )
+                        )
+                        if (result is ToolResult.Ok && result.imageDataUrls.isNotEmpty()) {
+                            // 该消息只承载图片：不写 usage，programmatic=true 使其不参与轮次统计。
+                            imageFollowUps.add(
+                                ChatMessage(
+                                    role = "user",
+                                    programmatic = true,
+                                    content = "[图片] 工具 " + call.name + " 返回的图片",
+                                    images = result.imagePaths,
+                                    imageDataUrls = result.imageDataUrls
+                                )
+                            )
+                        }
+                    }
                 }
+                for (message in imageFollowUps) messages.add(toolInsertAt++, message)
+
+                // X04 屏障③：步边界——工具结果回注后、下一次请求前。
+                // 一步内多个只读工具之间的进度从此入盘：一步内执行两个工具后杀进程，
+                // 重启能看到这一步之前的全部消息与该步结果，不出现整轮丢失
+                checkpoint(onCheckpoint, "step")
 
                 if (producedPlan) {
                     // 记入日志是因为该轮结束得「早」：无正文、无下一轮，排查时需确认由工具触发
@@ -422,11 +528,15 @@ class AgentLoop(
                 accrue()
                 // 收尾请求本身失败时仍要留一句原因：调用方据此区分「未产出答复」与「请求失败」
                 if (!wrapped && lastFailure.isNotEmpty()) {
-                    ui.onError("达到工具轮数上限后收尾失败：" + lastFailure)
+                    ui.onFailure(lastFailureCode, "达到工具轮数上限后收尾失败：" + lastFailure)
                 }
                 return round
             }
-            ui.onError("本轮已连续调用 " + maxRounds + " 次工具，先停下等你确认下一步。")
+            // 非请求类终态失败也走错误节点：主会话重进后仍能看到，不再只留输入框上方临时提示
+            ui.onFailure(
+                "TOOL_ROUND_LIMIT",
+                "本轮已连续调用 " + maxRounds + " 次工具，先停下等你确认下一步。"
+            )
             return round
         } finally {
             // 放在 finally：被「停止」打断的那一轮也需上报已消耗的时间，
@@ -588,7 +698,11 @@ class AgentLoop(
         // 此处曾两次出现同一问题，第一次是在 request 组装之后才挂载快照。
         if (snapshotOwner in history.indices) history[snapshotOwner] = messages[snapshotOwner]
 
+        // 恢复标记（origin=recovery）只是写给界面的记录，不进模型视图：
+        // 模型看到的是恢复时补齐的「结局未知」工具结果（见 SessionController.closeOpenToolCalls），
+        // 若把这句当用户指令发过去，模型会把它读成「请重试」而在新回合里原样重跑上一条命令。
         val tail = history.subList(start, history.size)
+            .filterNot { it.role == "user" && it.origin == ORIGIN_RECOVERY }
         val sanitized = tail.sanitized()
          // 压缩发生之后，超长的工具输出在**请求视图**中折叠中段（见 [ToolResultPruner]：
         // 压力确认后才折叠，低于压力线不变，宁可多付 token 也保留全文）。仅修改本次发送的字节，
@@ -696,12 +810,34 @@ class AgentLoop(
             lastCacheFingerprint = fingerprint
         }
 
-        val contentFilter = DsmlFilter("正文")
-        val reasoningFilter = DsmlFilter("思考")
         val calls = LinkedHashMap<Int, ToolCall>()
         var content = ""
         var reasoning = ""
         var failed = false
+        // 本次尝试的失败分类与等待时长：重试判定、退避等待与最终错误节点都用这一份
+        var attemptFailureCode = ""
+        var attemptRetryAfterMs: Long? = null
+        var attemptFailureText = ""
+        var attemptFailureRaw = ""
+
+        // 跨尝试累计：重试的是同一次「本轮请求」，计时口径与单次一致（等待时间不算模型耗时）
+        var totalStreamMs = 0L
+        var totalTtftMs = 0L
+        var totalTtftCount = 0
+        var totalGenMs = 0L
+        var totalReasoningMs = 0L
+        var totalTextMs = 0L
+        var totalToolArgMs = 0L
+
+        /** 把跨尝试累计的计时回填到本轮字段：成功与失败两条路径都要用这一份。 */
+        fun applyTimingTotals() {
+            lastStreamMillis = totalStreamMs
+            lastReasoningMillis = totalReasoningMs
+            lastTextMillis = totalTextMs
+            lastToolArgMillis = totalToolArgMs
+            lastTtftMillis = if (totalTtftCount > 0) totalTtftMs / totalTtftCount else 0L
+            lastGenMillis = totalGenMs
+        }
 
         /** 把流里的当前内容写回 messages 的 assistant 占位：替换同一个下标，界面才能实时刷新。 */
         fun publish() {
@@ -714,44 +850,63 @@ class AgentLoop(
             )
         }
 
-        // 仅统计「等待模型」这一段：请求拼装、读取工作区指令均在此之前，不应计入模型耗时
-        val streamStartedAt = System.nanoTime()
-        // 首字与末字时间：TTFT 与「纯生成速度」均由这两个时间点计算。
-         // 仅统计实际产生内容的片段（思考内容也算，属于模型输出），工具调用增量不计，该部分无 token 速率。
-        var firstTokenAt = 0L
-        var lastTokenAt = 0L
         /**
-         * 生成阶段的块计时：流式事件按类型切换即切块（思考 / 正文 / 工具参数）。
+         * 跑一次请求尝试。
          *
-         * DSH 使用 block-start 标记切块；此处没有该标记，但事件类型本身即为分界，
-         * 一段结束到下一段开始之间的空档归入下一段，三段互不重叠，合计即整个生成窗口。
+         * 自动重试复用同一个函数：每次尝试都清空上一次的半截输出、过滤器与计时块，
+         * 保证「重试成功后界面看到的内容」与「单次成功」逐字节一致。
          */
-        var blockKind = 0
-        var blockStartAt = 0L
-        var reasoningMs = 0L
-        var textMs = 0L
-        var toolArgMs = 0L
-        fun switchBlock(kind: Int, at: Long) {
-            if (blockKind != 0) {
-                val d = (at - blockStartAt) / 1_000_000
-                when (blockKind) {
-                    1 -> reasoningMs += d
-                    2 -> textMs += d
-                    3 -> toolArgMs += d
+        suspend fun attempt(): Boolean {
+            content = ""
+            reasoning = ""
+            calls.clear()
+            failed = false
+            attemptFailureCode = ""
+            attemptRetryAfterMs = null
+            attemptFailureText = ""
+            attemptFailureRaw = ""
+            val contentFilter = DsmlFilter("正文")
+            val reasoningFilter = DsmlFilter("思考")
+
+            // 仅统计「等待模型」这一段：请求拼装、读取工作区指令均在此之前，不应计入模型耗时
+            val streamStartedAt = System.nanoTime()
+            // 首字与末字时间：TTFT 与「纯生成速度」均由这两个时间点计算。
+             // 仅统计实际产生内容的片段（思考内容也算，属于模型输出），工具调用增量不计，该部分无 token 速率。
+            var firstTokenAt = 0L
+            var lastTokenAt = 0L
+            /**
+             * 生成阶段的块计时：流式事件按类型切换即切块（思考 / 正文 / 工具参数）。
+             *
+             * DSH 使用 block-start 标记切块；此处没有该标记，但事件类型本身即为分界，
+             * 一段结束到下一段开始之间的空档归入下一段，三段互不重叠，合计即整个生成窗口。
+             */
+            var blockKind = 0
+            var blockStartAt = 0L
+            var reasoningMs = 0L
+            var textMs = 0L
+            var toolArgMs = 0L
+            fun switchBlock(kind: Int, at: Long) {
+                if (blockKind != 0) {
+                    val d = (at - blockStartAt) / 1_000_000
+                    when (blockKind) {
+                        1 -> reasoningMs += d
+                        2 -> textMs += d
+                        3 -> toolArgMs += d
+                    }
                 }
+                blockKind = kind
+                blockStartAt = at
             }
-            blockKind = kind
-            blockStartAt = at
-        }
-        /** 记录一次增量时间戳：首次调用确定首字起点，之后每次更新末字时间。 */
-        fun markToken() {
-            val now = System.nanoTime()
-            if (firstTokenAt == 0L) firstTokenAt = now
-            lastTokenAt = now
-        }
-         // 屏障①：发送请求前落盘。此刻历史中已有用户提问与上次的工具结果，
-        // 在此崩溃仅丢失「尚未生成的回答」，不会产生无法解释的不完整记录。
-        checkpoint(onCheckpoint, "before-request")
+            /** 记录一次增量时间戳：首次调用确定首字起点，之后每次更新末字时间。 */
+            fun markToken() {
+                val now = System.nanoTime()
+                if (firstTokenAt == 0L) firstTokenAt = now
+                lastTokenAt = now
+            }
+             // 屏障①：发送请求前落盘。此刻历史中已有用户提问与上次的工具结果，
+            // 在此崩溃仅丢失「尚未生成的回答」，不会产生无法解释的不完整记录。
+            checkpoint(onCheckpoint, "before-request")
+
         try {
             provider.stream(
                 ChatRequest(
@@ -830,11 +985,15 @@ class AgentLoop(
 
                     is LlmEvent.Failed -> {
                         failed = true
-                        lastFailureRaw = event.message
-                        lastFailure = if (event.code > 0) {
+                        attemptFailureCode = event.failureCode
+                        attemptRetryAfterMs = event.retryAfterMs
+                        attemptFailureRaw = event.message
+                        attemptFailureText = if (event.code > 0) {
                             "请求失败（HTTP " + event.code + "）：" + event.message
                         } else {
-                            "请求失败：" + event.message
+                            // 提供方的文案本身已是完整句子（如「请求失败，请检查网络连接后重试」），
+                            // 不再加前缀，避免出现「请求失败：请求失败…」
+                            event.message.ifBlank { "请求失败，请稍后重试" }
                         }
                     }
                 }
@@ -843,20 +1002,29 @@ class AgentLoop(
             throw e
         } catch (e: Exception) {
             failed = true
-            lastFailureRaw = e.message.orEmpty()
-            lastFailure = "请求异常：" + (e.message ?: e.javaClass.simpleName)
+            // 提供方通常已把网络异常转成 Failed；这里兜住其余异常（连接被重置、DNS 失败等）
+            attemptFailureCode = if (
+                e is java.net.SocketTimeoutException || e is java.io.InterruptedIOException
+            ) {
+                LlmFailureCodes.TIMEOUT
+            } else {
+                LlmFailureCodes.TRANSPORT
+            }
+            attemptFailureRaw = e.message.orEmpty()
+            attemptFailureText = "请求异常：" + (e.message ?: e.javaClass.simpleName)
         } finally {
             // 取消也需记录：用户点击停止时，本轮等待时间已实际消耗
             val endedAt = System.nanoTime()
             switchBlock(0, endedAt)
-            lastStreamMillis = (endedAt - streamStartedAt) / 1_000_000
-            lastReasoningMillis = reasoningMs
-            lastTextMillis = textMs
-            lastToolArgMillis = toolArgMs
+            totalStreamMs += (endedAt - streamStartedAt) / 1_000_000
+            totalReasoningMs += reasoningMs
+            totalTextMs += textMs
+            totalToolArgMs += toolArgMs
             if (firstTokenAt > 0L) {
-                lastTtftMillis = (firstTokenAt - streamStartedAt) / 1_000_000
+                totalTtftMs += (firstTokenAt - streamStartedAt) / 1_000_000
+                totalTtftCount++
                 // 仅产生一个字时 lastTokenAt == firstTokenAt：生成时长按 0 计算，速度计算处自行兜底，避免除零
-                lastGenMillis = (lastTokenAt - firstTokenAt) / 1_000_000
+                totalGenMs += (lastTokenAt - firstTokenAt) / 1_000_000
             }
         }
 
@@ -866,49 +1034,80 @@ class AgentLoop(
             ui.onError("模型输出里出现了非法标记，已截断，不会显示到界面")
         }
 
-        if (failed || (content.isBlank() && calls.isEmpty())) {
-            if (index in messages.indices) messages.removeAt(index)
-            return false
+        // 空响应与 DSH 同样归为可重试失败：流正常结束却一个字都没有，多半是服务端瞬时问题
+        if (!failed && content.isBlank() && calls.isEmpty()) {
+            failed = true
+            attemptFailureCode = LlmFailureCodes.EMPTY_RESPONSE
+            attemptFailureRaw = "模型没有返回任何内容"
+            attemptFailureText = "模型没有返回任何内容"
         }
-        publish()
-        return true
+        return !failed
+        }
+
+        // 自动重试：与 DSH 一致，最多 RETRY_MAX 次、指数退避 + 抖动、优先服务端 Retry-After；
+        // 鉴权 / 额度 / 参数类失败不重试，直接交给调用方判溢出或上报。
+        var retry = 0
+        while (true) {
+            if (attempt()) {
+                ui.onModelRetry(null)
+                applyTimingTotals()
+                publish()
+                return true
+            }
+            lastFailureCode = attemptFailureCode
+            lastFailureRaw = attemptFailureRaw
+            lastFailure = attemptFailureText
+            applyTimingTotals()
+
+            val retryAfter = attemptRetryAfterMs
+            val retryAllowed = LlmFailureCodes.isRetryable(attemptFailureCode) &&
+                retry < RETRY_MAX &&
+                (retryAfter == null || retryAfter <= RETRY_MAX_DELAY_MS)
+            if (!retryAllowed) {
+                ui.onModelRetry(null)
+                if (index in messages.indices) messages.removeAt(index)
+                return false
+            }
+            retry++
+            val waitMs = retryAfter ?: retryDelayMs(retry)
+            FileLog.log(
+                "retry",
+                "第 " + retry + "/" + RETRY_MAX + " 次重试，等待 " + waitMs + "ms（" +
+                    attemptFailureCode + "：" + attemptFailureRaw.take(160) + "）",
+                sessionId = toolContext.sessionId
+            )
+            ui.onModelRetry(
+                ModelRetryInfo(retry, RETRY_MAX, waitMs, attemptFailureCode, attemptFailureText)
+            )
+            // 失败尝试的半截输出不保留：重试的是同一条请求，留着会让用户看到重复内容
+            if (index in messages.indices) {
+                messages[index] = ChatMessage(role = "assistant", content = "")
+            }
+            delay(waitMs)
+        }
+    }
+
+    /**
+     * 第 [retry] 次重试的本地等待时长：500ms 起步、逐次翻倍、10s 封顶，带 ±10% 抖动。
+     *
+     * 抖动用于打散多端同时重试的尖峰；口径与 DSH 的默认策略一致。
+     */
+    private fun retryDelayMs(retry: Int): Long {
+        val exponent = (retry - 1).coerceIn(0, 20)
+        val base = (RETRY_INITIAL_DELAY_MS.toDouble() * (1 shl exponent))
+            .coerceAtMost(RETRY_MAX_DELAY_MS.toDouble())
+        val jitter = 1.0 - RETRY_JITTER_RATIO +
+            2 * RETRY_JITTER_RATIO * kotlin.random.Random.nextDouble()
+        return (base * jitter).toLong().coerceAtMost(RETRY_MAX_DELAY_MS)
     }
 
     /**
      * 发送请求前的清洗：丢弃空 assistant 占位、孤立的 tool 消息，以及「有 tool_calls 但结果不完整」的整轮。
      * 停止按钮打断工具执行时，历史中会留下此类不完整轮次，未清洗则下一轮必定返回 400。
+     *
+     * 实现唯一在 [sanitizeToolPairing]：摘要前缀组装走同一份，两处口径不会分叉。
      */
-    private fun List<ChatMessage>.sanitized(): List<ChatMessage> {
-        val out = ArrayList<ChatMessage>(size)
-        var i = 0
-        while (i < size) {
-            val m = this[i]
-            when {
-                m.role == "tool" -> i++
-                m.role == "assistant" && m.content.isBlank() && m.toolCalls.isEmpty() -> i++
-                m.role == "assistant" && m.toolCalls.isNotEmpty() -> {
-                    var j = i + 1
-                    val results = ArrayList<ChatMessage>()
-                    while (j < size && this[j].role == "tool") {
-                        results.add(this[j])
-                        j++
-                    }
-                    val got = results.mapNotNull { it.toolCallId }.toSet()
-                    val complete = m.toolCalls.all { it.id in got }
-                    if (complete) {
-                        out.add(m)
-                        out.addAll(results)
-                    }
-                    i = j
-                }
-                else -> {
-                    out.add(m)
-                    i++
-                }
-            }
-        }
-        return out
-    }
+    private fun List<ChatMessage>.sanitized(): List<ChatMessage> = sanitizeToolPairing()
 }
 
 /**
