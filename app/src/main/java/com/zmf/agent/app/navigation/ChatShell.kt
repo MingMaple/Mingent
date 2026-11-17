@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.zmf.agent.capability.subagent.SubAgentRegistry
+import com.zmf.agent.core.model.TextMode
 import com.zmf.agent.core.prefs.ThemeMode
 import com.zmf.agent.feature.chat.AppPage
 import com.zmf.agent.feature.chat.ChatItem
@@ -59,6 +60,8 @@ internal fun ChatShell(
     onThemeModeChange: (ThemeMode) -> Unit,
     baseFontSp: Int,
     onBaseFontSpChange: (Int) -> Unit,
+    textMode: TextMode,
+    onTextModeChange: (TextMode) -> Unit,
     onPickFile: () -> Unit,
     onLogLaunch: (String) -> Unit,
     onImportLaunch: () -> Unit
@@ -119,6 +122,8 @@ internal fun ChatShell(
                                     imeVisible = imeVisible,
                                     baseFontSp = baseFontSp,
                                     onBaseFontSpChange = onBaseFontSpChange,
+                                    textMode = textMode,
+                                    onTextModeChange = onTextModeChange,
                                     onPickFile = onPickFile,
                                     onLogLaunch = onLogLaunch,
                                     onImportLaunch = onImportLaunch,
@@ -164,6 +169,8 @@ internal fun ChatShell(
                             imeVisible = imeVisible,
                             baseFontSp = baseFontSp,
                             onBaseFontSpChange = onBaseFontSpChange,
+                            textMode = textMode,
+                            onTextModeChange = onTextModeChange,
                             onPickFile = onPickFile,
                             onLogLaunch = onLogLaunch,
                             onImportLaunch = onImportLaunch,

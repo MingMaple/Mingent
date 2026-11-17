@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.zmf.agent.capability.subagent.SubAgentRegistry
+import com.zmf.agent.core.model.TextMode
 import com.zmf.agent.core.prefs.ShareTargetPrefs
 import com.zmf.agent.feature.chat.AppPage
 import com.zmf.agent.feature.chat.BrowserState
@@ -87,6 +88,8 @@ internal fun ChatMainContent(
     imeVisible: Boolean,
     baseFontSp: Int,
     onBaseFontSpChange: (Int) -> Unit,
+    textMode: TextMode,
+    onTextModeChange: (TextMode) -> Unit,
     onPickFile: () -> Unit,
     onLogLaunch: (String) -> Unit,
     onImportLaunch: () -> Unit,
@@ -211,7 +214,9 @@ internal fun ChatMainContent(
             context = context,
             scope = scope,
             imageRoot = imageRoot,
-            subAgentEntries = subAgentEntries
+            subAgentEntries = subAgentEntries,
+            textMode = textMode,
+            onTextModeChange = onTextModeChange
         )
     }
 }

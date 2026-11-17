@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.capability.subagent.SubAgentRegistry
 import com.zmf.agent.core.model.SharePayload
+import com.zmf.agent.core.model.TextMode
 import com.zmf.agent.infra.backup.BackupOptions
 import com.zmf.agent.core.prefs.ThemeMode
 import com.zmf.agent.core.prefs.FontSizeStore
@@ -68,6 +69,8 @@ fun ChatScreen(
     onThemeModeChange: (ThemeMode) -> Unit = {},
     baseFontSp: Int = FontSizeStore.DEFAULT_SP,
     onBaseFontSpChange: (Int) -> Unit = {},
+    textMode: TextMode = TextMode.TXT,
+    onTextModeChange: (TextMode) -> Unit = {},
     initialSessionId: String? = null,
     initialShare: SharePayload? = null,
     onShareConsumed: () -> Unit = {}
@@ -287,6 +290,8 @@ fun ChatScreen(
         onThemeModeChange = onThemeModeChange,
         baseFontSp = baseFontSp,
         onBaseFontSpChange = onBaseFontSpChange,
+        textMode = textMode,
+        onTextModeChange = onTextModeChange,
         onPickFile = { openFilePicker() },
         onLogLaunch = { name -> logLauncher.launch(name) },
         onImportLaunch = {

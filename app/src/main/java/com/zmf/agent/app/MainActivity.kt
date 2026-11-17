@@ -37,6 +37,7 @@ import com.zmf.agent.uikit.theme.Palette
 import com.zmf.agent.core.prefs.ThemeMode
 import com.zmf.agent.core.prefs.ThemeStore
 import com.zmf.agent.core.prefs.FontSizeStore
+import com.zmf.agent.core.prefs.GeneralPrefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -103,6 +104,8 @@ class MainActivity : ComponentActivity() {
             var mode by remember { mutableStateOf(ThemeStore.load(context)) }
             // 界面基准字号：合法性由 FontSizeStore 保证，读取结果已夹取到区间
             var baseFontSp by remember { mutableStateOf(FontSizeStore.load(context)) }
+            // 消息正文展示模式：进程内唯一一份，切换即写盘，所有选择文本页读同一状态
+            var textMode by remember { mutableStateOf(GeneralPrefs.loadTextMode(context)) }
             val dark = when (mode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
                 ThemeMode.LIGHT -> false
@@ -123,6 +126,11 @@ class MainActivity : ComponentActivity() {
                         onBaseFontSpChange = { picked ->
                             baseFontSp = picked
                             FontSizeStore.save(context, picked)
+                        },
+                        textMode = textMode,
+                        onTextModeChange = { picked ->
+                            textMode = picked
+                            GeneralPrefs.saveTextMode(context, picked)
                         },
                         initialSessionId = notificationSessionId,
                         initialShare = sharePayload,
