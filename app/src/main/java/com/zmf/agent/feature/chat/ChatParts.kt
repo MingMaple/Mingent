@@ -46,15 +46,10 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -69,8 +64,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.animation.animateContentSize
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -92,11 +85,8 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -586,52 +576,6 @@ internal fun MinimalDialog(
             Column(
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
                 content = content
-            )
-        }
-    }
-}
-
-/** 极简名字输入框（通用）：一行输入 + ✓ 保存 / × 取消，点外部取消。 */
-@Composable
-internal fun NameInputDialog(
-    placeholder: String,
-    initial: String = "",
-    onSave: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var value by remember(initial) {
-        mutableStateOf(TextFieldValue(initial, selection = TextRange(0, initial.length)))
-    }
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-    MinimalDialog(onDismiss = onDismiss) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextField(
-                value = value,
-                onValueChange = { value = it },
-                modifier = Modifier.weight(1f).focusRequester(focusRequester),
-                placeholder = { Text(placeholder, fontSize = 15.sp) },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent
-                ),
-                maxLines = 1,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { onSave(value.text) })
-            )
-            Text(
-                text = "✓",
-                modifier = Modifier.clickable { onSave(value.text) }.padding(horizontal = 8.dp),
-                fontSize = 20.sp,
-                color = UiColors.accentFg
-            )
-            Text(
-                text = "×",
-                modifier = Modifier.clickable(onClick = onDismiss).padding(horizontal = 6.dp),
-                fontSize = 20.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
             )
         }
     }
