@@ -1,4 +1,5 @@
 package com.zmf.agent.feature.chat
+import com.zmf.agent.capability.tools.toolHeadline
 import com.zmf.agent.uikit.icons.DshIcons
 
 import androidx.compose.foundation.background
@@ -76,7 +77,7 @@ import com.zmf.agent.uikit.components.CopyActionButton
  * 三、轨迹页
  *
  *   轨迹页用 [TraceToolCard]（从这里派生的另一份，默认展开）；参数同名同义，
- *   TraceLine 的 args / result 原文直接传进来就行。
+ *   TraceLine 的 args / result 以原文传入即可。
  *
  * 四、位置约定
  *   - 参数区：随整卡展开后 240dp 内滚；
@@ -119,7 +120,22 @@ fun ToolBlock(
     code: String? = null,
     codeLang: String = "",
     containerColor: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-    copyText: String? = null
+    copyText: String? = null,
+    /**
+     * 非空时代替「参数 / 代码 / 输出」三段，展开后只呈现这一块文字。
+     *
+     * 供提问条目使用：一次问答的可读正文（题面、选项、答复、状态）本身就是完整信息，
+     * 拆成「参数」与「结果」两段反而要用户在 JSON 与答案之间来回对照。
+     * 折叠行为、行高、箭头、复制入口与其他工具条目完全一致。
+     */
+    detailText: String? = null,
+    /**
+     * 这次调用是不是被用户中止后补写的合成结果。
+     *
+     * 只在标题行的状态词上体现（「已中止」），其余样式与「完成」一致；
+     * 轨迹页不传该参数，行为不变。
+     */
+    aborted: Boolean = false
 ) {
     val context = LocalContext.current
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -143,7 +159,12 @@ fun ToolBlock(
     // 不区分成功 / 失败 / 成败未知：调用结束即结束，具体错误可在输出中查看，
     // 卡片上额外的红字反而干扰阅读。
     val statusColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-    val statusText = if (running) "" else "完成"
+    // 中止补写的合成结果不是真实完成：状态词改为「已中止」，其余样式与「完成」一致
+    val statusText = when {
+        running -> ""
+        aborted -> "已中止"
+        else -> "完成"
+    }
     // 标题（「对比本地与远端插件版本」）：优先取模型写入的 description，旧数据回退 action_summary；
     // 模型遗漏时退回按工具名与参数拼出的句子（[toolSummary]），标题行不会留空。
     val headline = remember(toolName, arguments) { toolHeadline(toolName, arguments) }
@@ -225,6 +246,24 @@ fun ToolBlock(
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+            if (detailText != null) {
+                /* -------------------------- 单一详情块 -------------------------- */
+                // 提问条目专用：整块就是这一次问答，不再分「参数」「输出」两段
+                BoundedScrollColumn(
+                    maxHeight = BlockBodyMaxHeight,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(bodyBackground, RoundedCornerShape(10.dp))
+                ) {
+                    Text(
+                        text = detailText,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = onSurface.copy(alpha = 0.78f)
+                    )
+                }
+            } else {
             /* -------------------------- 参数区 -------------------------- */
             // 直接展示，无二级「展开 / 收起」：主页仅需「参数 / 结果」两段
             // （简化杂乱内容，仅展示参数 / 结果或代码 / 输出）。参数为空时整块不渲染。
@@ -291,15 +330,15 @@ fun ToolBlock(
                     )
                 }
             }
-            }
-            }
+            } // else：参数 / 代码 / 输出三段
+            } // 展开态的内容列
+            } // if (open)
         }
     }
 }
-
 /* ------------------------------ 内部实现 ------------------------------ */
 
-/** 默认的复制内容：工具名 + 有哪段带哪段，按「标签换行正文」拼，粘到外面还能读。 */
+/** 默认的复制内容：工具名 + 实际存在的段落，按「标签换行正文」拼接，粘贴到其他应用后仍可阅读。 */
 private fun buildToolCopyText(
     toolName: String,
     arguments: String,

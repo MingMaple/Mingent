@@ -42,9 +42,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -154,6 +157,9 @@ fun FloatingChatWindow(
     messages: List<ChatMessage>,
     sessions: List<ChatPortSession>,
     onSend: (String) -> Unit,
+    /** 当前会话是否在生成：与主页一致，生成中在输入条上显示停止键。 */
+    streaming: Boolean,
+    onStop: () -> Unit,
     onHome: () -> Unit,
     onCollapse: () -> Unit,
     onClose: () -> Unit,
@@ -294,6 +300,8 @@ fun FloatingChatWindow(
                         text = text,
                         onTextChange = { text = it },
                         canSend = canSend,
+                        streaming = streaming,
+                        onStop = onStop,
                         onFocusChanged = focusHook,
                         onSubmit = submit
                     )
@@ -397,7 +405,7 @@ private fun SessionPickerPanel(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(vertical = 4.dp)
             ) {
-                items(sessions.size, key = { sessions[it].id }) { index ->
+                items(sessions.size, key = { sessions[it].id }, contentType = { "session" }) { index ->
                     val session = sessions[index]
                     Row(
                         modifier = Modifier
@@ -692,6 +700,8 @@ private fun InputRow(
     text: String,
     onTextChange: (String) -> Unit,
     canSend: Boolean,
+    streaming: Boolean,
+    onStop: () -> Unit,
     onFocusChanged: (Boolean) -> Unit,
     onSubmit: () -> Unit
 ) {
@@ -734,6 +744,31 @@ private fun InputRow(
             )
         }
         Spacer(Modifier.width(8.dp))
+        // 停止键与主页同义：只在生成中出现，尺寸缩到 32dp 以适配小窗窄宽度，
+        // 底色与图形沿用主页（12% 墨色底 + 8dp 圆角方块）
+        if (streaming) {
+            val onSurface = MaterialTheme.colorScheme.onSurface
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(onSurface.copy(alpha = 0.12f))
+                    .clickable(onClick = onStop),
+                contentAlignment = Alignment.Center
+            ) {
+                Canvas(Modifier.size(14.dp)) {
+                    val s = size.width
+                    val inset = s * 0.3f
+                    drawRoundRect(
+                        color = onSurface.copy(alpha = 0.85f),
+                        topLeft = Offset(inset, inset),
+                        size = Size(s * 0.4f, s * 0.4f),
+                        cornerRadius = CornerRadius(s * 0.1f, s * 0.1f)
+                    )
+                }
+            }
+            Spacer(Modifier.width(6.dp))
+        }
         // 发送按钮与主页 Composer 使用同一套配色：底色为 UiColors.accentFill（浅色 #4176E6、深色 #7AAAFF），
         // 图标为 UiColors.onAccent（浅色白、深色墨），不可发送时透明度降至 40%。
         Box(

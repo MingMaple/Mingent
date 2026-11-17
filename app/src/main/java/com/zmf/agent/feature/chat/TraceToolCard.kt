@@ -1,4 +1,5 @@
 package com.zmf.agent.feature.chat
+import com.zmf.agent.capability.tools.toolHeadline
 import com.zmf.agent.uikit.icons.DshIcons
 
 import androidx.compose.foundation.background
@@ -285,7 +286,7 @@ fun TraceToolCard(
 
 /* ------------------------------ 内部实现 ------------------------------ */
 
-/** 默认的复制内容：工具名 + 有哪段带哪段，按「标签换行正文」拼，粘到外面还能读。 */
+/** 默认的复制内容：工具名 + 实际存在的段落，按「标签换行正文」拼接，粘贴到其他应用后仍可阅读。 */
 private fun buildToolCopyText(
     toolName: String,
     arguments: String,

@@ -47,12 +47,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,6 +72,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
@@ -160,10 +164,11 @@ private enum class ComposerPanelKind { NONE, PLUS, PERMISSION, CONTEXT, MODEL, S
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ChatComposer(
+internal fun ChatComposer(
     value: TextFieldValue,
     onValueChange: (TextFieldValue) -> Unit,
-    isStreaming: Boolean,
+    /** 本会话的回合状态：运行 / 中止中 / 空闲。输入区不再按「回合在不在跑」自行推断。 */
+    turnPhase: TurnPhase,
     hasAttachment: Boolean,
     planMode: Boolean,
     activeGoal: Boolean,
@@ -197,6 +202,18 @@ fun ChatComposer(
     effortLabel: String,
     // 模型 / 推理等级二级窗：点击一级窗中的两行即可在同张卡片内展开，无需跳转设置页
     quick: QuickSheetState,
+    /**
+     * 未决提问：非空时输入条上方显示提问面板（与「＋」面板同一槽位），
+     * 输入区自己的面板在此期间一律不打开——提问只由超时或面板内动作结算。
+     */
+    ask: QuestionCenter.ActiveAsk? = null,
+    onAskAnswer: (List<String>, String?) -> Unit = { _, _ -> },
+    /** 提问面板的叉号：放弃作答（按超时同一口径结算）。 */
+    onAskClose: () -> Unit = {},
+    /** 提问面板底部翻页器：切到同一请求里的第 index 题（只换展示，不作答）。 */
+    onAskGoto: (Int) -> Unit = {},
+    /** 未决提问期间禁止发送／插话（输入框仍可输入，停止键仍可用）。 */
+    sendBlocked: Boolean = false,
     modifier: Modifier = Modifier,
     // 父层拿它铺遮罩：不给也不会坏（自建一份就没人看）。给了就由本组件单向写 open、父层回调 dismiss
     panelHost: ComposerPanelHost = remember { ComposerPanelHost() }
@@ -204,7 +221,7 @@ fun ChatComposer(
     var panel by remember { mutableStateOf(ComposerPanelKind.NONE) }
     val panelOpen = panel != ComposerPanelKind.NONE
     var editingQueueId by remember { mutableStateOf<Long?>(null) }
-    // 插完 "/plan " 这类模板后面板必须马上让位：否则模板本身又被当成一次过滤，浮窗赖着不走
+    // 插入 "/plan " 这类模板后，面板必须立即让位：否则模板本身又被当成一次过滤，浮窗不会收起
     var slashClosed by remember { mutableStateOf(false) }
     val onSurface = MaterialTheme.colorScheme.onSurface
     // 三条分工：线/图标用 accentFg，填充面用 accentFill，压在填充上的图标用 onAccent。
@@ -214,17 +231,27 @@ fun ChatComposer(
     val onAccent = UiColors.onAccent
     // 只挂附件不写字也是有效发送：曾经只按文本判，图片/文件就永远发不出去。
     // 草稿为空但队列非空时同样可用：此时发送键的语义是「发送（插话）排队消息」，与占位提示一致
-    val canSend = value.text.isNotBlank() || hasAttachment || queue.isNotEmpty()
+    // 未决提问期间不投递：DSH 在提问卡占用编辑器期间也是「能打字、发不出去」
+    // 中止中一律不可发：取消与落盘尚未收尾，会话占用还没释放
+    val canSend = turnPhase != TurnPhase.ABORTING &&
+        (value.text.isNotBlank() || hasAttachment || queue.isNotEmpty()) && !sendBlocked
+    // 运行中与中止中都算「本回合还在」，停止键／中止中的槽位据此常驻
+    val streaming = turnPhase != TurnPhase.IDLE
     // 被编辑的消息已删除或发送后，描边随之消失，不会残留无效编辑态
     val editingId = editingQueueId?.takeIf { id -> queue.any { it.id == id } }
 
-    // 收面板只有三个入口：标签（上面那几个 clickable）、父层的 ComposerScrim、这里这条返回键。
-    // 键盘开合、焦点变化、点输入框、往框里打字都不许收：「点输入框面板就消失」就是这么来的。
+    // 收起面板仅有三个入口：标签（上文的 clickable）、父层的 ComposerScrim、此处返回键。
+    // 键盘开合、焦点变化、点击输入框、在框内输入均不允许收起：「点击输入框面板即消失」即由此产生。
     val closePanel: () -> Unit = { panel = ComposerPanelKind.NONE }
+    // 有未决提问时，提问面板独占输入条上方这一层：其它面板一律不开，
+    // 于是「唤出另一个面板把提问顶掉」这条关闭路径不存在（提问只由超时或面板内动作结算）。
+    val askActive = ask != null
+    LaunchedEffect(askActive) { if (askActive) panel = ComposerPanelKind.NONE }
     BackHandler(enabled = panelOpen) { closePanel() }
-    // 对外只开一个把手：open 决定遮罩铺不铺，dismiss 收面板。外面不用知道现在是哪一层浮窗
+    // 对外只开一个把手：open 决定遮罩铺不铺，dismiss 收面板。外面不用知道现在是哪一层浮窗。
+    // 提问面板不铺遮罩：它不可被点外部关闭。
     SideEffect {
-        panelHost.bind(open = panelOpen, close = closePanel)
+        panelHost.bind(open = panelOpen && !askActive, close = closePanel)
     }
 
     // 斜杠指令：以 "/" 开头就把同一张面板当过滤结果用；删掉 "/" 或一条都不命中时它自己就收了，
@@ -243,7 +270,7 @@ fun ChatComposer(
                 queue.forEachIndexed { index, message ->
                     if (index > 0) Spacer(modifier = Modifier.height(4.dp))
                     QueuedRow(
-                        text = message.text,
+                        text = message.displayText,
                         editing = message.id == editingId,
                         onEdit = {
                             editingQueueId = message.id
@@ -265,16 +292,28 @@ fun ChatComposer(
         // 浮窗不进布局流：只画在输入框上方，开合时不占一丝高度。
         // 此前它们与输入框并列于 Column 中，展开时会将上方 weight(1f) 的消息列表压缩，
         // 用户观察到的「窗口开关时突然跳动」即由此产生。
-        // 它跟输入条同在这个 Column 里，所以键盘推上来时两者是同一段位移，浮窗不用另外跟 IME。
-        // 当前该显示哪一张面板：斜杠过滤优先复用「＋」那张
-        val activePanel = if (commandPanelOpen) ComposerPanelKind.PLUS else panel
+        // 它与输入条同处于该 Column 内，键盘弹起时二者位移一致，浮窗无需另行跟随 IME。
+        // 当前该显示哪一张面板：斜杠过滤优先复用「＋」那张；有未决提问时整层让给提问面板
+        val activePanel = when {
+            askActive -> ComposerPanelKind.NONE
+            commandPanelOpen -> ComposerPanelKind.PLUS
+            else -> panel
+        }
         ComposerPanelOverlay(onDismiss = closePanel) {
             // **只有一套动效**，与「本轮用量」弹层完全一致：出现时围绕底边从 0.90 弹到 1，
             // 关闭时整块立即摘除；面板互切同样是旧的直接消失、新的从头播一遍。
             // 缩放施加在卡片**外层**的 graphicsLayer 上（与 SaltPopover 相同）：卡片连同阴影
             // 先按原尺寸画好，再由外层整体缩放。若把缩放落到卡片自身节点上，阴影会在动画期间
             // 按矩形包围盒重绘——出现时又深又硬，落定后才变回那圈浅影。
-            if (activePanel != ComposerPanelKind.NONE) {
+            if (ask != null) {
+                // 提问面板：同一槽位、同一套弹出与摘除节奏，挂在输入条上方而不是顶替它
+                QuestionPanel(
+                    ask = ask,
+                    onAnswer = onAskAnswer,
+                    onClose = onAskClose,
+                    onGoto = onAskGoto
+                )
+            } else if (activePanel != ComposerPanelKind.NONE) {
                 // 换面板时从 0.90 重新弹起：animateFloatAsState 的动画实例会跨面板复用，
                 // 直接改目标值会先往 0.90 回缩一段再弹起，因此用 Animatable 显式重播。
                 val scale = remember { Animatable(0.90f) }
@@ -358,7 +397,7 @@ fun ChatComposer(
                 .background(onSurface.copy(alpha = 0.04f))
                 .padding(start = 14.dp, end = 8.dp, top = 12.dp, bottom = 8.dp)
         ) {
-            // 此处此前曾设置「按下即收起面板」：键盘弹起、手指触到输入框后面板即消失，输入完成后还需再次点击标签。
+            // 此处此前曾设置「按下即收起面板」：键盘弹起、手指触到输入框后，面板即消失，输入完成后还需再次点击标签。
             // 现在点输入框、焦点进出、换行都不动面板：收面板只认标签、遮罩外点、返回键三件事。
             BasicTextField(
                 value = value,
@@ -442,7 +481,7 @@ fun ChatComposer(
                 if (activeGoal) {
                     ModeBadge { TargetGlyph(tint = accent, iconSize = 16.dp) }
                 }
-                // 「@」删掉了：选文件在「＋」里已经有入口，同一个动作给两个按钮只会让人犹豫
+                // 「@」已移除：选文件在「＋」里已有入口，同一动作给两个按钮只会使用户犹豫
                 Spacer(modifier = Modifier.weight(1f))
                 // 第一颗：模型 + 推理等级。空心细圆圈内含实心点，较原思考圆点更明确表示「设定」
                 Box(
@@ -489,23 +528,43 @@ fun ChatComposer(
                         progressTint = UiColors.meterTertiary
                     )
                 }
-                if (isStreaming) {
-                    // 停止和发送是两件事：一个是打断，一个是按繁忙策略投递，所以并排放两个键
+                if (streaming) {
+                    // 停止和发送是两件事：一个是打断，一个是按繁忙策略投递，所以并排放两个键。
+                    // 中止中沿用同一尺寸与槽宽（36dp + 6dp 间距），换成不可点的文字：
+                    // 此刻按下停止没有第二个信号可发，能点却什么都不发生比直接灰掉更糟
+                    val aborting = turnPhase == TurnPhase.ABORTING
                     Box(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(RoundedCornerShape(11.dp))
                             .background(onSurface.copy(alpha = 0.12f))
-                            .clickable(onClick = onStop),
+                            .then(
+                                if (aborting) {
+                                    Modifier
+                                } else {
+                                    Modifier.clickable(onClick = onStop)
+                                }
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
-                        UnitGlyph(iconSize = 16.dp) {
-                            drawRoundRect(
-                                color = onSurface.copy(alpha = 0.85f),
-                                topLeft = Offset(4.6f, 4.6f),
-                                size = Size(8.8f, 8.8f),
-                                cornerRadius = CornerRadius(2.6f, 2.6f)
+                        if (aborting) {
+                            // 禁用态按口径压到 40%；固定文案单行、不省略
+                            Text(
+                                text = "中止中",
+                                fontSize = 10.sp,
+                                color = onSurface.copy(alpha = 0.40f),
+                                maxLines = 1,
+                                softWrap = false
                             )
+                        } else {
+                            UnitGlyph(iconSize = 16.dp) {
+                                drawRoundRect(
+                                    color = onSurface.copy(alpha = 0.85f),
+                                    topLeft = Offset(4.6f, 4.6f),
+                                    size = Size(8.8f, 8.8f),
+                                    cornerRadius = CornerRadius(2.6f, 2.6f)
+                                )
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.width(6.dp))
@@ -527,8 +586,8 @@ fun ChatComposer(
                 ) {
                     // 忙时的发送键保留自己的身份：排队 / 插话，不跟停止键混用同一个图标
                     when {
-                        isStreaming && busyMode == BusySendMode.QUEUE -> QueueGlyph(onAccent, 18.dp)
-                        isStreaming && busyMode == BusySendMode.STEER -> SteerGlyph(onAccent, 18.dp)
+                        turnPhase == TurnPhase.RUNNING && busyMode == BusySendMode.QUEUE -> QueueGlyph(onAccent, 18.dp)
+                        turnPhase == TurnPhase.RUNNING && busyMode == BusySendMode.STEER -> SteerGlyph(onAccent, 18.dp)
                         else -> ArrowUpGlyph(onAccent, 18.dp)
                     }
                 }
@@ -543,11 +602,11 @@ fun ChatComposer(
             verticalAlignment = Alignment.CenterVertically,
             // 两枚胶囊直接贴着左右边缘排，中间不留「能抢权重」的空节点。
             // 此前中间的 Spacer 带 weight(1f)，三等分导致每枚胶囊仅获得 1/3 屏宽，
-            // 右侧的百分比正好被压成省略号：用户看到的「数字跑出界面外」就是这么来的。
+            // 右侧的百分比因而被压成省略号：用户所见「数字超出界面」即由此产生。
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             StatusChip(
-                // 权重只用来在真不够宽时收缩：正常宽度下 fill=false 会让它按内容自适应
+                // 权重仅用于宽度确实不足时收缩：正常宽度下 fill=false 会按内容自适应
                 modifier = Modifier.weight(1f, fill = false),
                 glyph = { tint -> StepsGlyph(tint = tint, iconSize = 11.dp) },
                 text = statusLeftText(status),
@@ -838,9 +897,21 @@ private fun ComposerPanelOverlay(
     onDismiss: () -> Unit,
     content: @Composable () -> Unit
 ) {
+    val density = LocalDensity.current
+    // 停靠线上方的实际空间（px→dp）；首帧还没量到时为 null，由内容侧按窗口高度兜底
+    var roomDp by remember { mutableStateOf<Dp?>(null) }
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            // 这条停靠线才是「面板底边」：它随输入法上移而变，因此可用高度要现场量，
+            // 不能拿窗口高度按比例算——键盘弹出后窗口高度不变，按比例算必被顶出屏幕顶端
+            .onGloballyPositioned { coords ->
+                val room = with(density) { coords.positionInWindow().y.toDp() } - PANEL_ROOM_MARGIN
+                val current = roomDp
+                if (current == null || kotlin.math.abs(current.value - room.value) >= 0.5f) {
+                    roomDp = room
+                }
+            }
             .layout { measurable, constraints ->
                 val placeable = measurable.measure(
                     constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity)
@@ -853,30 +924,44 @@ private fun ComposerPanelOverlay(
     ) {
         // 换面板时高度会变（「＋」是一长列、模型只有两行）：这一层把量到的高度做成弹簧过渡，
         // 内容贴底对齐，高度长出来时往上长（输入条那侧永远不动）。
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                // 这一层的边界就是「面板 + 左右各 12dp 留白」的可见轮廓：
-                // 点留白等于点面板以外，收面板；点面板本身由卡片的子节点先接
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss
-                )
-                .padding(horizontal = 12.dp),
-            // 这里**不能**再包 animateContentSize。
-            // 它会把自己的内容裁到「动画中的矩形」里，代价有两条，都被用户当场看见：
-            // ① 卡片 14dp 的柔和阴影被裁在矩形内 → 24dp 圆角之外、矩形之内的四角漏出一块方形黑影；
-            // ② 高度动画期间内容被逐帧裁开 → 换面板时「与旧面板等高的下半截先出来，
-            //    高出的上半截再向上伸长」，读起来就是两段式。
-            // 高度由内层 AnimatedContent 直接取目标面板的尺寸，不做过渡；本层只负责停靠，
-            // 内容贴底对齐，所以容器高度怎么变都不会带动内容位移。
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            content()
+        CompositionLocalProvider(LocalComposerPanelRoom provides roomDp) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // 这一层的边界就是「面板 + 左右各 12dp 留白」的可见轮廓：
+                    // 点留白等于点面板以外，收面板；点面板本身由卡片的子节点先接
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismiss
+                    )
+                    .padding(horizontal = 12.dp),
+                // 这里**不能**再包 animateContentSize。
+                // 它会把自己的内容裁到「动画中的矩形」里，代价有两条，都被用户当场看见：
+                // ① 卡片 14dp 的柔和阴影被裁在矩形内 → 24dp 圆角之外、矩形之内的四角漏出一块方形黑影；
+                // ② 高度动画期间内容被逐帧裁开 → 换面板时「与旧面板等高的下半截先出来，
+                //    高出的上半截再向上伸长」，读起来就是两段式。
+                // 高度由内层 AnimatedContent 直接取目标面板的尺寸，不做过渡；本层只负责停靠，
+                // 内容贴底对齐，所以容器高度怎么变都不会带动内容位移。
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                content()
+            }
         }
     }
 }
+
+/** 停靠线与卡片之间保留的余量：卡片底边原在停靠线上方 8dp，再留 4dp 避免贴住屏幕顶端。 */
+private val PANEL_ROOM_MARGIN = 12.dp
+
+/**
+ * 停靠层向上提供的可用高度：输入条上方的实际空间（键盘弹出后会随之收缩）。
+ *
+ * 浮窗内容一旦超过这段高度就会被顶出屏幕顶端——最先消失的正是头部与关闭按钮，
+ * 用户既看不到标题也够不到叉号。停靠层是唯一量得到这条停靠线的一层，故由它提供；
+ * null 表示首帧尚未量到，按窗口高度处理。
+ */
+internal val LocalComposerPanelRoom = staticCompositionLocalOf<Dp?> { null }
 
 /**
  * 一条排队消息：左边空心圆、中间单行文本、右边三个 36dp 热区（编辑 / 删除 / 插话发送）。
@@ -985,7 +1070,7 @@ private fun PermissionChip(label: String, onClick: () -> Unit) {
 /**
  * 权限 chip 右边的一枚状态灯：只报告「当前处于这个模式」。
  *
- * 刻意不加 clickable：它背后没有对应页面可跳，做成按钮只会让人点两下才发现点不动。
+ * 刻意不加 clickable：它背后没有对应页面可跳，做成按钮只会让用户点击两次才发现不可点。
  * 26dp 只是给 16dp 图标留呼吸位，这个尺寸下不消费任何手势。
  */
 @Composable

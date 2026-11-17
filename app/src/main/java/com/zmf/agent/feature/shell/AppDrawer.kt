@@ -317,7 +317,9 @@ fun AppDrawerContent(
     /** 工作区菜单里的「更改储存路径」：目录选择与可写校验由装配层完成。 */
     onChangeStorage: (WorkSpace) -> Unit,
     /** 删除工作区的确认文案按「有会话 / 目录空 / 目录非空」三选一，由控制器给出。 */
-    onDeleteWorkspacePrompt: (String) -> String
+    onDeleteWorkspacePrompt: (String) -> String,
+    /** 正在等待用户作答的会话：这些行右侧挂一个提示点，避免用户切走后忘记还有提问在等。 */
+    waitingSessionIds: Set<String> = emptySet()
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val context = LocalContext.current
@@ -358,7 +360,7 @@ fun AppDrawerContent(
             filterMenuOpen = false
         }
     }
-    // 分组只在数据变化时重算：置顶的排前面，其余按 updatedAt 倒序。
+    // 分组只在数据变化时重算：置顶的排在前，其余按 updatedAt 倒序。
     // 「未分类」是派生分组，只在其下有可见会话时成组：空桶不占一行（与 DSH 的未分组一致）；
     // 工作区是实体，空工作区仍保留标题行，作为继续新建会话的锚点。
     val known = remember(workspaces) { workspaces.map { it.id }.toSet() }
@@ -817,7 +819,8 @@ fun AppDrawerContent(
                                 }
                             } else {
                                 null
-                            }
+                            },
+                            waitingSessionIds = waitingSessionIds
                         )
                     }
                 }
@@ -1008,7 +1011,9 @@ private fun WorkspaceSection(
     onArchivedSessionOpen: () -> Unit,
     onSessionMenu: (ChatSession, Rect) -> Unit,
     onCreateSession: () -> Unit,
-    onWorkspaceMenu: ((Rect) -> Unit)?
+    onWorkspaceMenu: ((Rect) -> Unit)?,
+    /** 正在等待作答的会话 id。 */
+    waitingSessionIds: Set<String> = emptySet()
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     // 「⋯」自身的窗口坐标：伴随面板需贴合该按钮弹出，不依赖推断
@@ -1109,7 +1114,8 @@ private fun WorkspaceSection(
                 onClick = {
                     if (session.archived) onArchivedSessionOpen() else onPickSession(session.id)
                 },
-                onMenu = { anchor -> onSessionMenu(session, anchor) }
+                onMenu = { anchor -> onSessionMenu(session, anchor) },
+                waiting = session.id in waitingSessionIds
             )
         }
         if (sessions.size > SESSION_PREVIEW) {
@@ -1154,7 +1160,9 @@ private fun SessionTreeRow(
     /** 按下 / 抬起回调：按住期间上层不计时。 */
     onHoldChange: (Boolean) -> Unit,
     onClick: () -> Unit,
-    onMenu: (Rect) -> Unit
+    onMenu: (Rect) -> Unit,
+    /** 这条会话正在等用户作答：标题行右侧挂一个小圆点。 */
+    waiting: Boolean = false
 ) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -1206,8 +1214,10 @@ private fun SessionTreeRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = session.title.ifBlank { "新会话" },
+                    modifier = Modifier.weight(1f, fill = false),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     // 行高显式给定：继承的 24sp 会把 13sp 标题放入 24dp 行框，
@@ -1223,6 +1233,17 @@ private fun SessionTreeRow(
                         else -> onSurface.copy(alpha = 0.62f)
                     }
                 )
+                // 正在等用户作答：标题后挂一个小圆点。切走后就靠它提醒「还有提问在等」
+                if (waiting) {
+                    Spacer(Modifier.width(5.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(5.dp)
+                            .clip(CircleShape)
+                            .background(UiColors.accentFg)
+                    )
+                }
+                }
                 Text(
                     text = SessionStore.relativeTime(session.updatedAt),
                     modifier = Modifier.padding(top = SESSION_TIME_GAP),

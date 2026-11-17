@@ -506,7 +506,7 @@ private fun GlobalSection(
                 color = onSurface
             )
             // 分桶粒度不写在标题行：只有这一张卡会合并邻近日期，若标注「每 N 天」
-            // 会使标题行比其他卡多出一截，视觉上呈未对齐状态
+            // 会使标题行比其他卡多出一段，视觉上呈未对齐状态
             TabPill(text = "Token", selected = dayMode == 0) { dayMode = 0 }
             Spacer(Modifier.width(6.dp))
             TabPill(text = "请求", selected = dayMode == 1) { dayMode = 1 }
@@ -515,7 +515,7 @@ private fun GlobalSection(
         val values = global.series.map { if (dayMode == 0) it.tokens else it.requests.toLong() }
         val hourly = range == InsightRange.TODAY
         // 「今天」固定 7 个刻度：0 时在左端、23 时在右端，按 6 等分排开。
-        // 位置按比例而非按小时算，末段（20→23 只隔 3 小时）才不会比前面挤一截。
+        // 位置按比例而非按小时计算，末段（20→23 仅隔 3 小时）才不会比前段拥挤。
         val ticks = if (hourly) {
             listOf("0时", "4时", "8时", "12时", "16时", "20时", "23时")
                 .mapIndexed { index, text -> AxisTick(index / 6f, text) }

@@ -157,7 +157,8 @@ internal fun BoxScope.ChatOverlays(
             paths = target.paths,
             startIndex = target.startIndex,
             origin = target.origin,
-            root = imageRoot,
+            // 分享面板里的图片还在中转批次目录，按它自己的根解析；会话内的图片仍用工作区根
+            root = target.rootPath?.let { File(it) } ?: imageRoot,
             onDismiss = { viewer = null },
             // 背景虚化与图片缩放同一条进度：写回界面状态，由聊天列按图层半径读取
             onProgress = { ui.viewerProgress.floatValue = it }

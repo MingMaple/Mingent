@@ -70,6 +70,24 @@ class LlmConfigController(
     /** 当前请求对象（子智能体需使用同一个，否则仍在使用旧 Key / 旧端点）。 */
     val currentProvider: LlmProvider get() = provider
 
+    /**
+     * 新建一个只服务**一个回合**的循环实例。
+     *
+     * 为什么不能继续共用 [loop]：`AgentLoop.run()` 把计时、缓存指纹、失败原文这些账目存在实例字段上，
+     * 会话各跑一个回合时代（用户 2026-11-15 要求 A、B 可并行）两个回合会互相覆盖。
+     * 子智能体与定时任务本来就是每跑一次新建一个（见 `capability/subagent/SubAgent.kt`），这里对齐同一套做法；
+     * 配置（Key / 端点 / 模型）仍是当前这份，因此不会用到旧配置。
+     */
+    fun newLoop(): AgentLoop = AgentLoop(
+        provider = provider,
+        registry = registry,
+        model = model,
+        maxRounds = maxRounds,
+        contextPolicy = contextPolicy,
+        contextState = contextState,
+        promptProvider = promptInput
+    )
+
     /** 保存并立即生效（重建 provider 与 loop）。 */
     fun applyApiKey(newKey: String) {
         val trimmed = newKey.trim()

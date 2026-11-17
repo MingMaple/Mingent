@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.compose.runtime.MutableFloatState
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -41,7 +42,14 @@ internal data class ViewerTarget(
     val paths: List<String>,
     val startIndex: Int,
     /** 被点开缩略图在根坐标系中的矩形；用于「缩略图 → 全屏」的起止动画，未知时为 null。 */
-    val origin: Rect? = null
+    val origin: Rect? = null,
+    /**
+     * [paths] 相对哪个根解析；null = 会话所在工作区。
+     *
+     * 分享面板里的图片还在中转目录，尚未落进工作区，因此必须显式给出中转批次的绝对路径；
+     * 会话里的图片与待发图片都相对工作区，保持 null。
+     */
+    val rootPath: String? = null
 )
 
 /** 选择文本页要展示的内容。 */
@@ -52,11 +60,11 @@ internal data class SelectionTarget(
 )
 
 /**
- * 独立全屏页面：抽屉直接进的一级页（设置 / 工作区），以及设置首页下的各功能页。
+ * 独立全屏页面：抽屉直接进的一级页（设置），以及设置首页下的各功能页。
  * 会话列表页已删除：搜索与归档筛选都在抽屉内完成。
  */
 internal enum class AppPage {
-    SETTINGS, WORKSPACE, SETTINGS_DATA,
+    SETTINGS, SETTINGS_DATA,
     MODEL, PERMISSION, PACKAGE, LOGS, SCHEDULE, SUBAGENT, ARCHIVE, TRASH,
     // 设置首页（SETTINGS）→ 通用设置（GENERAL）/ 模型（MODEL）/ 长期记忆（MEMORY）/
     // 上下文洞察（CONTEXT_HUB）/ 上下文配置（CONTEXT_CONFIG）/ 包管理（PACKAGE）/ 数据（SETTINGS_DATA）；
@@ -87,9 +95,41 @@ internal enum class AppPage {
  * 需要按 key 复位的状态（`pendingSession` / `planIdsKnown` 等）不放在这里，它们跟着各自的
  * `remember(key)` 留在组合里。
  */
-internal class ChatUiState(context: Context) {
-    /** 当前所在的二级页；null = 主页。 */
-    val page: MutableState<AppPage?> = mutableStateOf(null)
+internal class ChatUiState(context: Context, private val sessionIdOf: () -> String) {
+    /**
+     * 「当前停在哪一页」按会话各一份（用户 2026-11-16，PLAN §2 第 4、5 条）。
+     *
+     * [page] 仍是 MutableState，但读写落在**当前显示会话**那一格上，因此各处
+     * `var page by ui.page` 无需改动；切会话时界面读到的就是另一条会话的页。
+     * 设置类页面同样按会话记，但它们不持久（见 `UiStateStore` 的白名单），重新进 App 一律回主页。
+     */
+    private val pages = mutableStateMapOf<String, AppPage>()
+
+    val page: MutableState<AppPage?> = object : MutableState<AppPage?> {
+        override var value: AppPage?
+            get() = pages[sessionIdOf()]
+            set(v) {
+                val id = sessionIdOf()
+                if (v == null) pages.remove(id) else pages[id] = v
+            }
+
+        override fun component1(): AppPage? = value
+
+        override fun component2(): (AppPage?) -> Unit = { value = it }
+    }
+
+    /** 某条会话停在哪一页；页面持久化与可见性判定都读它。 */
+    fun pageOf(sessionId: String): AppPage? = pages[sessionId]
+
+    /** 直接写入某条会话的页；null 表示回主页。持久化恢复走这里。 */
+    fun setPage(sessionId: String, page: AppPage?) {
+        if (page == null) pages.remove(sessionId) else pages[sessionId] = page
+    }
+
+    /** 删除会话时丢弃它的页面记录，避免 id 复用时开到别人的页。 */
+    fun forgetSession(sessionId: String) {
+        pages.remove(sessionId)
+    }
 
     /** 回收站页返回时自增：数据页始终挂在该层之下，不更换 key 则该行统计不会刷新。 */
     val trashRefreshKey: MutableState<Int> = mutableStateOf(0)
@@ -192,13 +232,29 @@ internal class ChatUiState(context: Context) {
     val wasAtBottom: MutableState<Boolean> = mutableStateOf(true)
 
     /**
-     * 系统分享的待发内容；null 表示当前不在分享流程里。
+     * 系统分享的待发内容；null 表示还没导入完成（此时由 [sharePreparing] 标记「正在导入」）。
      *
      * 与 [shareVisible] 分开存储：面板退场期间内容仍需保留，退场结束才清空。
-     * 附件在中转目录里，放弃或发送结束时整批删除，不会留在任何工作区。
+     * 退场后的处理分两种：已发出的整批删除（附件已复制进目标工作区）；
+     * 未发出的把附件移交到输入区待发项，再删除中转批次。
      */
     val shareDraft: MutableState<ShareDraft?> = mutableStateOf(null)
     val shareVisible: MutableState<Boolean> = mutableStateOf(false)
+
+    /**
+     * 本次分享是否已经由发送链路受理（含进队列的情况）。
+     *
+     * 面板退场后据此决定中转批次的去向：已受理则直接删除，未受理才移交到输入区待发项。
+     * 每次受理新的分享与每次面板退场处理完毕后都复位。
+     */
+    val shareSent: MutableState<Boolean> = mutableStateOf(false)
+
+    /**
+     * 分享内容正在导入（解析图片、写中转文件）：此时分享输入框已经占位，但发送键不可用。
+     *
+     * 先切会话再导入的原因见 `ChatEffects` 的分享段：落盘要解码压缩多张图，不能让它挡住会话切换。
+     */
+    val sharePreparing: MutableState<Boolean> = mutableStateOf(false)
 
     /** 输入框弹出面板的开关入口。面板状态仍归 Composer，父层仅借此铺设遮罩。 */
     val composerPanel = ComposerPanelHost()

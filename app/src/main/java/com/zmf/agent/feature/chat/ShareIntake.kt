@@ -31,9 +31,6 @@ import java.util.Locale
  */
 internal const val SHARE_INLINE_TEXT_LIMIT = 4000
 
-/** 正文转为附件、用户又没写补充说明时的最小正文：空正文会被 `send` 的空内容闸门拦下。 */
-internal const val SHARE_ATTACHMENT_PLACEHOLDER = "分享内容已作为附件"
-
 /** 同一份分享在此时长内被再次投递即视为重复（系统「分享」选单偶发连续投递两次）。 */
 private const val SHARE_DEDUPE_WINDOW_MS = 2_000L
 
@@ -224,11 +221,6 @@ internal object ShareIntake {
         val files = ArrayList<String>()
         var failedFiles = 0
         for (uri in payload.fileUris) {
-            // 先按长度拦一道（与普通附件同一上限）；导入过程还会再按字节数兜一次
-            if (exceedsFileLimit(context, uri)) {
-                failedFiles++
-                continue
-            }
             UploadStore.import(context, uri, root).fold(
                 onSuccess = { files.add(it.relPath) },
                 onFailure = { failedFiles++ }
@@ -313,9 +305,56 @@ internal object ShareIntake {
         runCatching { File(draft.sourceRootPath, relPath).delete() }
     }
 
-    /** 删除本次分享的整个中转批次：放弃分享、发送完成或内容为空时调用。 */
+    /**
+     * 删除本次分享的整个中转批次：放弃分享、发送完成或内容为空时调用。
+     *
+     * 删除结果必须进日志：这条路径以前是静默的，用户点「取消」后中转目录到底清没清
+     * 只能靠翻文件系统猜（2026-11-15 用户要求接入日志）。
+     */
     fun discard(draft: ShareDraft) {
-        runCatching { File(draft.sourceRootPath).deleteRecursively() }
+        val dir = File(draft.sourceRootPath)
+        val existed = dir.exists()
+        val fileCount = if (existed) runCatching { dir.walkTopDown().count { it.isFile } }.getOrDefault(0) else 0
+        val ok = runCatching { dir.deleteRecursively() }.getOrDefault(false)
+        val leftover = runCatching {
+            File(dir.parentFile ?: dir, "").let { _ -> dir.parentFile?.listFiles()?.size ?: 0 }
+        }.getOrDefault(0)
+        FileLog.log(
+            "share",
+            "放弃分享：删除中转批次 " + draft.sourceRootPath.substringAfterLast('/') +
+                "（存在=" + existed + "，文件 " + fileCount + " 个，删除" + (if (ok) "成功" else "失败") +
+                "，中转目录剩余批次 " + leftover + " 个）"
+        )
+    }
+
+    /**
+     * 冷启动清扫：删除 [SHARE_STAGING_DIR] 下由上一次进程遗留的全部批次目录。
+     *
+     * 中转批次的正常删除只发生在面板退场与导入取消两条路径上；进程在面板停留期间被系统回收时，
+     * 该批次会永久留在磁盘上。应用启动时清扫一次，把它收掉，并在日志里写明清掉多少，
+     * 使「残留到底清没清」不必再靠翻文件系统推断。
+     *
+     * 判定口径是「目录的最后修改时间早于本次清扫开始的时刻」：同一进程内正在落盘的批次
+     * 时间戳更新，不会被误删。必须在线程池调用——要递归统计并删除若干批文件。
+     *
+     * @return 清掉的批次数与文件数
+     */
+    fun sweepStale(context: Context): Pair<Int, Int> {
+        val startedAt = System.currentTimeMillis()
+        val parent = File(AppPaths.dataDir(context), SHARE_STAGING_DIR)
+        val batches = runCatching {
+            parent.listFiles()
+                ?.filter { it.isDirectory && it.lastModified() < startedAt }
+                .orEmpty()
+        }.getOrDefault(emptyList())
+        var files = 0
+        var removed = 0
+        for (dir in batches) {
+            files += runCatching { dir.walkTopDown().count { it.isFile } }.getOrDefault(0)
+            if (runCatching { dir.deleteRecursively() }.getOrDefault(false)) removed++
+        }
+        FileLog.log("share", "清理中转残留：批次 " + removed + "，文件 " + files)
+        return removed to files
     }
 
     /**
@@ -326,10 +365,7 @@ internal object ShareIntake {
      * 有附件而用户一个字都没写时补一句 [SHARE_ATTACHMENT_PLACEHOLDER]，
      * 否则空正文会被发送链路的「空内容」闸门拦下。
      */
-    fun composeBody(draft: ShareDraft, editorText: String): String {
-        val trimmed = editorText.trim()
-        return if (trimmed.isEmpty() && draft.hasFiles) SHARE_ATTACHMENT_PLACEHOLDER else trimmed
-    }
+    fun composeBody(editorText: String): String = editorText.trim()
 
     /** 图片条目是否属于本入口受理的图片：宿主类型或条目类型任一以 `image/` 开头即可。 */
     private fun acceptsImage(hostMime: String, itemMime: String): Boolean =
@@ -355,19 +391,6 @@ internal object ShareIntake {
             context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
         }.getOrNull() ?: -1L
         return bytes > SHARE_IMAGE_MAX_BYTES
-    }
-
-    /**
-     * 普通文件是否超过 [UploadStore.MAX_BYTES]（50MB）：与主页输入框选择附件同一口径。
-     *
-     * 与图片一样先按长度拦一道，避免把超大文件整个读进来；导入过程仍会边写边计字节兜底。
-     * 无法取得长度（-1）时不拦截。
-     */
-    private fun exceedsFileLimit(context: Context, uri: Uri): Boolean {
-        val bytes = runCatching {
-            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
-        }.getOrNull() ?: -1L
-        return bytes > UploadStore.MAX_BYTES
     }
 
     /**

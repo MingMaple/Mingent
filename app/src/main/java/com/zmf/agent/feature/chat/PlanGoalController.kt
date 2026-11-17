@@ -2,6 +2,7 @@ package com.zmf.agent.feature.chat
 
 import android.content.Context
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.zmf.agent.capability.tools.displayName
@@ -13,6 +14,8 @@ import com.zmf.agent.core.store.GoalStore
 import com.zmf.agent.core.store.PlanDoc
 import com.zmf.agent.core.store.PlanStore
 import com.zmf.agent.core.store.label
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** 批准计划时代替用户发送的语句；正文与日志共用一份，避免两处各写一遍。 */
 private const val PLAN_APPROVE_TEXT = "按计划开始执行"
@@ -38,13 +41,30 @@ class PlanGoalController(
     var planMode by mutableStateOf(PlanStore.load(appContext))
         private set
 
+    /**
+     * 计划列表与选中项**按会话各一份**（用户 2026-11-16，PLAN §2 第 4 条）。
+     *
+     * 界面仍以 `plans` / `selectedPlanId` 读，读到的是当前显示会话那一份；切会话只换看哪一份，
+     * 不再「一份列表换数据」，另一条会话的选中项也不会被重算。
+     */
+    private val plansBySession = mutableStateMapOf<String, List<PlanDoc>>()
+    private val selectedBySession = mutableStateMapOf<String, String>()
+
     /** 当前会话的计划列表（模型每次 write_plan 追加一份）；空 = 还没有计划。 */
-    var plans by mutableStateOf<List<PlanDoc>>(emptyList())
-        private set
+    val plans: List<PlanDoc> get() = plansBySession[currentSessionId()].orEmpty()
 
     /** 计划预览里选中的那一份；null = 没有计划可选。只存在内存里：这是「看哪份」的选择，不是数据。 */
-    var selectedPlanId by mutableStateOf<String?>(null)
-        private set
+    val selectedPlanId: String? get() = selectedBySession[currentSessionId()]
+
+    /** 写入某条会话的计划列表。 */
+    private fun putPlans(sessionId: String, list: List<PlanDoc>) {
+        plansBySession[sessionId] = list
+    }
+
+    /** 写入某条会话的选中项；null 表示清掉。 */
+    private fun putSelected(sessionId: String, planId: String?) {
+        if (planId == null) selectedBySession.remove(sessionId) else selectedBySession[sessionId] = planId
+    }
 
     /** 当前会话的长期目标；null = 没有目标。 */
     var goal by mutableStateOf<Goal?>(null)
@@ -200,8 +220,7 @@ class PlanGoalController(
             createdAt = now,
             updatedAt = now
         )
-        goal = next
-        GoalStore.save(appContext, currentSessionId(), next)
+        goal = GoalStore.save(appContext, currentSessionId(), next) ?: next
         FileLog.log("goal", "新目标（第 0 轮）：" + objective.take(60))
         // 流式中 send 会直接返回：该轮收尾时 goal 已为 ACTIVE，续跑链会补上本轮
         sendNow(objective, false)
@@ -223,44 +242,61 @@ class PlanGoalController(
     /**
      * 重读当前会话的计划列表：流结束与进入计划页时各调用一次，不可每帧调用（需读盘）。
      *
+     * 读盘放到 IO 线程：计划文件随会话增长，主线程同步读会卡住输入与滚动。
+     *
      * 选中态在这里一起校正：原选中那份被删掉、或第一次读到计划时，落到最新的一份。
      * 用户刚看到的应该就是模型刚交的那份。
      */
-    fun reloadPlans() {
+    suspend fun reloadPlans(sessionId: String = currentSessionId()) {
         // 记录重读前的计划数量：用于识别「本次确实新增了计划」
-        val before = plans.map { it.id }.toSet()
-        val list = PlanStore.loadPlans(appContext, currentSessionId())
-        plans = list
-        val current = selectedPlanId
+        val before = plansBySession[sessionId].orEmpty().map { it.id }.toSet()
+        val list = withContext(Dispatchers.IO) { PlanStore.loadPlans(appContext, sessionId) }
+        putPlans(sessionId, list)
+        val current = selectedBySession[sessionId]
         val fresh = list.filter { it.id !in before }
-        selectedPlanId = when {
-            // 模型刚提交新计划：直接将预览切换至最新一份（用户点击右上角按钮时应看到该份，
-            // 而非停留在上次查看的旧计划）
-            fresh.isNotEmpty() -> fresh.last().id
-            // 无新计划则停留在用户上次查看的一份：从计划页返回主页后再次进入，仍为同一页
-            current != null && list.any { it.id == current } -> current
-            list.isNotEmpty() -> list.last().id
-            else -> null
-        }
+        putSelected(
+            sessionId,
+            when {
+                // 模型刚提交新计划：直接将预览切换至最新一份（用户点击右上角按钮时应看到该份，
+                // 而非停留在上次查看的旧计划）
+                fresh.isNotEmpty() -> fresh.last().id
+                // 无新计划则停留在用户上次查看的一份：从计划页返回主页后再次进入，仍为同一页
+                current != null && list.any { it.id == current } -> current
+                list.isNotEmpty() -> list.last().id
+                else -> null
+            }
+        )
     }
 
     /**
-     * 新一轮对话开始前把「还没处理过」的计划标成废弃。
+     * 新一轮对话开始前把指定会话里「还没处理过」的计划标成废弃。
      *
      * 判据在 [PlanStore.abandonPending] 里，这里只负责同步界面上的两份真值：
      * 列表（按钮要变灰）与选中态（被废弃的那份仍然要能看到详情）。
+     *
+     * [sessionId] 是**发起回合的那条会话**：在 B 发一句话不得作废 A 待执行的计划。
+     * 界面上的计划只属于当前显示会话，因此只有被作废的正是它时才改这两份状态；
+     * 判据也从磁盘读，避免拿显示会话的列表误判「没有待执行计划」而提前返回。
      */
-    fun abandonPendingPlansBeforeNewTurn() {
-        if (plans.none { it.status == PlanStore.STATUS_PENDING }) return
-        val updated = PlanStore.abandonPending(appContext, currentSessionId())
+    fun abandonPendingPlansBeforeNewTurn(sessionId: String = currentSessionId()) {
+        val stored = PlanStore.loadPlans(appContext, sessionId)
+        if (stored.none { it.status == PlanStore.STATUS_PENDING }) return
+        val updated = PlanStore.abandonPending(appContext, sessionId)
         if (updated.isEmpty()) return
-        plans = updated
-        selectedPlanId = updated.lastOrNull()?.id ?: selectedPlanId
+        if (sessionId != currentSessionId()) return
+        putPlans(sessionId, updated)
+        putSelected(sessionId, updated.lastOrNull()?.id ?: selectedBySession[sessionId])
     }
 
     /** 重读当前会话的目标：切会话、以及 goal 工具跑完之后都要对齐。 */
     fun reloadGoal() {
         goal = GoalStore.load(appContext, currentSessionId())
+    }
+
+    /** 删除会话时丢弃它的计划表与选中项，避免 id 复用时读到别人的列表。 */
+    fun forgetSession(sessionId: String) {
+        plansBySession.remove(sessionId)
+        selectedBySession.remove(sessionId)
     }
 
     /** 目标续跑时把轮次推进后的目标写回界面状态（落盘由调用方紧接着做）。 */
@@ -269,7 +305,7 @@ class PlanGoalController(
     }
 
     /** 换会话路径统一调这一个：两份文档都跟当前会话绑定。 */
-    fun reloadSessionDocs() {
+    suspend fun reloadSessionDocs() {
         reloadPlans()
         reloadGoal()
     }
@@ -278,28 +314,29 @@ class PlanGoalController(
     fun goalText(): String {
         val current = goal ?: return ""
         return current.objective.take(200) + "（" + current.phase.label() + "，第 " + current.rounds +
-            " 轮 / 上限 " + MAX_GOAL_ROUNDS + " 轮）"
+            " 轮 / 上限 " + MAX_GOAL_ROUNDS + " 轮，revision " + current.revision + "）"
     }
 
     /** 计划预览切换选中项；id 不在列表里就当没点（界面上的选中态不该跟着乱跳）。 */
     fun selectPlan(id: String) {
         if (plans.none { it.id == id }) return
         if (id == selectedPlanId) return
-        selectedPlanId = id
+        putSelected(currentSessionId(), id)
         FileLog.log("plan", "预览切到计划 " + id)
     }
 
     /** 删除一份计划：删完的列表由 PlanStore 还回来，选中态基于同一份数据校正。 */
     fun deletePlan(id: String) {
+        val sessionId = currentSessionId()
         if (plans.none { it.id == id }) return
         // deletePlan 直接返回删除后的列表：省去一次读盘，选中态也基于同一份数据校正
-        val remaining = PlanStore.deletePlan(appContext, currentSessionId(), id)
+        val remaining = PlanStore.deletePlan(appContext, sessionId, id)
         val wasSelected = selectedPlanId == id
-        plans = remaining
+        putPlans(sessionId, remaining)
         if (wasSelected || remaining.none { it.id == selectedPlanId }) {
-            selectedPlanId = remaining.firstOrNull()?.id
+            putSelected(sessionId, remaining.firstOrNull()?.id)
         }
-        FileLog.log("plan", "删除计划 " + id + "，剩 " + plans.size + " 份")
+        FileLog.log("plan", "删除计划 " + id + "，剩 " + remaining.size + " 份")
     }
 
     /**
@@ -319,17 +356,20 @@ class PlanGoalController(
             FileLog.log("plan", "拒绝执行已处理的计划 " + target.id + "（状态=" + target.status + "）")
             return
         }
-        if (target != null) selectedPlanId = target.id
+        if (target != null) putSelected(currentSessionId(), target.id)
         // 先写入状态再发送消息：下方 send() 会将「仍待确认」的计划视为废弃，
         // 顺序相反时刚批准的计划会先被废弃、再作为可执行项发送
         if (target != null) {
-            plans = PlanStore.markPlan(
-                appContext,
+            putPlans(
                 currentSessionId(),
-                target.id,
-                PlanStore.STATUS_APPROVED,
-                // 同一时刻仅应有一份等待批准：其余待确认计划随之作废
-                abandonOtherPending = true
+                PlanStore.markPlan(
+                    appContext,
+                    currentSessionId(),
+                    target.id,
+                    PlanStore.STATUS_APPROVED,
+                    // 同一时刻仅应有一份等待批准：其余待确认计划随之作废
+                    abandonOtherPending = true
+                )
             )
         }
         PlanStore.save(appContext, false)
@@ -366,14 +406,17 @@ class PlanGoalController(
     /**
      * 「继续修改计划」：只把计划留在页面上。
      *
-     * 有意什么都不做：用户点这个是为了回到对话里补充要求，这里替他发消息反而会把「再看看」变成一次发送。
+     * 有意不作处理：用户点击此项是为了回到对话补充要求；此处代其发送消息，反而会使查看计划变为一次实际发送。
      */
     fun continuePlanEdit(planId: String) {
         // 点击后即视为该计划已被消费：两个按钮置灰，不可再次点击「同意执行」
         if (plans.none { it.id == planId }) return
-        plans = PlanStore.markPlan(appContext, currentSessionId(), planId, PlanStore.STATUS_EDITED)
+        putPlans(
+            currentSessionId(),
+            PlanStore.markPlan(appContext, currentSessionId(), planId, PlanStore.STATUS_EDITED)
+        )
         FileLog.log("plan", "用户选择继续修改计划 " + planId + "，该份标记为已处理")
-        // 其余操作均不执行：页面自行负责返回主页，代替用户发送消息会将「再看看」变为一次发送
+        // 其余操作均不执行：返回主页由页面自行处理；代用户发送消息会使查看计划变为一次实际发送
     }
 
     /** 暂停目标（/goal pause）：暂停后本轮结束即停止自动续跑。 */
@@ -385,16 +428,15 @@ class PlanGoalController(
     /**
      * 改写目标正文（/goal edit <文本>）。
      *
-     * 只改 objective：轮次与阶段是进度，改一句话不该把它们清零。
-     * 那会让「已经跑到第 5 轮」变成重新开始。
+     * 只改 objective：轮次与阶段是进度，改一句话不应把它们清零；
+     * 否则「已经跑到第 5 轮」会变成重新开始。
      */
     fun editGoal(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         val current = goal ?: return
         val next = current.copy(objective = trimmed)
-        goal = next
-        GoalStore.save(appContext, currentSessionId(), next)
+        goal = GoalStore.save(appContext, currentSessionId(), next) ?: next
         FileLog.log("goal", "目标正文改为：" + trimmed.take(60))
     }
 
@@ -410,9 +452,12 @@ class PlanGoalController(
     private fun applyGoalPhase(phase: GoalPhase) {
         val current = goal ?: return
         if (current.phase == phase) return
-        val next = current.copy(phase = phase)
-        goal = next
-        GoalStore.save(appContext, currentSessionId(), next)
+        // 用户恢复目标视为已处理上一次阻塞，连续计数清零
+        val next = current.copy(
+            phase = phase,
+            blockedStreak = if (phase == GoalPhase.ACTIVE) 0 else current.blockedStreak
+        )
+        goal = GoalStore.save(appContext, currentSessionId(), next) ?: next
         FileLog.log("goal", "目标阶段改为 " + phase.label())
     }
 }

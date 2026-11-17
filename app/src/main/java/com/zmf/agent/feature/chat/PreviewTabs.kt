@@ -38,7 +38,7 @@ internal object PreviewTabs {
     var activePath by mutableStateOf<String?>(null)
         private set
 
-    /** 标签打开（或上次进入页面）时记录的文件版本，用于判断「文件被改写」。 */
+    /** 标签打开（或上次进入页面）时记录的文件版本，用于判断「文件被改写」；键带会话，切回不丢。 */
     private val versions = mutableStateMapOf<String, Long>()
 
     private class Parked(val paths: List<String>, val active: String?)
@@ -47,6 +47,9 @@ internal object PreviewTabs {
     private val parked = mutableMapOf<String, Parked>()
     private var appContext: Context? = null
 
+    /** 当前持有标签的会话 id：正文缓存与版本表都以它作键的前缀。 */
+    val ownerSessionId: String get() = owner
+
     /** 当前标签；选中项刚被关掉时退回最后一条。 */
     val active: PreviewTab? get() = tabs.firstOrNull { it.path == activePath } ?: tabs.lastOrNull()
 
@@ -54,7 +57,10 @@ internal object PreviewTabs {
     val count: Int get() = tabs.size
 
     /** 已记录的版本；没有记录时返回 -1，供界面做 `remember` 的键。 */
-    fun versionOf(path: String?): Long = path?.let { versions[it] } ?: -1L
+    fun versionOf(path: String?): Long = path?.let { versions[key(it)] } ?: -1L
+
+    /** 会话内版本表的键：与正文缓存同一套「会话 + 路径」前缀。 */
+    private fun key(path: String) = owner + "|" + path
 
     /**
      * 打开一个文件：已存在则只聚焦，不存在则新建一条并聚焦。
@@ -66,8 +72,8 @@ internal object PreviewTabs {
         if (tabs.none { it.path == path }) {
             if (tabs.size >= MAX_TABS) {
                 val dropped = tabs.removeAt(0)
-                versions.remove(dropped.path)
-                PreviewTextCache.drop(dropped.path)
+                versions.remove(key(dropped.path))
+                PreviewTextCache.drop(owner, dropped.path)
             }
             tabs.add(PreviewTab(path))
         }
@@ -114,8 +120,8 @@ internal object PreviewTabs {
         val index = tabs.indexOfFirst { it.path == path }
         if (index < 0) return
         tabs.removeAt(index)
-        versions.remove(path)
-        PreviewTextCache.drop(path)
+        versions.remove(key(path))
+        PreviewTextCache.drop(owner, path)
         trail.removeAll { it == path }
         if (activePath == path) {
             activePath = tabs.getOrNull(index)?.path ?: tabs.lastOrNull()?.path
@@ -130,9 +136,10 @@ internal object PreviewTabs {
      * 首次记录返回 false，不会把「刚打开」当成「刚被改」。
      */
     fun observe(path: String, version: Long): Boolean {
-        val known = versions[path]
+        val k = key(path)
+        val known = versions[k]
         if (known == version) return false
-        versions[path] = version
+        versions[k] = version
         return known != null
     }
 
@@ -140,7 +147,8 @@ internal object PreviewTabs {
      * 会话切换：挂起旧会话的标签，挂回新会话的那一套。
      *
      * 新会话第一次进入时从磁盘读回上次留下的清单——这是「从后台划掉再打开」仍能看见入口的来源。
-     * 版本与已读文本属于上一个会话的运行态，切换时整表清空，避免把上一份内容带给另一个会话。
+     * 版本与已读文本都以「会话 + 路径」为键：切换会话不再整表清空，切回原会话时
+     * 已读出的正文与版本记录仍然有效，不必重读。
      */
     fun switchTo(context: Context, sessionId: String) {
         appContext = context.applicationContext
@@ -166,13 +174,30 @@ internal object PreviewTabs {
             tags(context, sessionId)
             activePath = tabs.firstOrNull()?.path
         }
-        versions.clear()
-        PreviewTextCache.clear()
     }
 
     /** 从磁盘读回某个会话上次留下的标签清单。 */
     private fun tags(context: Context, sessionId: String) {
         tabs.addAll(load(context, sessionId).map { PreviewTab(it) })
+    }
+
+    /**
+     * 删除会话：它挂起的标签清单、磁盘上的清单键与正文缓存一并清掉；
+     * 若删的正是当前持有者（先删后切的场景），当前表也整表清空。
+     */
+    fun forgetSession(context: Context, sessionId: String) {
+        if (sessionId.isEmpty()) return
+        parked.remove(sessionId)
+        val ctx = appContext ?: context.applicationContext
+        prefs(ctx).edit().remove(KEY_PREFIX + sessionId).apply()
+        PreviewTextCache.clearSession(sessionId)
+        if (sessionId == owner) {
+            tabs.clear()
+            trail.clear()
+            activePath = null
+            versions.clear()
+            owner = ""
+        }
     }
 
     private fun prefs(context: Context) =
@@ -202,23 +227,27 @@ internal class PreviewText(
     var binary: Boolean
 )
 
-/** 已读文本的内存缓存：按路径保存，版本不一致即作废；关标签或切会话时释放。 */
+/** 已读文本的内存缓存：键为「会话 + 路径」，版本不一致即作废；关标签或清会话时释放。 */
 internal object PreviewTextCache {
 
     private val entries = HashMap<String, PreviewText>()
 
-    fun get(path: String, version: Long): PreviewText? =
-        entries[path]?.takeIf { it.version == version }
+    private fun key(sessionId: String, path: String) = sessionId + "|" + path
 
-    fun put(path: String, entry: PreviewText) {
-        entries[path] = entry
+    fun get(sessionId: String, path: String, version: Long): PreviewText? =
+        entries[key(sessionId, path)]?.takeIf { it.version == version }
+
+    fun put(sessionId: String, path: String, entry: PreviewText) {
+        entries[key(sessionId, path)] = entry
     }
 
-    fun drop(path: String) {
-        entries.remove(path)
+    fun drop(sessionId: String, path: String) {
+        entries.remove(key(sessionId, path))
     }
 
-    fun clear() {
-        entries.clear()
+    /** 删除某个会话的全部正文缓存（删会话时用）。 */
+    fun clearSession(sessionId: String) {
+        val prefix = sessionId + "|"
+        entries.keys.removeAll { it.startsWith(prefix) }
     }
 }

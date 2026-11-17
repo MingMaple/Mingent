@@ -346,7 +346,7 @@ private fun SearchCard(
                 if (!noHit) Spacer(Modifier.height(6.dp))
             }
             if (noHit) {
-                // 内核没给 briefing 时才补这一行；给了就不在结论后面再重复一遍「没有命中」
+                // 内核未提供 briefing 时才补这一行；已提供则不在结论之后重复「没有命中」
                 if (state.briefing.isEmpty()) {
                     Text(
                         text = "没有命中",

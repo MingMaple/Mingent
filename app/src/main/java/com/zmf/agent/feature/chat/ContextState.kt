@@ -2,6 +2,7 @@ package com.zmf.agent.feature.chat
 
 import android.content.Context
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -16,6 +17,7 @@ import com.zmf.agent.capability.context.ContextStore
 import com.zmf.agent.capability.context.ContextSummarizer
 import com.zmf.agent.capability.context.ToolResultPruner
 import com.zmf.agent.capability.context.contextSummarySystemText
+import com.zmf.agent.capability.context.sanitizeToolPairing
 import com.zmf.agent.capability.context.validSummaryUpTo
 import com.zmf.agent.capability.loop.ContextSummaryState
 import com.zmf.agent.capability.loop.OutputTiming
@@ -54,6 +56,10 @@ import com.zmf.agent.infra.llm.ProviderStore
 import com.zmf.agent.infra.llm.UsageBuckets
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -90,12 +96,14 @@ private const val OVERFLOW_COMPACT_TIMEOUT_MS = 90_000L
 class ContextState(
     private val appContext: Context,
     private val scope: CoroutineScope,
-    private val messages: SnapshotStateList<ChatMessage>,
+    /** 按会话取正文列表：每个会话各持一份，生成中可以切会话。 */
+    private val messagesOf: (String) -> SnapshotStateList<ChatMessage>,
     private val currentSessionId: () -> String,
     private val sessions: () -> List<ChatSession>,
     private val writeSessions: (List<ChatSession>) -> Unit,
     private val isStreaming: () -> Boolean,
-    private val setActivity: (String?) -> Unit,
+    /** 写某条会话的「正在压缩上下文…」提示：并行时压缩发生在哪条会话就写哪条。 */
+    private val setActivity: (String, String?) -> Unit,
     private val modelName: () -> String,
     private val provider: () -> LlmProvider,
     private val registry: () -> ToolRegistry,
@@ -107,6 +115,29 @@ class ContextState(
     private val reloadSessionDocs: () -> Unit
 ) {
 
+    /**
+     * 展示类读取用的那份正文：永远是**当前显示会话**那一份。
+     *
+     * 回合内的流式追加、压缩、用量写回不再走它，而是各带自己的 sessionId 调 messagesOf：
+     * 每条会话都可以有自己的回合在跑，已经不存在「唯一正在跑的那条会话」可供指认。
+     */
+    private val messages: SnapshotStateList<ChatMessage> get() = messagesOf(currentSessionId())
+
+    /** 一条会话的摘要文本（空串 = 没有摘要）；回合内按 sessionId 取，展示方按当前会话取。 */
+    private fun summaryOf(sessionId: String): String =
+        sessions().firstOrNull { it.id == sessionId }?.contextSummary.orEmpty()
+
+    // ---- 按会话分开的回合账目 ----
+
+    /** 正在跑的回合，每条会话各一份；[endTurn] 时移除，[isTurnRunning] 据此判断。 */
+    private val turns = mutableMapOf<String, TurnState>()
+
+    /** 取（必要时创建）一条会话的回合账目：beginTurn 之后、endTurn 之前有效。 */
+    private fun turnOf(sessionId: String): TurnState = turns.getOrPut(sessionId) { TurnState() }
+
+    /** 这条会话是否有回合在跑：并行之后不能再靠「全进程唯一回合」推断。 */
+    fun isTurnRunning(sessionId: String): Boolean = turns.containsKey(sessionId)
+
     /** 上下文压缩策略（摘要式滚动压缩）：只作用于请求视图，不影响界面历史。 */
     var contextPolicy by mutableStateOf(ContextStore.load(appContext))
         private set
@@ -117,10 +148,39 @@ class ContextState(
 
     /** 当前会话摘要文本；空串 = 没有摘要，请求视图发全量。直接读会话表，落盘即生效。 */
     val contextSummary: String
-        get() = sessions().firstOrNull { it.id == currentSessionId() }?.contextSummary.orEmpty()
+        get() = summaryOf(currentSessionId())
 
     /** 摘要失败后置为 true：请求视图退化为只发送最近 fallbackKeepRounds 轮，不阻塞主请求。 */
-    private var contextFallback = false
+    /** 摘要失败的兜底标记，按会话：一条会话压失败不该让别的会话的请求视图被裁。 */
+    private val fallbackSessions = mutableSetOf<String>()
+
+    /**
+     * 压缩任务按会话记的代际令牌与任务本体。
+     *
+     * 压缩原来直接挂在控制器作用域上，与回合无关：用户点停止后它会继续跑完并落盘，
+     * 收尾时还会把「正在压缩上下文…」清掉——若下一回合已经开跑，清掉的是新回合的标记。
+     * 代际令牌让「发起者仍是自己」成为可校验的条件：令牌被换掉（中止或新发起）即视为过期，
+     * 过期任务不得写盘、不得清标记。
+     */
+    private var compactionSeq = 0L
+    private val compactionTokens = mutableMapOf<String, Long>()
+    private val compactionJobs = mutableMapOf<String, Job>()
+
+    /** 本次压缩是否仍是该会话当前发起的那一次。 */
+    private fun isCompactionCurrent(sessionId: String, token: Long): Boolean =
+        compactionTokens[sessionId] == token
+
+    /**
+     * 中止某条会话正在跑的压缩：令牌作废并取消任务，此后它既不落盘，也不清界面标记。
+     *
+     * 由回合中止路径调用（见 SendController.stop）：压缩与回合的从属关系只在这一处断开，
+     * 手动压缩不受影响（手动压缩在流式中本来就被拒绝）。
+     */
+    fun abortCompaction(sessionId: String) {
+        if (compactionTokens.remove(sessionId) == null) return
+        compactionJobs.remove(sessionId)?.cancel()
+        FileLog.log("context", "压缩任务已中止，本次结果不再写盘：" + sessionId)
+    }
 
     /** 上下文分段估算（系统提示词 / 工具表 / user / assistant / 工具结果）；由 [refreshContext] 同时刷新。 */
     var contextBreakdown by mutableStateOf(Breakdown())
@@ -135,8 +195,11 @@ class ContextState(
      *
      * 气泡中已内嵌「输入 / 输出」，该字段不渲染；保留仅为兼容旧数据。
      */
-    var usageText by mutableStateOf<String?>(null)
-        private set
+    /** 各会话最近一次请求的用量文本（气泡已内嵌，保留仅为兼容旧数据）。 */
+    private val usageTexts = mutableStateMapOf<String, String>()
+
+    /** 当前显示会话的那条用量文本。 */
+    val usageText: String? get() = usageTexts[currentSessionId()]
 
     /**
      * 统计页的快照（轮数 / 步数 / token / 上下文水位）。
@@ -164,46 +227,57 @@ class ContextState(
         private set
 
     /**
-     * 本轮（这一次回复）累计的 usage：[recordUsage] 每收到一次就累加，收尾时一次性写入本轮最后一条 assistant。
+     * 一条会话的回合账目：用量、回合起点、耗时与输出侧细分。
      *
-     * 一轮内可能多次请求模型（每次工具调用后都需再次请求），气泡只显示整轮总量，
-     * 因此先累计，待 [writeTurnUsage] 时再写入。
+     * 为什么搬进独立类：原来这些字段各只有一份、靠 turnSession() 指认归属；改成每条会话各跑
+     * 一个回合（可并行）之后，归属只能由 sessionId 决定，多个回合同时记也不会互相覆盖。
      */
-    private var turnPromptTokens = 0
-    private var turnCompletionTokens = 0
-    /** 本轮命中缓存的输入 tokens，以及服务端是否上报该项（未上报时面板整行不显示）。 */
-    private var turnCachedTokens = 0
-    private var turnCacheReported = false
-    /** 本轮未缓存输入、缓存写入、推理 tokens：仅部分模型提供这几项数据。 */
-    private var turnUncachedInputTokens = 0
-    private var turnCacheWriteTokens: Int? = null
-    private var turnReasoningTokens: Int? = null
-    /** 本轮使用的「提供方/模型」，在开始执行时固定，面板据此显示。 */
-    private var turnUsageModel = ""
+    private class TurnState {
+        /**
+         * 本轮（这一次回复）累计的 usage：[recordUsage] 每收到一次就累加，收尾时一次性写入本轮最后一条 assistant。
+         *
+         * 一轮内可能多次请求模型（每次工具调用后都需再次请求），气泡只显示整轮总量，
+         * 因此先累计，待 [writeTurnUsage] 时再写入。
+         */
+        var promptTokens = 0
+        var completionTokens = 0
+        /** 本轮命中缓存的输入 tokens，以及服务端是否上报该项（未上报时面板整行不显示）。 */
+        var cachedTokens = 0
+        var cacheReported = false
+        /** 本轮未缓存输入、缓存写入、推理 tokens：仅部分模型提供这几项数据。 */
+        var uncachedInputTokens = 0
+        var cacheWriteTokens: Int? = null
+        var reasoningTokens: Int? = null
+        /** 本轮使用的「提供方/模型」，在开始执行时固定，面板据此显示。 */
+        var usageModel = ""
 
-    /** 本回合从哪条消息开始（含）：收尾只在 [turnStartIndex, 末尾] 里找本轮最后一条 assistant。 */
-    private var turnStartIndex = 0
+        /** 本回合从哪条消息开始（含）：收尾只在 [startIndex, 末尾] 里找本轮最后一条 assistant。 */
+        var startIndex = 0
 
-    /** 本次回复的模型 / 工具耗时（毫秒）：AgentLoop 收尾回调一次，[commitTiming] 后清零。 */
-    private var turnModelMillis = 0L
-    private var turnToolMillis = 0L
+        /** 本次回复的模型 / 工具耗时（毫秒）：AgentLoop 收尾回调一次，[commitTiming] 后清零。 */
+        var modelMillis = 0L
+        var toolMillis = 0L
 
-    /**
-     * 本次回复的输出侧账目（首字等待 / 生成 / 三段细分 / 工具调用次数）。
-     *
-     * AgentLoop 在收尾时先回 onTiming、再回 onOutputTiming；[commitTiming] 在这之后，
-     * 所以这里先攒着，落总账时一次写清。
-     */
-    private var turnTtftMillis = 0L
-    private var turnGenMillis = 0L
-    private var turnGenTokens = 0
-    private var turnReasoningMillis = 0L
-    private var turnTextMillis = 0L
-    private var turnToolArgMillis = 0L
-    private var turnToolCalls = 0
+        /**
+         * 本次回复的输出侧账目（首字等待 / 生成 / 三段细分 / 工具调用次数）。
+         *
+         * AgentLoop 在收尾时先回 onTiming、再回 onOutputTiming；[commitTiming] 在这之后，
+         * 所以这里先攒着，落总账时一次写清。
+         */
+        var ttftMillis = 0L
+        var genMillis = 0L
+        var genTokens = 0
+        var reasoningMillis = 0L
+        var textMillis = 0L
+        var toolArgMillis = 0L
+        var toolCalls = 0
 
-    /** 本轮起点（毫秒）：用于计算总账的活跃时长（一次回复的实际耗时）。 */
-    private var turnStartedAt = 0L
+        /** 本轮起点（毫秒）：用于计算总账的活跃时长（一次回复的实际耗时）。 */
+        var startedAt = 0L
+
+        /** 本次回复已跑到的最大轮次（状态行「本次回复步数」的唯一来源，按会话各一份）。 */
+        var steps = 0
+    }
 
     // ---- 上下文摘要（滚动压缩） ----
 
@@ -219,25 +293,75 @@ class ContextState(
      * 重算快照：估算的是「真正会发出去的那份请求视图」。
      * 有摘要就是 system(摘要) + summaryUpTo 之后的原文，没有摘要就是全量（摘要失败时按兜底轮数裁）。
      * 分母是 ApiDefaults.CONTEXT_WINDOW；不另写估算器，直接复用 ContextCompactor.estimate。
+     *
+     * 只服务界面与统计（按**当前显示的会话**算）；压缩闸门按回合所属会话现算，见 [shouldSummarize]。
      */
     fun refreshContext() {
-        val summary = contextSummary
-        val upTo = if (summary.isEmpty()) 0 else normalizedSummaryUpTo()
-        val start = requestStart(summary, upTo)
-        val tokens = ContextCompactor.estimate(requestView(start, summary, upTo))
+        applyContextSnapshot(null)
+    }
+
+    /**
+     * 界面正在看的那条会话的水位快照（生成中切到别的会话时用）。
+     *
+     * 与 [refreshContext] 的区别只有落点：这里写 [displaySnapshot]，不动 [contextSnapshot]。
+     * 原因：回合的压缩闸门读的是 contextSnapshot，若被显示会话的数字覆盖，闸门会按别人的水位判断。
+     */
+    fun refreshDisplayContext(sessionId: String) {
+        applyContextSnapshot(sessionId)
+    }
+
+    /** 显示会话的水位快照；null 表示当前显示的就是回合/当前会话，界面直接用 [contextSnapshot]。 */
+    var displaySnapshot by mutableStateOf<ContextSnapshot?>(null)
+        private set
+
+    /** 生成中切到别的会话后，界面该显示哪一份水位快照。 */
+    fun snapshotFor(displaySessionId: String): ContextSnapshot {
+        // 主快照由 refreshContext() 按当前会话算：显示的就是当前会话（或没有回合在跑）时直接用
+        if (turns.isEmpty() || displaySessionId == currentSessionId()) return contextSnapshot
+        val cached = displaySnapshot
+        if (cached != null) return cached
+        // 还没算过就地算一份（切换会话时会调 [refreshDisplayContext]，这里的兜底只为首帧不空）
+        applyContextSnapshot(displaySessionId)
+        return displaySnapshot ?: contextSnapshot
+    }
+
+    /** 按给定会话算一次请求视图快照：[displaySessionId] 为 null 时写主快照。 */
+    private fun applyContextSnapshot(displaySessionId: String?) {
+        val target = displaySessionId ?: currentSessionId()
+        val snapshot = snapshotOf(target)
+        if (displaySessionId == null) {
+            contextSnapshot = snapshot
+            // 分段估算在末尾同时刷新一次：便于判断水位主要由系统提示词还是消息历史占用
+            refreshContextBreakdown()
+        } else {
+            displaySnapshot = snapshot
+        }
+    }
+
+    /**
+     * 按给定会话算一份请求视图快照（纯函数，不写 [contextSnapshot] 与 [displaySnapshot]）。
+     *
+     * 压缩闸门走这一条：并行时闸门必须按**发起回合的那条会话**判水位，
+     * 不能让显示会话的数字参与决定（否则 A 在跑、用户切到刚清空上下文的 B，A 就不压了）。
+     * 界面快照仍由 [refreshContext] / [refreshDisplayContext] 写，两者互不影响。
+     */
+    private fun snapshotOf(sessionId: String): ContextSnapshot {
+        val list = messagesOf(sessionId)
+        val summary = sessions().firstOrNull { it.id == sessionId }?.contextSummary.orEmpty()
+        val upTo = if (summary.isEmpty()) 0 else normalizedSummaryUpTo(sessionId, list)
+        val start = requestStart(sessionId, summary, upTo, list)
+        val tokens = ContextCompactor.estimate(requestView(start, summary, upTo, list))
         val window = ApiDefaults.CONTEXT_WINDOW
-        val session = sessions().firstOrNull { it.id == currentSessionId() }
-        contextSnapshot = ContextSnapshot(
+        val session = sessions().firstOrNull { it.id == sessionId }
+        return ContextSnapshot(
             estimatedTokens = tokens,
             window = window,
             ratio = if (window > 0) tokens.toFloat() / window else 0f,
             coveredMessages = start,
-            totalMessages = messages.size,
+            totalMessages = list.size,
             hasSummary = summary.isNotEmpty() && upTo > 0,
             lastSummaryAt = session?.lastSummaryAt ?: 0L
         )
-        // 分段估算在末尾同时刷新一次：便于判断水位主要由系统提示词还是消息历史占用
-        refreshContextBreakdown()
     }
 
     /**
@@ -245,22 +369,32 @@ class ContextState(
      *
      * refreshContext 与 refreshContextBreakdown 都从这里取，两处口径不会走偏。
      */
-    private fun requestStart(summary: String, upTo: Int): Int {
+    private fun requestStart(
+        sessionId: String,
+        summary: String,
+        upTo: Int,
+        list: List<ChatMessage> = messagesOf(sessionId)
+    ): Int {
         var start = upTo
-        if (contextPolicy.enabled && contextFallback) {
-            start = maxOf(start, ContextCompactor.tailStartIndex(messages, contextPolicy.fallbackKeepRounds))
+        if (contextPolicy.enabled && sessionId in fallbackSessions) {
+            start = maxOf(start, ContextCompactor.tailStartIndex(list, contextPolicy.fallbackKeepRounds))
         }
         return start
     }
 
     /** 真正会发出去的那份请求视图：摘要抬头 + 起点之后的原文（口径与 AgentLoop 一致）。 */
-    private fun requestView(start: Int, summary: String, upTo: Int): List<ChatMessage> {
-        val request = ArrayList<ChatMessage>(messages.size - start + 1)
+    private fun requestView(
+        start: Int,
+        summary: String,
+        upTo: Int,
+        list: List<ChatMessage> = messagesOf(currentSessionId())
+    ): List<ChatMessage> {
+        val request = ArrayList<ChatMessage>(list.size - start + 1)
         if (summary.isNotEmpty() && upTo > 0) {
             // 抬头和 AgentLoop 用同一个函数，保证估算口径与实际请求一致
             request.add(ChatMessage(role = "system", content = contextSummarySystemText(summary)))
         }
-        for (i in start until messages.size) request.add(messages[i])
+        for (i in start until list.size) request.add(list[i])
         return request
     }
 
@@ -271,8 +405,8 @@ class ContextState(
      */
     fun refreshContextBreakdown() {
         val summary = contextSummary
-        val upTo = if (summary.isEmpty()) 0 else normalizedSummaryUpTo()
-        val request = requestView(requestStart(summary, upTo), summary, upTo)
+        val upTo = if (summary.isEmpty()) 0 else normalizedSummaryUpTo(currentSessionId())
+        val request = requestView(requestStart(currentSessionId(), summary, upTo), summary, upTo)
         val summaryText = if (summary.isNotEmpty() && upTo > 0) summary else ""
         // planMode 由 promptInput() 自带（与 AgentLoop 同源）；摘要单独计量，避免将摘要计入提示词段
         val promptOnly = PromptBuilder.build(promptInput())
@@ -321,13 +455,13 @@ class ContextState(
      * 手动立即压缩（设置页 / 长按按钮）。流式回复中不允许：两路请求抢同一个会话没有意义。
      * 结果通过 [onDone] 回主线程：true = 摘要成功，false = 没做或失败（已退兜底）。
      */
-    fun summarizeNow(onDone: (Boolean) -> Unit = {}, force: Boolean = false) {
-        if (isStreaming()) {
+    fun summarizeNow(sessionId: String, onDone: (Boolean) -> Unit = {}, force: Boolean = false) {
+        if (isTurnRunning(sessionId)) {
             FileLog.log("context", "正在生成回复，手动压缩先跳过")
             onDone(false)
             return
         }
-        startCompaction(onDone, force)
+        startCompaction(sessionId, onDone, force)
     }
 
     /**
@@ -336,32 +470,55 @@ class ContextState(
      * 溢出恢复必须在流式输出过程中调用：该轮已被提供方按上下文超限拒绝，不压缩则无法重发；
      * 「两路请求争用同一会话」仅对用户手动压缩成立。
      */
-    private fun startCompaction(onDone: (Boolean) -> Unit, force: Boolean) {
+    private fun startCompaction(sessionId: String, onDone: (Boolean) -> Unit, force: Boolean) {
         if (!contextPolicy.enabled && !force) {
             FileLog.log("context", "摘要开关关着且未强制，手动压缩跳过")
             onDone(false)
             return
         }
         refreshContext()
-        setActivity("正在压缩上下文…")
-        scope.launch {
-            val ok = try {
-                runSummary()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // 手动路径同样不应抛出：置兜底标记，请求视图退化为最近几轮
-                contextFallback = true
-                refreshContext()
-                recordCompressFallback("手动压缩异常：" + (e.message ?: e.javaClass.simpleName))
-                FileLog.log("context", "手动压缩异常，退回兜底：" + e)
-                false
+        setActivity(sessionId, "正在压缩上下文…")
+        // 每次发起都换一个令牌：上一次尚未收尾的任务因此判定为过期（见 [compactionTokens]）
+        val token = ++compactionSeq
+        compactionTokens[sessionId] = token
+        val stillWanted = { isCompactionCurrent(sessionId, token) }
+        // LAZY 再启动：先登记 job 再开跑，避免协程在登记前就结束而留下过期引用
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            var ok = false
+            try {
+                ok = try {
+                    runSummary(sessionId, stillWanted)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 手动路径同样不应抛出：置兜底标记，请求视图退化为最近几轮
+                    if (stillWanted()) {
+                        fallbackSessions.add(sessionId)
+                        refreshContext()
+                        recordCompressFallback(sessionId, "手动压缩异常：" + (e.message ?: e.javaClass.simpleName))
+                    }
+                    FileLog.log("context", "手动压缩异常，退回兜底：" + e)
+                    false
+                }
+                // 回合已中止（或已被新一次压缩取代）时不得写盘：本次结果已不属于任何人
+                if (stillWanted()) {
+                    persistAll()
+                } else {
+                    FileLog.log("context", "压缩结果已过期，跳过落盘：" + sessionId)
+                }
             } finally {
-                setActivity(null)
+                // 只清理自己发起的这次：过期的任务不得清掉下一回合的「正在压缩上下文…」
+                if (stillWanted()) {
+                    setActivity(sessionId, null)
+                    compactionTokens.remove(sessionId)
+                    compactionJobs.remove(sessionId)
+                }
+                // 回调必须恰好一次：溢出恢复以它决定要不要重发同一轮
+                onDone(ok)
             }
-            persistAll()
-            onDone(ok)
         }
+        compactionJobs[sessionId] = job
+        job.start()
     }
 
     /**
@@ -370,10 +527,11 @@ class ContextState(
      * summarizeNow 为回调式 API，任一分支遗漏回调都会使本轮永久挂起；超时最坏仅本次未压缩成功，
      * AgentLoop 会将提供方原文返回给用户。此处走 [startCompaction] 以避开「流式中不压缩」的限制。
      */
-    suspend fun onOverflowCompaction(): Boolean =
+    suspend fun onOverflowCompaction(sessionId: String): Boolean =
         withTimeoutOrNull(OVERFLOW_COMPACT_TIMEOUT_MS) {
             suspendCancellableCoroutine { cont ->
                 startCompaction(
+                    sessionId = sessionId,
                     onDone = { ok -> if (cont.isActive) cont.resume(ok) },
                     force = true
                 )
@@ -383,8 +541,8 @@ class ContextState(
     /** 清除本会话摘要：请求视图恢复全量（旧消息本来就都在，不需要恢复任何内容）。 */
     fun clearContextSummary() {
         if (isStreaming()) return
-        contextFallback = false
         val id = currentSessionId()
+        fallbackSessions.remove(id)
         // 清除前的分界需留存记录：该条清除后即不存在，事件中需记录当时压缩至何处
         val boundary = sessions().firstOrNull { it.id == id }?.summaryUpTo ?: 0
         writeSessions(sessions().map {
@@ -393,7 +551,7 @@ class ContextState(
         persistCurrent()
         persistAll()
         refreshContext()
-        recordContextEvent(kind = ContextEventKind.CLEAR, boundary = boundary)
+        recordContextEvent(id, kind = ContextEventKind.CLEAR, boundary = boundary)
         FileLog.log("context", "已清除会话 " + id + " 的摘要，恢复全量请求视图")
     }
 
@@ -409,6 +567,7 @@ class ContextState(
      * 待其切换会话再切回后才出现，等同于提示「本次压缩未记录」。
      */
     private fun recordContextEvent(
+        sessionId: String,
         kind: ContextEventKind,
         ok: Boolean = true,
         fromMessages: Int = 0,
@@ -419,7 +578,7 @@ class ContextState(
     ) {
         ContextEventStore.append(
             appContext,
-            currentSessionId(),
+            sessionId,
             ContextEvent(
                 at = System.currentTimeMillis(),
                 kind = kind,
@@ -440,15 +599,17 @@ class ContextState(
      * 为什么分两条：失败原因是「这次没压成」，兜底窗口是「没压成之后发的是什么」，
      * 合并为一条则无法按类型分别过滤，页面也无法明确说明。
      */
-    private fun recordCompressFallback(reason: String) {
+    private fun recordCompressFallback(sessionId: String, reason: String) {
         // 失败事件也要带上兜底轮数：描述行要写「已退回最近 N 轮」，不传就渲染成 0 轮
         recordContextEvent(
+            sessionId = sessionId,
             kind = ContextEventKind.COMPRESS,
             ok = false,
             keptRounds = contextPolicy.fallbackKeepRounds,
             note = reason
         )
         recordContextEvent(
+            sessionId = sessionId,
             kind = ContextEventKind.FALLBACK,
             keptRounds = contextPolicy.fallbackKeepRounds
         )
@@ -460,27 +621,32 @@ class ContextState(
      * 保留区的口径按 DSH：优先级是「逐字保留预算（(W−O)×retainRatio 或绝对 token）」，
      * 同时不能低于 fallbackKeepRounds 轮；窗口与输出预留都从 ApiConfig 取，和请求口径一致。
      */
-    private fun summaryBoundary(): Int =
-        ContextCompactor.retainStart(messages, contextPolicy)
+    private fun summaryBoundary(sessionId: String): Int =
+        ContextCompactor.retainStart(messagesOf(sessionId), contextPolicy)
 
     /**
      * 双触发闸门（或关系）：
      * ① 估算 tokens / 上下文窗口 ≥ triggerRatio；
      * ② 自上次摘要后新增 user 消息数 ≥ triggerCount（可关）。
      * 前提是「分界确实前移」：无可摘要内容时不触发，避免空转并重复调用模型。
+     *
+     * 水位按传入的 [sessionId] 现算（见 [snapshotOf]），不读 [contextSnapshot]：
+     * 主快照属于界面显示的那条会话，并行时若拿来判断，A 的回合会按 B 的水位决定压不压。
+     * 因此本函数也不刷新主快照——界面数字随切会话与回合收尾各自刷新。
      */
-    fun shouldSummarize(): Boolean {
+    fun shouldSummarize(sessionId: String): Boolean {
         val policy = contextPolicy
         if (!policy.enabled) return false
-        refreshContext()
-        val boundary = summaryBoundary()
-        val covered = normalizedSummaryUpTo()
+        val boundary = summaryBoundary(sessionId)
+        val covered = normalizedSummaryUpTo(sessionId)
         if (boundary <= covered) return false
-        if (contextSnapshot.ratio >= policy.triggerRatio) return true
+        if (snapshotOf(sessionId).ratio >= policy.triggerRatio) return true
         if (policy.triggerByCount) {
-            // +1：这条即将发出的 user 消息还没进 messages，但它本来就算「新增的一条」
-            var count = 1
-            for (i in covered until messages.size) if (messages[i].role == "user") count++
+            // 这条即将发出的 user 消息已在起跑前进入正文（见 SendController.startTurn），
+            // 直接按现有列表数，不再额外 +1
+            var count = 0
+            val list = messagesOf(sessionId)
+            for (i in covered until list.size) if (list[i].role == "user") count++
             if (count >= policy.triggerCount) return true
         }
         return false
@@ -516,22 +682,50 @@ class ContextState(
     /**
      * 跑一次摘要（与上一条摘要融合成新的）：
      * 成功 → 写回会话三字段并落盘；失败/超时/空结果 → 只置兜底标记，主请求照常发。
+     *
+     * [stillWanted] 是生命周期校验：压缩在独立协程里跑时，回合可能已被用户中止，
+     * 此刻既不能写会话字段、也不能记事件（两者都落盘）。写盘前一律复核，过期即放弃本次结果。
      */
-    suspend fun runSummary(): Boolean {
+    suspend fun runSummary(
+        sessionId: String,
+        stillWanted: () -> Boolean = { true }
+    ): Boolean {
         val policy = contextPolicy
-        val boundary = summaryBoundary()
-        val covered = normalizedSummaryUpTo()
+        val list = messagesOf(sessionId)
+        val boundary = summaryBoundary(sessionId)
+        val covered = normalizedSummaryUpTo(sessionId, list)
         if (boundary <= covered) {
-            // 消息还不够多（或全被摘要覆盖）：没有可摘要的部分，不白花一次请求
+            // 消息数量不足（或已全部被摘要覆盖）：没有可摘要的部分，不额外消耗一次请求
             FileLog.log("context", "没有可摘要的部分（分界 " + boundary + " ≤ 已覆盖 " + covered + "）")
             return false
         }
 
-        val previous = contextSummary
+        // 摘要前缀与主请求共用同一套工具配对清洗：分界两侧的 assistant(tool_calls) 与 tool 结果
+        // 可能因回合中断、插话落在结果之前或工具组只回来一部分而不成组；原样重放会被服务端以
+        // HTTP 400「assistant message with 'tool_calls' must be followed by tool messages」拒绝。
+        // 先按整轮把区间末端对齐到完整轮次，再对区间做一次与主请求视图同口径的清洗。
+        val aligned = ContextCompactor.summaryEndAligned(list, covered, boundary)
+        val end = if (aligned > covered) aligned else boundary
+        val rangeView = list.subList(covered, end).sanitizeToolPairing()
+        val dropped = (end - covered) - rangeView.size
+        if (end != boundary || dropped > 0) {
+            FileLog.log(
+                "context",
+                "摘要区间清洗：分界 " + boundary + " → " + end + "（尾部未闭合的工具组按整轮移出 " +
+                    (boundary - end) + " 条），另丢弃 " + dropped +
+                    " 条孤立 tool 或结果不完整的 assistant(tool_calls) 组"
+            )
+        }
+        if (rangeView.isEmpty()) {
+            FileLog.log("context", "摘要区间清洗后为空（" + covered + "–" + end + "），本次跳过")
+            return false
+        }
+
+        val previous = summaryOf(sessionId)
         // 摘要请求要「蹭」主请求的热前缀：把主请求从 system 到分界处的字节**原样重放**，
         // 只把「请压缩」作为最后一条 user 消息追加。system / 工作区指令 / 已有检查点 / 工具表少给或换了
         // 顺序，缓存就断在那一处，摘要调用就从「几乎全命中」退化成「付一整份输入」。
-        val prefix = ArrayList<ChatMessage>(boundary - covered + 4)
+        val prefix = ArrayList<ChatMessage>(rangeView.size + 4)
         PromptBuilder.buildStable(promptInput())?.let {
             prefix.add(ChatMessage(role = "system", content = it))
         }
@@ -547,8 +741,7 @@ class ContextState(
         if (previous.isNotBlank()) {
             prefix.add(ChatMessage(role = "user", content = PromptBuilder.checkpointText(previous)))
         }
-        for (i in covered until boundary) {
-            val message = messages[i]
+        for (message in rangeView) {
             // 与主请求同一口径：待压区间里的超长工具输出先折中段，再喂给摘要器。
             // 摘要器要的是「读懂再压成几段话」，中段原始输出进不了摘要正文，折掉只省不亏；
             // 折叠形态与压缩后的请求视图一致，压完那一轮拼出来的前缀才对得上。
@@ -571,10 +764,19 @@ class ContextState(
         )
 
         if (text.isNullOrBlank()) {
-            // 失败兜底：请求视图仅发送最近 fallbackKeepRounds 轮，绝不阻塞，也不影响主请求
-            contextFallback = true
+            // 失败兜底：请求视图仅发送最近 fallbackKeepRounds 轮，绝不阻塞，也不影响主请求。
+            // 过期任务连兜底标记也不写：下一回合不该继承一次「不属于它」的失败。
+            // isActive 一并校验：直接跑在回合协程里的压缩被取消后同样不得提交。
+            if (!currentCoroutineContext().isActive || !stillWanted()) {
+                FileLog.log("context", "摘要结果已过期（已中止或已被取代），跳过兜底标记：" + sessionId)
+                return false
+            }
+            fallbackSessions.add(sessionId)
             refreshContext()
-            recordCompressFallback("摘要结果为空（" + (System.currentTimeMillis() - startedAt) + "ms）")
+            recordCompressFallback(
+                sessionId,
+                "摘要结果为空（" + (System.currentTimeMillis() - startedAt) + "ms）"
+            )
             FileLog.log(
                 "context",
                 "摘要失败（" + (System.currentTimeMillis() - startedAt) + "ms），兜底只发最近 " +
@@ -583,12 +785,16 @@ class ContextState(
             return false
         }
 
-        contextFallback = false
-        val id = currentSessionId()
+        // 写盘前最后一次复核：回合已中止时，这份摘要不得覆盖会话字段
+        if (!currentCoroutineContext().isActive || !stillWanted()) {
+            FileLog.log("context", "摘要结果已过期（已中止或已被取代），跳过写回：" + sessionId)
+            return false
+        }
+        fallbackSessions.remove(sessionId)
         val now = System.currentTimeMillis()
         writeSessions(sessions().map {
-            if (it.id == id) {
-                it.copy(contextSummary = text, summaryUpTo = boundary, lastSummaryAt = now)
+            if (it.id == sessionId) {
+                it.copy(contextSummary = text, summaryUpTo = end, lastSummaryAt = now)
             } else {
                 it
             }
@@ -596,35 +802,39 @@ class ContextState(
         // 先把三字段写进会话表，再 persistCurrent：后者只覆盖 messages/updatedAt，字段保得住
         persistCurrent()
         refreshContext()
-        // 记一条压缩事件：fromMessages 是压缩前的消息数，foldedMessages 与 boundary 同口径（分界即折叠条数）
+        // 记一条压缩事件：fromMessages 是压缩前的消息数，foldedMessages 与分界同口径（分界即折叠条数）
         recordContextEvent(
+            sessionId = sessionId,
             kind = ContextEventKind.COMPRESS,
             ok = true,
-            fromMessages = messages.size,
-            foldedMessages = boundary,
-            boundary = boundary
+            fromMessages = list.size,
+            foldedMessages = end,
+            boundary = end
         )
         FileLog.log(
             "context",
-            "摘要完成：" + (boundary - covered) + " 条原文 → " + text.length + " 字，分界 " + boundary +
+            "摘要完成：" + rangeView.size + " 条原文 → " + text.length + " 字，分界 " + end +
                 "（前缀 " + prefix.size + " 条，含 system/指令/旧检查点）"
         )
         return true
     }
 
     /** 给 AgentLoop 的视图信息：摘要文本 + 分界 + 兜底标记；分界失效就当作没有摘要（发全量最安全）。 */
-    fun summaryState(): ContextSummaryState {
-        val summary = contextSummary
-        if (summary.isEmpty()) return ContextSummaryState(fallback = contextFallback)
-        val upTo = normalizedSummaryUpTo()
-        if (upTo <= 0) return ContextSummaryState(fallback = contextFallback)
-        return ContextSummaryState(text = summary, upTo = upTo, fallback = contextFallback)
+    fun summaryState(sessionId: String): ContextSummaryState {
+        val summary = summaryOf(sessionId)
+        if (summary.isEmpty()) return ContextSummaryState(fallback = sessionId in fallbackSessions)
+        val upTo = normalizedSummaryUpTo(sessionId)
+        if (upTo <= 0) return ContextSummaryState(fallback = sessionId in fallbackSessions)
+        return ContextSummaryState(text = summary, upTo = upTo, fallback = sessionId in fallbackSessions)
     }
 
     /** 落盘的 summaryUpTo 只有在「是 user 消息边界、且在范围内」时才算数；校验规则见 [validSummaryUpTo]。 */
-    private fun normalizedSummaryUpTo(): Int {
-        val saved = sessions().firstOrNull { it.id == currentSessionId() }?.summaryUpTo ?: 0
-        return validSummaryUpTo(messages, saved)
+    private fun normalizedSummaryUpTo(
+        sessionId: String,
+        list: List<ChatMessage> = messagesOf(sessionId)
+    ): Int {
+        val saved = sessions().firstOrNull { it.id == sessionId }?.summaryUpTo ?: 0
+        return validSummaryUpTo(list, saved)
     }
 
     // ---- 统计与时间账 ----
@@ -636,18 +846,23 @@ class ContextState(
      * 就是 refreshContext() 算出的 contextSnapshot.estimatedTokens：界面上的全量历史不算在内；
      * 分母是 ApiDefaults.CONTEXT_WINDOW。不另写估算器。
      */
-    fun refreshStats() {
+    fun refreshStats(sessionId: String = currentSessionId()) {
         refreshContext()
         // 总账在内存中读取一次即可（重复调用 load 为空操作）；同时覆盖「进程刚启动尚未读盘」的情况
         UsageLedger.load(appContext)
         val ledger = UsageLedger.snapshot()
-        // 本会话累计的唯一来源是会话记录本身（重启后 stats 是空的，必须从那里读回来）
-        val session = sessions().firstOrNull { it.id == currentSessionId() }
+        // 本会话累计的唯一来源是会话记录本身（重启后 stats 为空，必须从会话记录读回）
+        val session = sessions().firstOrNull { it.id == sessionId }
         // 分叉会话克隆了父会话的记录：这里报的是洞察页口径，只算自分支起的真实用量，
         // 所以统一减掉分叉时继承的基线（普通会话基线是 0，减 0 等于不减）
         val inherited = session?.inheritedUsage ?: InheritedUsage()
         stats = stats.copy(
-            rounds = messages.count { it.role == "user" },
+            // X06：轮数统一读会话字段（回合收尾累计，重启后仍在）；字段为 0（旧数据/极端态）时
+            // 回退到消息派生，显示效果与旧版一致
+            rounds = session?.turns?.takeIf { it > 0 }
+                ?: messagesOf(sessionId).count { it.role == "user" },
+            // 本次回复步数按会话取：并行时别的会话的步数不该出现在这一条上
+            steps = turns[sessionId]?.steps ?: 0,
             totalPromptTokens = ((session?.promptTokens ?: 0) - inherited.promptTokens).coerceAtLeast(0),
             totalCompletionTokens = ((session?.completionTokens ?: 0) - inherited.completionTokens)
                 .coerceAtLeast(0),
@@ -670,15 +885,32 @@ class ContextState(
      * 累计与请求次数从该会话自身的字段读取（不清零，切换离开后返回仍可接续）；
      * 「本次回复步数」和「最近一次用量」归零，轮数与水位按新消息重算。
      */
-    fun resetStats() {
+    fun resetStats(sessionId: String) {
         // 整体换一个新快照：steps / last* 归零；
         // 累计与请求次数由 refreshStats 从当前会话字段读取（不执行清零）
         // 摘要失败的兜底标记是「上一份会话」的状态（回滚也会走到这里），换会话必须清掉，
         // 否则会将其他会话的历史同样裁剪为最近几轮
-        contextFallback = false
-        stats = UsageStats()
+        fallbackSessions.remove(sessionId)
+        // 这条会话自己还有回合在跑时：它的「本次回复步数」与最近一次用量不能被这里清零
+        // （commitSteps 收尾时读的就是该会话回合上的 steps，last* 由 writeTurnUsage 补进气泡）
+        val running = turns[sessionId]
+        stats = if (running == null) {
+            UsageStats()
+        } else {
+            UsageStats(
+                steps = running.steps,
+                lastPromptTokens = stats.lastPromptTokens,
+                lastCompletionTokens = stats.lastCompletionTokens
+            )
+        }
         // refreshStats 内部会调 refreshContext，水位与覆盖条数一起重算
-        refreshStats()
+        refreshStats(sessionId)
+        // 显示会话自己就有回合在跑时，主快照就是它的；反之另存一份显示快照，不覆盖回合正在用的数字
+        if (isTurnRunning(sessionId) && sessionId != currentSessionId()) {
+            refreshDisplayContext(currentSessionId())
+        } else {
+            displaySnapshot = null
+        }
         // 时间账也是「这条会话」的：换会话必须从会话记录重新读，不能把上一条的耗时带过来
         syncSessionTiming()
         // 计划与目标同样按会话存储：切换后需替换为该会话的数据，否则计划页会显示上一会话的计划
@@ -689,15 +921,14 @@ class ContextState(
 
     /**
      * 把「本次回复步数」加进本会话累计与全局总账，每次回复结束只调一次
-     * （onRound 每轮都会回调，在那里加会重复计）。
+     * （onRound 每轮都会回调，在该回调中累加会重复计）。
      */
-    fun commitSteps() {
-        val steps = stats.steps
+    fun commitSteps(sessionId: String) {
+        val steps = turnOf(sessionId).steps
         if (steps <= 0) return
-        val id = currentSessionId()
         // 本会话累计步数：落进 sessions.json 的会话记录
         writeSessions(sessions().map {
-            if (it.id == id) it.copy(steps = it.steps + steps) else it
+            if (it.id == sessionId) it.copy(steps = it.steps + steps) else it
         })
         UsageLedger.addSteps(appContext, steps)
     }
@@ -705,52 +936,58 @@ class ContextState(
     /**
      * 把本次回复的时间账加进会话累计，一次回复只加一次（跟 [commitSteps] 同一个位置）。
      *
-     * 加完立刻同步 [sessionTiming]：面板读的是这个快照，等下一次切会话才刷会让人以为数字没动。
+     * X06：回合收尾同时把「本轮轮数」（追加过用户消息才计，[turnCounts]）与「本轮墙钟」
+     * 折进会话字段（turns / wallMs）——重启后累计仍在，界面统一从字段读，不再从消息派生。
+     *
+     * 写入后立刻同步 [sessionTiming]：面板读的是这个快照，等下一次切会话才刷新会让用户误以为数字未变化。
      */
-    fun commitTiming() {
-        val model = turnModelMillis
-        val tool = turnToolMillis
+    fun commitTiming(sessionId: String, turnCounts: Boolean = true) {
+        val turn = turnOf(sessionId)
+        val model = turn.modelMillis
+        val tool = turn.toolMillis
         // 本轮输出 tokens 在 writeTurnUsage 之后仍然留着（计数器要到下一次提问才清零），
         // 所以这里能把它和本轮耗时配成一对落进会话记录，供「输出速度」使用
-        val lastOutput = turnCompletionTokens
-        val active = if (turnStartedAt > 0L) {
-            (System.currentTimeMillis() - turnStartedAt).coerceAtLeast(0L)
+        val lastOutput = turn.completionTokens
+        val active = if (turn.startedAt > 0L) {
+            (System.currentTimeMillis() - turn.startedAt).coerceAtLeast(0L)
         } else {
             0L
         }
-        turnModelMillis = 0
-        turnToolMillis = 0
+        turn.modelMillis = 0
+        turn.toolMillis = 0
         // 总账按天：一次回复一次，把六段耗时、活跃时长与工具次数一起记进去
         UsageLedger.recordTiming(
             appContext,
             modelMs = model,
             toolMs = tool,
             activeMs = active,
-            ttftMs = turnTtftMillis,
-            genMs = turnGenMillis,
-            reasoningMs = turnReasoningMillis,
-            textMs = turnTextMillis,
-            toolArgMs = turnToolArgMillis,
-            genTokens = turnGenTokens,
-            toolCalls = turnToolCalls
+            ttftMs = turn.ttftMillis,
+            genMs = turn.genMillis,
+            reasoningMs = turn.reasoningMillis,
+            textMs = turn.textMillis,
+            toolArgMs = turn.toolArgMillis,
+            genTokens = turn.genTokens,
+            toolCalls = turn.toolCalls
         )
-        turnTtftMillis = 0L
-        turnGenMillis = 0L
-        turnGenTokens = 0
-        turnReasoningMillis = 0L
-        turnTextMillis = 0L
-        turnToolArgMillis = 0L
-        turnToolCalls = 0
-        turnStartedAt = 0L
-        if (model > 0 || tool > 0) {
-            val id = currentSessionId()
+        turn.ttftMillis = 0L
+        turn.genMillis = 0L
+        turn.genTokens = 0
+        turn.reasoningMillis = 0L
+        turn.textMillis = 0L
+        turn.toolArgMillis = 0L
+        turn.toolCalls = 0
+        turn.startedAt = 0L
+        if (model > 0 || tool > 0 || turnCounts || active > 0) {
             writeSessions(sessions().map {
-                if (it.id == id) {
+                if (it.id == sessionId) {
                     it.copy(
                         modelMillis = it.modelMillis + model,
                         toolMillis = it.toolMillis + tool,
                         lastTurnModelMillis = model,
-                        lastTurnCompletionTokens = lastOutput
+                        lastTurnCompletionTokens = lastOutput,
+                        // X06：轮数与墙钟随回合收尾折进会话字段
+                        turns = it.turns + (if (turnCounts) 1 else 0),
+                        wallMs = it.wallMs + active
                     )
                 } else {
                     it
@@ -758,6 +995,18 @@ class ContextState(
             })
         }
         syncSessionTiming()
+    }
+
+    /**
+     * X06：回滚 / 删除消息 / 编辑重发之后，按剩余消息重算轮数字段。
+     *
+     * 轮数累计是「回合收尾 +1」，截断路径必须反向修正，否则回滚后状态行仍显示旧的轮数。
+     */
+    fun recountTurns(sessionId: String) {
+        val count = messagesOf(sessionId).count { it.role == "user" }
+        writeSessions(sessions().map {
+            if (it.id == sessionId && it.turns != count) it.copy(turns = count) else it
+        })
     }
 
     /** 从当前会话记录读回时间账（本会话累计耗时 + 累计输出 tokens）。 */
@@ -818,72 +1067,80 @@ class ContextState(
 
     /**
      * 新的一轮开跑：上一轮的用量已经写进气泡了，这里清零重新累计；
-     * [turnStartIndex] 记下本轮起点，收尾写用量时不会写到上一轮的气泡里。
+     * [TurnState.startIndex] 记下本轮起点，收尾写用量时不会写到上一轮的气泡里。
      */
-    fun beginTurn() {
-        usageText = null
-        turnPromptTokens = 0
-        turnCompletionTokens = 0
-        turnCachedTokens = 0
-        turnCacheReported = false
-        turnUncachedInputTokens = 0
-        turnCacheWriteTokens = null
-        turnReasoningTokens = null
-        turnUsageModel = usageModel()
-        turnStartIndex = messages.size
+    fun beginTurn(sessionId: String) {
+        // 开账：turnOf 会把这条会话登记进 turns，isTurnRunning 从这里开始为 true
+        val turn = turnOf(sessionId)
+        usageTexts.remove(sessionId)
+        turn.promptTokens = 0
+        turn.completionTokens = 0
+        turn.cachedTokens = 0
+        turn.cacheReported = false
+        turn.uncachedInputTokens = 0
+        turn.cacheWriteTokens = null
+        turn.reasoningTokens = null
+        turn.usageModel = usageModel()
+        // 回合边界取本回合所属会话那一份正文：并行时另一条会话随时可能在追加消息
+        turn.startIndex = messagesOf(sessionId).size
         // 时间账同样按回合清零：AgentLoop 收尾时会把本回合的模型/工具耗时回调一次
-        turnModelMillis = 0
-        turnToolMillis = 0
-        turnTtftMillis = 0L
-        turnGenMillis = 0L
-        turnGenTokens = 0
-        turnReasoningMillis = 0L
-        turnTextMillis = 0L
-        turnToolArgMillis = 0L
-        turnToolCalls = 0
-        turnStartedAt = System.currentTimeMillis()
-        // 新的一次提问：本次回复步数归零；累计 token 与轮数保留（它们是整个会话的）
-        stats = stats.copy(steps = 0)
+        turn.modelMillis = 0
+        turn.toolMillis = 0
+        turn.ttftMillis = 0L
+        turn.genMillis = 0L
+        turn.genTokens = 0
+        turn.reasoningMillis = 0L
+        turn.textMillis = 0L
+        turn.toolArgMillis = 0L
+        turn.toolCalls = 0
+        turn.startedAt = System.currentTimeMillis()
+        // 新的一次提问：**本会话**本次回复步数归零；累计 token 与轮数保留（它们是整个会话的）
+        turn.steps = 0
+        if (sessionId == currentSessionId()) stats = stats.copy(steps = 0)
         // 发送这一刻先对一次水位：状态行与圆环读的是 contextSnapshot，本轮跑完还会再刷一次
         refreshStats()
     }
 
     /** 新一轮开始：记录本次回复已跑到的最大轮次（会话累计由 [commitSteps] 加一次）。 */
-    fun noteRound(round: Int) {
-        // 步数取本次回复跑过的最大轮次（不是当前轮次，循环退出时不至于回落）
-        stats = stats.copy(steps = maxOf(stats.steps, round))
+    fun noteRound(sessionId: String, round: Int) {
+        // 步数取本次回复跑过的最大轮次（不是当前轮次，循环退出时不至于回落）；按会话各记一份
+        val turn = turnOf(sessionId)
+        turn.steps = maxOf(turn.steps, round)
+        // 显示的就是这条会话时同步一份，状态行不必等下一次 refreshStats
+        if (sessionId == currentSessionId()) stats = stats.copy(steps = turn.steps)
     }
 
     /** 清掉最近一次请求的用量文本（新提问 / 回滚时用）。 */
-    fun clearUsageText() {
-        usageText = null
+    fun clearUsageText(sessionId: String) {
+        usageTexts.remove(sessionId)
     }
 
     /** 循环收尾回调一次：只累计本次回复的时间账，落会话记录在 [commitTiming] 里做。 */
-    fun addTurnTiming(modelMillis: Long, toolMillis: Long) {
-        turnModelMillis += modelMillis
-        turnToolMillis += toolMillis
+    fun addTurnTiming(sessionId: String, modelMillis: Long, toolMillis: Long) {
+        val turn = turnOf(sessionId)
+        turn.modelMillis += modelMillis
+        turn.toolMillis += toolMillis
     }
 
     /**
      * 输出侧账目（首字等待 / 生成时长 / 输出 tokens）：跟 [addTurnTiming] 一起落进会话记录。
      *
      * 落盘而不是只放内存：这两个数决定状态行上的 tok/s 与浮窗里的 TTFT，重启一次就归零
-     * 会让人以为数字坏了。落盘的时机就是这里：一次回复一次，不会写得太勤。
+     * 会让用户误以为数字异常。落盘时机即此处：一次回复一次，不会写得太频繁。
      */
-    fun recordOutputTiming(timing: OutputTiming) {
+    fun recordOutputTiming(sessionId: String, timing: OutputTiming) {
         if (timing.ttftCount == 0 && timing.genTokens == 0 && timing.toolCalls == 0) return
-        // 先攒在本轮：commitTiming 落总账时一起写（活跃时长在那里才有终点）
-        turnTtftMillis = timing.ttftMillis
-        turnGenMillis = timing.genMillis
-        turnGenTokens = timing.genTokens
-        turnReasoningMillis = timing.reasoningMillis
-        turnTextMillis = timing.textMillis
-        turnToolArgMillis = timing.toolArgMillis
-        turnToolCalls = timing.toolCalls
-        val id = currentSessionId()
+        // 先缓存在本轮：commitTiming 落总账时一并写入（活跃时长以该时刻为终点）
+        val turn = turnOf(sessionId)
+        turn.ttftMillis = timing.ttftMillis
+        turn.genMillis = timing.genMillis
+        turn.genTokens = timing.genTokens
+        turn.reasoningMillis = timing.reasoningMillis
+        turn.textMillis = timing.textMillis
+        turn.toolArgMillis = timing.toolArgMillis
+        turn.toolCalls = timing.toolCalls
         writeSessions(sessions().map {
-            if (it.id == id) {
+            if (it.id == sessionId) {
                 it.copy(
                     ttftMillis = it.ttftMillis + timing.ttftMillis,
                     ttftCount = it.ttftCount + timing.ttftCount,
@@ -902,26 +1159,38 @@ class ContextState(
     }
 
     /**
+     * 回合收尾：把这条会话的回合账目整份丢掉（下次 beginTurn 重新开一份）。
+     *
+     * 必须在本回合所有记账动作（writeTurnUsage / commitTiming / commitSteps）之后调用：
+     * 账目一旦移除，[turnOf] 再被调动就会开出一份空的，收尾数字就写不回去了。
+     */
+    fun endTurn(sessionId: String) {
+        turns.remove(sessionId)
+    }
+
+    /**
      * 把本轮累计的 usage 写进本轮最后一条 assistant 消息。
      *
      * 为什么只写最后一条：一轮里的工具调用会产生多条 assistant，胶囊只在气泡底部显示一行，
-     * 每条都写就会冒出好几行。[turnStartIndex] 保证不会写到上一轮（插话续跑那种
+     * 每条都写就会冒出好几行。[startIndex] 保证不会写到上一轮（插话续跑那种
      * 不追加用户消息的回合也一样）。
      */
-    fun writeTurnUsage() {
-        if (turnPromptTokens <= 0 && turnCompletionTokens <= 0) return
-        for (i in messages.lastIndex downTo turnStartIndex) {
+    fun writeTurnUsage(sessionId: String) {
+        val turn = turnOf(sessionId)
+        if (turn.promptTokens <= 0 && turn.completionTokens <= 0) return
+        val list = messagesOf(sessionId)
+        for (i in list.lastIndex downTo turn.startIndex) {
             if (i < 0) return
-            if (messages[i].role != "assistant") continue
-            messages[i] = messages[i].copy(
-                promptTokens = turnPromptTokens,
-                completionTokens = turnCompletionTokens,
-                cachedTokens = turnCachedTokens,
-                usageCacheReported = turnCacheReported,
-                uncachedInputTokens = turnUncachedInputTokens,
-                cacheWriteTokens = turnCacheWriteTokens,
-                reasoningTokens = turnReasoningTokens,
-                usageModel = turnUsageModel
+            if (list[i].role != "assistant") continue
+            list[i] = list[i].copy(
+                promptTokens = turn.promptTokens,
+                completionTokens = turn.completionTokens,
+                cachedTokens = turn.cachedTokens,
+                usageCacheReported = turn.cacheReported,
+                uncachedInputTokens = turn.uncachedInputTokens,
+                cacheWriteTokens = turn.cacheWriteTokens,
+                reasoningTokens = turn.reasoningTokens,
+                usageModel = turn.usageModel
             )
             return
         }
@@ -932,21 +1201,22 @@ class ContextState(
      *
      * 服务端没报的字段（缓存、推理）不累加、也不写成 0，界面上按「未知」显示。
      */
-    fun recordUsage(usage: UsageBuckets) {
+    fun recordUsage(sessionId: String, usage: UsageBuckets) {
+        val turn = turnOf(sessionId)
         val promptTokens = usage.promptTokens
         val completionTokens = usage.completionTokens
-        usageText = "输入 " + promptTokens + " / 输出 " + completionTokens + " tokens"
+        usageTexts[sessionId] = "输入 " + promptTokens + " / 输出 " + completionTokens + " tokens"
         // 气泡里要的是整轮总账：单个请求的数字只在这里加总，收尾时一次写进最后一条 assistant
-        turnPromptTokens += promptTokens
-        turnCompletionTokens += completionTokens
-        turnUncachedInputTokens += usage.uncachedInputTokens
+        turn.promptTokens += promptTokens
+        turn.completionTokens += completionTokens
+        turn.uncachedInputTokens += usage.uncachedInputTokens
         // 缓存读写与推理只认服务端真报过的那次：没报就不累加，面板上整行不显示而不是写 0%
         if (usage.cacheReadReported) {
-            turnCachedTokens += usage.cacheReadTokens
-            turnCacheReported = true
+            turn.cachedTokens += usage.cacheReadTokens
+            turn.cacheReported = true
         }
-        usage.cacheWriteTokens?.let { turnCacheWriteTokens = (turnCacheWriteTokens ?: 0) + it }
-        usage.reasoningTokens?.let { turnReasoningTokens = (turnReasoningTokens ?: 0) + it }
+        usage.cacheWriteTokens?.let { turn.cacheWriteTokens = (turn.cacheWriteTokens ?: 0) + it }
+        usage.reasoningTokens?.let { turn.reasoningTokens = (turn.reasoningTokens ?: 0) + it }
         // 缓存命中 / 未命中仅认可服务端实际上报的那一次：未上报则不记录，否则界面会显示一个
         // 看似「缓存一次都未命中」的 0%，实际仅因该服务商不提供此字段
         val hitTokens = if (usage.cacheReadReported) usage.cacheReadTokens else 0
@@ -954,9 +1224,8 @@ class ContextState(
         // 计费构成：这次请求视图的估算占比 × 真实 prompt tokens；输出直接取 completion
         val scaled = scaledComposition(promptTokens, completionTokens)
         // 本会话计数写回当前会话记录（切换会话不丢失、返回后可接续），随后落盘
-        val id = currentSessionId()
         writeSessions(sessions().map {
-            if (it.id == id) {
+            if (it.id == sessionId) {
                 it.copy(
                     promptTokens = it.promptTokens + promptTokens,
                     completionTokens = it.completionTokens + completionTokens,
@@ -973,7 +1242,7 @@ class ContextState(
         // 全局总账：只增不减，跟删会话 / 归档无关，记在同一次 usage 里
         val now = System.currentTimeMillis()
         val cost = CostBook.costOf(
-            usageModel = turnUsageModel,
+            usageModel = turn.usageModel,
             promptTokens = promptTokens,
             completionTokens = completionTokens,
             cachedTokens = hitTokens,
@@ -1028,7 +1297,7 @@ class ContextState(
      * 只并入会话累计与总账：检索结果作为工具结果进入请求，输入构成记在「工具结果」一段；
      * 本轮的上下文水位、状态行与气泡用量都不受影响，它们仍只反映对话请求本身。
      */
-    fun recordAuxUsage(aux: AuxUsage) {
+    fun recordAuxUsage(sessionId: String, aux: AuxUsage) {
         if (aux.promptTokens <= 0 && aux.completionTokens <= 0 && aux.searchRequests <= 0) return
         val hit = if (aux.cacheReadReported) aux.cachedTokens.coerceAtLeast(0) else 0
         val miss = if (aux.cacheReadReported) aux.uncachedInputTokens.coerceAtLeast(0) else aux.promptTokens
@@ -1042,9 +1311,8 @@ class ContextState(
             atMillis = System.currentTimeMillis()
         ) ?: 0.0) + CostBook.searchCostCny(aux.searchRequests)
         // 会话累计：检索与对话共用同一张会话卡片，请求数与 token 都要算进去
-        val id = currentSessionId()
         writeSessions(sessions().map {
-            if (it.id == id) {
+            if (it.id == sessionId) {
                 it.copy(
                     promptTokens = it.promptTokens + aux.promptTokens,
                     completionTokens = it.completionTokens + aux.completionTokens,
@@ -1178,11 +1446,13 @@ class ContextState(
         )
     }
 
-    /** 本轮（从 turnStartIndex 起）有没有工具结果：用它判断模型是不是真的动手了。 */
-    fun turnUsedTools(): Boolean {
-        for (i in messages.lastIndex downTo turnStartIndex) {
+    /** 本轮（从 startIndex 起）有没有工具结果：用它判断模型是不是真的动手了。 */
+    fun turnUsedTools(sessionId: String): Boolean {
+        val turn = turnOf(sessionId)
+        val list = messagesOf(sessionId)
+        for (i in list.lastIndex downTo turn.startIndex) {
             if (i < 0) return false
-            if (messages[i].role == "tool") return true
+            if (list[i].role == "tool") return true
         }
         return false
     }
@@ -1193,17 +1463,28 @@ class ContextState(
      * 状态行显示的轮数：界面历史里用户问过几次。
      *
      * 为什么不用 stats.rounds：那个只有进统计页时才刷，状态行会一直停在旧数字上。
+     * 为什么按**当前显示会话**数：生成中切到别的会话时，状态行要描述眼前这条会话，
+     * 而不是正在后台生成的那条。
+     * 为什么按 countsAsRound 数：系统代发的 user 消息（计划按钮、后台任务结算、peer 投递、
+     * 子智能体结论回传）不算用户问过一次，与 ChatMessage.countsAsRound 的口径一致。
      */
-    val statusRounds: Int get() = messages.count { it.role == "user" }
+    val statusRounds: Int get() = messagesOf(currentSessionId()).count { it.countsAsRound }
 
     /**
      * 状态行显示的步数：本会话已提交的步数 + 本次回复跑过的步数。
      *
      * 为什么要把两段加起来：stats.steps 只是「本次回复」，每次新提问都会归零，
      * 只看它会让状态行在提问的一瞬间掉回 0。
+     * 本次回复跑的步数只在「显示的就是这条会话」时才计入——否则会把后台会话的步数
+     * 算到眼前这条上。
      */
-    val statusSteps: Int get() =
-        (sessions().firstOrNull { it.id == currentSessionId() }?.steps ?: 0) + stats.steps
+    val statusSteps: Int get() {
+        val display = currentSessionId()
+        val base = sessions().firstOrNull { it.id == display }?.steps ?: 0
+        // 「本次回复步数」记在共享的 stats 上：只有显示会话自己有回合在跑（或压根没回合在跑，
+        // 即刚收尾、还没被别的会话顶掉）时才加到这一条上，否则会把别人的步数算到眼前这条
+        return base + (turns[display]?.steps ?: 0)
+    }
 
     /**
      * 洞察页显示的步数：跟 [statusSteps] 同一口径，但减掉分叉继承的步数。
@@ -1403,7 +1684,7 @@ class ContextState(
         val costCny = usage.costCny
         val cacheRate = if (hit + miss > 0) hit.toFloat() / (hit + miss) else null
         // 与 dsh 同口径：timing.wallMs 是各会话「模型流 + 工具执行」之和，全局即各会话相加。
-        // 不使用逐轮的墙钟差值：那里面含重试等待与工具间的空闲，会把「其他开销」撑成主体
+        // 不使用逐轮的墙钟差值：该口径含重试等待与工具间的空闲，会把「其他开销」撑成主体
         val activeWork = usage.modelMs + usage.toolMs
         val other = (activeWork - ttft - reasoning - text - toolArg - toolExec).coerceAtLeast(0L)
         val speed = if (genMs > 0 && genTokens > 0) {
@@ -1804,7 +2085,7 @@ data class TimingSnapshot(
     /**
      * 输出速度（tok/s）：分子是输出 tokens，分母只算「第一个字到最后一个字」。
      *
-     * 为什么**不**用累计模型耗时：那里面含等首字的时间，网络慢的时候会把速度压得莫名其妙。
+     * 为什么**不**用累计模型耗时：该口径含等待首字的时间，网络较慢时会把速度压得远低于实际。
      */
     val tokensPerSec: Int?
         get() = if (genMillis > 0L && genTokens > 0) ((genTokens * 1000L) / genMillis).toInt() else null

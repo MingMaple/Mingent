@@ -163,8 +163,13 @@ fun LogsPage(onBack: () -> Unit) {
                         )
                     }
                 }
-                // 不设 key：日志整体刷新（清空或重读），设 key 可能因重复行冲突
-                items(shown.size) { index ->
+                // 不按内容设 key：日志整体刷新（清空或重读），内容可能重复；
+                // 下标 key 与默认行为一致，contentType 让同类日志行按同一类型复用。
+                items(
+                    count = shown.size,
+                    key = { index -> index },
+                    contentType = { "log" }
+                ) { index ->
                     Text(
                         text = shown[index],
                         modifier = Modifier

@@ -6,16 +6,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.zmf.agent.capability.context.ContextEventStore
+import com.zmf.agent.capability.jobs.JobRegistry
 import com.zmf.agent.capability.runtime.ScheduleBridge
 import com.zmf.agent.capability.storage.StorageReclaimer
+import com.zmf.agent.capability.subagent.SubAgentRegistry
+import com.zmf.agent.capability.tools.shell.support.SessionCwd
 import com.zmf.agent.core.fs.PathGate
 import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.core.prefs.UiStateStore
 import com.zmf.agent.core.model.ChatMessage
+import com.zmf.agent.core.model.ORIGIN_RECOVERY
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.core.model.wireName
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.GoalStore
 import com.zmf.agent.core.store.PlanStore
+import com.zmf.agent.core.store.SessionLog
 import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.core.store.Storage
 import com.zmf.agent.core.store.StorageKind
@@ -26,6 +32,7 @@ import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.core.store.WorkspaceIo
 import com.zmf.agent.core.store.workspaceIoForRoot
 import com.zmf.agent.infra.llm.LlmEvent
+import com.zmf.agent.uikit.common.NoticeCenter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,11 +40,25 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.concurrent.atomic.AtomicLong
 
 /** 「用户最后停留的会话」的落盘位置。 */
 private const val SESSION_PREFS = "session_prefs"
 private const val KEY_OPENED_SESSION = "last_opened_session"
+
+/** P32 恢复标记正文（仅界面可见）：说明上一轮在工具执行期间被中断，不再重试该调用。 */
+private const val RECOVERY_NOTICE =
+    "上次运行在工具执行期间被中断，该调用结果未知；本条只是界面记录，不要按它重试。"
+
+/**
+ * 恢复时给未结算工具调用补的合成结果正文。
+ *
+ * 与 DSH `dsh-session` 的 `CLOSER_TEXT.interrupted.started` 对齐（结局未知、按工具语义决定是否重试），
+ * 并追加一句更保守的约束：未收到用户明确要求前不重试，避免新回合把上一条命令原样再跑一遍。
+ */
+private const val RECOVERY_TOOL_RESULT =
+    "该工具调用已被记录，但结果未落盘，结局未知。" +
+        "是否重试按工具语义判断：仅只读或幂等操作可重试；可能产生副作用时，先核实外部状态或询问用户。" +
+        "未收到用户明确要求前不要重试。"
 
 /**
  * 会话与工作区：会话表、当前会话、工作区表、当前工作区，以及它们的新建/切换/归档/删除与落盘。
@@ -45,15 +66,26 @@ private const val KEY_OPENED_SESSION = "last_opened_session"
  * 目录不再挂在会话或工作区上：两者都只持有存储单元 id，运行根由存储单元解析，
  * 因此移动会话、删除工作区、更改储存路径都不需要搬运文件。
  *
- * 从 [ChatViewModel] 拆出，仅将跨模块动作改为注入——消息容器、流式标记、待发附件清理与引用路径、
+ * 从 [ChatViewModel] 拆出，仅将跨模块动作改为注入——消息容器、流式标记、待发附件引用路径、
  * 工具成败清理、待办/统计/错误的回显入口、导入后暂缓落盘的开关、草稿存取与当前默认偏好。
  */
 class SessionController(
     private val appContext: Context,
-    private val messages: SnapshotStateList<ChatMessage>,
+    /** 按会话取正文列表：每个会话各持一份，切会话只换显示，不换写入目标。 */
+    private val messagesOf: (String) -> SnapshotStateList<ChatMessage>,
+    /** 已载入内存的那些会话及其正文（落盘时折回各自的会话记录）。 */
+    private val loadedMessages: () -> Map<String, SnapshotStateList<ChatMessage>>,
+    /** 正在生成的那一轮所属会话；空闲时为 null。 */
+    /** 这条会话是否正在跑回合（并行时代各会话各跑一个）。 */
+    private val isTurnRunning: (String) -> Boolean,
+    /** 正在跑回合的那些会话：落盘要把它们各写一次。 */
+    private val turnSessions: () -> Set<String>,
+    /** 会话被真删时丢弃内存里那一份正文。 */
+    private val forgetMessages: (String) -> Unit,
+    /** 会话被真删时丢弃其待发队列条目（内存队列 + queues.json，P33）。 */
+    private val forgetQueues: (String) -> Unit,
     private val scope: CoroutineScope,
     private val isStreaming: () -> Boolean,
-    private val clearAttachments: () -> Unit,
     private val pendingUploadPaths: () -> List<String>,
     private val clearToolOutcomes: () -> Unit,
     private val clearTodos: () -> Unit,
@@ -82,6 +114,12 @@ class SessionController(
     var currentWorkspaceId by mutableStateOf<String?>(null)
 
     /**
+     * 当前会话的正文。本类里所有「当前会话」语义（打开、落盘、标题、盘上同步）都走它；
+     * 换会话只是换成另一份列表，所以切走再切回不需要重建内容。
+     */
+    private val messages: SnapshotStateList<ChatMessage> get() = messagesOf(currentSessionId)
+
+    /**
      * 草稿存取入口，由 [ChatViewModel] 在输入区状态构造完成后注入。
      *
      * 用可空端口而不是构造参数：草稿状态属于输入区，输入区又依赖本控制器提供的会话 id，
@@ -108,7 +146,6 @@ class SessionController(
      * 现在状态先改、界面先动，写盘挪到 IO；连点排进来的多拍只保留最新一拍（旧快照是它的子集）。
      */
     private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val persistGeneration = AtomicLong(0)
 
     /** 每条会话正在进行的模型标题任务；同一会话开始新任务前先取消旧的（对应 DSH 的 supersede）。 */
     private val titleJobs = HashMap<String, Job>()
@@ -124,12 +161,18 @@ class SessionController(
      * 冷启动 ANR 窗口；状态写入仍回到调用方（主线程），保证快照状态只在主线程修改。
      */
     suspend fun loadInitial() {
-        // 工作区表先读回来：默认工作区永远在，后面决定当前工作区时要用它兜底
+        // 先读回工作区表：默认工作区始终存在，随后决定当前工作区时用它兜底
         val snapshot = withContext(Dispatchers.IO) {
+            // D1 迁移先行：旧 sessions.json → 每会话 JSONL（幂等；失败时本次启动降级为旧格式，
+            // 下次重试）。必须先于读会话表，否则模式判定会抖动
+            runCatching { SessionLog.migrateIfNeeded(appContext) }
+                .onFailure { FileLog.log("session", "会话存储迁移异常：" + it) }
             InitialSnapshot(
                 spaces = WorkSpaceStore.load(appContext),
                 storageIds = StorageStore.loadStorages(appContext).map { it.id }.toSet(),
-                sessions = SessionStore.load(appContext)
+                // 列表页快读（D1.3-F 随机读保护）：只读索引，不解压任何会话文件；
+                // 旧格式模式（迁移失败的降级）退回全量读
+                sessions = SessionStore.loadSummaries(appContext)
             )
         }
         val loadedSpaces = snapshot.spaces
@@ -143,12 +186,12 @@ class SessionController(
             }
         }
         // 再重新读取会话表以确定当前会话：存在历史时接续最近一条，否则新建空会话
-        // 顺便兜底：会话引用了已不存在的工作区（workspaces.json 丢了/坏了）就当未分类，
+        // 兜底处理：会话引用了已不存在的工作区（workspaces.json 丢了/坏了）就当未分类，
         // 否则这些会话在界面分组里会直接消失
         val loaded = snapshot.sessions.sortedByDescending { it.updatedAt }
         val validIds = workspaces.map { space -> space.id }.toSet()
         var repaired = false
-        val sessions = loaded.map { session ->
+        var sessions = loaded.map { session ->
             val workspaceId = session.workspaceId
             var next = session
             if (workspaceId != null && !validIds.contains(workspaceId)) {
@@ -174,6 +217,38 @@ class SessionController(
             this.sessions = sessions
             saveLoadedOnIo(sessions)
         }
+        // P32：上次进程被杀时回合未收尾（turnOpen=true）的会话，先按 DSH 的合成 closer 口径
+        // 给未结算的工具调用补错误结果（结局未知），再补一条仅界面可见的中断标记。
+        // 索引条目里没有正文，须从该会话的事件流读回。
+        var recovered = 0
+        val openTurns = sessions.filter { it.turnOpen }
+        if (openTurns.isNotEmpty()) {
+            val recoveredSessions = withContext(Dispatchers.IO) {
+                sessions.map { session ->
+                    if (!session.turnOpen) {
+                        session
+                    } else {
+                        val full = SessionStore.loadOne(appContext, session.id) ?: session
+                        recovered++
+                        full.copy(
+                            turnOpen = false,
+                            messages = closeOpenToolCalls(full.messages) + ChatMessage(
+                                role = "user",
+                                content = RECOVERY_NOTICE,
+                                programmatic = true,
+                                origin = ORIGIN_RECOVERY,
+                                createdAt = System.currentTimeMillis()
+                            ),
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    }
+                }
+            }
+            sessions = recoveredSessions
+            this.sessions = recoveredSessions
+            saveLoadedOnIo(recoveredSessions)
+            FileLog.log("session", "P32 恢复：" + recovered + " 条会话补中断标记")
+        }
         if (sessions.isEmpty()) {
             // 一条会话都没有：落在默认工作区，并创建一条可见的空白会话
             currentWorkspaceId = workspaces.firstOrNull()?.id
@@ -191,8 +266,13 @@ class SessionController(
             // 「上次的选择」采用最近会话的归属：该会话属于哪个工作区即进入哪个工作区；
             // 它没有归属（老数据 → 未分类）时退回列表第一个，保证当前工作区始终是合法 id
             currentWorkspaceId = latest.workspaceId ?: workspaces.firstOrNull()?.id
+            // 当前会话的正文从它自己的事件流读回（D1 懒加载：索引条目里没有正文）
+            val latestMessages = withContext(Dispatchers.IO) {
+                runCatching { SessionStore.loadOne(appContext, latest.id)?.messages }
+                    .getOrDefault(latest.messages)
+            }
             messages.clear()
-            messages.addAll(latest.messages)
+            messages.addAll(latestMessages.orEmpty())
             draftPort?.restore(latest.id)
         }
     }
@@ -200,6 +280,35 @@ class SessionController(
     /** 会话表整体替换（`ContextState` 摘要写回等场景用）；与内部写入口同一份状态。 */
     fun replaceSessions(next: List<ChatSession>) {
         sessions = next
+    }
+
+    /**
+     * 给「有 tool_calls、但没有对应 tool 结果」的调用补合成错误结果（DSH 的 TOOL_OUTCOME_UNKNOWN 口径）。
+     *
+     * 只处理正文末尾那条未收尾的回合：从后往前找最后一条带 tool_calls 的 assistant，
+     * 取其后紧邻的 tool 结果，缺失的按调用顺序补在已有结果之后。
+     * 补完后配对完整，请求视图不再把它整组丢弃——模型看到的是「结局未知」的错误结果，
+     * 而不是空白加一句「请重试」的提示。
+     */
+    private fun closeOpenToolCalls(messages: List<ChatMessage>): List<ChatMessage> {
+        val callIndex = messages.indexOfLast { it.role == "assistant" && it.toolCalls.isNotEmpty() }
+        if (callIndex < 0) return messages
+        var end = callIndex + 1
+        while (end < messages.size && messages[end].role == "tool") end++
+        val answered = messages.subList(callIndex + 1, end).mapNotNull { it.toolCallId }.toSet()
+        val missing = messages[callIndex].toolCalls.filter { it.id !in answered }
+        if (missing.isEmpty()) return messages
+        val synthetic = missing.map { call ->
+            ChatMessage(
+                role = "tool",
+                content = RECOVERY_TOOL_RESULT,
+                toolCallId = call.id,
+                toolName = call.name,
+                toolOk = null,
+                createdAt = System.currentTimeMillis()
+            )
+        }
+        return messages.take(end) + synthetic + messages.drop(end)
     }
 
     /**
@@ -224,15 +333,15 @@ class SessionController(
      * 草稿随之一并保留。用户手动新建的空白会话默认隐藏，首轮消息后转正并进入列表。
      */
     fun newSession() {
-        if (isStreaming()) return
-        // 附件是「当前这条提问」的，换会话就不该带过去
-        clearAttachments()
+        // 生成中也允许新建：正文按会话各持一份，新会话只是多一份空列表
+        // （运行中那一轮继续写自己的，见 _Docs/上下文与落盘.md §2.5）
+        // 待发附件按会话分槽：新建不是「换一条提问」，原会话的槽保留，新会话的槽从空开始
         draftPort?.flush()
         persistCurrent()
         val workspaceId = currentWorkspaceId
         val blank = sessions.firstOrNull { it.blank && !it.archived && it.workspaceId == workspaceId }
         if (blank != null) {
-            // 复用前刷新时间：列表按 updatedAt 排序，「新会话」必须出现在最前面；
+            // 复用前刷新时间：列表按 updatedAt 排序，「新会话」必须出现在最前；
             // 否则复用到的是很早以前那条空白会话，它会落在十几行之后，用户看不到自己刚点出来的会话
             val touched = blank.copy(updatedAt = System.currentTimeMillis())
             sessions = sessions.map { if (it.id == touched.id) touched else it }
@@ -254,14 +363,18 @@ class SessionController(
      * id 与当前会话相同时也要走一遍「盘上是否更长」的同步：定时任务跑完点通知回来，
      * 目标往往正是当前这条，界面这份 messages 还是后台追加之前的快照。
      * 内存里找不到目标时先重读一次盘：后台刚建出来的结果会话只有盘上有。
+     *
+     * **生成中同样允许切**（用户 2026-11-15 要求）：正文按会话各持一份，正在跑的那一轮钉着自己的
+     * 会话继续写，切走只改变界面显示的是哪一份，不打断流式输出。
+     *
+     * **待发附件与待发图片不清空**（用户 2026-11-16）：两者按会话分槽，切走只是换看另一条会话的槽，
+     * 切回来仍在原位；清空只发生在该会话的消息把附件带走之后。
      */
     fun switchSession(id: String) {
-        if (isStreaming()) return
         if (id == currentSessionId) {
             syncCurrentFromDisk()
             return
         }
-        clearAttachments()
         draftPort?.flush()
         persistCurrent()
         var target = sessions.firstOrNull { it.id == id }
@@ -285,8 +398,26 @@ class SessionController(
         persistOpenedSession(target.id)
         // 会话可能属于其他工作区（UI 直接点击某分组中的会话）：选中态随之切换，避免两处不一致
         currentWorkspaceId = target.workspaceId
-        messages.clear()
-        messages.addAll(target.messages)
+        // 内存里那一份是正文的唯一真相：只有第一次打开（这份还是空的）时才用记录填一次。
+        // 不能无条件 clear+addAll：生成中的回合可能正在向这份列表追加，清掉即等于丢失这些回合
+        val list = messagesOf(target.id)
+        if (list.isEmpty() && target.messages.isNotEmpty()) {
+            list.addAll(target.messages)
+        } else if (list.isEmpty() && !isTurnRunning(target.id)) {
+            // D1 懒加载：预热尚未完成时记录里也没有正文，从该会话的事件流现读（IO）。
+            // 读到后直接填进这份列表：Compose 观察的就是它，晚几毫秒出现正文没有副作用
+            scope.launch {
+                val disk = withContext(Dispatchers.IO) {
+                    runCatching { SessionStore.loadOne(appContext, target.id)?.messages }.getOrNull()
+                }
+                // 读取期间回合开跑或预热已折入正文时让位：内存里那份才是唯一真相
+                if (disk != null && list.isEmpty() && !isTurnRunning(target.id)) {
+                    list.addAll(disk)
+                    resetStats()
+                    FileLog.log("session", "懒加载会话正文：" + target.id + "，" + disk.size + " 条")
+                }
+            }
+        }
         clearToolOutcomes()
         // 上一个会话的累计不回带：累计从目标会话自己的字段读回来（切回来就能接上）
         resetStats()
@@ -305,8 +436,9 @@ class SessionController(
      * 摘要与待办都不继承：摘要记的是父会话的消息下标，待办属于父会话这一轮的计划。
      */
     fun forkSession(atIndex: Int? = null) {
-        if (isStreaming()) {
-            reportError("正在生成回复，无法分叉会话")
+        // 分叉要读当前会话的正文快照：对正在生成的那条分叉会切出一份不完整的历史
+        if (isTurnRunning(currentSessionId)) {
+            reportError("这条会话正在生成回复，结束后才能分叉")
             return
         }
         // 先把内存里的消息写回当前会话：紧接着要从会话记录里取它的标题与工作区
@@ -332,7 +464,11 @@ class SessionController(
      * 若它是某内置目录的最后一个引用，目录按引用归零的规则进入回收站。
      */
     fun deleteSession(id: String) {
-        if (isStreaming()) return
+        // 运行中那条会话不能删：它的回合还在往这份正文里写，删了会连正文一起丢
+        if (isTurnRunning(id)) {
+            reportError("这条会话正在生成回复，结束后才能删除")
+            return
+        }
         val removed = sessions.firstOrNull { it.id == id } ?: return
         if (!removed.archived) {
             FileLog.log("session", "未归档的会话不允许删除：" + id)
@@ -340,13 +476,23 @@ class SessionController(
         }
         // 先将当前会话的最新消息存回列表，避免删除操作丢失本次改动
         persistCurrent()
+        // 会话不再存在：它名下的后台任务一并终止，终止原因随任务结算保留
+        JobRegistry.killSession(appContext, id, "会话已删除")
         sessions = sessions.filter { it.id != id }
+        // 内存里那份正文一并丢弃：id 复用或会话表回退时不能再读到它
+        forgetMessages(id)
         // 磁盘上同样需实际删除：仅删除内存时，合并写盘会将该会话视为「磁盘新增」并重新写入
         SessionStore.removeSession(appContext, id)
         // 会话真删了：它名下的计划/目标/上下文事件也一起收掉，否则那几个 JSON 里永远留着孤儿
         clearSessionDocs(id)
         ContextEventStore.clear(appContext, id)
+        // 界面格局键同点删除（D3）：不留孤儿键，id 复用后也不会恢复到别人的页面
+        UiStateStore.forget(appContext, id)
         draftPort?.forget(listOf(id))
+        // 待发队列条目与子智能体登记条目同批清（X10）：删除会话后残留会让 queues.json 与
+        // 子智能体面板各留一份孤儿，且前者的持久化条目还会随下一次 persistQueues 写回
+        forgetQueues(id)
+        SubAgentRegistry.clearSession(id)
         if (id == currentSessionId) {
             // 仅从当前工作区选择下一条：删除会话后不应跳转至其他工作区的对话
             val remaining = sessions.filter { !it.archived && it.workspaceId == currentWorkspaceId }
@@ -401,7 +547,6 @@ class SessionController(
 
     /** 重命名会话；标题 trim 后为空就退回「新会话」的空标题。 */
     fun renameSession(id: String, title: String) {
-        if (isStreaming()) return
         val trimmed = title.trim()
         // 显式改名会作废仍在进行的自动命名并钉住标题（对应 DSH 的 `rename`）
         titleJobs.remove(id)?.cancel()
@@ -433,7 +578,7 @@ class SessionController(
      * 唯一的特例：有定时任务以该会话为目标，归档会把这些任务自动停用并解绑。
      * 内置目录的引用数不在此提示：归档不改存储单元、不改引用关系，句中所说的
      * 「以后删除会把它移入回收站」属于删除动作的后果，由 [deleteSessionExtraNote]
-     * 在归档页的删除确认中说明；在可逆的归档前再说一遍属于重复告知。
+     * 在归档页的删除确认中说明；在可逆的归档前重复说明属于冗余告知。
      */
     fun archiveNotes(id: String): List<String> {
         if (sessions.none { it.id == id }) return emptyList()
@@ -451,9 +596,14 @@ class SessionController(
      * 任务继续指向一条已归档的会话，只会在后台静默往不可见的记录里写内容。
      */
     fun archiveSession(id: String) {
-        if (isStreaming()) return
+        if (isTurnRunning(id)) {
+            reportError("这条会话正在生成回复，结束后才能归档")
+            return
+        }
         val target = sessions.firstOrNull { it.id == id } ?: return
-        // 先确保当前会话消息已经落到 sessions，否则后面新建会话会把当前对话冲掉
+        // 归档后不再有人读取该会话的完成通知：先终止它名下的后台任务
+        JobRegistry.killSession(appContext, id, "会话已归档")
+        // 先确保当前会话消息已经落到 sessions，否则随后新建会话会把当前对话冲掉
         persistCurrent()
         // 解绑与停用放在改写之前：ScheduleBridge 需要读到「归档前」的会话状态
         ScheduleBridge.detachSession(id)
@@ -477,7 +627,6 @@ class SessionController(
      * 返回 true 表示发生了这一降级，界面据此提示一句。
      */
     fun unarchiveSession(id: String): Boolean {
-        if (isStreaming()) return false
         val target = sessions.firstOrNull { it.id == id } ?: return false
         val exists = target.workspaceId != null && workspaces.any { it.id == target.workspaceId }
         val workspaceId = if (exists) target.workspaceId else null
@@ -500,8 +649,9 @@ class SessionController(
      * 返回需要补充的提示（原内置目录已无剩余引用时移入回收站），没有则返回 null。
      */
     fun moveSession(id: String, workspaceId: String): String? {
-        if (isStreaming()) {
-            reportError("正在生成回复，无法移动会话")
+        // 移动只改归属，不碰正文；只拦正在生成的那条（它的运行根在回合开局时已固定）
+        if (isTurnRunning(id)) {
+            reportError("这条会话正在生成回复，结束后才能移动")
             return null
         }
         val target = sessions.firstOrNull { it.id == id } ?: return null
@@ -542,7 +692,6 @@ class SessionController(
      * 切换工作区（null = 未分类）：先存回当前会话，再切选中态，最后载入目标工作区最近的会话。
      */
     fun switchWorkspace(id: String?) {
-        if (isStreaming()) return
         // 目标工作区不存在（例如刚被删除）则不切换，避免停留在空分组
         if (id != null && workspaces.none { it.id == id }) return
         draftPort?.flush()
@@ -550,12 +699,38 @@ class SessionController(
         currentWorkspaceId = id
         openRecentIn(id)
         persistAll()
+        notifyIfTerminalUnmapped(id)
         FileLog.log("workspace", "切到工作区 " + (id ?: "未分类") + "，当前会话=" + currentSessionId)
     }
 
     /**
+     * 工作区对应的终端目录：能映射进 PRoot 时是工作区根，否则为 `/root`。
+     *
+     * 新建/切换工作区的不可映射提示与终端目录派生共用这一个计算点，避免界面与执行期各算一套。
+     */
+    fun terminalDirOf(workspaceId: String?): String {
+        val storage = StorageStore.find(appContext, storageIdFor(workspaceId))
+            ?: return SessionCwd.DEFAULT_GUEST
+        val root = StorageStore.ensureRoot(appContext, storage) ?: return SessionCwd.DEFAULT_GUEST
+        return SessionCwd.workspaceTerminalGuest(appContext, root)
+    }
+
+    /** 当前工作区的终端目录。 */
+    fun terminalDir(): String = terminalDirOf(currentWorkspaceId)
+
+    /**
+     * 新建或切换工作区后提示一次：派生值为 `/root` 说明该工作区不在终端可访问范围内。
+     * 只提示、不拦截；可映射工作区不打扰用户。
+     */
+    private fun notifyIfTerminalUnmapped(workspaceId: String?) {
+        if (terminalDirOf(workspaceId) == SessionCwd.DEFAULT_GUEST) {
+            NoticeCenter.info("该工作区不在终端可访问范围内，终端命令将使用 /root。")
+        }
+    }
+
+    /**
      * 改工作区显示名：只动名字，存储单元与会话归属都不变（见 [WorkSpaceStore.rename]）。
-     * 名字空白 / 工作区不存在返回 false，界面据此提示一句就行。
+     * 名字为空或工作区不存在时返回 false，界面据此给出提示即可。
      */
     fun renameWorkspace(id: String, name: String): Boolean {
         val renamed = WorkSpaceStore.rename(appContext, id, name) ?: return false
@@ -577,7 +752,6 @@ class SessionController(
         /** 是否顺带切过去并开一条可见的空白会话；由「更改工作区」创建时不切，随后直接移入目标会话。 */
         openBlank: Boolean = true
     ): Boolean {
-        if (isStreaming()) return false
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return false
         draftPort?.flush()
@@ -602,6 +776,8 @@ class SessionController(
             openRecentIn(space.id)
         }
         persistAll()
+        // 「新建 + 移入」由随后的 switchWorkspace 统一提示，避免同一次操作弹两遍
+        if (openBlank) notifyIfTerminalUnmapped(space.id)
         FileLog.log(
             "workspace",
             "新建工作区 " + trimmed + "（" + space.id + "）存储单元=" + storage.id + "（" + storage.kind.wire + "）"
@@ -620,7 +796,11 @@ class SessionController(
         rootPath: String?,
         treeUri: String?
     ): Boolean {
-        if (isStreaming()) return false
+        // 只拦正在生成的那条会话：它的运行根在回合开局时已固定，搬走会让工具写到新目录
+        if (isTurnRunning(sessionId)) {
+            reportError("这条会话正在生成回复，结束后才能移动")
+            return false
+        }
         val before = workspaces.map { it.id }.toSet()
         if (!createWorkspace(name, rootPath, treeUri, openBlank = false)) return false
         val created = workspaces.firstOrNull { it.id !in before } ?: return false
@@ -806,13 +986,28 @@ class SessionController(
         return if (current == null || current.title.isBlank()) "新会话" else current.title
     }
 
-    /** 把内存里的 messages 写回当前会话那条记录，并把列表重排成 updatedAt 降序。 */
+    /**
+     * 把内存里的正文写回会话记录，并把列表重排成 updatedAt 降序。
+     *
+     * 生成中用户可能正在看另一条会话：此时「当前显示会话」与「正在跑的那一轮所属会话」不是同一条，
+     * 两条都要写——只写当前那条的话，回合那条的正文要等下次落盘才进记录，进程被杀就丢了。
+     * [override] 是落盘检查点用的「去掉在飞占位」快照，只对正在跑的那条生效。
+     */
     internal fun persistCurrent(override: List<ChatMessage>? = null) {
+        // 并行时可能有多条会话在跑：每条在跑的会话各落一次，再落当前显示的会话
+        for (id in turnSessions() - currentSessionId) persistSession(id, null)
+        persistSession(currentSessionId, override)
+    }
+
+    /** 把某条会话的内存正文写回它的记录；列表里没有这条时补一条占位，避免正文只留在内存里。 */
+    internal fun persistSessionNow(id: String) = persistSession(id, null)
+
+    /** 把某条会话的内存正文写回它的记录；列表里没有这条时补一条占位，避免正文只留在内存里。 */
+    private fun persistSession(id: String, override: List<ChatMessage>?) {
         if (persistenceBlocked()) return
-        val id = currentSessionId
         if (id.isEmpty()) return
         val now = System.currentTimeMillis()
-        val snapshot = override ?: messages.toList()
+        val snapshot = override ?: messagesOf(id).toList()
         var found = false
         val updated = ArrayList<ChatSession>(sessions.size)
         for (session in sessions) {
@@ -826,19 +1021,28 @@ class SessionController(
             }
         }
         if (!found) {
-            // 兜底：列表里没有当前会话（正常流程不会发生），补一条空的占位，避免消息丢在内存里
+            // 兜底：列表里没有这条会话（正常流程不会发生），补一条空的占位，避免消息丢在内存里
+            val workspaceId = if (id == currentSessionId) currentWorkspaceId else null
             updated.add(
                 ChatSession(
                     id = id,
                     title = "",
                     messages = snapshot,
                     updatedAt = now,
-                    workspaceId = currentWorkspaceId,
-                    storageId = storageIdFor(currentWorkspaceId)
+                    workspaceId = workspaceId,
+                    storageId = storageIdFor(workspaceId)
                 )
             )
         }
         sessions = updated.sortedByDescending { it.updatedAt }
+        // D1：正文回写以本会话为单位直接落盘（允许截断——回滚路径会把磁盘长出的尾部裁掉）。
+        // 每会话独立追加不存在「旧快照覆盖新快照」，旧整写时代的代际闸随之删除（X05 保留
+        // 进程内单写者 + 索引 len 一致性检查）。实际写盘在 IO；事件为空时 upsert 不产生任何写入
+        val record = updated.firstOrNull { it.id == id } ?: return
+        persistScope.launch {
+            runCatching { SessionStore.saveAuthoritative(appContext, record) }
+                .onFailure { FileLog.log("session", "会话落盘失败：" + (it.message ?: it.javaClass.simpleName)) }
+        }
     }
 
     /**
@@ -849,14 +1053,23 @@ class SessionController(
      * 写进去只会让重载后的界面多一个空气泡（未完成的 assistant frame 保持瞬态）。
      * 有 tool_calls 的 assistant 不能剔：它正是「已派发」的证据。
      */
-    internal fun persistCheckpoint(reason: String) {
+    internal fun persistCheckpoint(reason: String, sessionId: String = currentSessionId) {
         if (persistenceBlocked()) return
-        if (currentSessionId.isEmpty()) return
-        val durable = checkpointMessages()
-        persistCurrent(durable)
-        // 检查点是「崩溃后还能接上」的底线，必须当场落地（见 persistAllNow 的注释）
-        persistAllNow()
-        FileLog.log("session", "检查点写盘（" + reason + "）：" + durable.size + " 条 / 内存 " + messages.size + " 条")
+        // 检查点属于「正在生成的那一轮」：并行时用户可能已经在看别的会话，不能拿当前会话的正文去写
+        val active = sessionId
+        if (active.isEmpty()) return
+        val durable = checkpointMessages(messagesOf(active))
+        // 快照只属于这条会话：先写它，再把其余在跑的会话与当前会话各落一次
+        persistSession(active, durable)
+        persistCurrent()
+        // 检查点仍在屏障处立即排队写盘：本条会话的逐会话写盘本来就异步，
+        // 这里只是把其余会话折回后交给 persistAll，由 persistScope（IO）完成磁盘写入，不占主线程
+        persistAll()
+        FileLog.log(
+            "session",
+            "检查点写盘（" + reason + "）：" + durable.size + " 条 / 内存 " + messagesOf(active).size + " 条",
+            sessionId = active
+        )
     }
 
     /**
@@ -872,53 +1085,90 @@ class SessionController(
     }
 
     /** 供落盘用的消息快照：去掉尾部「还没填字的 assistant 占位」。 */
-    private fun checkpointMessages(): List<ChatMessage> {
-        var end = messages.size
+    private fun checkpointMessages(list: List<ChatMessage>): List<ChatMessage> {
+        var end = list.size
         while (end > 0) {
-            val message = messages[end - 1]
+            val message = list[end - 1]
             if (message.role == "assistant" && message.content.isBlank() && message.toolCalls.isEmpty()) {
                 end--
             } else {
                 break
             }
         }
-        return if (end == messages.size) messages.toList() else messages.subList(0, end).toList()
+        return if (end == list.size) list.toList() else list.subList(0, end).toList()
+    }
+
+    /**
+     * 把内存里**所有已载入的会话正文**折回各自的会话记录。
+     *
+     * 一份会话各持一份列表之后，记录里的 messages 只有在落盘这一刻才被内存覆盖；
+     * 不折回的话，用户切换过的那几条会话在盘上仍停在上一次写回的版本。
+     */
+    private fun foldLoadedMessages() {
+        val loaded = loadedMessages()
+        if (loaded.isEmpty()) return
+        var changed = false
+        sessions = sessions.map { session ->
+            val list = loaded[session.id] ?: return@map session
+            // 空列表不折：可能是「刚建还没填」的那份，用空内容覆盖记录会把正文抹掉
+            if (list.isEmpty() || list == session.messages) return@map session
+            changed = true
+            session.copy(messages = list.toList())
+        }
+        if (!changed) return
     }
 
     internal fun persistAll() {
         // 导入后未重启前一律不落盘：内存中仍为旧列表，写入会覆盖刚导入的会话
         if (persistenceBlocked()) return
-        // 合并写：定时任务在后台往会话里追加过消息，整份覆盖会把它们抹掉，
-        // 表现就是「迭代到四又从头开始」「记录里只剩第一条」
-        val generation = persistGeneration.incrementAndGet()
+        // 先把内存里各会话的正文折回记录，再走逐会话 upsert
+        foldLoadedMessages()
         val snapshot = sessions
         persistScope.launch {
-            // 连点会排进好几拍：只有最新一拍要写。旧的快照是它的子集，写了反而可能把删除的会话带回来
-            if (generation != persistGeneration.get()) return@launch
-            SessionStore.saveMerged(appContext, snapshot)
+            // D1：saveMerged ＝ 逐会话 upsert（不截断）；正在跑回合的会话由 persistSession 单独落，
+            // 这里再 upsert 一次也安全：内容一致时差异为空，不写任何事件。
+            // 旧整写时代的「连点只写最新一拍」代际闸删除：追加写没有覆盖问题
+            runCatching { SessionStore.saveMerged(appContext, snapshot) }
+                .onFailure { FileLog.log("session", "会话表落盘失败：" + (it.message ?: it.javaClass.simpleName)) }
         }
     }
 
     /**
-     * 同步落盘：退到后台 / 落盘检查点用。这两处要的是「返回时已经写进去了」，
-     * 异步队列可能还没轮到，进程一被杀就丢了。
-     */
-    private fun persistAllNow() {
-        if (persistenceBlocked()) return
-        // 让排队中的异步写全部作废：它们的内容比这一刻旧
-        persistGeneration.incrementAndGet()
-        SessionStore.saveMerged(appContext, sessions)
-    }
-
-    /**
-     * [loadInitial] 的落盘：只在「修复缺键」与「首次建空会话」两种情况下触发。
-     * 此时处在启动阶段，整份会话表可能是数 MB，写到 IO 线程以免占用主线程。
+     * [loadInitial] 的落盘：只在「修复缺键」「P32 恢复补标记」与「首次建空会话」三种情况下触发。
+     * 此时处在启动阶段，写到 IO 线程以免占用主线程。
      */
     private suspend fun saveLoadedOnIo(snapshot: List<ChatSession>) {
         if (persistenceBlocked()) return
-        // 与 persistAllNow 同一口径：让排队中的异步写作废
-        persistGeneration.incrementAndGet()
-        withContext(Dispatchers.IO) { SessionStore.saveMerged(appContext, snapshot) }
+        withContext(Dispatchers.IO) {
+            runCatching { SessionStore.saveMerged(appContext, snapshot) }
+                .onFailure { FileLog.log("session", "会话表落盘失败：" + (it.message ?: it.javaClass.simpleName)) }
+        }
+    }
+
+    /**
+     * 启动预热（D1.3-F）：首屏已经按索引渲染完毕，这里把各会话正文从事件流折回内存。
+     *
+     * 只给「内存里还没有正文」的记录补正文，绝不覆盖在跑回合或用户正在编辑的内容；
+     * 依赖正文的消费者（总账回填、附件引用统计、洞察统计）从此读到全量数据，
+     * 与旧版「启动即全量在内存」的语义对齐——只是把解压挪出了首屏关键路径。
+     */
+    suspend fun warmUpSessions() {
+        if (persistenceBlocked()) return
+        val full = withContext(Dispatchers.IO) {
+            runCatching { SessionStore.load(appContext) }.getOrDefault(emptyList())
+        }
+        if (full.isEmpty()) return
+        val loaded = loadedMessages()
+        sessions = sessions.map { record ->
+            val disk = full.firstOrNull { it.id == record.id } ?: return@map record
+            val memory = loaded[record.id]
+            if (record.messages.isNotEmpty() || (memory != null && memory.isNotEmpty())) {
+                record
+            } else {
+                record.copy(messages = disk.messages)
+            }
+        }
+        FileLog.log("session", "会话预热完成：" + sessions.size + " 条记录已带正文")
     }
 
     /**
@@ -928,6 +1178,8 @@ class SessionController(
      */
     private fun syncCurrentFromDisk() {
         if (persistenceBlocked()) return
+        // 正在被本轮写的那条会话，盘上必然比内存旧：不能拿它覆盖内存，否则流式内容会断
+        if (isTurnRunning(currentSessionId)) return
         persistCurrent()
         val disk = SessionStore.load(appContext).firstOrNull { it.id == currentSessionId } ?: return
         if (disk.messages.size <= messages.size) return
@@ -953,28 +1205,38 @@ class SessionController(
         }
     }
 
-    /** 从磁盘重读会话列表：以磁盘为准，只有当前会话的消息取内存里还没落盘的那份。 */
+    /**
+     * 从磁盘重读会话列表：以磁盘为准，只有「内存里已载入的正文」取内存那份。
+     *
+     * 一份会话各持一份列表之后，判断口径从「只护当前会话」放宽到「护所有已载入的会话」：
+     * 切走的那些会话正文同样只在内存里最新，被盘上的旧快照顶掉就等于丢消息。
+     */
     fun reloadSessionsFromDisk() {
         if (persistenceBlocked()) return
-        if (isStreaming()) return
+        if (isStreaming()) {
+            // 回合进行中不能整表重载（会用盘上的旧正文顶掉正在流的这条），
+            // 但助手工具在回合内改了会话设置（session_update_settings）时必须带回来：
+            // 否则内存仍是旧值，下一次检查点落盘会把磁盘上的新设置冲掉。
+            mergeSessionSettingsFromDisk()
+            return
+        }
         persistCurrent()
+        foldLoadedMessages()
         val disk = SessionStore.load(appContext)
         val id = currentSessionId
         val mine = sessions.firstOrNull { it.id == id }
         val merged = ArrayList<ChatSession>(disk.size + 1)
         for (session in disk) {
-            // 当前会话换成内存里的 messages/updatedAt，标题等其它字段仍跟磁盘走
+            val memory = sessions.firstOrNull { it.id == session.id }
+            // 盘上内容更长且内存内容为其前缀 ⇒ 其他来源（定时任务）追加过，以磁盘为准；
+            // 否则仍以内存为准（用户正在编辑的那份不能被旧快照顶掉）
+            val memoryWins = memory != null && !(
+                session.messages.size > memory.messages.size &&
+                    session.messages.take(memory.messages.size) == memory.messages
+                )
             merged.add(
-                if (mine != null && session.id == id) {
-                    // 磁盘内容更长且内存内容为其前缀 ⇒ 其他来源（定时任务）追加过，以磁盘为准；
-                    // 否则仍以内存为准（用户正在编辑的那份不能被旧快照顶掉）
-                    if (session.messages.size > mine.messages.size &&
-                        session.messages.take(mine.messages.size) == mine.messages
-                    ) {
-                        session
-                    } else {
-                        session.copy(messages = mine.messages, updatedAt = mine.updatedAt)
-                    }
+                if (memoryWins) {
+                    session.copy(messages = memory.messages, updatedAt = memory.updatedAt)
                 } else {
                     session
                 }
@@ -985,14 +1247,44 @@ class SessionController(
         // 当前会话在盘上更长（后台追加过）时，界面这份 messages 也要一起换掉：
         // 若仅替换 sessions，正在查看的会话仍停留在旧快照上，从通知返回时即为空白。
         val refreshed = merged.firstOrNull { it.id == id }
-        val memoryCount = messages.size
+        val memoryCount = messagesOf(id).size
         if (refreshed != null && refreshed.messages.size > memoryCount) {
-            messages.clear()
-            messages.addAll(refreshed.messages)
+            val list = messagesOf(id)
+            list.clear()
+            list.addAll(refreshed.messages)
             resetStats()
             FileLog.log("session", "当前会话已同步盘上新增的 " + (refreshed.messages.size - memoryCount) + " 条")
         }
         FileLog.log("session", "从磁盘重载 " + sessions.size + " 条会话")
+    }
+
+    /**
+     * 回合进行中只把「会话设置」从盘上合并回内存（正文一律不动）。
+     *
+     * 工具改设置在回合内完成时，整表重载会被 `isStreaming` 拦下；不同步这一份就会出现
+     * 「设置看起来改了、下一回合不生效、并被检查点落盘写回旧值」的静默丢失。
+     */
+    private fun mergeSessionSettingsFromDisk() {
+        val disk = runCatching { SessionStore.load(appContext) }.getOrDefault(emptyList())
+        if (disk.isEmpty()) return
+        val byId = disk.associateBy { it.id }
+        var changed = false
+        sessions = sessions.map { memory ->
+            val saved = byId[memory.id] ?: return@map memory
+            if (
+                memory.permissionPreset == saved.permissionPreset &&
+                memory.reasoningEffort == saved.reasoningEffort
+            ) {
+                memory
+            } else {
+                changed = true
+                memory.copy(
+                    permissionPreset = saved.permissionPreset,
+                    reasoningEffort = saved.reasoningEffort
+                )
+            }
+        }
+        if (changed) FileLog.log("session", "回合中合并会话设置（权限/思考强度）")
     }
 
     /**
@@ -1003,16 +1295,19 @@ class SessionController(
      * 2. 只有首条用户消息才请求模型（对应 `first-prompt`：消息数为 1 且尚无标题）；
      * 3. 模型结果仅在标题仍是本次写入的兜底名时才替换；用户改名或其它写入一律不覆盖；
      * 4. 失败、超时、输入超过 4096 字节与输出被截断时静默保留兜底标题。
+     *
+     * [sessionId] 是**发起回合的那条会话**：队列补发与分享发送可能发生在用户已经切走之后，
+     * 标题必须写回原会话，不能落到当时显示的那条上。首条消息的判定也按该会话自己的正文。
      */
-    internal fun autoTitleIfNeeded(prompt: String) {
-        val id = currentSessionId
+    internal fun autoTitleIfNeeded(prompt: String, sessionId: String = currentSessionId) {
+        val id = sessionId
         if (id.isEmpty()) return
         val current = sessions.firstOrNull { it.id == id } ?: return
         if (current.title.isNotEmpty()) return
         val fallback = SessionStore.fallbackTitle(prompt)
         if (fallback.isEmpty()) return
         // 首条用户消息：此刻消息容器还是空的（发送流程尚未追加），模型标题只在这一步调度
-        val firstPrompt = messages.isEmpty()
+        val firstPrompt = messagesOf(id).isEmpty()
         sessions = sessions.map { if (it.id == id) it.copy(title = fallback) else it }
         persistCurrent()
         FileLog.log("session", "会话 " + id + " 起标题：" + fallback)
@@ -1061,15 +1356,27 @@ class SessionController(
         persistAll()
     }
 
-    /** 清空当前会话的草稿（发送成功后调用）。 */
-    fun clearCurrentDraft() {
-        if (currentSessionId.isEmpty()) return
-        draftPort?.forget(listOf(currentSessionId))
+    /**
+     * 清空指定会话的草稿（发送成功后调用）。
+     *
+     * [sessionId] 默认当前显示会话；回合补发到别的会话时必须显式带上，
+     * 否则会清掉用户眼前这条会话正在写的草稿。
+     */
+    fun clearCurrentDraft(sessionId: String = currentSessionId) {
+        if (sessionId.isEmpty()) return
+        draftPort?.forget(listOf(sessionId))
+    }
+
+    /** P32：回合开合标记的唯一写入口（meta-only，落盘不碰消息）。 */
+    fun setTurnOpen(id: String, open: Boolean) {
+        if (id.isEmpty()) return
+        sessions = sessions.map { if (it.id == id) it.copy(turnOpen = open) else it }
+        runCatching { SessionStore.setTurnOpen(appContext, id, open) }
+            .onFailure { FileLog.log("session", "turnOpen 落盘失败：" + it) }
     }
 
     /** 当前会话的权限档：会话字段优先，缺失时取全局默认。 */
-    fun sessionPermission(): PermissionLevel {
-        val current = sessions.firstOrNull { it.id == currentSessionId } ?: return currentPermission()
+    fun sessionPermission(): PermissionLevel {        val current = sessions.firstOrNull { it.id == currentSessionId } ?: return currentPermission()
         return com.zmf.agent.core.model.permissionLevelOfWire(current.permissionPreset) ?: currentPermission()
     }
 

@@ -70,6 +70,8 @@ enum class TailIcon { COPY, SELECT_TEXT, FORK, ROLLBACK, USAGE }
  * 按钮数量按功能需要确定，不追求与其他客户端一致。
  *
  * [usageAnchor] 仅在点击用量按钮时回调，参数为该图标在窗口中的位置，伴随面板据此定位。
+ *
+ * [note] 非空时跟在时间之后（如「已停止」）：与时间同字号、同颜色，不引入新的视觉元素。
  */
 @Composable
 fun MessageTailRow(
@@ -77,7 +79,8 @@ fun MessageTailRow(
     alignEnd: Boolean,
     icons: List<TailIcon>,
     onAction: (TailIcon) -> Unit,
-    usageAnchor: (Offset) -> Unit
+    usageAnchor: (Offset) -> Unit,
+    note: String? = null
 ) {
     val secondary = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
     Row(
@@ -108,6 +111,9 @@ fun MessageTailRow(
         }
         Spacer(Modifier.width(6.dp))
         Text(text = at, fontSize = 12.sp, color = secondary)
+        if (!note.isNullOrBlank()) {
+            Text(text = " · " + note, fontSize = 12.sp, color = secondary)
+        }
     }
 }
 

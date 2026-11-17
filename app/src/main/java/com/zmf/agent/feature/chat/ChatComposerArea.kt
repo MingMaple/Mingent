@@ -193,10 +193,13 @@ internal fun ChatComposerArea(
                             .fillMaxWidth()
                             .onGloballyPositioned { inputBarHeightPx = it.size.height }
                     ) {
+                    // 未决提问期间：输入框照常可输入，但发送/插话键禁用（停止键仍可点，用来结束本轮）
+                    val pendingAsk = QuestionCenter.activeFor(viewModel.currentSessionId)
                     ChatComposer(
                         value = viewModel.inputText,
                         onValueChange = { viewModel.updateInput(it) },
-                        isStreaming = viewModel.isStreaming,
+                        // 回合状态机：运行 / 中止中 / 空闲（停止后的收尾期间停在「中止中」）
+                        turnPhase = viewModel.turnPhase,
                         // 仅挂载图片/文件、未输入文字也视为可发送：发送键此前仅按文本判断可发送
                         hasAttachment = viewModel.attachments.isNotEmpty() ||
                             viewModel.pendingImages.isNotEmpty(),
@@ -210,17 +213,16 @@ internal fun ChatComposerArea(
                         permissionLabel = viewModel.permissionLevel.displayName(),
                         permissionLevel = viewModel.permissionLevel,
                         queue = viewModel.pendingQueue.toList(),
-                        // 「编辑」= 从队列取出并回填输入框：不保留在队列中，避免同一内容被发送两次
+                        // 「编辑」= 从队列取出并回填输入框：正文与附件一起回来，避免同一内容被发送两次
                         onEditQueued = { queued ->
-                            viewModel.updateInput(TextFieldValue(queued.text, TextRange(queued.text.length)))
-                            viewModel.deleteQueued(queued.id)
+                            viewModel.takeBackQueued(queued.id)
                         },
                         onDeleteQueued = { queued -> viewModel.deleteQueued(queued.id) },
                         onSendQueued = { queued -> viewModel.sendQueuedNow(queued.id, scope) },
                         // 长按发送键：把队列整体插话发送（DSH 的 Ctrl/Cmd+Enter）
                         onSteerAll = { viewModel.steerAllQueued(scope) },
                         onPlus = {},
-                        // 本项目没有 @ 会话/文件 的补全列表，「@」暂时等同「选择文件」
+                        // 本项目未提供「@」会话/文件的补全列表，「@」当前等同「选择文件」
                         onMention = { onPickFile() },
                         onSend = {
                             // 用户主动发送 = 需回到对话底部；否则在向上翻阅时发送消息后仍停留在原位置
@@ -234,13 +236,35 @@ internal fun ChatComposerArea(
                                 viewModel.updateInput(TextFieldValue(""))
                             } else if (viewModel.pendingQueue.isNotEmpty()) {
                                 // 草稿为空而队列非空：发送键此时就是「发送排队消息」，
-                                // 与输入框的占位提示一致（此前这一下什么都不做，点了像没反应）
+                                // 与输入框的占位提示一致（此前此处不执行任何操作，点击后没有反馈）
                                 viewModel.sendQueuedNow(viewModel.pendingQueue.first().id, scope)
                             }
                         },
                         onStop = { viewModel.stop() },
                         // 面板入口交由 Composer：仅用于让父层铺设遮罩，不承担其他职责
                         panelHost = composerPanel,
+                        // 未决提问：与「＋」等面板同一槽位、挂在输入条上方；提问期间输入条照常可用，
+                        // 输入区自己的面板让位（关闭只由超时或面板内动作结算）
+                        ask = pendingAsk,
+                        sendBlocked = pendingAsk != null,
+                        onAskAnswer = { selected, custom ->
+                            // 按提问自带的会话回传：期间用户若切走会话，作答仍须落到发起该提问的会话上
+                            QuestionCenter.activeFor(viewModel.currentSessionId)?.let { active ->
+                                QuestionCenter.answer(active.sessionId, selected, custom)
+                            }
+                        },
+                        // 叉号 = 放弃作答：按超时同一口径结算（工具收到 pending），面板随即消失
+                        onAskClose = {
+                            QuestionCenter.activeFor(viewModel.currentSessionId)?.let { active ->
+                                QuestionCenter.cancel(active.sessionId, "用户关闭提问面板")
+                            }
+                        },
+                        // 翻页器：只换展示位置，不作答；按题保存的草稿在面板内自行保留
+                        onAskGoto = { index ->
+                            QuestionCenter.activeFor(viewModel.currentSessionId)?.let { active ->
+                                QuestionCenter.goto(active.sessionId, index)
+                            }
+                        },
                         onPermissionPick = { level -> viewModel.setPermission(level) },
                         onComposerCommand = { command ->
                             when (command) {

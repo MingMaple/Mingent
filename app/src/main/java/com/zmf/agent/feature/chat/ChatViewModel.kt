@@ -15,7 +15,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -29,7 +29,7 @@ import com.zmf.agent.capability.mcp.McpManager
 import com.zmf.agent.capability.loop.AgentUi
 import com.zmf.agent.capability.memory.MemoryState
 import com.zmf.agent.capability.loop.ContextSummaryState
-import com.zmf.agent.capability.loop.OutputTiming
+import com.zmf.agent.capability.loop.ModelRetryInfo
 import com.zmf.agent.capability.permission.PermissionStore
 import com.zmf.agent.capability.prompt.PromptBuilder
 import com.zmf.agent.capability.prompt.PromptInput
@@ -37,7 +37,6 @@ import com.zmf.agent.capability.prompt.PromptStore
 import com.zmf.agent.capability.skill.SkillStore
 import com.zmf.agent.infra.llm.LlmProvider
 import com.zmf.agent.infra.llm.ProviderConfig
-import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.core.store.ChatSession
 import com.zmf.agent.core.store.InsightGlobalView
 import com.zmf.agent.core.store.InsightRange
@@ -57,11 +56,9 @@ import com.zmf.agent.core.log.AuditLog
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.PermissionLevel
-import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.capability.tools.ToolRegistry
-import com.zmf.agent.capability.tools.ToolResult
 import com.zmf.agent.capability.tools.SandboxRegression
-import com.zmf.agent.capability.tools.file.TrashStore
+import com.zmf.agent.capability.tools.file.support.TrashStore
 import com.zmf.agent.capability.tools.displayName
 import com.zmf.agent.capability.tools.spill.SpillStore
 import androidx.compose.ui.text.input.TextFieldValue
@@ -106,7 +103,7 @@ internal const val PLAN_DETAIL_MARKER = "【计划原文·仅供模型执行】"
 /** 草稿写入的防抖窗口：500 毫秒内的连续输入只写一次。 */
 private const val DRAFT_DEBOUNCE_MS = 500L
 
-class ChatViewModel(context: Context) : AgentUi {
+class ChatViewModel(context: Context) {
 
     /**
      * 单轮工具调用次数的上限：对齐 DSH 的「一次提问内尽量跑完」。
@@ -166,8 +163,13 @@ class ChatViewModel(context: Context) : AgentUi {
     /** Agent 循环：换 Key / 端点 / 模型后由 [LlmConfigController] 重建。 */
     private val loop: AgentLoop get() = llm.loop
 
-    /** 上下文快照（估算 tokens / 水位 / 覆盖条数）；由 [refreshContext] 算，界面只读。 */
-    val contextSnapshot: ContextSnapshot get() = context.contextSnapshot
+    /**
+     * 上下文快照（估算 tokens / 水位 / 覆盖条数）；由 [refreshContext] 算，界面只读。
+     *
+     * 生成中切到别的会话时返回的是**显示会话**那一份；回合自己的那份仍留在上下文层，
+     * 供压缩闸门判断，不会因为用户切走而变化。
+     */
+    val contextSnapshot: ContextSnapshot get() = context.snapshotFor(currentSessionId)
 
     /** 当前会话摘要文本；空串 = 没有摘要，请求视图发全量。直接读会话表，落盘即生效。 */
     val contextSummary: String get() = context.contextSummary
@@ -178,11 +180,40 @@ class ChatViewModel(context: Context) : AgentUi {
      */
     private val summaryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    /** 对话全量消息（user / assistant / tool），循环直接往里追加。 */
-    val messages: SnapshotStateList<ChatMessage> = mutableStateListOf()
+    /**
+     * 会话正文：**每个会话各持一份消息列表**（见 [SessionMessageStore]）。
+     *
+     * 生成回复期间允许切换会话：界面读的是「当前显示会话」那一份，正在跑的那一轮钉住自己的会话
+     * 继续往那一份里写，两边互不干扰。
+     */
+    private val messageStore = SessionMessageStore()
 
-    /** tool_call_id -> 工具是否成功；只用于界面给工具卡上色，不参与请求。 */
-    val toolOutcomes: Map<String, Boolean> get() = toolCalls.outcomes
+    /** 界面当前显示的那条会话的消息（切会话即换成另一份）。 */
+    val messages: SnapshotStateList<ChatMessage> get() = messageStore.of(sessionStore.currentSessionId)
+
+    /** 取某条会话的消息列表：控制器按会话读写时用（落盘检查点、回合内的流式追加等）。 */
+    internal fun messagesOf(sessionId: String): SnapshotStateList<ChatMessage> = messageStore.of(sessionId)
+
+    /** 已载入内存的那些会话（落盘时把它们折回各自的会话记录，见 `SessionController.persistAll`）。 */
+    internal fun loadedMessages(): Map<String, SnapshotStateList<ChatMessage>> = messageStore.loaded()
+
+    /**
+     * 一轮对话开始：把回合账目挂到它所属的会话上。
+     *
+     * 每个会话各持一份正文列表（[messageStore]），回合内部一律用 `messagesOf(会话 id)`；
+     * A、B 两条会话可以各跑一个回合，因此这里不再有「唯一在跑的会话」这个概念。
+     */
+    internal fun beginTurn(sessionId: String) {
+        context.beginTurn(sessionId)
+    }
+
+    /** 一轮对话收尾（正常结束、被停止、异常都走这里）：摘掉这条会话的回合账目。 */
+    internal fun endTurn(sessionId: String) {
+        context.endTurn(sessionId)
+    }
+
+    /** tool_call_id -> 工具是否成功；只用于界面给工具卡上色，不参与请求（按当前显示会话取）。 */
+    val toolOutcomes: Map<String, Boolean> get() = toolCalls.outcomesOf(currentSessionId)
 
     /** 当前会话的待办清单，实现与依赖装配见 [TodoController]；界面仍通过 [todos] 读。 */
     private val todoStore = TodoController(
@@ -200,14 +231,19 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 会话与工作区的状态与动作均在此；以下四个转发入口对应原有的四个属性。 */
     private val sessionStore: SessionController = SessionController(
         appContext = appContext,
-        messages = messages,
+        messagesOf = { id -> messagesOf(id) },
+        loadedMessages = { loadedMessages() },
+        isTurnRunning = { id -> sender.isStreamingFor(id) },
+        turnSessions = { sender.turnSessions },
+        forgetMessages = { id -> messageStore.forget(id) },
+        forgetQueues = { id -> sender.dropQueuesOf(id) },
         scope = summaryScope,
-        isStreaming = { isStreaming },
-        clearAttachments = { composer.clearAttachments() },
+        isStreaming = { sender.anyStreaming },
         pendingUploadPaths = {
-            composer.attachments.map { it.relPath } + composer.pendingImages.map { it.relPath }
+            // 各会话的槽都算引用：清未引用附件时，别的会话还排着的附件同样不能被删
+            composer.allPendingRelPaths()
         },
-        clearToolOutcomes = { toolCalls.clear() },
+        clearToolOutcomes = { toolCalls.clear(currentSessionId) },
         clearTodos = { todoStore.clearTodos() },
         reloadTodos = { reloadTodos() },
         resetStats = { resetStats() },
@@ -243,6 +279,12 @@ class ChatViewModel(context: Context) : AgentUi {
             ?: globalEffortWire()
 
     var lastError by mutableStateOf<String?>(null)
+
+    /** 各会话当前正在进行的自动重试：有键 = 消息流末尾显示倒计时节点。 */
+    private val retries = mutableStateMapOf<String, ModelRetryInfo>()
+
+    /** 当前会话的重试状态；null = 没有在重试。 */
+    val modelRetry: ModelRetryInfo? get() = retries[currentSessionId]
 
     /**
      * 启动读盘（工作区表 + 全部会话正文）是否已完成。
@@ -298,8 +340,8 @@ class ChatViewModel(context: Context) : AgentUi {
     private val planGoal: PlanGoalController = PlanGoalController(
         appContext = appContext,
         currentSessionId = { currentSessionId },
-        isStreaming = { isStreaming },
-        setActivity = { activityText = it },
+        isStreaming = { sender.isStreamingFor(currentSessionId) },
+        setActivity = { text -> setActivityOf(currentSessionId, text) },
         reportError = { lastError = it },
         applyPermission = { setPermission(it) },
         summarizeNow = { summarizeNow() },
@@ -328,7 +370,9 @@ class ChatViewModel(context: Context) : AgentUi {
         workspaceRoot = { currentWorkspaceRoot() },
         sessionsReferencingUploads = { sessionsOfCurrentWorkspace() },
         scope = summaryScope,
-        reportError = { lastError = it }
+        reportError = { lastError = it },
+        // 待发附件与待发图片按会话分槽：当前显示哪条会话，就暴露哪条会话的槽
+        sessionIdOf = { sessionStore.currentSessionId }
     )
 
     /** 输入框内容（受控状态）。回滚时把被删掉的那条提问填回这里，光标落在末尾。 */
@@ -352,12 +396,13 @@ class ChatViewModel(context: Context) : AgentUi {
     private val context = ContextState(
         appContext = appContext,
         scope = summaryScope,
-        messages = messages,
+        messagesOf = { id -> messagesOf(id) },
         currentSessionId = { currentSessionId },
         sessions = { sessionList },
         writeSessions = { sessionStore.replaceSessions(it) },
-        isStreaming = { isStreaming },
-        setActivity = { activityText = it },
+        isStreaming = { sender.anyStreaming },
+        // 压缩提示按「哪条会话在压缩」写：并行时后台会话的压缩不该显示在前台会话的输入条上方
+        setActivity = { id, text -> setActivityOf(id, text) },
         modelName = { model },
         provider = { provider },
         registry = { registry },
@@ -369,15 +414,25 @@ class ChatViewModel(context: Context) : AgentUi {
         reloadSessionDocs = { reloadSessionDocs() }
     )
 
-    /** 当前在干什么：「调用 read_file」「已返回 read_file」之类，空闲时为 null。 */
-    var activityText by mutableStateOf<String?>(null)
-        private set
+    /**
+     * 各会话的当前操作提示：如「调用 read_file」「正在压缩上下文…」，空闲时该会话没有条目。
+     *
+     * 按会话分开：并行时 A 在跑命令、B 在跑搜索，各自那行提示不该互相覆盖。
+     * 工具返回后不追加「已返回 xxx」：那条提示只表示此刻在做什么，成败留在工具卡与轨迹里。
+     */
+    private val activities = mutableStateMapOf<String, String>()
 
-    /** 工具调用展示：成败表与工具起止提示；界面仍通过 [toolOutcomes] 读。 */
-    private val toolCalls = ToolCallController(
-        setActivity = { activityText = it },
-        reloadGoal = { reloadGoal() }
-    )
+    /** 当前显示会话正在干什么；空闲时为 null。 */
+    val activityText: String?
+        get() = activities[currentSessionId]
+
+    /** 写某条会话的进行中提示；[text] 为 null 表示清掉。 */
+    private fun setActivityOf(sessionId: String, text: String?) {
+        if (text == null) activities.remove(sessionId) else activities[sessionId] = text
+    }
+
+    /** 工具调用展示：只留成败表供工具卡着色；界面仍通过 [toolOutcomes] 读。 */
+    private val toolCalls = ToolCallController(reloadGoal = { reloadGoal() })
 
     /**
      * 发送与流式回合（发送/排队/插话/续跑/回滚/删改/停止），实现与依赖装配见 [SendController]。
@@ -386,18 +441,22 @@ class ChatViewModel(context: Context) : AgentUi {
      */
     private val sender: SendController = SendController(
         appContext = appContext,
-        messages = messages,
+        messagesOf = { id -> messagesOf(id) },
+        beginTurn = { id -> beginTurn(id) },
+        endTurn = { id -> endTurn(id) },
         context = this.context,
         session = sessionStore,
         composer = composer,
         scope = summaryScope,
-        loop = { loop },
-        agentUi = { this },
+        // 每回合一个新循环实例：并行时共用一份会把计时与缓存指纹互相覆盖
+        newLoop = { llm.newLoop() },
+        // 每回合一份界面回调，绑死它自己那条会话
+        agentUiFor = { id -> turnUi(id) },
         slashCommand = { handleSlashCommand(it) },
         restartBlocked = { needsRestart },
         readError = { lastError },
         reportError = { lastError = it },
-        setActivity = { activityText = it },
+        setActivity = { id, text -> setActivityOf(id, text) },
         thinkingOn = { thinkingEnabled },
         thinkingEffortProvider = { thinkingEffort },
         permissionProvider = { permissionLevel },
@@ -406,25 +465,49 @@ class ChatViewModel(context: Context) : AgentUi {
         setGoal = { planGoal.applyGoal(it) },
         reloadTodos = { reloadTodos() },
         reloadPlans = { reloadPlans() },
-        dropFinishedTodos = { dropFinishedTodosBeforeNewRound() },
-        abandonPendingPlans = { abandonPendingPlansBeforeNewTurn() }
+        dropFinishedTodos = { id -> dropFinishedTodosBeforeNewRound(id) },
+        abandonPendingPlans = { id -> abandonPendingPlansBeforeNewTurn(id) }
     )
 
-    /** 是否正在生成回复；只读转发。 */
-    val isStreaming: Boolean get() = sender.isStreaming
+    /**
+     * 当前显示的会话是否正在生成回复；只读转发。
+     *
+     * 用户 2026-11-15 要求「每条会话各跑一个回合」：这里只看当前会话，
+     * 因此 A 在后台跑时切到空闲的 B，发送键立刻可用、点了就在 B 开一个新回合。
+     */
+    val isStreaming: Boolean get() = sender.isStreamingFor(currentSessionId)
+
+    /**
+     * 当前会话的回合状态：运行 / 中止中 / 空闲；输入条据此决定右侧按钮与发送键的形态。
+     *
+     * 点停止后停在「中止中」直到取消与落盘全部收尾，不会在忙状态释放前先变成空闲。
+     */
+    val turnPhase: TurnPhase get() = sender.phaseOf(currentSessionId)
+
+    /** 有任何会话正在跑（顶栏状态点、会话闸门用）。 */
+    val anyStreaming: Boolean get() = sender.anyStreaming
+
+    /** 正在跑回合的会话集合；侧边栏可据此挂「进行中」标记。 */
+    val turnSessions: Set<String> get() = sender.turnSessions
+
+    /** 这条会话是否正在生成回复。 */
+    fun isStreamingOf(sessionId: String): Boolean = sender.isStreamingFor(sessionId)
+
+    /** 正在等待用户作答的会话；侧边栏据此挂提示点（与提问面板同一份状态）。 */
+    val pendingAskSessions: Set<String> get() = QuestionCenter.pendingSessions()
 
     /**
      * 本轮结束后是否已经排上了下一回合（目标续跑）；只读转发。
      *
      * 收尾到续跑之间有几百毫秒 `isStreaming` 为 false，界面靠它避免在空档里把过程区折起来。
      */
-    val chainPending: Boolean get() = sender.chainPending
+    val chainPending: Boolean get() = sender.chainPendingFor(currentSessionId)
 
     /** 繁忙时的发送行为；只读转发。 */
     val busyMode: BusySendMode get() = sender.busyMode
 
-    /** 排队待发的消息；只读转发（界面只读，改动都走 [editQueued] / [deleteQueued]）。 */
-    val pendingQueue: SnapshotStateList<QueuedMessage> get() = sender.pendingQueue
+    /** 当前会话排队待发的消息；只读转发（界面只读，改动都走 [takeBackQueued] / [deleteQueued]）。 */
+    val pendingQueue: SnapshotStateList<QueuedMessage> get() = sender.queueOf(currentSessionId)
 
     /** 上下文分段估算（系统提示词 / 工具表 / user / assistant / 工具结果）；由 [refreshContext] 顺带刷新。 */
     val contextBreakdown: Breakdown get() = context.contextBreakdown
@@ -515,6 +598,13 @@ class ChatViewModel(context: Context) : AgentUi {
                 }
                 // 工作区表与会话表读回来，决定当前会话并载入它的消息
                 sessionStore.loadInitial()
+                // D1 启动预热：首屏已按索引渲染，这里把各会话正文从事件流折回内存，
+                // 让总账回填等依赖正文的消费者读到全量数据（只补空记录，不覆盖在跑回合）
+                runCatching { sessionStore.warmUpSessions() }
+                    .onFailure { FileLog.log("session", "会话预热失败：" + (it.message ?: it.javaClass.simpleName)) }
+                // P33：按会话恢复「繁忙时排队」的待发消息（崩溃前排的队，重启后接着发）
+                runCatching { sender.restoreQueues() }
+                    .onFailure { FileLog.log("queue", "队列恢复失败：" + (it.message ?: it.javaClass.simpleName)) }
                 // 费用与轮次总账回填：按现存会话逐条计算，仅写统计文件，不影响首帧内容
                 runCatching {
                     withContext(Dispatchers.IO) {
@@ -658,22 +748,13 @@ class ChatViewModel(context: Context) : AgentUi {
 
     /** 手动立即压缩；流式回复中不执行，结果通过 [onDone] 回主线程。 */
     fun summarizeNow(onDone: (Boolean) -> Unit = {}, force: Boolean = false) =
-        context.summarizeNow(onDone, force)
+        context.summarizeNow(currentSessionId, onDone, force)
 
     /** 清除本会话摘要：请求视图恢复全量（见 [ContextState.clearContextSummary]）。 */
     fun clearContextSummary() = context.clearContextSummary()
 
     /** 给 AgentLoop 的摘要视图信息：摘要文本 + 分界 + 兜底标记。 */
-    private fun summaryState(): ContextSummaryState = context.summaryState()
-
-    /** 发送前的双触发闸门：比例或新增轮数到达阈值就返回 true。 */
-    private fun shouldSummarize(): Boolean = context.shouldSummarize()
-
-    /** 跑一次摘要，成功写回会话三字段并落盘（见 [ContextState.runSummary]）。 */
-    private suspend fun runSummary(): Boolean = context.runSummary()
-
-    /** AgentLoop 的溢出恢复回调：压一次上下文，成功就让它重发同一轮。 */
-    private suspend fun onOverflowCompaction(): Boolean = context.onOverflowCompaction()
+    private fun summaryState(): ContextSummaryState = context.summaryState(currentSessionId)
 
     // ---- 模型与提供商（状态与实现见 LlmConfigController.kt，这里只留对外的调用口）----
 
@@ -795,17 +876,25 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 斜杠命令入口：true = 该句已被命令消费，不作为普通消息发送。 */
     fun handleSlashCommand(text: String): Boolean = planGoal.handleSlashCommand(text)
 
-    /** 重读当前会话的计划列表（流结束与进计划页时各调一次）。 */
-    fun reloadPlans() = planGoal.reloadPlans()
+    /** 重读当前会话的计划列表（流结束与进计划页时各调一次）。读盘在 IO，结果回主线程写状态。 */
+    fun reloadPlans() {
+        summaryScope.launch { planGoal.reloadPlans() }
+    }
 
-    /** 新一轮对话开始前，把还悬着待确认的计划标成废弃。 */
-    private fun abandonPendingPlansBeforeNewTurn() = planGoal.abandonPendingPlansBeforeNewTurn()
+    /** 删除会话时丢弃它的计划表与选中项（内存）；磁盘上的键由删除点清理。 */
+    fun forgetPlanState(id: String) = planGoal.forgetSession(id)
+
+    /** 新一轮对话开始前，把指定会话里还悬着待确认的计划标成废弃（发起回合的那条会话）。 */
+    private fun abandonPendingPlansBeforeNewTurn(sessionId: String) =
+        planGoal.abandonPendingPlansBeforeNewTurn(sessionId)
 
     /** 重读当前会话的目标。 */
     fun reloadGoal() = planGoal.reloadGoal()
 
     /** 换会话路径统一调这一个：两份文档都跟当前会话绑定。 */
-    private fun reloadSessionDocs() = planGoal.reloadSessionDocs()
+    private fun reloadSessionDocs() {
+        summaryScope.launch { planGoal.reloadSessionDocs() }
+    }
 
     /** 计划预览切换选中项。 */
     fun selectPlan(id: String) = planGoal.selectPlan(id)
@@ -883,7 +972,8 @@ class ChatViewModel(context: Context) : AgentUi {
      * 因此这里只负责「把中转附件落进当前工作区 → 交给发送链路」。附件与图片由本函数显式交给
      * 发送链路，不读写输入区队列，用户正在当前会话编辑的草稿不会被打扰。
      *
-     * 本轮正在生成时沿用普通输入框的繁忙语义：带附件则拒绝（面板保留），纯文字则排队或插话。
+     * 本轮正在生成时与普通输入框同一套繁忙语义：无附件按设置插话或排队，
+     * 带附件一律排队，附件随条目存下，本轮结束后照常发出。
      *
      * @param onResult null 表示已受理；非 null 为应显示在面板里的一句失败说明
      */
@@ -897,17 +987,7 @@ class ChatViewModel(context: Context) : AgentUi {
             onResult("没有可发送的内容")
             return
         }
-        val body = ShareIntake.composeBody(draft, editorText)
-        if (isStreaming) {
-            // 发到正在回复的这一条：沿用普通输入框的繁忙语义（排队或插话）
-            if (draft.hasFiles) {
-                onResult("正在生成回复，附件等本轮结束后再发送")
-                return
-            }
-            val queued = sender.queuePayload(body, scope)
-            onResult(if (queued) null else lastError ?: "发送失败，请重试")
-            return
-        }
+        val body = ShareIntake.composeBody(editorText)
         scope.launch {
             // 中转文件落进当前会话的工作区：与普通输入框选择附件走同一套 UploadStore.import
             val attachments = withContext(Dispatchers.IO) {
@@ -934,6 +1014,53 @@ class ChatViewModel(context: Context) : AgentUi {
         }
     }
 
+    /** 已经移交到输入区的分享批次（按中转目录绝对路径记）：同一批只移交一次。 */
+    private val handedOffShareBatches = mutableSetOf<String>()
+
+    /**
+     * 分享面板退场后的收尾：已发出的删除中转批次；未发出的把附件移交到输入区待发项再删。
+     *
+     * 用户关掉面板（或点了「修改」把队列条目取回）不等于丢掉刚分享进来的文件：未发出的批次
+     * 走与发送同一条 [ShareIntake.stageForSend]，先把中转文件复制进**当前会话**的工作区，
+     * 待发项因此拿到工作区相对路径——缩略图可解码、叉号可删、点开可预览、可直接发送。
+     *
+     * 幂等按批次目录判定：反复关闭面板、反复「发送 / 编辑」同一条分享内容，都不会重复追加。
+     * 移交落进**发起这一步时所在会话**的槽（复制期间用户切走也不会落到别的会话上）。
+     *
+     * @param sent 分享发送链路是否已受理（含进入队列）：受理过的批次附件已在消息或队列条目里
+     */
+    internal fun releaseShareDraft(draft: ShareDraft, sent: Boolean) {
+        if (sent || !draft.hasFiles) {
+            ShareIntake.discard(draft)
+            return
+        }
+        if (!handedOffShareBatches.add(draft.sourceRootPath)) {
+            // 同一批已经移交过：只清中转，不再追加第二次
+            ShareIntake.discard(draft)
+            return
+        }
+        // 工作区与目标会话都在发起时钉住：复制是 IO，期间用户可能已经切到别的会话
+        val root = currentWorkspaceRoot()
+        val target = currentSessionId
+        summaryScope.launch {
+            val moved = withContext(Dispatchers.IO) {
+                ShareIntake.stageForSend(appContext, draft, root)
+            }
+            val files = composer.addFiles(moved.files, target)
+            val images = composer.addImages(moved.images, target)
+            FileLog.log(
+                "share",
+                "分享未发出：附件移交输入区待发 " + files + " 个文件、" + images + " 张图片（会话 " + target + "）"
+            )
+            if (moved.images.size > images) {
+                // 图片有数量上限：超出部分不静默丢弃，明确告诉用户
+                lastError = "图片最多 " + MAX_IMAGES + " 张，分享里有 " +
+                    (moved.images.size - images) + " 张未移交"
+            }
+            ShareIntake.discard(draft)
+        }
+    }
+
     /**
      * 分享面板选定目标时调用：真的切换会话，让上方的会话区立刻变成该会话的内容。
      *
@@ -941,10 +1068,6 @@ class ChatViewModel(context: Context) : AgentUi {
      * 选定即切换，发送时不再二次切换，因此「用户先看再发」与「直接发」走的是同一条路径。
      */
     internal fun selectShareTarget(target: ShareTarget): Boolean = applyShareTarget(target)
-
-    /** 分享面板所选目标是否就是当前会话本身：选它只是确认，不构成切换，生成中也应放行。 */
-    internal fun isShareTargetCurrent(target: ShareTarget): Boolean =
-        target is ShareTarget.Session && target.id == currentSessionId
 
     /**
      * 把会话切到分享面板所选的目标；返回 false 表示目标已不存在（工作区被删、会话被归档删除）。
@@ -1011,9 +1134,10 @@ class ChatViewModel(context: Context) : AgentUi {
     private fun reloadTodos() = todoStore.reloadTodos()
 
     /**
-     * 新一轮提问前清掉上一轮「全部完成」的清单（口径见 [TodoController.dropFinishedTodosBeforeNewRound]）。
+     * 新一轮提问前清掉指定会话上一轮「全部完成」的清单（口径见 [TodoController.dropFinishedTodosBeforeNewRound]）。
      */
-    private fun dropFinishedTodosBeforeNewRound() = todoStore.dropFinishedTodosBeforeNewRound()
+    private fun dropFinishedTodosBeforeNewRound(sessionId: String) =
+        todoStore.dropFinishedTodosBeforeNewRound(sessionId)
 
     // ---- 备份 / 恢复（状态与实现见 BackupController.kt，这里只留对外的调用口）----
 
@@ -1062,8 +1186,19 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 切换繁忙时的发送行为并落盘（只影响下一次「繁忙时发送」）。 */
     fun applyBusyMode(mode: BusySendMode) = sender.applyBusyMode(mode)
 
-    /** 修改排队消息的正文；改为空串即将其移出队列。 */
-    fun editQueued(id: Long, text: String) = sender.editQueued(id, text)
+    /**
+     * 把队列里的一条取回输入框：正文回填、附件放回待发区，然后从队列移除。
+     *
+     * 附件跟着条目走：只回填文字会让这条消息的文件凭空消失。按路径去重——反复
+     * 「发送 / 编辑」同一条分享内容时，同一份附件不得在待发区叠成两份。
+     */
+    fun takeBackQueued(id: Long) {
+        val item = pendingQueue.firstOrNull { it.id == id } ?: return
+        updateInput(TextFieldValue(item.text, TextRange(item.text.length)))
+        composer.addFiles(item.files)
+        composer.addImages(item.images)
+        sender.deleteQueued(id)
+    }
 
     /** 把某条排队消息移出队列。 */
     fun deleteQueued(id: Long) = sender.deleteQueued(id)
@@ -1096,7 +1231,7 @@ class ChatViewModel(context: Context) : AgentUi {
     fun editAndResend(index: Int, text: String, scope: CoroutineScope) =
         sender.editAndResend(index, text, scope)
 
-    /** 用户点「停止」：取消当前流式任务并清掉进行中提示。 */
+    /** 用户点「停止」：取消当前流式任务；提示行、占用与回合摘除统一由该回合收尾清理。 */
     fun stop() = sender.stop()
     // ---- 会话与工作区（状态与实现见 SessionController.kt，这里只留对外的调用口）----
 
@@ -1163,7 +1298,7 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 改工作区显示名：只动名字，目录名与会话归属都不变。 */
     fun renameWorkspace(id: String, name: String): Boolean = sessionStore.renameWorkspace(id, name)
 
-    /** 新建工作区：名字空白 / 目录不可用返回 false；建完切过去（会顺便建一条空会话）。 */
+    /** 新建工作区：名字空白 / 目录不可用返回 false；建完切过去（同时新建一条空会话）。 */
     fun createWorkspace(name: String, rootPath: String? = null, treeUri: String? = null): Boolean =
         sessionStore.createWorkspace(name, rootPath, treeUri)
 
@@ -1212,19 +1347,7 @@ class ChatViewModel(context: Context) : AgentUi {
     fun refreshStats() = context.refreshStats()
 
     /** 换会话后统计、时间账、计划/目标、上下文事件一起跟着换（见 [ContextState.resetStats]）。 */
-    private fun resetStats() = context.resetStats()
-
-    /** 把「本次回复步数」加进本会话累计与全局总账，一次回复只加一次。 */
-    private fun commitSteps() = context.commitSteps()
-
-    /** 把本次回复的时间账加进会话累计，一次回复只加一次。 */
-    private fun commitTiming() = context.commitTiming()
-
-    /** 本轮（从 turnStartIndex 起）有没有工具结果：用它判断模型是不是真的动手了。 */
-    private fun turnUsedTools(): Boolean = context.turnUsedTools()
-
-    /** 把本轮累计的 usage 写进本轮最后一条 assistant 消息。 */
-    private fun writeTurnUsage() = context.writeTurnUsage()
+    private fun resetStats() = context.resetStats(currentSessionId)
 
     /** 全部会话的消息总数，统计页「会话与消息」用。 */
     fun totalMessageCount(): Int = context.totalMessageCount()
@@ -1263,20 +1386,38 @@ class ChatViewModel(context: Context) : AgentUi {
     /** 重启记忆页时清掉上一次的临时状态；安装进行中则保留进度。 */
     fun clearMemoryVectorStatus() = insight.clearMemoryVectorStatus()
 
-    // ---- AgentUi ----
+    // ---- 回合的界面回调 ----
 
-    /** 新一轮开始：仅记录本次回复已达到的最大轮次；状态行的轮/步已有固定显示，不重复提示。 */
-    override fun onRound(round: Int) {
-        // 只记「本次回复」的步数口径，会话累计由流结束时的 commitSteps 加一次
-        context.noteRound(round)
-    }
-
-    /** 工具开始执行：只改进行中提示，不提前写结果。 */
-    override fun onToolStarted(call: ToolCall) = toolCalls.onToolStarted(call)
-
-    /** 工具执行结束：记下这一步的成败供工具卡读，goal 工具成功时顺带刷新目标。 */
-    override fun onToolFinished(call: ToolCall, result: ToolResult) =
-        toolCalls.onToolFinished(call, result)
+    /**
+     * 为一个回合生成它专属的界面回调（绑死 sessionId）。
+     *
+     * 以前 ChatViewModel 自己实现 [AgentUi]，并行跑两个回合时用量、步数、工具成败会被记到
+     * 最近一次收尾的那条会话上；现在每回合一份（见 [TurnAgentUi]）。
+     */
+    private fun turnUi(sessionId: String): TurnAgentUi = TurnAgentUi(
+        sessionId = sessionId,
+        context = context,
+        toolCalls = toolCalls,
+        onRequestOk = {
+            lastRequestOk = true
+            // 顶栏状态点回绿时顺带清掉上一次的失败提示
+            lastError = null
+        },
+        onRequestFailed = {
+            lastError = it
+            lastRequestOk = false
+            FileLog.log("error", it)
+        },
+        // 终态请求失败不在输入框上方内嵌：错误写进消息流（由 SendController 落盘），
+        // 这里只负责顶栏状态点与日志
+        onTurnFailed = { _, message ->
+            lastRequestOk = false
+            FileLog.log("error", message)
+        },
+        retryNotice = { info ->
+            if (info == null) retries.remove(sessionId) else retries[sessionId] = info
+        }
+    )
 
     /**
      * 本轮用量的「提供方/模型」：写成 `deepseek/deepseek-flash` 这种形态。
@@ -1290,39 +1431,5 @@ class ChatViewModel(context: Context) : AgentUi {
             ?: "内置"
         val model = model.takeIf { it.isNotBlank() } ?: ApiDefaults.MODEL
         return provider + "/" + model
-    }
-
-    /**
-     * 收到一次服务端 usage：累加本轮与会话用量、写全局总账，并立刻刷新水位与状态行。
-     *
-     * 服务端没报的字段（缓存、推理）不累加、也不写成 0，界面上按「未知」显示。
-     */
-    override fun onUsage(usage: UsageBuckets) {
-        context.recordUsage(usage)
-        // 收到 usage 说明这一轮请求真的成功了，顶栏状态点可以回绿
-        lastRequestOk = true
-    }
-
-    /** 请求失败：把错误挂到界面并把顶栏状态点置为失败，直到下一次成功。 */
-    override fun onError(message: String) {
-        lastError = message
-        // 请求失败：顶栏状态点变红，直到下一次成功
-        lastRequestOk = false
-        FileLog.log("error", message)
-    }
-
-    /** 循环收尾回调一次：只累计本次回复的时间账，落会话记录在 [commitTiming] 里做。 */
-    override fun onTiming(modelMillis: Long, toolMillis: Long) {
-        context.addTurnTiming(modelMillis, toolMillis)
-    }
-
-    /**
-     * 输出侧账目（首字等待 / 生成时长 / 输出 tokens）：跟 [onTiming] 一起落进会话记录。
-     *
-     * 落盘而不是只放内存：这两个数决定状态行上的 tok/s 与浮窗里的 TTFT，重启一次就归零
-     * 会让人以为数字坏了。落盘的时机就是这里：一次回复一次，不会写得太勤。
-     */
-    override fun onOutputTiming(timing: OutputTiming) {
-        context.recordOutputTiming(timing)
     }
 }

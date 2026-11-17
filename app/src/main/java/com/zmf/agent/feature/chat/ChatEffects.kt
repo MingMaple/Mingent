@@ -14,7 +14,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.zmf.agent.capability.subagent.SubAgentNotices
 import com.zmf.agent.capability.subagent.SubAgentRegistry
+import com.zmf.agent.capability.subagent.SubAgentRunner
 import com.zmf.agent.infra.backup.BackupArchive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,8 @@ import androidx.compose.ui.platform.SoftwareKeyboardController
 import com.zmf.agent.capability.runtime.ChatBridge
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.SharePayload
+import com.zmf.agent.core.prefs.ShareTargetPrefs
+import com.zmf.agent.core.prefs.UiStateStore
 import com.zmf.agent.uikit.common.NoticeCenter
 import com.zmf.agent.uikit.markdown.LinkRouter
 
@@ -88,8 +92,12 @@ internal fun ChatAppEffects(
         }
     }
 
-    // 系统分享：受理一次（去重、暂存），随后进入**分享模式**——切到默认工作区的新会话，
-    // 底部槽位换成分享面板。启动未就绪时等一等：此前会话表为空，newSession 会落在错误的工作区。
+    // 系统分享：受理一次（去重、暂存），随后进入**分享模式**。
+    //
+    // 顺序是「先切会话，再导入」：导入要解码压缩多张图片，先导入再切换会让用户在原会话里停留数秒、
+    // 之后整块跳转。目标规则：1 小时内分享过且那条会话还在 → 回到它（用户 2026-11-15 定），
+    // 否则默认工作区新建会话。生成回复期间会话层会拦下切换（流式结果写的是当前会话），
+    // 此时留在当前会话，发送按「繁忙时发送行为」执行。
     var pendingShare by remember(initialShare) { mutableStateOf(initialShare) }
     LaunchedEffect(pendingShare, viewModel.startupReady) {
         val payload = pendingShare ?: return@LaunchedEffect
@@ -109,6 +117,29 @@ internal fun ChatAppEffects(
             ui.imageMenuVisible.value = false
             ui.selectionVisible.value = false
             ui.turnUsage.value = null
+
+            // 目标：同一小时窗口内回到上一次分享的会话；该会话已删除或已归档时按新分享处理
+            val recent = ShareTargetPrefs.recentSession(context)
+            val recentExists = recent != null &&
+                viewModel.sessionList.any { it.id == recent && !it.archived }
+            if (recentExists) {
+                viewModel.switchSession(recent)
+            } else {
+                // 与「手动新建会话」完全同一套动作：切到默认工作区并新建空会话，会话区就是普通聊天界面
+                val defaultSpace = viewModel.workspaceList.firstOrNull { it.isDefault }?.id
+                if (defaultSpace != null && viewModel.currentWorkspaceId != defaultSpace) {
+                    viewModel.switchWorkspace(defaultSpace)
+                }
+                viewModel.newSession()
+            }
+            // 分享输入框立刻占位；导入完成前用「正在导入…」占着底部槽位，发送键不可用
+            ui.shareDraft.value = null
+            ui.shareSent.value = false
+            ui.sharePreparing.value = true
+            ui.shareVisible.value = true
+            // 记下本次落地会话：切换被生成中的回合拦下时，实际用的仍是当前会话，按实际记
+            ShareTargetPrefs.remember(context, viewModel.currentSessionId)
+
             // 图片与长文先落进与任何工作区无关的中转目录：发送时才按目标会话落盘，
             // 用户随后在面板或抽屉里改目标，不会留下挂在别的工作区的文件
             val draft = withContext(Dispatchers.IO) {
@@ -116,34 +147,40 @@ internal fun ChatAppEffects(
                     .onFailure { FileLog.log("share", "落盘失败：" + (it.message ?: it.javaClass.simpleName)) }
                     .getOrNull()
             }
+            // 导入期间用户可能已经取消：此时不再把内容塞回界面，整批中转文件直接丢弃
+            if (!ui.shareVisible.value) {
+                ui.sharePreparing.value = false
+                draft?.let { ShareIntake.discard(it) }
+                return@launch
+            }
             if (draft == null) {
-                // 全部图片读取失败且没有正文时没有任何可发送的内容，说明一句即可，不进分享模式
+                // 全部图片读取失败且没有正文时没有任何可发送的内容，说明一句即可，退出分享模式
+                ui.sharePreparing.value = false
+                ui.shareVisible.value = false
                 NoticeCenter.show("未读到可发送的分享内容")
                 return@launch
             }
-            // 与「手动新建会话」完全同一套动作：切到默认工作区并新建空会话，会话区就是普通聊天界面。
-            // 生成中改工作区与新建都会被会话层拦下（流式结果写的是当前会话的消息表），
-            // 此时界面停在原会话上，发送仍发往当时所在的会话。
-            val defaultSpace = viewModel.workspaceList.firstOrNull { it.isDefault }?.id
-            if (defaultSpace != null && viewModel.currentWorkspaceId != defaultSpace) {
-                viewModel.switchWorkspace(defaultSpace)
-            }
-            viewModel.newSession()
             ui.shareDraft.value = draft
-            ui.shareVisible.value = true
+            ui.sharePreparing.value = false
         }
     }
 
-    // 面板退场结束后再清内容：退场动画期间面板仍要画出附件与正文。
-    // 本次中转批次整批删除；发出的附件已复制进目标工作区，不再依赖中转文件。
-    // 关闭分享不改变当前会话：用户停在新会话里，不回退到分享前的那一条。
+    // 面板退场结束后再处理本次内容：退场动画期间面板仍要画出附件与正文。
+    // 已发出的批次整批删除（附件已复制进目标工作区）；未发出的把附件移交到输入区待发项后再删，
+    // 用户关掉面板不等于丢掉刚分享进来的文件。
+    // 关闭分享不改变当前会话：用户停在目标会话里，不回退到分享前的那一条。
     val shareVisibleNow by ui.shareVisible
     LaunchedEffect(shareVisibleNow) {
         if (shareVisibleNow) return@LaunchedEffect
         delay(320)
         if (ui.shareVisible.value) return@LaunchedEffect
-        ui.shareDraft.value?.let { draft -> ShareIntake.discard(draft) }
+        ui.sharePreparing.value = false
+        val draft = ui.shareDraft.value
+        // 「已发出」必须在清空草稿之前读取：清空会让父层重组并复位这个标记
+        val sent = ui.shareSent.value
+        ui.shareSent.value = false
         ui.shareDraft.value = null
+        if (draft != null) viewModel.releaseShareDraft(draft, sent = sent)
     }
 
     // 网页随会话切换：切换会话时将标签挂起并分别挂回各自会话。
@@ -157,6 +194,107 @@ internal fun ChatAppEffects(
         PreviewTabs.switchTo(context, viewModel.currentSessionId)
     }
 
+    // ── 界面格局持久化（D3，用户 2026-11-16）──
+    // 结构随改随存、比对旧值：停在哪一页（限 PLAN / PREVIEW / BROWSER）、选中哪份计划、
+    // 预览停在哪条标签、浏览页开着哪些地址。滚动位置与窗口几何一律不存（不追像素级恢复）。
+    // 以下四个读取都在组合里完成：它们的任何变化都会重启这条 effect，也就是「值变了才写」。
+    val layoutSessionId = viewModel.currentSessionId
+    val layoutPage = page
+    val layoutPlanId = viewModel.selectedPlanId
+    val layoutPreviewPath = PreviewTabs.activePath
+    val layoutBrowserUrls = BrowserState.urlsFor(layoutSessionId)
+
+    /** 落盘或清键：主页 / 设置层不留键，防止陈旧记录在下次启动时误恢复。 */
+    fun persistLayout(
+        id: String,
+        current: AppPage?,
+        planId: String?,
+        previewPath: String?,
+        urls: List<String>
+    ) {
+        if (id.isEmpty()) return
+        val stored = current
+            ?.takeIf { it == AppPage.PLAN || it == AppPage.PREVIEW || it == AppPage.BROWSER }
+        if (stored == null) {
+            UiStateStore.forget(context, id)
+            return
+        }
+        UiStateStore.save(
+            context = context,
+            sessionId = id,
+            page = stored.name,
+            planId = if (stored == AppPage.PLAN) planId else null,
+            previewPath = if (stored == AppPage.PREVIEW) previewPath else null,
+            browserUrls = if (stored == AppPage.BROWSER) urls else emptyList()
+        )
+    }
+
+    // 值变即同步落盘：apply 的异步写在 am force-stop 时可能整段丢失（D3 实测），
+    // 而 force-stop 不投递 ON_STOP，不能把可靠性寄托在退后台那一刻。commit 放到 IO 线程执行。
+    LaunchedEffect(layoutSessionId, layoutPage, layoutPlanId, layoutPreviewPath, layoutBrowserUrls) {
+        if (!viewModel.startupReady) return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            persistLayout(layoutSessionId, layoutPage, layoutPlanId, layoutPreviewPath, layoutBrowserUrls)
+        }
+    }
+
+    // 启动后首次进入某条会话时，恢复它上次留下的格局；失效（计划已删光、标签已清空、
+    // 地址一个都打不开）就当作没有记录，留在主页并顺带清掉键。
+    // 本进程里进过的会话不再读盘：内存里那份页面表才是最新的。
+    var layoutRestored by remember { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(viewModel.startupReady, viewModel.currentSessionId) {
+        if (!viewModel.startupReady) return@LaunchedEffect
+        val id = viewModel.currentSessionId
+        if (id.isEmpty() || id in layoutRestored) return@LaunchedEffect
+        layoutRestored = layoutRestored + id
+        val saved = UiStateStore.load(context, id) ?: return@LaunchedEffect
+        var restored = saved.page?.let { runCatching { AppPage.valueOf(it) }.getOrNull() }
+        when (restored) {
+            AppPage.PLAN -> {
+                // 计划已全部删除：计划页没有可看的内容
+                if (viewModel.plans.isEmpty()) {
+                    restored = null
+                } else if (saved.planId != null && viewModel.plans.any { it.id == saved.planId }) {
+                    viewModel.selectPlan(saved.planId)
+                }
+            }
+            AppPage.PREVIEW -> {
+                // 标签清单已读回（上文的 switchTo 先执行）：回到上次打开的标签
+                if (PreviewTabs.count == 0) {
+                    restored = null
+                } else if (saved.previewPath != null) {
+                    PreviewTabs.activate(saved.previewPath)
+                }
+            }
+            AppPage.BROWSER -> {
+                // WebView 实例不落盘：按留下的地址重开标签；一个都开不出来就当作没有记录
+                saved.browserUrls.forEach { url -> BrowserHolder.open(context, url) }
+                if (BrowserState.tabs.isEmpty()) restored = null
+            }
+            else -> {}
+        }
+        ui.setPage(id, restored)
+    }
+
+    // 会话从列表里消失（归档页删除 / session_delete 工具）：内存里它名下的运行态一并丢弃，
+    // 避免 id 悬留或复用后读到别人的页面、计划与标签。磁盘上的格局键由各删除点自行清理。
+    var knownSessionIds by remember { mutableStateOf<Set<String>?>(null) }
+    LaunchedEffect(viewModel.sessionList) {
+        val ids = viewModel.sessionList.map { it.id }.toSet()
+        val known = knownSessionIds
+        knownSessionIds = ids
+        if (known == null) return@LaunchedEffect
+        for (gone in known - ids) {
+            ui.forgetSession(gone)
+            viewModel.forgetPlanState(gone)
+            PreviewTabs.forgetSession(context, gone)
+            BrowserState.forgetSession(gone)
+            // 子智能体：清掉该会话的并发计数与未转交的结论通知（正在跑的协程不受影响）
+            SubAgentRunner.forgetSession(gone)
+            SubAgentNotices.forgetSession(gone)
+        }
+    }
+
     // 返回前台时从磁盘重新读取会话；输入法有意不在此收起，切后台再返回时其应仍在输入框上。
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -165,7 +303,17 @@ internal fun ChatAppEffects(
                 Lifecycle.Event.ON_RESUME -> if (viewModel.startupReady) viewModel.reloadSessionsFromDisk()
                 // 退至后台时落盘一次：产品约定为「按返回仅进入后台、永不终止后台」，
                 // 但系统仍可能在后台回收进程，因此需在此时写入会话。
-                Lifecycle.Event.ON_STOP -> viewModel.persistForBackground("on-stop")
+                Lifecycle.Event.ON_STOP -> {
+                    viewModel.persistForBackground("on-stop")
+                    // 界面格局再同步刷盘一次：值变时已写过，此处只兜住「状态变了但 effect 尚未执行」的窗口
+                    persistLayout(
+                        viewModel.currentSessionId,
+                        ui.page.value,
+                        viewModel.selectedPlanId,
+                        PreviewTabs.activePath,
+                        BrowserState.urlsFor(viewModel.currentSessionId)
+                    )
+                }
                 else -> {}
             }
         }
@@ -224,12 +372,18 @@ internal fun ChatAppEffects(
     // 不可退回弹出系统浏览器，否则等同于将用户移出 App。
     DisposableEffect(Unit) {
         LinkRouter.onOpen = { url ->
-            BrowserHolder.open(context, url)
-            // 从预览页里的链接进入网页：记住来路，返回时回到刚才那一页（阅读位置原样保留）；
-            // 从主页进入则没有来路，返回仍回主页
-            ui.browserReturnPage.value = ui.page.value.takeIf { it == AppPage.PREVIEW }
-            page = AppPage.BROWSER
-            true
+            // 只放行 http/https：javascript:/file:/intent: 等 scheme 一律不加载，记一行日志后忽略
+            if (!BrowserHolder.isHttpUrl(url)) {
+                FileLog.log("browser", "忽略非 http/https 链接: " + url)
+                false
+            } else {
+                BrowserHolder.open(context, url)
+                // 从预览页里的链接进入网页：记住来路，返回时回到刚才那一页（阅读位置原样保留）；
+                // 从主页进入则没有来路，返回仍回主页
+                ui.browserReturnPage.value = ui.page.value.takeIf { it == AppPage.PREVIEW }
+                page = AppPage.BROWSER
+                true
+            }
         }
         onDispose { LinkRouter.onOpen = null }
     }
@@ -288,7 +442,6 @@ internal fun ChatBackHandlers(
     BackHandler(enabled = page == AppPage.BROWSER) {
         if (!BrowserHolder.goBack()) page = ui.browserExitTarget()
     }
-    BackHandler(enabled = page == AppPage.WORKSPACE) { page = null }
     BackHandler(enabled = page == AppPage.SUBAGENT) { page = null }
     // 结构：设置首页 → 通用设置 / 模型 / 长期记忆 / 上下文洞察 / 上下文配置 / 包管理 / 数据，
     // 通用设置 → 权限、定时任务；数据 → 日志、归档。

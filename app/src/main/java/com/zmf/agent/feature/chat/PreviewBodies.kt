@@ -83,8 +83,12 @@ internal fun TextBody(
     markdown: Boolean,
     modifier: Modifier = Modifier
 ) {
-    // 切标签回来时沿用已经读出的部分：不重读，也不把滚动位置拉回顶部（位置由外层按标签保存）
-    val cached = remember(source.path, source.version) { PreviewTextCache.get(source.path, source.version) }
+    // 切标签回来时沿用已经读出的部分：不重读，也不把滚动位置拉回顶部（位置由外层按标签保存）。
+    // 正文缓存按「会话 + 路径」存：切走再切回，已读的部分仍然有效
+    val sessionId = PreviewTabs.ownerSessionId
+    val cached = remember(sessionId, source.path, source.version) {
+        PreviewTextCache.get(sessionId, source.path, source.version)
+    }
     var text by remember(source.path, source.version) { mutableStateOf(cached?.text.orEmpty()) }
     var nextLine by remember(source.path, source.version) { mutableStateOf(cached?.nextLine ?: 0) }
     var eof by remember(source.path, source.version) { mutableStateOf(cached?.eof ?: false) }
@@ -94,7 +98,9 @@ internal fun TextBody(
     val onSurface = MaterialTheme.colorScheme.onSurface
 
     fun cache() {
-        if (!binary) PreviewTextCache.put(source.path, PreviewText(source.version, text, nextLine, eof, binary))
+        if (!binary) {
+            PreviewTextCache.put(sessionId, source.path, PreviewText(source.version, text, nextLine, eof, binary))
+        }
     }
 
     suspend fun loadPage() {
@@ -394,7 +400,13 @@ internal fun PdfViewer(
                 modifier = modifier,
                 state = listState
             ) {
-                items(doc.pageCount) { index -> PdfPageView(doc, index) }
+                items(
+                    count = doc.pageCount,
+                    key = { index -> index },
+                    contentType = { "pdfPage" }
+                ) { index ->
+                    PdfPageView(doc, index)
+                }
             }
         }
     }

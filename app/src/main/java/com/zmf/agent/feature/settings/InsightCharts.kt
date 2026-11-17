@@ -181,7 +181,7 @@ internal fun StackedBar(
  *
  * [fraction] 是绘图区宽度的比例（0 = 左端，1 = 右端），与数据下标无关。
  * 用比例而不是下标，是为了让「今天」的 7 个刻度（0/4/8/12/16/20/23 时）在整条轴上等距排开：
- * 若按小时数对齐，末段只有 3 小时，右端会空出一截、看起来疏密不均。
+ * 若按小时数对齐，末段只有 3 小时，右端会空出一段、看起来疏密不均。
  */
 internal data class AxisTick(val fraction: Float, val label: String)
 
@@ -300,7 +300,7 @@ internal fun UsageLineChart(
      * 测量与绘制必须共用同一份 TextStyle。
      *
      * 只写 fontSize 时，Text 还会叠一层 LocalTextStyle，而 Material 默认带 0.5sp 字距，
-     * 实测宽度比真正渲染的窄，行名与数字的末尾就被裁掉一截。这里以 LocalTextStyle 为底，
+     * 实测宽度比真正渲染的窄，行名与数字的末尾就会被裁掉一段。这里以 LocalTextStyle 为底，
      * 让测量拿到的字距、字体与 Text 完全一致。
      */
     val baseTextStyle = LocalTextStyle.current
@@ -440,7 +440,7 @@ internal fun UsageLineChart(
     }
 
     /*
-     * 结构固定：曲线永远是 Layout 的第一个子节点，浮层按需跟在后面。
+     * 结构固定：曲线永远是 Layout 的第一个子节点，浮层按需随后挂载。
      *
      * 这一点必须守住——早前把「无浮层」与「有浮层」写成两棵不同的子树，
      * 选中一变曲线就被重新创建，正在进行的拖动手势当场被取消，
@@ -833,7 +833,7 @@ private fun oneDecimal(value: Double): String = String.format(Locale.US, "%.1f",
  * 所以这里不写中文单位。
  *
  * 取整用「四舍五入」而不是「一律向上」：六段耗时要与中心的活跃时长对得上，
- * 每段各自向上取整会让合计比总数大出一截（实测 6 秒的一轮，六段能加成 9 秒）。
+ * 每段各自向上取整会使合计显著大于总数（实测 6 秒的一轮，六段相加为 9 秒）。
  */
 internal fun durationText(millis: Long): String {
     val totalSeconds = kotlin.math.round(millis.coerceAtLeast(0L) / 1000.0).toLong()

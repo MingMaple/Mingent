@@ -43,7 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zmf.agent.capability.storage.StorageReclaimer
-import com.zmf.agent.capability.tools.file.TrashStore
+import com.zmf.agent.capability.tools.file.support.TrashStore
 import com.zmf.agent.core.store.SessionStore
 import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.layout.LocalUiWindow
@@ -620,7 +620,7 @@ private fun IconTile(icon: androidx.compose.ui.graphics.vector.ImageVector) {
     }
 }
 
-/** 空状态：一枚图标、一句结论、一句「东西会从哪里来」。 */
+/** 空状态：一枚图标、一句结论、一句来源说明。 */
 @Composable
 private fun TrashEmptyState(modifier: Modifier = Modifier) {
     val onSurface = MaterialTheme.colorScheme.onSurface

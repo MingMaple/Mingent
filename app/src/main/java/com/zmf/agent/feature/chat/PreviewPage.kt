@@ -36,6 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.FileKind
 import com.zmf.agent.core.model.FileKinds
 import com.zmf.agent.core.store.WorkspaceIo
@@ -244,6 +245,11 @@ private fun PreviewBody(
         )
         source.kind == FileKind.PDF -> PdfBody(source, modifier, onPdfPage)
         source.kind == FileKind.IMAGE -> ImageBody(source, modifier)
+        source.kind == FileKind.VIDEO -> PreviewNotice(
+            title = "视频请用其他应用打开",
+            detail = "本应用没有内置播放器。点右上角的 ↗，即可交给系统播放器打开。",
+            modifier = modifier
+        )
         source.kind == FileKind.DOCX -> DocxBody(source, modifier, onWebHide)
         source.kind == FileKind.MARKDOWN -> TextBody(source, markdown = true, modifier = modifier)
         source.kind == FileKind.CODE -> TextBody(source, markdown = false, modifier = modifier)
@@ -256,7 +262,7 @@ private fun PreviewBody(
     }
 }
 
-/** 文件信息 + 一行说明：空态只讲清是什么情况、下一步去哪里看，不教用户在终端里做事。 */
+/** 文件信息 + 一行说明：空态只讲清是什么情况、下一步去哪里看，不引导用户在终端内操作。 */
 @Composable
 internal fun PreviewNotice(title: String, detail: String, modifier: Modifier = Modifier) {
     Column(
@@ -353,18 +359,14 @@ internal fun previewSourceOf(io: WorkspaceIo, path: String): PreviewSource {
 /**
  * 用其他应用打开。
  *
- * 一律先落到应用缓存再由 FileProvider 授权读取：targetSdk 28 下 file:// 会被系统直接拒掉，
- * 而缓存副本与源文件解耦，外部应用改内容也不会影响原文件。
+ * 外发的永远是缓存副本，从不直接给外部应用原始文件：
+ * - targetSdk 28 下 `file://` 会被系统直接拒掉，只能走 FileProvider；
+ * - 副本与源文件解耦，外部应用改内容不会动到工作区里的原件；
+ * - FileProvider 只授权 `cache/preview-out`（见 `res/xml/file_paths.xml`），
+ *   工作区与 `filesDir` 不对任何应用开口子。
  */
 internal suspend fun openExternally(context: Context, source: PreviewSource): Boolean {
-    val file = source.localFile ?: withContext(Dispatchers.IO) {
-        runCatching {
-            val dir = File(context.cacheDir, "preview-out").apply { mkdirs() }
-            val target = File(dir, source.name)
-            source.open().use { input -> target.outputStream().use { output -> input.copyTo(output) } }
-            target
-        }.getOrNull()
-    } ?: return false
+    val file = withContext(Dispatchers.IO) { stageForExternalOpen(context, source) } ?: return false
     return runCatching {
         val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
         val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -373,8 +375,44 @@ internal suspend fun openExternally(context: Context, source: PreviewSource): Bo
         }
         context.startActivity(intent)
         true
-    }.getOrDefault(false)
+    }.getOrElse { e ->
+        FileLog.log("preview", "外发失败：" + source.name + "（" + (e.message ?: e.javaClass.simpleName) + "）")
+        false
+    }
 }
+
+/**
+ * 把预览内容复制到 `cache/preview-out/`，返回副本。
+ *
+ * 文件名带序号：同一份文件反复外发时不覆盖上一次的副本，避免外部应用读到一半被截断。
+ * 复制前清理一小时前的旧副本，缓存目录不会无限增长。
+ */
+private fun stageForExternalOpen(context: Context, source: PreviewSource): File? = runCatching {
+    val dir = File(context.cacheDir, "preview-out").apply { mkdirs() }
+    val cutoff = System.currentTimeMillis() - PREVIEW_OUT_KEEP_MS
+    dir.listFiles()?.forEach { old -> if (old.lastModified() < cutoff) old.delete() }
+    val target = uniqueOutFile(dir, source.name)
+    source.open().use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+    target
+}.getOrNull()
+
+/** 目录内重名时加序号，保留扩展名：`报告-1.pdf`、`报告-2.pdf`…… */
+private fun uniqueOutFile(dir: File, name: String): File {
+    val safe = name.replace('/', '_').replace('\\', '_').ifEmpty { "preview" }
+    if (!File(dir, safe).exists()) return File(dir, safe)
+    val dot = safe.lastIndexOf('.')
+    val base = if (dot > 0) safe.substring(0, dot) else safe
+    val ext = if (dot > 0) safe.substring(dot) else ""
+    var index = 1
+    while (true) {
+        val candidate = File(dir, base + "-" + index + ext)
+        if (!candidate.exists()) return candidate
+        index++
+    }
+}
+
+/** 缓存副本保留一小时：够外部应用读完，又不至于把缓存堆成仓库。 */
+private const val PREVIEW_OUT_KEEP_MS = 60L * 60L * 1000L
 
 private fun mimeOf(kind: FileKind, name: String): String = when (kind) {
     FileKind.PDF -> "application/pdf"
@@ -386,6 +424,15 @@ private fun mimeOf(kind: FileKind, name: String): String = when (kind) {
         else -> "image/jpeg"
     }
     FileKind.MARKDOWN, FileKind.TEXT, FileKind.CODE -> "text/plain"
+    FileKind.VIDEO -> when (FileKinds.suffixOf(name)) {
+        "webm" -> "video/webm"
+        "mkv" -> "video/x-matroska"
+        "mov" -> "video/quicktime"
+        "3gp" -> "video/3gpp"
+        "m4v" -> "video/x-m4v"
+        "avi" -> "video/x-msvideo"
+        else -> "video/mp4"
+    }
     FileKind.DOCX -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     FileKind.ARCHIVE -> "application/zip"
     else -> "application/octet-stream"

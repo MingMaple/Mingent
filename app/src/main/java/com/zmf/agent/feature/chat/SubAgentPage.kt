@@ -113,7 +113,11 @@ fun SubAgentPage(
                         )
                     }
                 } else {
-                    items(entry.transcript.size) { index ->
+                    items(
+                        count = entry.transcript.size,
+                        key = { index -> index },
+                        contentType = { "turn" }
+                    ) { index ->
                         val turn = entry.transcript[index]
                         TurnRow(turn.role, turn.text, turn.tools)
                     }

@@ -24,6 +24,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.toArgb
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.uikit.theme.Palette
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONTokener
 import java.util.concurrent.Executors
 
 /**
@@ -44,7 +47,7 @@ internal class BrowserTab(
     val id: Long,
     val web: WebView,
     val frame: FrameLayout,
-    /** 用户点开它时那个地址（不会被站内跳转改掉）：判断「同一个网址」用的就是它。 */
+    /** 用户点击该标签时的地址（不会被站内跳转改写）：判断「同一网址」依据的即是它。 */
     val originUrl: String
 ) {
     var url by mutableStateOf("")
@@ -68,7 +71,7 @@ internal class BrowserTab(
 /**
  * 内置浏览器（与「计划页」对齐）：一个地址一个标签，标签并列、可左右滑。
  *
- * 点开新链接就新建一个标签、与旧标签并列，可以点回去看旧页面；标签并排超出屏幕时左右滑动切换；
+ * 点击新链接即新建标签并与旧标签并列，可切回旧页面查看；标签并排超出屏幕时左右滑动切换；
  * 旧网页不删除（与计划页保持同一行为）。
  *
  * 所以：**一个标签 = 一份 WebView**。标签切走时不销毁、不重载，登录态与滚动位置都留在实例里；
@@ -97,6 +100,40 @@ internal object BrowserState {
 
     /** 当前标签：activeId 对应的那份；id 失效（刚被关掉）时退回第一份。 */
     val active: BrowserTab? get() = tabs.firstOrNull { it.id == activeId } ?: tabs.firstOrNull()
+
+    /** 当前持有 [tabs] 的会话 id：工具侧要按调用方会话取标签，不能跟着界面切换走。 */
+    val ownerSessionId: String get() = owner
+
+    /**
+     * 指定会话的标签列表：当前会话直接给 [tabs]，其他会话给挂起的那一套。
+     *
+     * 工具侧（`browser_*`）用它按**调用方会话**取页面，而不是显示会话；
+     * 界面仍然只读 [tabs]，两者互不干扰。
+     */
+    fun tabsFor(sessionId: String): List<BrowserTab> {
+        if (sessionId.isEmpty() || sessionId == owner) return tabs
+        return parked[sessionId]?.tabs.orEmpty()
+    }
+
+    /** 指定会话的活动标签；该会话没有打开浏览页时返回 null（不回落到显示会话）。 */
+    fun activeFor(sessionId: String): BrowserTab? {
+        if (sessionId.isEmpty() || sessionId == owner) return active
+        val saved = parked[sessionId] ?: return null
+        return saved.tabs.firstOrNull { it.id == saved.activeId } ?: saved.tabs.firstOrNull()
+    }
+
+    /** 指定会话的标签地址（持久化用）：当前会话取实时列表，其他会话取挂起的那一套。 */
+    fun urlsFor(sessionId: String): List<String> =
+        tabsFor(sessionId).mapNotNull { it.originUrl.takeIf { url -> url.isNotBlank() } }
+
+    /** 哪个会话持有这份标签：界面终止横幅（`abort` 需要会话 id）按它定位；查不到返回 null。 */
+    fun sessionOf(tabId: Long): String? {
+        if (tabs.any { it.id == tabId }) return owner
+        for ((id, parkedEntry) in parked) {
+            if (parkedEntry.tabs.any { it.id == tabId }) return id
+        }
+        return null
+    }
 
     /** 是否至少有一个标签：顶栏网页图标的显隐依据。 */
     val alive: Boolean get() = tabs.isNotEmpty()
@@ -127,6 +164,21 @@ internal object BrowserState {
         tabs.addAll(back.tabs)
         activeId = back.activeId?.takeIf { id -> back.tabs.any { it.id == id } }
             ?: back.tabs.firstOrNull()?.id
+    }
+
+    /**
+     * 删除会话时销毁它名下的全部标签：挂起的那一套直接销毁；
+     * 若删的正是当前持有者（先删后切的场景），当前表也整表清空。
+     */
+    fun forgetSession(sessionId: String) {
+        if (sessionId.isEmpty()) return
+        parked.remove(sessionId)?.tabs?.forEach { BrowserHolder.destroyTab(it) }
+        if (sessionId == owner) {
+            tabs.toList().forEach { BrowserHolder.destroyTab(it) }
+            tabs.clear()
+            activeId = null
+            owner = ""
+        }
     }
 }
 
@@ -208,11 +260,27 @@ internal object BrowserHolder {
     }
 
     /**
+     * 链接 scheme 白名单：只放行 http/https（大小写不敏感）。
+     *
+     * 回复中的链接、页面内跳转与恢复的标签地址都经此判据：`javascript:`、`file:`、`intent:` 等
+     * 一律不交给 WebView。与 BrowserAutomation 打开地址时的既有口径一致。
+     */
+    internal fun isHttpUrl(url: String): Boolean {
+        val scheme = runCatching { Uri.parse(url.trim()).scheme?.lowercase() }.getOrNull()
+        return scheme == "http" || scheme == "https"
+    }
+
+    /**
      * 打开一个新地址 = 新建一个标签，并切到它。
      *
      * 为什么不复用已有标签：新链接需打开新模块并保留旧网页，复用会覆盖上一个页面。
      */
     fun open(context: Context, url: String) {
+        // 非白名单 scheme 不建标签、不 loadUrl：链接可能来自消息文本或页面内脚本
+        if (!isHttpUrl(url)) {
+            FileLog.log("browser", "忽略非 http/https 链接: " + url)
+            return
+        }
         // 同一地址不重复打开：已存在于某个标签中则切换回该标签。比较前需归一化（用户点击的 https://github.com 与标签中的 https://github.com/，以及站内跳转后的地址），直接比较字符串将始终不相等。
         // 先比较 originUrl（打开时的原始地址），再比较当前地址（允许「已在其他位置浏览到该页」时复用）。
         val key = urlKeyOf(url)
@@ -238,17 +306,27 @@ internal object BrowserHolder {
         val index = BrowserState.tabs.indexOfFirst { it.id == id }
         if (index < 0) return
         val tab = BrowserState.tabs.removeAt(index)
-        // 先移除父容器再销毁：直接 destroy 仍挂在窗口上的 WebView 会在部分机型上留下空壳
-        (tab.frame.parent as? ViewGroup)?.removeView(tab.frame)
-        tab.frame.removeAllViews()
-        runCatching { tab.web.stopLoading() }
-        runCatching { tab.web.destroy() }
+        destroyTab(tab)
         if (BrowserState.activeId == id) {
             // 关闭的是当前标签：优先接续右侧标签，否则退回左侧，全部关闭则清空
             BrowserState.activeId = BrowserState.tabs.getOrNull(index)?.id
                 ?: BrowserState.tabs.lastOrNull()?.id
         }
         FileLog.log("browser", "关闭标签 " + id + "，剩 " + BrowserState.tabs.size + " 个")
+    }
+
+    /**
+     * 销毁一份标签的 WebView：与 [close] 的销毁段是同一套动作。
+     *
+     * 单独列出是因为它不要求标签仍在当前列表里——删除会话时挂起在其他会话名下的
+     * 标签也要一并销毁，那些标签不在 [BrowserState.tabs] 中。
+     */
+    fun destroyTab(tab: BrowserTab) {
+        // 先移除父容器再销毁：直接 destroy 仍挂在窗口上的 WebView 会在部分机型上留下空壳
+        (tab.frame.parent as? ViewGroup)?.removeView(tab.frame)
+        tab.frame.removeAllViews()
+        runCatching { tab.web.stopLoading() }
+        runCatching { tab.web.destroy() }
     }
 
     /** 网页内部后退（只影响当前标签的浏览历史，不影响「回主页」）。 */
@@ -286,6 +364,73 @@ internal object BrowserHolder {
     }
 
     /**
+     * 助手正在操作的标签：这些标签的页面只读。
+     *
+     * 状态置于此对象而非界面：租赁由 [BrowserAutomation] 建立与解除，界面只读此表决定
+     * 是否安装触摸守卫；标签关闭或页面销毁时表随标签 id 自然失效。
+     */
+    private val agentReadOnly = mutableStateOf<Set<Long>>(emptySet())
+
+    /** 只读标签集合；页面组合读取此值以决定触摸守卫与失焦处理。 */
+    val agentReadOnlyIds: Set<Long> get() = agentReadOnly.value
+
+    /**
+     * 设置标签的助手只读状态。
+     *
+     * [tabId] 为标签 id 的字符串形式（端口层以字符串传递）；非法 id 静默忽略，不抛异常。
+     */
+    fun setAgentReadOnly(tabId: String, on: Boolean) {
+        val id = tabId.toLongOrNull() ?: return
+        val current = agentReadOnly.value
+        val next = if (on) current + id else current - id
+        if (next != current) agentReadOnly.value = next
+    }
+
+    /**
+     * 在指定标签执行一段固定脚本，并等待其返回。
+     *
+     * `evaluateJavascript` 必须在主线程调用，结果经 [CompletableDeferred] 交回调用协程。
+     * 标签已关闭或超过 [timeoutMs] 时返回失败 JSON，**不得**抛出异常；
+     * 调用方协程自身被取消时照常向上抛出取消，以免「停止」失效。
+     */
+    suspend fun runScript(tab: BrowserTab, script: String, timeoutMs: Long): String {
+        if (BrowserState.allTabs().none { it.id == tab.id }) return FAILED_TAB_CLOSED
+        val deferred = CompletableDeferred<String?>()
+        val post = Runnable {
+            runCatching {
+                tab.web.evaluateJavascript(script) { raw -> deferred.complete(raw) }
+            }.onFailure {
+                FileLog.log("browser", "页面脚本执行失败: " + it.message)
+                deferred.complete(null)
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) post.run()
+        else Handler(Looper.getMainLooper()).post(post)
+
+        val raw = withTimeoutOrNull(timeoutMs.coerceAtLeast(1L)) { deferred.await() }
+            ?: return if (deferred.isCompleted) FAILED_TAB_CLOSED else FAILED_TIMEOUT
+        return decodeJsValue(raw)
+    }
+
+    /**
+     * 还原 `evaluateJavascript` 的返回值：回调给出的是 JSON 字面量，字符串结果带外层引号。
+     *
+     * 脚本统一返回 JSON 文本，此处只剥掉字符串的外层编码；非字符串结果原样返回。
+     */
+    private fun decodeJsValue(raw: String?): String {
+        if (raw.isNullOrEmpty() || raw == "null") return ""
+        return runCatching {
+            JSONTokener(raw).nextValue() as? String ?: raw
+        }.getOrDefault(raw)
+    }
+
+    /** 脚本未执行时的固定失败回执：标签已关闭。 */
+    private const val FAILED_TAB_CLOSED = "{\"ok\":false,\"code\":\"E_TAB_CLOSED\",\"message\":\"标签已关闭，未执行脚本\"}"
+
+    /** 脚本未执行时的固定失败回执：执行超时。 */
+    private const val FAILED_TIMEOUT = "{\"ok\":false,\"code\":\"E_TIMEOUT\",\"message\":\"页面脚本执行超时\"}"
+
+    /**
      * 让一份 WebView 的网页配色跟随 App 的深浅色。
      *
      * 底色一并设置：网页首帧绘制前的那一瞬会露出 WebView 自身底色，深色下是刺眼的白。
@@ -314,7 +459,7 @@ internal object BrowserHolder {
      * dsh-web-mobile 在 `html[data-mobile-nav="frame"]` 上用 `--dsha-safe-area-inset-top`
      * 预留了一块等于状态栏高度的顶部空白（1440x3200 设备上实测 36–38px）。
      * 本应用的浏览页按约定不再为系统状态栏预留区域，顶栏收起后整屏只剩网页，
-     * 这块空白就成了页内多出来的一条。这里把该变量与 frame 的内边距一起归零。
+     * 该空白即成为页面内多余的一条。此处将该变量与 frame 的内边距一并归零。
      *
      * 只作用于这个选择器与这个变量名，对其他站点无影响；样式挂在页面 head 上，
      * 页面内重新渲染也会保留。

@@ -2,7 +2,6 @@ package com.zmf.agent.feature.chat
 
 import com.zmf.agent.uikit.common.stableStatusBarPadding
 import com.zmf.agent.uikit.components.FoldToggle
-import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.decodeSampledBitmap
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -38,7 +37,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,15 +48,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -99,6 +93,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
@@ -109,13 +104,14 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.zmf.agent.core.store.PlanDoc
+import com.zmf.agent.capability.subagent.SubAgentNotices
 import com.zmf.agent.capability.subagent.SubAgentRegistry
-import com.zmf.agent.core.store.WorkSpace
-import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.capability.jobs.JobRegistry
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ORIGIN_JOB
+import com.zmf.agent.core.model.ORIGIN_RECOVERY
+import com.zmf.agent.core.model.ORIGIN_SUBAGENT
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
@@ -225,13 +221,13 @@ internal fun ChatTopBar(
             Spacer(Modifier.width(10.dp))
         }
         // 三枚入口按体系中固定的顺序排列：计划 → 浏览 → 预览。
-        // 只在各自确有内容时出现：挂一枚点不开的淡色图标，等于教用户「这里没用」
+        // 只在各自确有内容时出现：挂一枚点不开的淡色图标，会暗示此处不可交互
         if (plans.isNotEmpty()) {
             PlanGlyph(onClick = onPlanClick)
             Spacer(Modifier.width(10.dp))
         }
         // 网页图标：只有存在活着的页面时才出现。它出现在「从浏览页返回主页之后」，
-        // 语义是「网页还开着，点我回去」，所以画的是窗口而不是链接
+        // 语义为「网页仍打开，点击即返回」，因此绘制窗口而非链接
         if (browserOpen) {
             BrowserGlyph(onClick = onBrowserClick)
             Spacer(Modifier.width(10.dp))
@@ -309,8 +305,8 @@ internal fun PlanGlyph(onClick: () -> Unit) {
 /**
  * 右上角的「网页」图标：一个小窗口（外框 + 顶部工具栏 + 一颗小圆点）。
  *
- * 只在浏览器里真有页面时出现。用户从浏览页返回主页之后，这枚图标就是「网页还开着，点我回去」
- * 的唯一入口，所以画成窗口而不是链接符号；和 PlanGlyph 同一套线宽，排在一行里不打架。
+ * 仅在浏览器存在页面时出现。用户从浏览页返回主页后，该图标是「网页仍打开，点击即返回」
+ * 的唯一入口，因此绘制为窗口而非链接符号；线宽与 PlanGlyph 一致，同一行内视觉不冲突。
  */
 @Composable
 internal fun BrowserGlyph(onClick: () -> Unit) {
@@ -404,7 +400,7 @@ internal fun TraceGlyph(onClick: () -> Unit) {
 private const val SUB_AGENT_PANEL_ROWS = 5
 
 /**
- * 右上角的「预览」入口：一叠纸（前一张右上角折起，后面一张只露出左边与下边）。
+ * 右上角的「预览」入口：一叠纸（前一张右上角折起，后一张只露出左边与下边）。
  *
  * 与计划、网页、轨迹同一套线宽与颜色；没有任何打开的标签时不绘制。
  * 不画正文横线：17dp 下「圆角矩形 + 横线」与计划图标几乎同形，靠折角与叠层才分得开。
@@ -432,7 +428,7 @@ internal fun FilesGlyph(onClick: () -> Unit) {
             val top = h * 0.08f
             val bottom = h * 0.8f
             val fold = w * 0.34f
-            // 后面那张纸：只露出左边与下边，读作「一叠」而不是单页
+            // 后一张纸：只露出左边与下边，读作「一叠」而不是单页
             drawPath(
                 path = Path().apply {
                     moveTo(left - 2.4.dp.toPx(), top + 2.6.dp.toPx())
@@ -442,7 +438,7 @@ internal fun FilesGlyph(onClick: () -> Unit) {
                 color = color.copy(alpha = 0.6f),
                 style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
             )
-            // 前面那张纸：右上角留出折角缺口
+            // 前一张纸：右上角留出折角缺口
             drawPath(
                 path = Path().apply {
                     moveTo(left, top)
@@ -471,7 +467,7 @@ internal fun FilesGlyph(onClick: () -> Unit) {
 /**
  * 右上角「子智能体」下拉卡片：只读 [SubAgentRegistry] 的快照，和 ViewModel 无关。
  *
- * 每条：描述 + 状态；点一条进详情页（对话与续聊都在那里）。
+ * 每条：描述 + 状态；点一条进详情页（对话与续聊均在该页）。
  * 卡片自己也接点击，避免点空白处透到底下「点外部收起」的遮罩上。
  */
 @Composable
@@ -642,7 +638,7 @@ internal fun NameInputDialog(
 }
 
 /**
- * 体积文案：按量级给 KB / MB / GB，MB 以上取整：这里只是让人判断「这包大不大」，
+ * 体积文案：按量级给 KB / MB / GB，MB 以上取整：仅用于判断「包体是否偏大」，
  * 精确到小数反而无法体现差别（与 SentFileCard 的规则相同，但该处为单个附件，保留一位小数）。
  */
 internal fun exportSizeText(bytes: Long): String = when {
@@ -684,7 +680,7 @@ internal fun BackupToggleRow(
 /** 待发送缩略图统一 64dp 见方：和文件 chip 一样高，同一行里不会一高一矮。 */
 internal val PendingThumbSide = 64.dp
 
-/** 待发送的一件东西：文件和图片排在同一个行里，所以得有一个统一的表现。 */
+/** 待发送的单个附件：文件与图片排在同一行，因此需要统一的表现形式。 */
 internal data class PendingEntry(
     val pending: PendingFile,
     val isImage: Boolean,
@@ -815,177 +811,6 @@ internal fun PendingFileChip(name: String, onRemove: () -> Unit) {
     }
 }
 
-/** 工作区页（一级页面）：未分类 + 自建工作区的列表，可切换 / 新建 / 删除；streaming 时全部点不动。 */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun WorkSpacePage(
-    workspaces: List<WorkSpace>,
-    currentId: String?,
-    streaming: Boolean,
-    onPick: (String?) -> Unit,
-    onCreate: (String) -> Unit,
-    onDelete: (String) -> Unit,
-    onBack: () -> Unit
-) {
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    var showCreate by remember { mutableStateOf(false) }
-    var pendingDelete by remember { mutableStateOf<WorkSpace?>(null) }
-
-    Surface(
-        // 工作区页：铺满且不透明，最外层消费点击，避免穿透到下方聊天界面
-        modifier = Modifier
-            .fillMaxSize()
-            .blockTapsOnly(),
-        color = MaterialTheme.colorScheme.background
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .stableStatusBarPadding()
-                .navigationBarsPadding()
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "←",
-                    modifier = Modifier
-                        .clickable(onClick = onBack)
-                        .padding(horizontal = 12.dp, vertical = 14.dp),
-                    fontSize = 20.sp,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "工作区",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-            }
-
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .alpha(if (streaming) 0.4f else 1f)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                // 「未分类」不是 WorkSpace，它是 workspaceId == null 的状态：永远排第一，不能删
-                WorkSpaceRow(
-                    title = "未分类",
-                    selected = currentId == null,
-                    deletable = false,
-                    enabled = !streaming,
-                    onPick = { onPick(null) },
-                    onAskDelete = {}
-                )
-                workspaces.forEach { space ->
-                    WorkSpaceRow(
-                        title = space.name,
-                        selected = space.id == currentId,
-                        // 默认工作区的目录是全体历史文件的根，不允许删
-                        deletable = space.id != WorkSpaceStore.DEFAULT_ID,
-                        enabled = !streaming,
-                        onPick = { onPick(space.id) },
-                        onAskDelete = { pendingDelete = space }
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-
-            HorizontalDivider(color = onSurface.copy(alpha = 0.08f))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(enabled = !streaming) { showCreate = true }
-                    .padding(horizontal = 20.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "＋ 新建工作区",
-                    fontSize = 15.sp,
-                    color = UiColors.accentFg.copy(alpha = if (streaming) 0.35f else 1f)
-                )
-            }
-        }
-    }
-
-    if (showCreate) {
-        NameInputDialog(
-            placeholder = "工作区名称",
-            onDismiss = { showCreate = false },
-            onSave = { name ->
-                if (name.isNotBlank()) {
-                    onCreate(name.trim())
-                    showCreate = false
-                }
-            }
-        )
-    }
-
-    pendingDelete?.let { space ->
-        AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("删除工作区", fontSize = 17.sp) },
-            text = {
-                Text(
-                    text = "删掉后这个工作区里的对话会进入「未分类」，目录会移到回收站（不真删）。",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onDelete(space.id)
-                    pendingDelete = null
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
-            }
-        )
-    }
-}
-
-/** 工作区列表的一行：名字 + 当前高亮；非默认工作区右侧带「×」。 */
-@Composable
-internal fun WorkSpaceRow(
-    title: String,
-    selected: Boolean,
-    deletable: Boolean,
-    enabled: Boolean,
-    onPick: () -> Unit,
-    onAskDelete: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onPick)
-            // 固定容器高 52dp：行高 24sp，上下余量由居中分配，字号调大时只放大文字
-            .height(52.dp)
-            .padding(horizontal = 20.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = title,
-            modifier = Modifier.weight(1f),
-            fontSize = 15.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        if (deletable) {
-            Text(
-                text = "×",
-                modifier = Modifier
-                    .clickable(enabled = enabled, onClick = onAskDelete)
-                    .padding(start = 12.dp, end = 2.dp),
-                fontSize = 17.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
-            )
-        }
-    }
-}
-
 /**
  * 列表项：用户消息单独一行；一个助手回合 = 到下一条提问之前的全部内容。
  *
@@ -1000,7 +825,7 @@ internal sealed interface ChatItem {
     ) : ChatItem
 
     /**
-     * 一个助手回合。[trigger] 非空表示这一轮由后台任务结算通知触发：
+     * 一个助手回合。[trigger] 非空表示这一轮由系统转交通知触发（后台任务结算、子智能体结论回传）：
      * 该通知本身不画成用户气泡，只在回合上方留一行说明（与 DSH 的触发说明一致）。
      */
     data class AssistantItem(
@@ -1014,20 +839,33 @@ internal fun buildChatItems(all: List<ChatMessage>): List<ChatItem> {
     val out = ArrayList<ChatItem>()
     var i = 0
     var lastUserIndex = -1
-    // 后台任务结算通知不是用户发言：跳过气泡，只在紧随其后的回合上方留一行触发说明
-    fun isJobNotice(message: ChatMessage): Boolean =
-        message.role == "user" && (message.origin == ORIGIN_JOB ||
-            // 旧数据没有 origin 标记：按固定抬头识别，历史里那几条也不再画成用户气泡
-            (message.programmatic && message.content.startsWith(JobRegistry.NOTICE_PREFIX)))
+    // 系统转交通知（后台任务结算、子智能体结论）不是用户发言：跳过气泡，只在紧随其后的回合上方留一行触发说明。
+    // 返回触发说明文案；null 表示普通用户消息。
+    fun noticeLabel(message: ChatMessage): String? {
+        if (message.role != "user") return null
+        // 旧数据没有 origin 标记：按固定抬头识别，历史里那几条也不再画成用户气泡
+        return when {
+            message.origin == ORIGIN_JOB ||
+                (message.programmatic && message.content.startsWith(JobRegistry.NOTICE_PREFIX)) ->
+                "后台任务状态更新"
+            message.origin == ORIGIN_SUBAGENT ||
+                (message.programmatic && message.content.startsWith(SubAgentNotices.NOTICE_PREFIX)) ->
+                "子智能体结论回传"
+            // P32：崩溃恢复的中断标记（合成 closer）。画成触发行而不是用户气泡，
+            // 让「上次中断过」在界面上一眼可见；正文已告知模型不要盲目重试
+            message.origin == ORIGIN_RECOVERY -> "上次运行中断标记"
+            else -> null
+        }
+    }
     // 先数一遍总轮数：轮次差 = 总数 - 当前序号 - 1，单次遍历即可，不必每条消息再扫一次
-    val totalRounds = all.count { it.role == "user" && !isJobNotice(it) }
+    val totalRounds = all.count { noticeLabel(it) == null && it.role == "user" }
     var roundOrdinal = 0
     var trigger: String? = null
     while (i < all.size) {
         val message = all[i]
         when {
-            isJobNotice(message) -> {
-                trigger = "后台任务状态更新"
+            noticeLabel(message) != null -> {
+                trigger = noticeLabel(message)
                 i++
             }
 
@@ -1040,10 +878,12 @@ internal fun buildChatItems(all: List<ChatMessage>): List<ChatItem> {
 
             message.role == "assistant" -> {
                 val indices = ArrayList<Int>()
-                // 通知夹在回合中间时同样跳过：它与前后两段助手内容属于同一轮
-                while (i < all.size && (all[i].role != "user" || isJobNotice(all[i]))) {
+                // 通知夹在回合中间时同样跳过：它与前后两段助手内容属于同一轮。
+                // 普通用户消息必须终止收集：否则相邻回合被并成一条，后续提问的气泡连同轮次边界一起消失
+                while (i < all.size && (all[i].role != "user" || noticeLabel(all[i]) != null)) {
                     if (all[i].role == "assistant") indices.add(i)
-                    if (isJobNotice(all[i])) trigger = "后台任务状态更新"
+                    val label = noticeLabel(all[i])
+                    if (label != null) trigger = label
                     i++
                 }
                 if (indices.isNotEmpty()) {
@@ -1070,7 +910,7 @@ internal val SentFileCardWidth = 168.dp
 /**
  * 一条用户消息 = 竖排两块：上面是附件卡行（文件卡 + 图片缩略图，超出横滑），下面是文字气泡。
  *
- * 卡片在前、文字在后，是照 DeepSeek 手机端的顺序：图片和文件是「随这条消息递过去的东西」，
+ * 卡片在前、文字在后，沿用 DeepSeek 手机端的顺序：图片与文件是「随这条消息一并发送的附件」，
  * 不属于气泡中的内容。无文字时整块不绘制气泡：纯图片消息不保留空白气泡。
  */
 @Composable
@@ -1298,7 +1138,7 @@ internal fun FileGlyph(tint: Color) {
             drawRoundRect(
                 color = tint,
                 topLeft = Offset(left, size.height * ratio),
-                // 最后一行短一截，纸片才有「一页写完」的样子
+                // 最后一行略短，纸片才有「一页写完」的样子
                 size = Size(if (index == 2) (right - left) * 0.62f else right - left, lineHeight),
                 cornerRadius = CornerRadius(lineHeight / 2, lineHeight / 2)
             )
@@ -1436,11 +1276,20 @@ internal fun AssistantRow(
     // 旧实现将所有思考拼接为一整段置于顶部、将工具卡全部放入同一气泡，界面顺序与真实
     // 发生顺序对不上；摊平之后界面顺序＝发生顺序：思考 → 工具 → 思考 → 工具 → 正文。
     val segments = buildTurnSegments(all, indices)
-    // 长按菜单要的是「这一轮用户能挑走的文字」，所以正文与思考仍各自整轮拼接
-    val wholeText = indices.mapNotNull { all.getOrNull(it)?.content?.takeIf { c -> c.isNotBlank() } }
-        .joinToString("\n\n")
-    val reasoning = indices.joinToString("") { all.getOrNull(it)?.reasoningContent.orEmpty() }
+    // 长按菜单要的是「这一轮用户能挑走的文字」，所以正文与思考仍各自整轮拼接；
+    // 但拼接只在复制 / 选择文本 / 动作行判空时真正取值，流式逐 token 重组不再付这份代价。
+    // 惰性取值时读的是同一份消息列表，点击那一刻取到的仍是最新内容，菜单不会拿到旧文本。
+    val wholeText by lazy {
+        indices.mapNotNull { all.getOrNull(it)?.content?.takeIf { c -> c.isNotBlank() } }
+            .joinToString("\n\n")
+    }
+    val reasoning by lazy {
+        indices.joinToString("") { all.getOrNull(it)?.reasoningContent.orEmpty() }
+    }
     val lastIndex = indices.lastOrNull()
+    // 被用户中止的回合：最后一条 assistant 带 interrupted（随落盘保留），尾部据此标「已停止」。
+    // 即使本轮没产出任何正文，也要给出这一句，否则用户只看到一片空白，读不出「是停了，不是还在跑」。
+    val interrupted = indices.any { all.getOrNull(it)?.interrupted == true }
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val bubbleColor = if (isDark) Palette.BubbleAiDark else Palette.BubbleAiLight
     val thinkColor = if (isDark) Palette.BubbleThinkDark else Palette.BubbleThinkLight
@@ -1491,7 +1340,8 @@ internal fun AssistantRow(
     val thinkCount = processSegments.count { it is TurnSegment.Think }
     val callCount = processSegments.count { it is TurnSegment.Call }
     val hasProcess = thinkCount > 0 || callCount > 0
-    // 折叠态只在「这一轮真的跑完」之后才成立：流式中途折起来，用户就看不见正在做的事了。
+    // 折叠态只在「这一轮真的跑完」之后才成立：底下的 expanded 是整轮汇总行的状态。
+    // 运行期间走 TurnLiveStream，过程组在那一层同样是收起态，实时进展由组头承担（对齐 DSH）。
     //
     // 判据是上游算好的 [streaming]（= 这一轮还在流式，或这一轮结束后紧接着还要续跑）。
     // 为什么不能只看「是否正在流式」：一轮结束到下一段开始之间有一个真实的空档——
@@ -1502,7 +1352,7 @@ internal fun AssistantRow(
     LaunchedEffect(streaming) { if (!streaming) expanded = false }
     val collapsed = hasProcess && !streaming && !expanded
     // 折叠时只留最终回答；本轮没有最终回答（模型以工具调用收尾 / 一句话没说）时什么都不留，
-    // 只剩上面那行计数。流式途中（含续跑交接的空档）不折，看得见正在做什么。
+    // 只剩上面那行计数。运行中的过程由 TurnLiveStream 以「收起的过程组」呈现。
     val shown = if (collapsed) listOfNotNull(finalSegment) else segments
     // 展开态：过程装进底板，最终回复留在底板外面
     val showPanel = expanded && hasProcess && !streaming
@@ -1519,8 +1369,10 @@ internal fun AssistantRow(
                 onToggle = { expanded = !expanded }
             )
         }
+        // 提问调用不再单独画一张回看卡：它就是过程组里的普通工具条目（见 TurnStream 的 Call 分支），
+        // 整组收起时一并收起，展开后按同一套折叠交互看题面与答复。
         if (showPanel) {
-            // 过程区：浅灰底板 + 内缩，读作「打开的一堆底层日志」
+            // 过程区：浅灰底板 + 内缩，读作一组展开的底层日志
             if (processSegments.isNotEmpty()) {
                 TurnProcessPanel {
                     TurnStream(
@@ -1551,7 +1403,7 @@ internal fun AssistantRow(
                 )
             }
         } else if (streaming) {
-            // 运行中：思考与工具按过程组收起，组外正文照常显示（对齐 DSH 的组级折叠）。
+            // 运行中：过程组收起，组头上给出「正在做什么 · 最新一句」与流光，组外正文照常显示。
             // 本轮一结束走上面两条分支：整轮收成一行汇总，只留最终回复。
             TurnLiveStream(
                 blocks = buildTurnBlocks(segments),
@@ -1574,24 +1426,31 @@ internal fun AssistantRow(
                 cardColor = cardColor
             )
         }
+        // 回合终态失败节点：失败的那一轮往往没有任何正文，因此与上面的内容分支并列，
+        // 只看「本轮最后一条消息是否带错误」，不依赖正文/工具是否存在
+        val failedMessage = all.getOrNull(lastIndex ?: -1)?.takeIf { it.errorText != null }
+        if (!streaming && failedMessage != null) {
+            if (wholeText.isNotEmpty() || hasProcess) Spacer(Modifier.height(8.dp))
+            TurnErrorRow(text = failedMessage.errorText.orEmpty(), code = failedMessage.errorCode)
+        }
         // 产物卡片：位于收尾正文与动作行之间，与 DSH 的 turnTail 同一位置。
         // 流式途中不显示：这时还不知道这一轮最终会留下哪些文件。
-        // 回合下标只收 assistant 消息，工具成败需回全会话按 toolCallId 查，并叠加本进程的实时表。
+        // 只认本回合 present 声明过的产物；没有 present 的回合不显示卡片。
         val turnFiles = ProducedFiles.ofTurn(
             turn = indices.mapNotNull { all.getOrNull(it) },
-            all = all,
-            root = root,
-            liveOk = toolOutcomes
+            root = root
         )
         if (!streaming && turnFiles.isNotEmpty()) {
             DeliverableCards(files = turnFiles, onOpen = onOpenFile)
         }
         // 尾部动作行：复制 / 选择文本 / 分支 / 用量 + 时间，跟着这条回复走。
         // 用量的明细仍然点开才看：数字本身不该占着一行。
-        if (!streaming && (turnUsage != null || wholeText.isNotEmpty())) {
+        // 被中止的回合即使没有正文也没有用量，仍要出这一行：时间之后那句「已停止」是唯一的状态说明。
+        if (!streaming && (turnUsage != null || wholeText.isNotEmpty() || interrupted)) {
             MessageTailRow(
                 at = clockText(tokensAt),
                 alignEnd = false,
+                note = if (interrupted) "已停止" else null,
                 icons = buildList {
                     add(TailIcon.COPY)
                     add(TailIcon.SELECT_TEXT)
@@ -1612,6 +1471,63 @@ internal fun AssistantRow(
                 usageAnchor = { anchor ->
                     turnUsage?.let { usage -> onUsage(usage, anchor) }
                 }
+            )
+        }
+    }
+}
+
+/**
+ * 回合终态失败节点（对齐 DSH 的 `turn-error`）：红点 +「本轮运行失败」+ 说明 + 灰色错误码。
+ *
+ * 位置在消息流内、本轮内容之后；由一条正文为空的 assistant 消息承载并随会话落盘，
+ * 重进会话仍可见。输入框上方只留输入与临时提示，失败属于这一轮的结果，不应挤占该区域。
+ */
+@Composable
+internal fun TurnErrorRow(text: String, code: String?) {
+    val error = MaterialTheme.colorScheme.error
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 6.dp)
+                .size(6.dp)
+                .background(error, CircleShape)
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "本轮运行失败",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = error
+                )
+                if (!code.isNullOrBlank()) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = code,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                        modifier = Modifier
+                            .background(
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
+                                RoundedCornerShape(4.dp)
+                            )
+                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = text,
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
             )
         }
     }
@@ -1807,8 +1723,8 @@ internal fun LazyListState.isNearBottom(tolerancePx: Int): Boolean {
  * 自动贴底：最后一条消息变高时，把它底部对齐到真正的列表末尾。
  *
  * [bottomInsetPx] 为列表底部内容内距（`contentPadding` 的下内距）。LazyList 的
- * `viewportEndOffset` 是「可见下沿」，滚到最后一条时其下沿还要再让出这块内距；
- * 直接按 `viewportEndOffset` 对齐会固定少滚一截，底部留下可上滑的空区。
+ * `viewportEndOffset` 是「可见下沿」，滚到最后一条时其下沿还需再让出该内距；
+ * 直接按 `viewportEndOffset` 对齐会固定少滚动一段，底部留下可上滑的空区。
  */
 internal suspend fun followBottom(state: LazyListState, lastIndex: Int, bottomInsetPx: Int) {
     if (lastIndex < 0) return
@@ -1828,7 +1744,7 @@ internal suspend fun followBottom(state: LazyListState, lastIndex: Int, bottomIn
 /**
  * 把 [itemBottom]（最后一条的下沿，与 `visibleItemsInfo.offset` 同一坐标系）推到列表末尾。
  *
- * 对齐后若仍可继续前滚，说明还余着一截（内容内距与二次测量都会造成这种偏差），
+ * 对齐后若仍可继续前滚，说明仍有剩余（内容内距与二次测量都会造成这种偏差），
  * 再补一次直接抵到末尾，底部不留可上滑的空白。
  */
 private suspend fun scrollToBottomEdge(state: LazyListState, itemBottom: Int, bottomInsetPx: Int) {

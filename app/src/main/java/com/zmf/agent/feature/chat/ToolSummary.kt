@@ -1,89 +1,19 @@
 package com.zmf.agent.feature.chat
 
 import android.graphics.BitmapFactory
-import com.zmf.agent.capability.tools.LEGACY_ACTION_SUMMARY_PARAM
-import com.zmf.agent.capability.tools.STEP_DESCRIPTION_PARAM
 import org.json.JSONObject
 import java.io.File
 
 /*
- * 工具卡的两项纯数据处理：一句话总结、输出中的图片附件。
+ * 工具卡的渲染数据：参数区是否为空、输出中的图片附件。
+ *
+ * 标题（一句话总结）已下沉到 `capability/tools/ToolHeadline.kt`：界面与 peer 回执必须
+ * 对同一次调用给出同一句话，规则只能有一份。
  *
  * 为什么单独一个文件：主页卡（ToolBlock.kt）与轨迹卡（TraceToolCard.kt）有意分为两份 UI
  * （两页语义不同，见各自 KDoc），但其对「这条工具执行了什么」「输出中是否有图」的判断
  * 必须一致。两项均为纯函数，抽出共用不违反该划分，且可减少一处不一致的可能。
  */
-
-/** 一句话总结的字符上限：标题行只有一行，再长就省略号。 */
-private const val SUMMARY_LIMIT = 44
-
-/** 参数中最可能充当宾语的字段，按优先级取第一个非空值。 */
-private val SUMMARY_ARG_KEYS = listOf(
-    "path", "file_path", "filePath", "command", "cmd", "query", "url",
-    "description", "prompt", "title", "goal", "pattern", "name", "session_id"
-)
-
-/** 每个工具对应的动词：无需识别工具名即可读出「正在执行什么」。 */
-private val TOOL_VERBS = mapOf(
-    "read_file" to "读取",
-    "write_file" to "写入",
-    "list_files" to "列出",
-    "terminal" to "运行命令",
-    "web_fetch" to "抓取网页",
-    "web_search" to "联网检索",
-    "skill" to "加载 Skill",
-    "shizuku" to "系统级操作",
-    "todo_write" to "更新待办",
-    "subagent" to "委派子智能体",
-    "send_message" to "给子智能体发消息",
-    "mem" to "记忆操作",
-    "write_plan" to "提交计划",
-    "goal" to "更新目标"
-)
-
-/**
- * 这条工具执行了什么，一句话说明。
- *
- * 规则：动词 + 参数中的宾语（路径 / 命令 / 查询词 …），截断至 SUMMARY_LIMIT。
- * 无法识别的工具退化为「工具名 · 首参数」，至少不为空。
- */
-internal fun toolSummary(name: String, arguments: String): String {
-    val verb = TOOL_VERBS[name]
-    val arg = pickArg(arguments)
-    val head = verb ?: name
-    val text = when {
-        arg.isBlank() -> head
-        verb == null -> head + " · " + arg
-        else -> verb + " " + arg
-    }
-    return if (text.length > SUMMARY_LIMIT) text.take(SUMMARY_LIMIT - 1) + "…" else text
-}
-
-/**
- * 工具卡与轨迹行的标题。
- *
- * 取值顺序与 DSH 的 `bash` 工具一致：**先取模型写的 `description`**（这一步在做什么），
- * 缺失时退回按工具名与参数推断的 [toolSummary]（读取 xxx、列出 xxx）。
- * 两处显示必须由同一个函数决定，否则同一调用在主页与轨迹页会说成两句话。
- */
-internal fun toolHeadline(name: String, arguments: String): String =
-    stepDescription(arguments) ?: toolSummary(name, arguments)
-
-/**
- * 模型写入的这一步说明；缺失、非字符串或空白时返回 null。
- *
- * 新调用只写 [STEP_DESCRIPTION_PARAM]；[LEGACY_ACTION_SUMMARY_PARAM] 是为 2026-11-10 之前
- * 的会话保留的读取路径，两者同义，读的时候都认。
- */
-internal fun stepDescription(arguments: String): String? {
-    if (arguments.isBlank()) return null
-    val obj = runCatching { JSONObject(arguments) }.getOrNull() ?: return null
-    // 只认字符串：缺键、null 与数组 / 对象都不当作说明，避免标题行出现「null」
-    val raw = (obj.opt(STEP_DESCRIPTION_PARAM) as? String)
-        ?: (obj.opt(LEGACY_ACTION_SUMMARY_PARAM) as? String)
-        ?: return null
-    return raw.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim().ifEmpty { null }
-}
 
 /**
  * 参数是否「等于空」。
@@ -109,26 +39,6 @@ internal fun toolArgIsBlank(arguments: String): Boolean {
         return false
     }
     return true
-}
-
-/** 参数中最可能充当宾语的值；取不到时将整串压为一行。 */
-private fun pickArg(arguments: String): String {
-    if (arguments.isBlank()) return ""
-    val flat = arguments.trim().let { raw ->
-        val obj = runCatching { JSONObject(raw) }.getOrNull()
-        if (obj == null) {
-            raw
-        } else {
-            SUMMARY_ARG_KEYS.firstNotNullOfOrNull { key ->
-                val value = obj.opt(key) ?: return@firstNotNullOfOrNull null
-                if (value === JSONObject.NULL || value is JSONObject || value is org.json.JSONArray) {
-                    return@firstNotNullOfOrNull null
-                }
-                value.toString().takeIf { it.isNotBlank() }
-            } ?: ""
-        }
-    }.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-    return flat.trim()
 }
 
 /**

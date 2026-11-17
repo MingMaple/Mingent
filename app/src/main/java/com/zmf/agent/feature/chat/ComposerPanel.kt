@@ -61,7 +61,7 @@ import com.zmf.agent.uikit.theme.UiColors
  *
  * 说明放右边而不是第二行：用户是来挑一个动作，不是来读文档；38dp 的行高让键盘弹起时整块还能落在可视区。
  * [filter] 给斜杠指令复用：以 "/" 开头的输入直接过滤这张面板，命中的行才留，空组连灰标题都不画
- * 画一个空标题等于告诉用户「这里本来有东西，只是没匹配上」，那是噪音。
+ * 绘制空标题等于告诉用户「此处本有内容，只是未匹配」，属于冗余信息。
  * [slashMode] 才亮出 /plan、/goal 这类模板：它们只在斜杠语境下有意义，＋ 菜单里出现会误导。
  */
 @Composable
@@ -163,7 +163,7 @@ private fun skillMatches(name: String, filter: String): Boolean =
 /**
  * 斜杠模板：点击后仅将 [insert] 填入输入框，实际解析在 ViewModel。
  *
- * 面板不替用户执行，是因为 /plan 后面的那半句、/goal 的子命令都得由用户接着写。
+ * 面板不替用户执行：/plan 之后的那半句、/goal 的子命令都需由用户继续输入。
  */
 private data class SlashTemplate(val title: String, val desc: String, val insert: String)
 
@@ -203,7 +203,7 @@ internal fun composerPanelHasMatch(skills: List<String>, filter: String): Boolea
 /**
  * 斜杠模板行：左边一根斜线 + 命令名，右侧说明它怎么接着写。
  *
- * 点它不会执行任何东西，只是把模板放进输入框，光标停在末尾等用户补完。
+ * 点击后不会执行任何操作，仅将模板放入输入框，光标停在末尾等待用户补完。
  */
 @Composable
 private fun TemplateRow(title: String, desc: String, onClick: () -> Unit) {
@@ -232,7 +232,7 @@ private fun TemplateRow(title: String, desc: String, onClick: () -> Unit) {
     }
 }
 
-/** 技能行：只放技能名，技能名本身就是它能干什么的描述。 */
+/** 技能行：仅放技能名；技能名本身即为其功能说明。 */
 @Composable
 private fun SkillRow(name: String, onClick: () -> Unit) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -407,7 +407,7 @@ fun ComposerContextPanel(
  * 会话统计浮窗：本会话的时间账与输出速度。
  *
  * 只放四个数、都能一眼读完：模型用时、工具调用用时、首 token 平均（TTFT）、输出速度（TPS）。
- * 没有样本的项写「—」：新会话刚开还没跑过一轮时，写 0 秒会让人以为「模型没花时间」。
+ * 没有样本的项写「—」：新会话刚开还没跑过一轮时，写 0 秒会让用户误以为「模型未耗时」。
  */
 @Composable
 fun ComposerStatsPanel(stats: ComposerStatsInfo, modifier: Modifier = Modifier) {
@@ -583,7 +583,7 @@ private fun DetailRow(
     title: String,
     value: String,
     singleLine: Boolean = false,
-    /** 值后面跟一句小字说明（用量面板的「（其中推理 N tok）」用它）。 */
+    /** 值之后跟一句小字说明（用量面板的「（其中推理 N tok）」用它）。 */
     suffix: String? = null,
     /** 小字是否跟主值同色：用量面板里它是弱提示，弱一档。 */
     suffixStrong: Boolean = false
@@ -650,7 +650,7 @@ private fun countText(count: Int): String = String.format(Locale.US, "%,d", coun
  * 本界面本身为扁平设计，通过 surface 底色与页面底色的差异区分层次即可。
  */
 @Composable
-private fun PanelCard(
+internal fun PanelCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {

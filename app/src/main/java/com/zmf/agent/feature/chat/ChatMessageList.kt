@@ -35,6 +35,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.zmf.agent.capability.runtime.AskBridge
 import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.markdown.FileLinkRouter
 import kotlinx.coroutines.delay
@@ -76,9 +80,45 @@ internal fun ColumnScope.ChatMessageList(
     )
     val forkWithReload: (() -> Unit) -> Unit = { action -> ui.forkWithReload(scope, action) }
 
+    // 提问通道与聊天页同生共死：组合建立时绑定本页实现，销毁时仅清除自己绑定的那一份，
+    // 重复建立或销毁均不产生副作用。
+    DisposableEffect(context) {
+        QuestionCenter.bind(context)
+        AskBridge.port = QuestionCenter
+        onDispose {
+            // 仅清除自己绑定的那一份：其他界面若已接管端口，不得将其一并撤销
+            if (AskBridge.port === QuestionCenter) AskBridge.port = null
+        }
+    }
+
+    // 前后台切换：回到前台取消待作答通知，退到后台时为当前会话的挂起提问补发通知。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> QuestionCenter.onForeground()
+                Lifecycle.Event.ON_PAUSE -> QuestionCenter.onBackground(viewModel.currentSessionId)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // 本会话产出的文件：卡片、正文里的产物链接、预览页列表三处共用同一份推导结果。
-    // 不套 remember：messages 是就地变异的快照列表，拿它当键永远不会失效，结果会停在首次组合时的空表。
-    val producedFiles = ProducedFiles.of(viewModel.messages, imageRoot)
+    // 推导只读每条消息的 produced：attachProduced 只会追加并按路径去重，从不改写既有条目，
+    // 因此「消息条数 + 产物总数」足以判定有无新产物；配合会话 id 与本会话工作区根缓存结果，
+    // 流式逐 token 重组时不再重扫整轮并重算绝对路径。messages 是就地变异的快照列表，
+    // 不能直接拿列表或消息当键，否则永远不会失效。
+    val producedCount = viewModel.messages.sumOf { it.produced.size }
+    val producedFiles = remember(
+        viewModel.currentSessionId,
+        viewModel.messages.size,
+        producedCount,
+        imageRoot
+    ) {
+        ProducedFiles.of(viewModel.messages, imageRoot)
+    }
     // 行内代码里的产物路径按这一份集合解析；换会话或新写出文件时重挂一次
     DisposableEffect(producedFiles) {
         FileLinkRouter.attach { token -> ProducedFiles.match(producedFiles, token)?.path }
@@ -109,12 +149,20 @@ internal fun ColumnScope.ChatMessageList(
     // 贴底计算与 contentPadding 必须共用同一份取值，否则底部会固定留出可上滑的空区。
     val listBottomInset = if (window.compactChrome) 8.dp else 16.dp
     val listBottomInsetPx = with(density) { listBottomInset.toPx() }.toInt()
-    // 新消息 / 工具返回 / 流式正文各变化一项：四项合成跟随的触发键，仅在键变化时滚动
+    // 提问不再挂在消息列末尾：它在输入区槽位以伴随面板形态出现（见 QuestionPanel），
+    // 这张列表只负责消息本身，滚动跟随也就回到「最后一条消息」这一种目标。
+    // 自动重试节点：跟随在本轮消息之后占用列表最后一格（对齐 DSH 把 model-retry 放进消息流）
+    val retryInfo = viewModel.modelRetry
+    val retryItemIndex = if (retryInfo != null && items.isNotEmpty()) items.size else -1
+    val followIndex = if (retryItemIndex >= 0) retryItemIndex else items.lastIndex
+    // 新消息 / 工具返回 / 流式正文各变化一项：合成跟随的触发键，仅在键变化时滚动
     val followKey = listOf(
         items.size,
         viewModel.messages.size,
         viewModel.messages.lastOrNull()?.content?.length ?: 0,
-        viewModel.messages.lastOrNull()?.reasoningContent?.length ?: 0
+        viewModel.messages.lastOrNull()?.reasoningContent?.length ?: 0,
+        // 重试节点的出现/翻次也要触发跟随，否则它可能停在视口外
+        retryInfo?.retry ?: 0
     )
 
     // 流式期间的「最后一条助手消息」下标。
@@ -128,7 +176,7 @@ internal fun ColumnScope.ChatMessageList(
 
     // 最后一条「用户亲手发送」的提问下标。
     //
-    // 插话会立刻在末尾追加一条 user 消息：被它插在后面的那一轮，从用户视角已经结束
+    // 插话会立刻在末尾追加一条 user 消息：被它插入其后的那一轮，从用户视角已经结束
     // （没有最终输出，只有过程），过程区应当立刻折叠成计数行，而不是把一整排工具卡摊在表面。
     // 只认非代发消息：后台任务结算注入的是 programmatic = true，那不算用户开口，
     // 它注入时本轮仍在继续，不触发折叠。
@@ -149,7 +197,7 @@ internal fun ColumnScope.ChatMessageList(
     // 向上翻阅历史时不被拉回底部（此前每次工具调用都会弹回底部）。
     LaunchedEffect(followKey) {
         if (!wasAtBottom) return@LaunchedEffect
-        followBottom(listState, items.lastIndex, listBottomInsetPx)
+        followBottom(listState, followIndex, listBottomInsetPx)
     }
 
     // 冷启动 / 切换会话的首次落位：必须直接落在最后一条，而非列表顶部。
@@ -191,8 +239,8 @@ internal fun ColumnScope.ChatMessageList(
     // 使用 collectLatest 仅在视口稳定 120ms 后执行一次。
     //
     // 同时监听「最后一条的高度」：消息正文、工具卡与图片的最终高度常在首次测量之后才落定，
-    // 只监听视口会漏掉这一类变化，那时底部就会留下固定的一截可上滑余量。
-    val lastItemIndex = rememberUpdatedState(items.lastIndex)
+    // 只监听视口会漏掉这一类变化，那时底部就会留下固定的可上滑余量。
+    val lastItemIndex = rememberUpdatedState(followIndex)
     LaunchedEffect(listState) {
         snapshotFlow {
             val info = listState.layoutInfo
@@ -323,6 +371,10 @@ internal fun ColumnScope.ChatMessageList(
                                     }
                                 )
                             }
+                        }
+                        // 自动重试节点：独立一行挂在消息流末尾，不进入 ChatItem（它不属于任何回合的内容）
+                        if (retryInfo != null) {
+                            item(key = "retry") { ModelRetryRow(retryInfo) }
                         }
                     }
 

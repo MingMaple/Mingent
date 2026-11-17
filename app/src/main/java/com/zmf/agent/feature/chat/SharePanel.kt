@@ -119,6 +119,7 @@ import java.io.File
  * @param failure 失败说明；非空时显示在输入条下方
  * @param onRemoveFile 删除某个分享文件（长文附件或普通文件）：父层同步删掉中转文件
  * @param onRemoveImage 删除某张分享图片
+ * @param onPreviewImage 点开某张图片（按同批图片的下标）：父层打开图片查看器，可左右翻页
  * @param onCancel 放弃本次分享
  * @param onTargetPicked 用户选定了目标：父层据此真正切换会话，上方会话区随之变化
  * @param onSend 最终提交入口；参数为输入框正文，父层负责发送并收起面板
@@ -134,6 +135,7 @@ internal fun ShareArea(
     failure: String?,
     onRemoveFile: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
+    onPreviewImage: (Int) -> Unit,
     onCancel: () -> Unit,
     onTargetPicked: (ShareTarget) -> Unit,
     onSend: (String) -> Unit
@@ -155,7 +157,8 @@ internal fun ShareArea(
             AttachmentStrip(
                 draft = draft,
                 onRemoveFile = onRemoveFile,
-                onRemoveImage = onRemoveImage
+                onRemoveImage = onRemoveImage,
+                onPreviewImage = onPreviewImage
             )
         }
 
@@ -212,17 +215,58 @@ internal fun ShareArea(
 }
 
 /**
+ * 分享内容导入中的占位输入区。
+ *
+ * 分享受理后会话区已经切到目标会话，但图片解码与中转写盘还在 IO 线程进行。这里先占住底部槽位，
+ * 让用户知道内容正在导入、发送键此刻不可用；导入完成后由父层换成完整的 [ShareArea]。
+ */
+@Composable
+internal fun SharePreparingArea(onCancel: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.background)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "正在导入分享内容…",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "取消",
+                    modifier = Modifier.clickable(onClick = onCancel),
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
+}
+
+/**
  * 附件行：图片缩略图在前、文件 chip 在后，同一行横向滚动。
  *
  * 与主页 `ChatComposerArea` 里那行是同一套件（[PendingImageThumb] / [PendingFileChip]），
  * 只是这里没有「添加」入口——内容已经由分享带进来了。普通文件与超阈值长文都走
  * [PendingFileChip]，图标、字号、宽度上限与 ✕ 行为完全一致。
+ *
+ * 点缩略图打开图片查看器，与主页待发图片、会话里的图片同一套交互（可左右翻页）：
+ * 用户分享进来后仍需先确认这确实是那张图，才决定发还是删。
  */
 @Composable
 private fun AttachmentStrip(
     draft: ShareDraft,
     onRemoveFile: (String) -> Unit,
-    onRemoveImage: (String) -> Unit
+    onRemoveImage: (String) -> Unit,
+    onPreviewImage: (Int) -> Unit
 ) {
     val root = File(draft.sourceRootPath)
     val scroll = rememberScrollState()
@@ -236,12 +280,11 @@ private fun AttachmentStrip(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        draft.imageRelPaths.forEach { rel ->
+        draft.imageRelPaths.forEachIndexed { index, rel ->
             PendingImageThumb(
                 relPath = rel,
                 root = root,
-                // 分享面板里点开大图没有意义（发送后就在会话里），只保留删除
-                onClick = {},
+                onClick = { onPreviewImage(index) },
                 onRemove = { onRemoveImage(rel) }
             )
         }
@@ -316,7 +359,7 @@ private fun ShareComposer(
                 onValueChange = onTextChange,
                 modifier = Modifier
                     .fillMaxWidth()
-                    // 右上角留给放弃按钮，正文最后一行不钻到它下面
+                    // 右上角留给放弃按钮，正文末行不与其重叠
                     .padding(end = 22.dp)
                     .heightIn(min = 22.dp, max = 128.dp),
                 textStyle = TextStyle(fontSize = 15.sp, lineHeight = 21.sp, color = onSurface),
@@ -489,7 +532,7 @@ private fun TargetPickerPopover(
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val density = LocalDensity.current
     val config = LocalConfiguration.current
-    // 固定尺寸；只有窗口小到放不下时才按可用空间夹一下。两页共用同一个值，翻页时窗口不缩放
+    // 固定尺寸；仅当窗口过小无法容纳时，按可用空间收敛。两页共用同一值，翻页时窗口不缩放
     val width = minOf(PickerPopupWidth, config.screenWidthDp.dp - PickerEdgeMargin * 2)
     val height = minOf(PickerPopupHeight, config.screenHeightDp.dp - PickerEdgeMargin * 2)
 

@@ -9,6 +9,9 @@ import com.zmf.agent.capability.loop.AgentUi
 import com.zmf.agent.capability.loop.ContextSummaryState
 import com.zmf.agent.capability.loop.TurnOutcome
 import com.zmf.agent.capability.permission.PermissionStore
+import com.zmf.agent.capability.port.DeliveryResult
+import com.zmf.agent.capability.port.DeliveryTarget
+import com.zmf.agent.capability.port.SessionDelivery
 import com.zmf.agent.capability.prompt.PromptInput
 import com.zmf.agent.infra.llm.DeepSeekProvider
 import com.zmf.agent.infra.llm.UsageBuckets
@@ -24,7 +27,9 @@ import com.zmf.agent.core.store.WorkSpaceStore
 import com.zmf.agent.core.fs.PathGate
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
+import com.zmf.agent.core.model.ORIGIN_PEER
 import com.zmf.agent.core.model.ORIGIN_SCHEDULE
+import com.zmf.agent.core.model.ProducedArtifact
 import com.zmf.agent.core.model.SessionPreference
 import com.zmf.agent.core.model.ToolCall
 import com.zmf.agent.core.model.permissionLevelOfWire
@@ -46,16 +51,22 @@ import com.zmf.agent.capability.tools.AuxUsage
 import com.zmf.agent.capability.tools.ToolContext
 import com.zmf.agent.capability.tools.ToolRegistry
 import com.zmf.agent.capability.tools.ToolResult
+import com.zmf.agent.capability.tools.file.present.PresentArtifacts
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import com.zmf.agent.capability.runtime.ChatBridge
+import com.zmf.agent.capability.runtime.PeerCollab
 import com.zmf.agent.capability.runtime.ScheduleBridge
 import com.zmf.agent.capability.runtime.ScheduleInfo
+import com.zmf.agent.capability.runtime.SchedulePatch
 import com.zmf.agent.capability.runtime.ScheduleSpec
+import com.zmf.agent.capability.runtime.ScheduleUpdate
+import com.zmf.agent.capability.runtime.SessionDispatchBridge
 
 /**
  * 定时任务的执行端：设置闹钟、到点执行一轮 Agent、将结果写回会话并发送通知。
@@ -65,9 +76,20 @@ import com.zmf.agent.capability.runtime.ScheduleSpec
  * 执行一轮需启动常驻前台服务：广播唤醒的进程回到后台后可能被回收，
  * 而一轮 Agent（含工具调用）可能持续数分钟，仅靠 BroadcastReceiver 的 onReceive 执行预算无法维持。
  */
-object ScheduleRunner {
+object ScheduleRunner : SessionDelivery, SessionDispatchBridge.Port {
 
     private const val TAG = "schedule"
+
+    /**
+     * peer 投递的最大跳数。
+     *
+     * 首跳为 1，因此最多允许三条会话依次转投；超过此值即拒绝，避免会话之间形成无需用户参与的循环。
+     */
+    private const val MAX_PEER_HOP = 2
+
+    /** peer 投递与执行所需的进程级 Context；由组合根在启动时装配。 */
+    @Volatile
+    private var dispatchApp: Context? = null
 
     /**
      * 单次任务的工具轮数上限：后台无界面监管，避免无限循环。
@@ -350,6 +372,7 @@ object ScheduleRunner {
         var content = ""
         var reason = ""
         var usage = TurnUsage()
+        var produced: List<ProducedArtifact> = emptyList()
         try {
             // 与聊天页同序：提问先落进历史，成功后再追加本轮答复。
             // 中途进程被杀时至少留下「问过什么」，不会连提问一起丢。
@@ -367,6 +390,7 @@ object ScheduleRunner {
                 reason = outcome.error
                 // 只保留成功那次尝试的用量：上一次失败的重试不该写进消息
                 usage = outcome.usage
+                produced = outcome.produced
                 if (content.isNotEmpty()) break
                 // 失败的这次也花了 token 与时间：并入会话，但不写消息、不动排序
                 // （与聊天页一致——那边每次请求拿到 usage 就直接记进会话，与整轮成败无关）
@@ -378,7 +402,8 @@ object ScheduleRunner {
                 }
             }
             if (content.isNotEmpty()) {
-                appendReply(app, session, task, content, usage)
+                // 产物只认本回合内执行成功的 present 调用，随答复写回同一条消息
+                appendReply(app, session, task.title.take(TITLE_CHARS), content, usage, produced)
                 // 轮次已在提问落盘时记过；这里只补本轮的步数（与聊天页 commitSteps 同口径）
                 UsageLedger.addSteps(app, usage.steps)
                 ChatBridge.notifySessionsChanged()
@@ -401,12 +426,29 @@ object ScheduleRunner {
      *
      * 有意不复用 ChatViewModel 的状态：定时任务在后台执行，界面中的同一会话可能正被用户编辑，
      * 共用消息列表会导致相互覆盖。
+     *
+     * [session] 必须为本轮提问落盘**之前**的快照：提问由 [runTurn] 交给 AgentLoop 追加，
+     * 若快照已含该句，模型会看到同一句话出现两次。
      */
-    private suspend fun runRound(app: Context, session: ChatSession, task: ScheduleTask): RoundResult {
+    private suspend fun runRound(app: Context, session: ChatSession, task: ScheduleTask): RoundResult =
+        runTurn(app, session, task.prompt, task.workspaceId)
+
+    /**
+     * 后台回合的公共执行体：定时任务与 peer 投递共用，避免两处各写一份 AgentLoop 调用。
+     *
+     * [userText] 为本轮提问正文，由 AgentLoop 追加到 [session] 的消息之后；[workspaceId] 为运行根
+     * 所属工作区，null 表示默认工作区。
+     */
+    private suspend fun runTurn(
+        app: Context,
+        session: ChatSession,
+        userText: String,
+        workspaceId: String?
+    ): RoundResult {
         // 权限取目标会话的快照，缺失时退回全局默认：任务在后台执行，用户无法当场切档
         val permission = permissionLevelOfWire(session.permissionPreset) ?: PermissionStore.load(app)
-        // 运行根取任务归属工作区映射的存储单元：会话被移到别的工作区后，任务目录不应随之漂移
-        val workspace = rootOf(task.workspaceId, app)
+        // 运行根取归属工作区映射的存储单元：会话被移到别的工作区后，任务目录不应随之漂移
+        val workspace = rootOf(workspaceId, app)
         val registry = ToolRegistry()
         // 提示词输入只构造一次：既是请求来源，也是用量构成的估算依据，两者必须同源。
         // 当前时间与聊天页同一口径写进尾部快照：后台由闹钟冷启动，用户无法在提问里补日期，
@@ -473,7 +515,7 @@ object ScheduleRunner {
             messages = messages,
             // messages 是本轮开始前的快照，不含刚落盘的提问：这里由循环追加，避免同句出现两次。
             // programmatic = true：无人值守的执行不把任务文本当作高危授权。
-            userText = task.prompt,
+            userText = userText,
             userTextProgrammatic = true,
             thinking = false,
             thinkingEffort = null,
@@ -515,9 +557,15 @@ object ScheduleRunner {
             // 通知正文要能区分「没产出正文」与「请求失败 / 上下文溢出」：
             // ui.errors 里已带提供方原文（如「请求失败（HTTP 400）：…」），为空说明本轮确实没有正文
             val detail = ui.errors.toString().ifEmpty { "模型未返回任何内容" }
-            return RoundResult("", "未产出答复：" + detail)
+            return RoundResult("", "未产出答复：" + detail, added = outcome.added)
         }
-        return RoundResult(content, "", turn)
+        return RoundResult(
+            content,
+            "",
+            turn,
+            PresentArtifacts.collect(messages.drop(turnStart)),
+            outcome.added
+        )
     }
 
     /**
@@ -691,12 +739,332 @@ object ScheduleRunner {
                 FileLog.log(TAG, "助手删除定时任务 id=" + id)
                 return true
             }
+
+            override fun update(
+                id: String,
+                patch: SchedulePatch,
+                expectedRevision: Long?
+            ): ScheduleUpdate {
+                val current = ScheduleStore.load(app).firstOrNull { it.id == id }
+                    ?: return ScheduleUpdate.NotFound
+                // 版本不一致说明期间已有其他入口写入：返回当前快照，由调用方决定是否重读后再改
+                if (expectedRevision != null && expectedRevision != current.revision) {
+                    return ScheduleUpdate.Conflict(infoOf(current))
+                }
+                val now = System.currentTimeMillis()
+                val kind = patch.kind?.trim()?.lowercase(Locale.US) ?: current.kind
+                if (kind != ScheduleStore.KIND_EVERY &&
+                    kind != ScheduleStore.KIND_DAILY &&
+                    kind != ScheduleStore.KIND_ONCE
+                ) {
+                    return ScheduleUpdate.BadRule("kind 只能是 once、daily 或 every")
+                }
+
+                val timeArg = patch.time?.trim()
+                val dateArg = patch.date?.trim()
+                var timeOfDay = current.timeOfDay
+                if (!timeArg.isNullOrEmpty()) {
+                    val parsed = parseMinuteOfDay(timeArg)
+                        ?: return ScheduleUpdate.BadRule("time 格式不正确：应使用 24 小时制 HH:mm")
+                    timeOfDay = String.format(Locale.US, "%02d:%02d", parsed.first, parsed.second)
+                }
+                if (kind == ScheduleStore.KIND_ONCE && !dateArg.isNullOrEmpty() &&
+                    !validDate(dateArg)
+                ) {
+                    return ScheduleUpdate.BadRule("date 格式不正确：应使用 yyyy-MM-dd")
+                }
+
+                var everyMinutes = current.everyMinutes
+                if (kind == ScheduleStore.KIND_EVERY) {
+                    everyMinutes = patch.everyMinutes ?: current.everyMinutes
+                    if (everyMinutes < ScheduleStore.MIN_EVERY_MINUTES ||
+                        everyMinutes > ScheduleStore.MAX_EVERY_MINUTES
+                    ) {
+                        return ScheduleUpdate.BadRule("every_minutes 需在 1–10080 之间")
+                    }
+                }
+
+                var atMillis = current.atMillis
+                var timeReset = false
+                if (kind == ScheduleStore.KIND_ONCE) {
+                    val inMinutes = patch.inMinutes
+                    when {
+                        inMinutes != null -> {
+                            if (inMinutes < 1) {
+                                return ScheduleUpdate.BadRule("in_minutes 必须是大于 0 的整数")
+                            }
+                            atMillis = now + inMinutes * 60_000L
+                            timeReset = true
+                        }
+                        !timeArg.isNullOrEmpty() -> {
+                            atMillis = onceMillis(timeOfDay, dateArg.orEmpty(), now)
+                                ?: return ScheduleUpdate.PastTime
+                            timeReset = true
+                        }
+                        kind != current.kind -> {
+                            return ScheduleUpdate.BadRule("once 任务需要提供 time 或 in_minutes")
+                        }
+                    }
+                    if (timeReset && atMillis <= now + 30_000L) return ScheduleUpdate.PastTime
+                } else {
+                    // 非一次性任务不保留绝对时刻：留旧值会让下一次切换回 once 时沿用过期时间
+                    atMillis = 0L
+                    if (kind == ScheduleStore.KIND_EVERY) timeOfDay = ""
+                }
+
+                val spaces = WorkSpaceStore.load(app)
+                val targetArg = patch.target?.trim()?.lowercase(Locale.US)
+                val sessionArg = patch.sessionId?.trim()?.takeIf { it.isNotEmpty() }
+                val workspaceArg = patch.workspaceId?.trim()?.takeIf { it.isNotEmpty() }
+                var targetSessionId = current.targetSessionId
+                var workspaceId = current.workspaceId
+                when (targetArg) {
+                    "session" -> {
+                        val sid = sessionArg ?: targetSessionId?.takeIf { it.isNotEmpty() }
+                        if (sid.isNullOrEmpty()) {
+                            return ScheduleUpdate.TargetMissing("target=session 需要 session_id")
+                        }
+                        val found = SessionStore.load(app).firstOrNull { it.id == sid }
+                            ?: return ScheduleUpdate.TargetMissing("session_id 不存在：" + sid)
+                        targetSessionId = found.id
+                        workspaceId = found.workspaceId
+                    }
+                    "workspace_new" -> {
+                        val wid = workspaceArg ?: workspaceId
+                        if (wid.isNullOrEmpty()) {
+                            return ScheduleUpdate.TargetMissing("target=workspace_new 需要 workspace_id")
+                        }
+                        if (spaces.none { it.id == wid }) {
+                            return ScheduleUpdate.TargetMissing("workspace_id 不存在：" + wid)
+                        }
+                        targetSessionId = null
+                        workspaceId = wid
+                    }
+                    "default_new" -> {
+                        targetSessionId = null
+                        workspaceId = spaces.firstOrNull { it.isDefault }?.id
+                            ?: WorkSpaceStore.DEFAULT_ID
+                    }
+                    null -> {
+                        if (sessionArg != null) {
+                            val found = SessionStore.load(app).firstOrNull { it.id == sessionArg }
+                                ?: return ScheduleUpdate.TargetMissing("session_id 不存在：" + sessionArg)
+                            targetSessionId = found.id
+                            workspaceId = found.workspaceId
+                        }
+                        if (workspaceArg != null) {
+                            if (spaces.none { it.id == workspaceArg }) {
+                                return ScheduleUpdate.TargetMissing("workspace_id 不存在：" + workspaceArg)
+                            }
+                            workspaceId = workspaceArg
+                        }
+                    }
+                    else -> return ScheduleUpdate.BadRule(
+                        "target 只能是 session、workspace_new 或 default_new"
+                    )
+                }
+
+                val title = patch.title?.trim() ?: current.title
+                if (patch.title != null && title.isEmpty()) {
+                    return ScheduleUpdate.BadRule("title 不能为空")
+                }
+                val prompt = patch.prompt?.trim() ?: current.prompt
+                if (patch.prompt != null && prompt.isEmpty()) {
+                    return ScheduleUpdate.BadRule("prompt 不能为空")
+                }
+
+                val updated = current.copy(
+                    title = title,
+                    prompt = prompt,
+                    kind = kind,
+                    everyMinutes = everyMinutes,
+                    timeOfDay = timeOfDay,
+                    atMillis = atMillis,
+                    targetSessionId = targetSessionId,
+                    workspaceId = workspaceId,
+                    enabled = patch.enabled ?: current.enabled
+                )
+                // 只有规则或启用状态变化才重排闹钟：仅改标题、提示词或目标时保留既有 nextAt
+                val ruleChanged = updated.kind != current.kind ||
+                    updated.timeOfDay != current.timeOfDay ||
+                    updated.atMillis != current.atMillis ||
+                    updated.everyMinutes != current.everyMinutes ||
+                    updated.enabled != current.enabled
+                val stored = if (ruleChanged) {
+                    arm(app, updated)
+                } else {
+                    ScheduleStore.upsert(app, updated)
+                }
+                FileLog.log(
+                    TAG,
+                    "助手更新定时任务「" + stored.title + "」id=" + stored.id +
+                        " revision=" + stored.revision
+                )
+                return ScheduleUpdate.Ok(infoOf(stored))
+            }
         })
+    }
+
+    // ---- 会话间投递（peer） ----
+
+    /**
+     * 装配 peer 投递：保存进程级 Context，并把本对象注册为 [SessionDispatchBridge] 的实现。
+     *
+     * 重复装配以最后一次为准；工具服务集合由组合根另行装配。
+     * 旧版按统筹者→目标持久化的游标文件不再使用，装配时直接删除。
+     */
+    fun installDelivery(context: Context) {
+        dispatchApp = context.applicationContext
+        SessionDispatchBridge.port = this
+        PeerCollab.cleanupLegacy(context.applicationContext)
+    }
+
+    /**
+     * [SessionDelivery] 入口：按统一投递端口受理，供工具服务集合调用。
+     *
+     * 来源取 [origin]，跳数按首跳处理。
+     */
+    override fun deliver(target: DeliveryTarget, text: String, origin: String): DeliveryResult =
+        deliver(sessionId = target.sessionId, text = text, from = origin, hop = 1)
+
+    /**
+     * peer 投递：把消息写入目标会话并触发一轮后台执行。
+     *
+     * 顺序固定为「校验 → 占用 → 写消息 → 起执行」：占用先于写入，避免消息已落盘却没有回合运行；
+     * 写入失败时立即释放占用。返回 [DeliveryResult.Accepted] 只表示已受理，不代表回合已经完成；
+     * 其中的时间戳就是刚落盘那条 user 消息的 `createdAt`，作为统一步骤回执的节点。
+     *
+     * 目标会话由界面持有时同样走后台回合：提问已按 peer 来源落盘，若再经 [ChatBridge.send] 代发，
+     * 界面会追加一条同文消息，且来源不是 [ORIGIN_PEER]；回合结束后由 [ChatBridge.notifySessionsChanged]
+     * 通知界面重读即可。
+     */
+    override fun deliver(
+        sessionId: String,
+        text: String,
+        from: String,
+        hop: Int
+    ): DeliveryResult {
+        val app = dispatchApp
+            ?: return DeliveryResult.Failed("[E_NO_DISPATCH] 会话投递端口尚未装配")
+        if (hop > MAX_PEER_HOP) {
+            return DeliveryResult.Failed(
+                "[E_HOP_LIMIT] peer 投递最多 " + MAX_PEER_HOP + " 跳，本次为第 " + hop + " 跳"
+            )
+        }
+        if (sessionId == from) {
+            return DeliveryResult.Failed("[E_SELF] 不得向来源会话自身投递")
+        }
+        val target = SessionStore.load(app).firstOrNull { it.id == sessionId }
+            ?: return DeliveryResult.Failed("[E_TARGET_NOT_FOUND] 没有这个会话：" + sessionId)
+        if (target.archived) {
+            return DeliveryResult.Failed("[E_TARGET_ARCHIVED] 目标会话已归档：" + sessionId)
+        }
+        if (!SessionBusy.tryAcquire(sessionId)) return DeliveryResult.Busy
+        val now = System.currentTimeMillis()
+        val body = peerBody(from, hop, text)
+        val prompt = ChatMessage(
+            role = "user",
+            content = body,
+            programmatic = true,
+            origin = ORIGIN_PEER,
+            createdAt = now
+        )
+        val fallbackTitle = SessionStore.fallbackTitle(text)
+        val written = SessionStore.appendMessages(
+            app,
+            sessionId,
+            listOf(prompt),
+            titleIfBlank = fallbackTitle
+        )
+        if (!written) {
+            SessionBusy.release(sessionId)
+            return DeliveryResult.Failed("[E_TARGET_NOT_FOUND] 没有这个会话：" + sessionId)
+        }
+        // 界面持有的是内存快照：通知其重读，否则投递的消息与答复要等到重启才可见
+        ChatBridge.notifySessionsChanged()
+        launchPeerRound(app, target, body, fallbackTitle)
+        return DeliveryResult.Accepted(now)
+    }
+
+    /** peer 消息正文：前缀携带来源会话与跳数，供目标会话与其转投方识别。 */
+    private fun peerBody(from: String, hop: Int, text: String): String =
+        "[peer from=" + from + " hop=" + hop + "] " + text
+
+    /**
+     * 在后台执行 peer 回合，把工具轨迹与最终答复写回目标会话。
+     *
+     * [session] 为投递前的会话快照，不含刚落盘的提问：该句由 [runTurn] 交给 AgentLoop 追加。
+     * 轮次的完成与否不在这里登记：统筹者按节点读取落盘消息判定，进程内只有 [SessionBusy]。
+     */
+    private fun launchPeerRound(
+        app: Context,
+        session: ChatSession,
+        prompt: String,
+        fallbackTitle: String
+    ) {
+        PlatformAlarms.scope.launch {
+            var steps = 0
+            try {
+                // 冷启动的进程没有界面：先申请常驻前台服务，避免回合执行中被系统回收
+                runCatching { AgentForegroundService.start(app) }
+                    .onFailure { FileLog.log(TAG, "peer 回合启动前台服务失败：" + it) }
+                if (SessionStore.load(app).none { it.id == session.id }) {
+                    FileLog.log(TAG, "peer 回合未执行：目标会话已删除：" + session.id)
+                } else {
+                    val outcome = runCatching {
+                        runTurn(app, session, prompt, session.workspaceId)
+                    }.getOrElse {
+                        RoundResult("", "执行异常：" + (it.message ?: it.javaClass.simpleName))
+                    }
+                    steps = outcome.usage.steps
+                    // 先写工具轨迹：peer 按节点读取这一轮的步骤标题与成败，中断时也要留下已执行的步骤
+                    appendTrace(app, session.id, outcome.added)
+                    if (outcome.content.isNotEmpty()) {
+                        // 产物只认本回合内执行成功的 present 调用，随答复写回同一条消息
+                        appendReply(
+                            app,
+                            session,
+                            fallbackTitle,
+                            outcome.content,
+                            outcome.usage,
+                            outcome.produced
+                        )
+                        UsageLedger.addSteps(app, outcome.usage.steps)
+                        ChatBridge.notifySessionsChanged()
+                    } else {
+                        FileLog.log(TAG, "peer 回合没有答复：" + outcome.error)
+                    }
+                }
+            } catch (e: Exception) {
+                FileLog.log(TAG, "peer 回合异常：" + e)
+            } finally {
+                SessionBusy.release(session.id)
+                FileLog.log(TAG, "peer 回合结束：" + session.id + "，" + steps + " 步")
+            }
+        }
+    }
+
+    /**
+     * 把本轮的工具调用与工具结果写入目标会话。
+     *
+     * peer 的步骤回执按节点读取落盘消息，因此这一层轨迹必须保留；
+     * 只写 assistant(tool_calls) 与 tool 结果，不写占位消息、图片 follow-up 等其他中间态。
+     * 最终答复由 [appendReply] 单独写入（含用量与产物）。
+     */
+    private fun appendTrace(app: Context, sessionId: String, added: List<ChatMessage>) {
+        val trace = added.filter {
+            it.role == "tool" || (it.role == "assistant" && it.toolCalls.isNotEmpty())
+        }
+        if (trace.isEmpty()) return
+        if (!SessionStore.appendMessages(app, sessionId, trace)) {
+            FileLog.log(TAG, "peer 回合的工具轨迹写入失败：" + sessionId)
+        }
     }
 
     /** 把持久化记录转换为窄口快照；字段一一对应，不额外计算。 */
     private fun infoOf(task: ScheduleTask): ScheduleInfo = ScheduleInfo(
         id = task.id,
+        revision = task.revision,
         title = task.title,
         prompt = task.prompt,
         kind = task.kind,
@@ -746,14 +1114,16 @@ object ScheduleRunner {
     private fun appendReply(
         app: Context,
         session: ChatSession,
-        task: ScheduleTask,
+        fallbackTitle: String,
         content: String,
-        usage: TurnUsage
+        usage: TurnUsage,
+        produced: List<ProducedArtifact>
     ) {
         val now = System.currentTimeMillis()
         val reply = ChatMessage(
             role = "assistant",
             content = content,
+            produced = produced,
             promptTokens = usage.promptTokens,
             completionTokens = usage.completionTokens,
             cachedTokens = usage.cachedTokens,
@@ -770,7 +1140,7 @@ object ScheduleRunner {
             if (stored != null && stored.title.isBlank()) {
                 SessionStore.saveMerged(
                     app,
-                    listOf(stored.copy(title = task.title.take(TITLE_CHARS)))
+                    listOf(stored.copy(title = fallbackTitle))
                 )
             }
             return
@@ -781,7 +1151,7 @@ object ScheduleRunner {
             app,
             listOf(
                 session.copy(
-                    title = session.title.ifEmpty { task.title.take(TITLE_CHARS) },
+                    title = session.title.ifEmpty { fallbackTitle },
                     messages = session.messages + reply,
                     updatedAt = now
                 ).foldUsage(delta)
@@ -827,11 +1197,55 @@ object ScheduleRunner {
     private fun timeText(millis: Long): String =
         SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(millis))
 
+    /** 解析 "HH:mm"；格式或取值范围不合法时返回 null。 */
+    private fun parseMinuteOfDay(raw: String): Pair<Int, Int>? {
+        val parts = raw.trim().split(":")
+        if (parts.size != 2) return null
+        val hour = parts[0].trim().toIntOrNull() ?: return null
+        val minute = parts[1].trim().toIntOrNull() ?: return null
+        if (hour !in 0..23 || minute !in 0..59) return null
+        return hour to minute
+    }
+
+    /** 日期是否为合法的 yyyy-MM-dd；空串视为未指定。 */
+    private fun validDate(raw: String): Boolean {
+        if (raw.isEmpty()) return true
+        return runCatching { java.time.LocalDate.parse(raw) }.isSuccess
+    }
+
+    /**
+     * 把 "HH:mm"（可带日期）换算为绝对毫秒；格式错误或时刻已过时返回 null。
+     *
+     * 与创建路径同一口径：未给日期时取最近一次该时刻，已过则顺延至次日。
+     */
+    private fun onceMillis(time: String, date: String, now: Long): Long? {
+        val minute = parseMinuteOfDay(time) ?: return null
+        if (date.isNotEmpty()) {
+            val parsed = runCatching {
+                SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply { isLenient = false }
+                    .parse(date + " " + String.format(Locale.US, "%02d:%02d", minute.first, minute.second))
+            }.getOrNull() ?: return null
+            return parsed.time.takeIf { it > now + 30_000L }
+        }
+        val cal = Calendar.getInstance()
+        cal.timeInMillis = now
+        cal.set(Calendar.HOUR_OF_DAY, minute.first)
+        cal.set(Calendar.MINUTE, minute.second)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        if (cal.timeInMillis <= now) cal.add(Calendar.DAY_OF_YEAR, 1)
+        return cal.timeInMillis
+    }
+
     /** 单次执行结果：content 非空表示获得答复；error 为原始失败原因，仅用于日志与排障。 */
     private data class RoundResult(
         val content: String,
         val error: String,
-        val usage: TurnUsage = TurnUsage()
+        val usage: TurnUsage = TurnUsage(),
+        /** 本回合由 present 声明并通过校验的产物。 */
+        val produced: List<ProducedArtifact> = emptyList(),
+        /** 本轮新增的全部消息（含工具调用与结果）：peer 回合据此把步骤轨迹落盘。 */
+        val added: List<ChatMessage> = emptyList()
     )
 
     /**

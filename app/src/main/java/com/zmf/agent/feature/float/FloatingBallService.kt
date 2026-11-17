@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.PixelFormat
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -43,6 +42,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
@@ -287,13 +287,14 @@ class FloatingBallService : Service() {
                 addAction(Intent.ACTION_SCREEN_ON)
                 addAction(Intent.ACTION_SCREEN_OFF)
             }
-            // 两条都是系统保护广播：Android 13 起显式声明「不接收其它应用发送的广播」，
-            // 避免将来提升 targetSdk 后被系统要求补 flag（或拒绝注册）
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                registerReceiver(screenReceiver, filter)
-            }
+            // 两条都是系统保护广播：显式声明「不接收其它应用发送的广播」，
+            // 避免将来提升 targetSdk 后被系统要求补 flag（或拒绝注册）；低版本的 flag 兼容由 ContextCompat 处理
+            ContextCompat.registerReceiver(
+                this,
+                screenReceiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
         }
         // 悬浮球服务属于普通后台服务，Android 8 及以上会在应用退至后台后回收（球随之消失）。
         // 窗口添加成功后启动常驻前台服务，使整个进程处于前台服务状态，窗口才能持续显示。
@@ -511,6 +512,9 @@ class FloatingBallService : Service() {
                     // 会话切换列表：桥接层每次重组均取最新快照，切换后消息列表随之更新
                     sessions = ChatBridge.sessions(),
                     onSend = { text -> ChatBridge.send(text) },
+                    // 与主页同相位：生成中（含中止中）在输入条上多一枚停止键
+                    streaming = ChatBridge.streaming(),
+                    onStop = { ChatBridge.stop() },
                     // 在会话切换面板中点击某条：切换至该会话（面板自动收起）
                     onPickSession = { id -> ChatBridge.switchSession(id) },
                     // 「回主页」：先将主界面拉至前台（NEW_TASK 复用已有任务，不重建），

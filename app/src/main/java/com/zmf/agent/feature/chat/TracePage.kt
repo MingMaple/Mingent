@@ -1,6 +1,8 @@
 package com.zmf.agent.feature.chat
 
 import android.os.SystemClock
+import com.zmf.agent.capability.tools.stepDescription
+import com.zmf.agent.capability.tools.toolHeadline
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
@@ -250,7 +252,9 @@ fun TracePage(
                 ) {
                     items(
                         entries,
-                        key = { entry -> entry.line?.key ?: "h" + entry.roundNumber }
+                        key = { entry -> entry.line?.key ?: "h" + entry.roundNumber },
+                        // 轮分隔与轨迹行结构不同，分开按类型复用
+                        contentType = { entry -> if (entry.line == null) "round" else "line" }
                     ) { entry ->
                         val line = entry.line
                         // 灰的是「没选中的行」，轮分隔永远不灰：它只是分隔，不是内容
@@ -454,7 +458,7 @@ private fun buildRounds(all: List<ChatMessage>): List<TraceRound> {
                 val target = lines ?: return@forEachIndexed
                 val thinking = message.reasoningContent.orEmpty()
                 val body = message.content
-                // 工具轮之间会留下内容、思考、调用全空的占位助手消息，它没有可看的东西
+                // 工具轮之间会留下内容、思考、调用均为空的占位助手消息，没有可展示的内容
                 if (thinking.isBlank() && body.isBlank() && message.toolCalls.isEmpty()) {
                     return@forEachIndexed
                 }
@@ -474,7 +478,7 @@ private fun buildRounds(all: List<ChatMessage>): List<TraceRound> {
                 if (body.isNotBlank()) {
                     val flatBody = flat(body)
                     val head = oneLine(flatBody, HeadLimit)
-                    // 结尾预览只在正文真的比首行长时才补，否则就是把首行再抄一遍
+                    // 结尾预览只在正文真的比首行长时才补，否则只是把首行重复一遍
                     val tail = if (flatBody.length > head.length + 12) {
                         flatBody.takeLast(TailLimit)
                     } else {
@@ -837,7 +841,7 @@ private fun DetailCard(
                 }
             }
             Spacer(Modifier.height(6.dp))
-            // 卡片自己滚到底就停：再带动整页会让人以为外面那层也动了。
+            // 卡片自身滚到底即停：再带动整页会让用户误以为外层页面也在滚动。
             // 光把 over-scroll 工厂关掉还不够：那只是去掉回弹光晕，滚到边界之后的位移照样会
             // 冒给外层列表。交给 BoundedScrollColumn：装得下时不挂拦截、超出时才认领边界余量。
             CompositionLocalProvider(LocalOverscrollFactory provides null) {
@@ -870,7 +874,7 @@ private val TraceThumbShape = RoundedCornerShape(14.dp)
  * 展开卡里的一排图片缩略图：横向一行、超出横滑，点击交给页面去开查看器。
  *
  * 这些 composable 之所以没直接复用主页那份：主页的 SentImageThumb 是 file-private 的，
- * 跨文件拿不到；尺寸、圆角、crop 填充与「解码失败退成灰块」都照它抄一份，保证两页一致。
+ * 跨文件拿不到；尺寸、圆角、crop 填充与「解码失败退成灰块」都按它复制一份，保证两页一致。
  */
 @Composable
 private fun TraceThumbRow(paths: List<String>, root: File, onTap: (Int) -> Unit) {
@@ -968,7 +972,7 @@ private fun askBody(message: ChatMessage): String {
     val cut = listOf(
         message.content.indexOf(IMAGE_PATHS_MARKER),
         message.content.indexOf(ATTACHMENT_PATHS_MARKER),
-        // 批准执行时粘进去的计划正文同理：轨迹里也只留「同意执行了哪一份」
+        // 批准执行时写入提问的计划正文同理：轨迹里也只留「同意执行了哪一份」
         message.content.indexOf(PLAN_DETAIL_MARKER)
     ).filter { it >= 0 }.minOrNull() ?: return message.content
     return message.content.substring(0, cut).trimEnd()
@@ -1038,7 +1042,7 @@ private enum class TraceHue { User, Assistant, Tool, Context }
 /**
  * 取具体色值。
  *
- * 不做成 `@Composable`：它要在 `Canvas` 的 draw lambda 里用，那里不是组合作用域。
+ * 不做成 `@Composable`：需在 `Canvas` 的 draw lambda 中使用，该处不是组合作用域。
  * 把深浅判断交给调用方取一次，再作为参数传进来。
  */
 private fun hueColor(hue: TraceHue, dark: Boolean): Color = when (hue) {

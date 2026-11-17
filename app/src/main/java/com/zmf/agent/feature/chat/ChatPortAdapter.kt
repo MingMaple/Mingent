@@ -16,7 +16,14 @@ class ChatPortAdapter(private val viewModel: ChatViewModel) : ChatPort {
 
     override fun messages(): List<ChatMessage> = viewModel.messages
 
-    override fun send(text: String, scope: CoroutineScope) = viewModel.send(text, scope)
+    /**
+     * 小窗发送与主页共用同一套繁忙语义：空闲直接发，生成中按设置插话或排队，不丢消息。
+     *
+     * 此前这里转发的是只在空闲时生效的旧入口，目标会话正在生成时消息被静默丢弃。
+     */
+    override fun send(text: String, scope: CoroutineScope) {
+        viewModel.sendWhileBusy(text, scope)
+    }
 
     override fun title(): String = viewModel.currentTitle()
 
@@ -46,4 +53,8 @@ class ChatPortAdapter(private val viewModel: ChatViewModel) : ChatPort {
     }
 
     override fun switchSession(id: String) = viewModel.switchSession(id)
+
+    override fun streaming(): Boolean = viewModel.isStreaming
+
+    override fun stop() = viewModel.stop()
 }

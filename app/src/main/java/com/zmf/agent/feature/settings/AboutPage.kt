@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zmf.agent.core.llm.HolidayCalendar
 import com.zmf.agent.uikit.common.blockTapsOnly
 import com.zmf.agent.uikit.common.saltCardRow
 import com.zmf.agent.uikit.common.saltRowClickable
@@ -134,6 +135,18 @@ fun AboutPage(onBack: () -> Unit) {
                         versionCode = versionCode,
                         packageName = context.packageName
                     )
+
+                    AboutCard(title = "计费") {
+                        Text(
+                            text = "费用按 DeepSeek 官方口径估算：北京时间工作日 09:00–12:00、14:00–18:00 为高峰价，" +
+                                "其余时段（含周末与法定节假日）按半价计。节假日表覆盖至 " +
+                                HolidayCalendar.COVERED_UNTIL + " 年，之后的年份在更新前只按周末与时段判断。",
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 10.dp),
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                        )
+                    }
 
                     AboutCard(title = "开源") {
                         AboutLinkRow(

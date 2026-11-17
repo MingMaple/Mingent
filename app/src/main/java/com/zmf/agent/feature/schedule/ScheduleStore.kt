@@ -37,7 +37,7 @@ data class ScheduleTask(
      * 归属工作区；null 表示默认工作区。
      *
      * 任务在后台执行时需要知道用哪个目录当运行根：早期实现按目标会话所属工作区取，
-     * 会话被移到别处后目录会跟着变，因此改为任务自身记录归属，旧任务迁移为默认工作区。
+     * 会话移动后目录随之变化，因此改为由任务自身记录归属，旧任务迁移为默认工作区。
      */
     val workspaceId: String? = null,
     /** 停用后不设置闹钟，已错过的触发也不补执行。 */
@@ -53,7 +53,14 @@ data class ScheduleTask(
      * 就置为 true，此后改用 `setAlarmClock` 排期：系统不会把它推迟，代价是状态栏出现闹钟图标。
      * 正常机型永远不会被置位，也就不会出现该图标。
      */
-    val clockAlarm: Boolean = false
+    val clockAlarm: Boolean = false,
+    /**
+     * 记录版本号：每次写入由 [ScheduleStore.upsert] 加一。
+     *
+     * 助手修改任务时可携带期望版本，版本不一致即说明期间已被其他入口改写，
+     * 此时拒绝覆盖并返回当前快照，避免以旧快照静默撤销用户的修改。
+     */
+    val revision: Long = 0L
 )
 
 /**
@@ -105,6 +112,7 @@ object ScheduleStore {
     private const val KEY_LAST_RUN_AT = "lastRunAt"
     private const val KEY_NEXT_AT = "nextAt"
     private const val KEY_CLOCK_ALARM = "clockAlarm"
+    private const val KEY_REVISION = "revision"
 
     /** 上一次生成的 id，保证同一毫秒内连续两次保存不会产生重复 id。 */
     @Volatile
@@ -154,20 +162,22 @@ object ScheduleStore {
     /**
      * 写入一条记录（id 为空时先生成），返回实际持久化的副本。
      *
-     * 返回值即调用方用于设置闹钟的版本：id 与 nextAt 均已补全。
+     * 返回值即调用方用于设置闹钟的版本：id、nextAt 与 revision 均已补全。
      * 现读现写：整份覆盖写的文件与界面共用，读取越新则丢失的更新越少。
+     * revision 以磁盘上的既有记录为基准递增，调用方传入的旧版本号不参与计算，
+     * 因此任何写入都会得到一个不小于既往值的新版本。
      */
     @Synchronized
     fun upsert(context: Context, task: ScheduleTask): ScheduleTask {
-        val stored = if (task.id.isEmpty()) task.copy(id = nextId()) else task
-        val list = load(context)
-        val index = list.indexOfFirst { it.id == stored.id }
-        val merged = if (index >= 0) {
-            list.toMutableList().also { it[index] = stored }
-        } else {
-            list + stored
-        }
-        save(context, merged)
+        val list = load(context).toMutableList()
+        val index = if (task.id.isEmpty()) -1 else list.indexOfFirst { it.id == task.id }
+        val previous = if (index >= 0) list[index] else null
+        val stored = task.copy(
+            id = previous?.id ?: task.id.ifEmpty { nextId() },
+            revision = (previous?.revision ?: 0L) + 1L
+        )
+        if (index >= 0) list[index] = stored else list.add(stored)
+        save(context, list)
         return stored
     }
 
@@ -250,6 +260,7 @@ object ScheduleStore {
         obj.put(KEY_ENABLED, task.enabled)
         obj.put(KEY_LAST_RUN_AT, task.lastRunAt)
         obj.put(KEY_NEXT_AT, task.nextAt)
+        obj.put(KEY_REVISION, task.revision)
         if (task.clockAlarm) obj.put(KEY_CLOCK_ALARM, true)
         return obj
     }
@@ -277,6 +288,8 @@ object ScheduleStore {
                     enabled = obj.optBoolean(KEY_ENABLED, true),
                     lastRunAt = obj.optLong(KEY_LAST_RUN_AT, 0L),
                     nextAt = obj.optLong(KEY_NEXT_AT, 0L),
+                    // 旧文件无该键：读取为 0，首次写入时由 upsert 递增为 1
+                    revision = obj.optLong(KEY_REVISION, 0L),
                     clockAlarm = obj.optBoolean(KEY_CLOCK_ALARM, false)
                 )
             )

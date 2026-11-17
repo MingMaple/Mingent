@@ -52,21 +52,24 @@ class TodoController(
     }
 
     /**
-     * 新一轮提问前清掉上一轮「全部完成」的清单；还有 pending / in_progress 就保留。
+     * 新一轮提问前清掉指定会话上一轮「全部完成」的清单；还有 pending / in_progress 就保留。
      *
      * 清单是本轮的执行计划：全部完成说明本轮已收尾，保留只会干扰新一轮进度；
      * 未完成项需继续显示，否则会被误认为任务自行消失。
      * 落盘必须在这一轮开跑之前同步做完：模型的 todo_write 紧接着就会写同一份文件，
      * 若放入 IO 线程异步清除，可能反向覆盖刚写入的新清单。
+     *
+     * [sessionId] 是**发起回合的那条会话**：并行时在 B 发一句话不得清掉 A 的清单，
+     * 界面上的清单只在被清的正是当前显示会话时才同步。
      */
-    fun dropFinishedTodosBeforeNewRound() {
-        val id = currentSessionId()
+    fun dropFinishedTodosBeforeNewRound(sessionId: String = currentSessionId()) {
+        val id = sessionId
         if (id.isEmpty()) return
         // 以磁盘上的清单为准：reloadTodos 为异步操作，刚结束的一轮可能尚未读取完成
         val stored = TodoStore.load(appContext, id)
         if (stored.isEmpty() || stored.any { it.status != TodoStore.COMPLETED }) return
         TodoStore.save(appContext, id, emptyList())
-        todos = emptyList()
-        FileLog.log("todo", "上一轮清单已全部完成，新一轮提问时清空")
+        if (id == currentSessionId()) todos = emptyList()
+        FileLog.log("todo", "上一轮清单已全部完成，新一轮提问时清空（会话 " + id + "）")
     }
 }
