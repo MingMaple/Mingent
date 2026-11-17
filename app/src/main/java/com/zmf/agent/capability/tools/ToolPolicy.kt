@@ -5,7 +5,7 @@ import com.zmf.agent.core.model.PermissionLevel
 import java.io.File
 
 /**
- * 工具执行前的确定性闸门：工具真正动手之前必须过这一关。
+ * 工具执行前的确定性闸门：工具实际执行前必须通过这一层判定。
  *
  * 只负责两件事，不在此处加入业务逻辑：
  * 1. **终端命令闸**：工作区档下不许碰外部挂载点（/sdcard、/storage、/mnt/media…），
@@ -54,7 +54,7 @@ object ToolPolicy {
     private const val ESCALATE_FILE =
         "。要这么做请把权限切到「完全」（设置 → 权限），或改到工作区内（含 tmp/）的路径操作。"
 
-    /** 命令类的提权提示：命令没法「换个路径」，只能切档位或收缩命令范围。 */
+    /** 命令类的提权提示：命令无法更换路径，只能切换档位或收缩命令范围。 */
     private const val ESCALATE_COMMAND =
         "。要这么做请把权限切到「完全」（设置 → 权限），或把命令限制在工作区内执行。"
 
@@ -159,7 +159,7 @@ object ToolPolicy {
      * 拼一条拒绝文案：`[sandbox: <类别> denied under <mode> mode] 档位「中文」：<原因><提权提示>`。
      *
      * 档位写两遍（mode 给机器看、中文给人看）是有意的：前缀必须严格可解析，
-     * 而用户/模型看到的正文仍是全中文，不用去猜 workspace 是哪一档。
+     * 而用户与模型看到的正文仍是全中文，无需推断 workspace 对应哪一档。
      */
     private fun deny(
         prefix: String,

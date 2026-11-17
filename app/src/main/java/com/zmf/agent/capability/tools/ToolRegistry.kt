@@ -4,118 +4,31 @@ import com.zmf.agent.infra.llm.ToolSpec
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.core.model.ToolCall
-import com.zmf.agent.capability.tools.agent.SendMessageTool
-import com.zmf.agent.capability.tools.agent.TaskTool
-import com.zmf.agent.capability.tools.file.DeleteFileTool
-import com.zmf.agent.capability.tools.file.EditFileTool
-import com.zmf.agent.capability.tools.file.ListFilesTool
-import com.zmf.agent.capability.tools.file.PresentTool
-import com.zmf.agent.capability.tools.file.ReadFileTool
-import com.zmf.agent.capability.tools.goal.GoalTool
-import com.zmf.agent.capability.tools.memory.MemTool
-import com.zmf.agent.capability.tools.plan.PlanTool
-import com.zmf.agent.capability.tools.file.WriteFileTool
-import com.zmf.agent.capability.tools.jobs.JobKillTool
-import com.zmf.agent.capability.tools.jobs.JobListTool
-import com.zmf.agent.capability.tools.jobs.JobOutputTool
-import com.zmf.agent.capability.tools.jobs.JobStartTool
-import com.zmf.agent.capability.tools.schedule.ScheduleCreateTool
-import com.zmf.agent.capability.tools.schedule.ScheduleDeleteTool
-import com.zmf.agent.capability.tools.schedule.ScheduleListTool
-import com.zmf.agent.capability.tools.skill.SkillSaveTool
-import com.zmf.agent.capability.tools.skill.SkillTool
-import com.zmf.agent.capability.tools.system.ShizukuTool
-import com.zmf.agent.capability.tools.task.TodoTool
-import com.zmf.agent.capability.tools.terminal.TerminalTool
-import com.zmf.agent.capability.tools.session.SessionArchiveTool
-import com.zmf.agent.capability.tools.session.SessionCreateTool
-import com.zmf.agent.capability.tools.session.SessionDeleteTool
-import com.zmf.agent.capability.tools.session.SessionListTool
-import com.zmf.agent.capability.tools.session.SessionMoveTool
-import com.zmf.agent.capability.tools.session.SessionRenameTool
-import com.zmf.agent.capability.tools.session.SessionRestoreTool
-import com.zmf.agent.capability.tools.session.SessionUpdateSettingsTool
-import com.zmf.agent.capability.tools.workspace.WorkspaceCreateTool
-import com.zmf.agent.capability.tools.workspace.WorkspaceDeleteTool
-import com.zmf.agent.capability.tools.workspace.WorkspaceListTool
-import com.zmf.agent.capability.tools.workspace.WorkspaceRenameTool
-import com.zmf.agent.capability.tools.workspace.WorkspaceSetRootTool
-import com.zmf.agent.capability.tools.web.WebSearchTool
-import com.zmf.agent.capability.tools.web.WebTool
+import com.zmf.agent.capability.tools.plugin.ToolPlugin
+import com.zmf.agent.capability.tools.plugin.ToolPlugins
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 当前可用的全部工具：文件工具、App 内 Ubuntu 的 terminal、网页抓取 web_fetch、Skill 加载 skill、
- * 联网检索 web_search、任务清单 todo_write、子智能体 subagent、子智能体续聊 send_message、
- * 记忆内核 mem、计划提交 write_plan、长期目标 goal、定时任务 schedule_create / schedule_list / schedule_delete。
+ * 当前可用的全部工具。
  *
- * subagent 依赖 [com.zmf.agent.capability.subagent.SubAgentDeps] 里注入的 provider 与工具表：
- * 没接线时它只会明确报「子智能体未初始化」，不会假装跑成功。
+ * 清单由 [ToolPlugins] 提供；本函数只保留为兼容入口，新增工具不应修改此处。
  */
-fun defaultTools(): List<Tool> =
-    listOf(
-        ReadFileTool(),
-        WriteFileTool(),
-        // 精确编辑：按原文片段替换，避免为改一行整文件重写
-        EditFileTool(),
-        // 删除单独成工具：它是唯一能拿到「解析后的真实路径」的删除入口，
-        // 高危闸门才能对规范化落点做判定（terminal 的 rm 只能看命令文本）
-        DeleteFileTool(),
-        ListFilesTool(),
-        // 显式交付：PDF / Office / 图片这类 write_file 写不出的文件，靠它在回合末尾挂卡片
-        PresentTool(),
-        TerminalTool(),
-        WebTool(),
-        SkillTool(),
-        // 写入侧单独成工具：skill 保持只读，避免「加载正文」这种高频动作被权限档连带收紧
-        SkillSaveTool(),
-        ShizukuTool(),
-        WebSearchTool(),
-        TodoTool(),
-        TaskTool(),
-        SendMessageTool(),
-        MemTool(),
-        // 计划与目标：都是只读档工具（各自只写 appdata 里自己的 JSON），
-        // 所以计划模式（只暴露 READ_ONLY）下 write_plan 仍然可见
-        PlanTool(),
-        GoalTool(),
-        // 后台任务：job_start 起长任务，job_output/job_list/job_kill 读、列、取消
-        JobStartTool(),
-        JobOutputTool(),
-        JobListTool(),
-        JobKillTool(),
-        // 工作区与会话：只读写 appdata 里自己的工作区／会话文件，
-        // 因此最低权限为只读档，写操作由 mutates 在执行期拦截
-        WorkspaceListTool(),
-        WorkspaceCreateTool(),
-        WorkspaceRenameTool(),
-        WorkspaceSetRootTool(),
-        WorkspaceDeleteTool(),
-        SessionListTool(),
-        SessionCreateTool(),
-        SessionRenameTool(),
-        SessionMoveTool(),
-        SessionArchiveTool(),
-        SessionRestoreTool(),
-        SessionDeleteTool(),
-        SessionUpdateSettingsTool(),
-        // 定时任务：创建、列出、删除；数据与闹钟经 ScheduleBridge 交给 feature 域
-        ScheduleCreateTool(),
-        ScheduleListTool(),
-        ScheduleDeleteTool()
-    )
+fun defaultTools(): List<Tool> = ToolPlugins.tools()
 
 /**
  * 工具注册表：支持运行期按「来源」动态增删工具，读路径不加锁。
  *
+ * - 内置工具一件一个来源，来源名为 `tool:<工具名>`：`unregister("tool:grep")` 只注销 grep，
+ *   不影响其他工具；
  * - 写（[register] / [unregister]）获取 [lock]，修改完成后整体重建一份不可变快照 [snapshot]；
  * - 读（[specs] / [find] / [execute]）只读 [snapshot] 这个引用，不在循环里反复 synchronized，
  *   并且一次调用内看到的是同一份列表（不会出现「声明里有、执行时没了」）。
  * - 同名工具以先注册者为准：后注册者记录一条日志后丢弃，不抛异常，避免插件同名导致 Agent 崩溃。
  *
- * @param initial 内置工具列表，统一记在 builtin 来源下。
+ * @param initial 内置工具列表；每件工具分别登记在 `tool:<工具名>` 来源下。
  */
 class ToolRegistry(initial: List<Tool> = defaultTools()) {
 
@@ -138,8 +51,10 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
 
     init {
         synchronized(lock) {
-            sources[BUILTIN_SOURCE] = initial.toMutableList()
-            snapshot = initial.toList()
+            for (tool in initial) {
+                sources[ToolPlugin.SOURCE_PREFIX + tool.name] = mutableListOf(tool)
+            }
+            snapshot = flattenLocked()
             specSnapshot = buildSpecs(snapshot)
         }
         if (initial.isNotEmpty()) {
@@ -239,7 +154,7 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
      */
     suspend fun execute(call: ToolCall, ctx: ToolContext): ToolResult {
         val tool = find(call.name) ?: return ToolResult.Error("没有这个工具：" + call.name)
-        // 参数先解析：后面两道闸都要看参数（mem / goal 是读写一体的工具）
+        // 参数先解析：其后两道闸均需读取参数（mem / goal 是读写一体的工具）
         val args = runCatching { JSONObject(call.arguments.ifBlank { "{}" }) }.getOrElse {
             return ToolResult.Error(
                 "参数不是合法 JSON：要求一个完整的 JSON 对象，字符串必须带双引号，数组必须用方括号。" +
@@ -249,7 +164,7 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
             )
         }
         // 必填参数统一校验：直接读工具自己声明的 JSON Schema（tools[].function.parameters.required），
-        // 不靠每个工具各写一遍判空：那样漏一处就是静默默认值，而且新增工具容易忘。
+        // 不靠每个工具各写一遍判空：漏一处即产生静默默认值，且新增工具时容易遗漏。
         missingRequired(tool, args)?.let { missing ->
             FileLog.log(TAG, "参数缺失 " + call.name + "：" + missing)
             return ToolResult.Error("缺少必填参数「" + missing + "」（" + call.name + " 的参数说明里写了用途，补齐后重试）")
@@ -260,27 +175,43 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
                     "（至少需要「" + tool.minPermission.displayName() + "」）"
             )
         }
-        // 两道闸都按**能力**判断，不按工具名维护名单：
-        // 名单漏一个，新增的写工具就会在只读档/计划模式下被静默放行。
-        val mutating = tool.mutatesWith(args)
-        if (mutating && ctx.permission == PermissionLevel.READ_ONLY) {
-            FileLog.log(TAG, "只读档拒绝 " + call.name + "（有副作用）")
+        // 两道闸只拦**文件系统与命令**：权限档不再约束计划 / 待办 / 目标 / 记忆这类控制类工具。
+        // 判定叠加 mutatesWith：apply_patch dry_run 不写盘，不会被当成敏感操作。
+        val sandboxed = tool.sandboxSensitive && tool.mutatesWith(args)
+        if (sandboxed && ctx.permission == PermissionLevel.READ_ONLY) {
+            FileLog.log(TAG, "只读档拒绝 " + call.name + "（受文件/命令约束）")
             return ToolResult.Error(
-                "当前是「只读」权限档：不能写文件、不能执行命令，也不能改计划 / 待办 / 记忆 / 目标这类 App 内部状态。" +
-                    "需要动手请让用户在侧栏切到「工作区」或「完全」；这一轮只做调研，不要换别的工具绕。"
+                "当前是「只读」权限档：权限档只约束文件系统写入与命令执行，不能写文件、不能执行命令，也不能做系统级操作。" +
+                    "需要动手请让用户在侧栏切到「工作区」或「完全」；计划、待办、目标、记忆等控制类工具不受此限制，不必绕路。"
             )
         }
         // 计划模式：工具目录里仍然看得见写 / 终端 / 系统级工具，但执行期一律拒绝。
-        // 文案要说清「为什么被拒 + 怎么解除」，否则模型容易把它当成权限不足去换别的工具绕。
-        if (mutating && ctx.planMode && !tool.planModeAllowed(args)) {
-            FileLog.log(TAG, "计划模式拒绝 " + call.name + "（有副作用）")
+        // 文案要说明「为何被拒 + 如何解除」，否则模型容易将其理解为权限不足，转而用其他工具绕过限制。
+        if (sandboxed && ctx.planMode && !tool.planModeAllowed(args)) {
+            FileLog.log(TAG, "计划模式拒绝 " + call.name + "（受文件/命令约束）")
             return ToolResult.Error(
-                "当前是计划模式，只做调研：不能写文件、不能执行终端命令、不能做系统级操作，也不改 App 内部状态。" +
+                "当前是计划模式：只做调研，不能写文件、不能执行终端命令、不能做系统级操作（计划、待办等控制类工具不受限）。" +
                     "要动手请让用户先关掉计划模式；这一轮请把要做的事写成计划，用 write_plan 提交。"
             )
         }
         return try {
-            tool.invoke(args, ctx)
+            // 统一总闸：每个工具都在这里拿到一个硬上界，工具自己的时限仍先到（见 Tool.timeoutMs）。
+            // 这样「工具有没有自己写超时」不再是行为差异：未声明时限的工具最多占用 30 分钟，
+            // 不会让一整轮永久挂住；取消（用户点停止）照常向上传播，不被这里吞掉。
+            val limit = tool.timeoutMs
+            val result = if (limit <= 0L) {
+                tool.invoke(args, ctx)
+            } else {
+                withTimeoutOrNull(limit + TOOL_EXEC_TIMEOUT_GRACE_MS) { tool.invoke(args, ctx) }
+                    ?: run {
+                        FileLog.log(TAG, "工具超时 " + call.name + "（上限 " + limit + "ms）")
+                        ToolResult.Error(
+                            "工具执行超时：超过 " + (limit / 1000L) + " 秒仍未结束，已中止本次调用。" +
+                                "可以缩小任务范围后重试，或把卡点告诉用户。"
+                        )
+                    }
+            }
+            result
         } catch (e: CancellationException) {
             throw e
         } catch (e: IllegalArgumentException) {
@@ -292,6 +223,18 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
                     "（可以换一种做法，或把卡点与需要什么告诉用户）"
             )
         }
+    }
+
+    /**
+     * 这次调用能否与同一步内其他并发安全调用重叠执行。
+     *
+     * 两道条件：工具自己声明 [Tool.concurrencySafe]，且本次调用不产生副作用。
+     * 后者是硬门槛——检查点要求「执行有副作用的工具之前落盘」，若允许并行，
+     * 落盘顺序与执行顺序将无法对应；因此即使某工具误标并发安全，只要本次会写盘仍按独占处理。
+     */
+    fun parallelSafe(call: ToolCall): Boolean {
+        val tool = find(call.name) ?: return false
+        return tool.concurrencySafe && !mutates(call)
     }
 
     /**
@@ -337,11 +280,8 @@ class ToolRegistry(initial: List<Tool> = defaultTools()) {
         /** 日志 tag，和 FileLog 里其他模块区分开。 */
         const val TAG = "tools"
 
-        /** 构造时就有的那批工具记在这个来源名下。 */
-        const val BUILTIN_SOURCE = "builtin"
-
-        // 计划模式与只读档不维护工具拒绝名单：改由 Tool.mutates / mutatesWith 的能力声明驱动，
-        // 新增写工具只需声明一次即可被识别（见 ToolRegistry.execute 的两道闸）。
+        // 权限档只约束文件与命令：由 Tool.sandboxSensitive 分类，控制类工具显式声明为 false。
+        // mutates 仍用于落盘检查点，不再直接驱动这两道闸。
     }
 }
 
@@ -360,7 +300,7 @@ private val STEP_DESCRIPTION_REQUIRED = setOf("terminal", "job_start", "shizuku"
 private const val STEP_DESCRIPTION_HINT =
     "这一步在做什么：用 5–10 个词的主动语态短语，界面直接把它当作该步的标题。" +
         "示例：ls →「列出当前目录的文件」；git status →「查看工作区状态」；" +
-        "npm install →「安装依赖包」。不得照抄命令原文，也不要写成「执行命令」这类空话。"
+        "npm install →「安装依赖包」。不得照抄命令原文，也不要写成「执行命令」这类泛泛描述。"
 
 /**
  * 在工具的参数声明里注入 [STEP_DESCRIPTION_PARAM]，由全表统一注入，各工具不必逐一声明。
@@ -379,7 +319,7 @@ private fun String.withStepDescription(toolName: String): String {
     val root = runCatching { JSONObject(this) }.getOrNull() ?: return this
     val properties = root.optJSONObject("properties") ?: JSONObject()
     if (properties.has(STEP_DESCRIPTION_PARAM)) return this
-    // 重建属性表：说明在前，原有属性按原序跟在后面，相对次序不变
+    // 重建属性表：说明置于首位，原有属性按原序追加，相对次序不变
     val reordered = JSONObject()
     reordered.put(
         STEP_DESCRIPTION_PARAM,

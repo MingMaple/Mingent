@@ -8,7 +8,7 @@ import com.zmf.agent.core.log.AuditLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.PermissionLevel
 import com.zmf.agent.infra.terminal.TerminalEnv
-import com.zmf.agent.capability.tools.file.TrashStore
+import com.zmf.agent.capability.tools.file.support.TrashStore
 import java.io.File
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -353,7 +353,7 @@ object HighRiskGate {
     /**
      * 文本层覆盖度：命令里出现**静态看不见**的构造就标 PARTIAL。
      *
-     * 一旦 PARTIAL，任何被判成 SAFE 的删除都降为 CONFIRM：「没看出来」不等于「安全」。
+     * 一旦 PARTIAL，任何被判成 SAFE 的删除都降为 CONFIRM：「未能识别」不等于「安全」。
      * 这些构造的共同点是「真正的删除对象只有运行时才知道」：变量、命令替换、
      * 脚本内部、上游输出、解码后的载荷。
      */
@@ -468,7 +468,7 @@ object HighRiskGate {
     /**
      * 回收站判定：**字面路径与 canonical 路径都看**。
      *
-     * 只看字面路径会漏掉「工作区里放一个软链接指向 `.trash`」这种绕法：
+     * 只看字面路径会漏掉「工作区内放置指向 `.trash` 的软链接」这类绕过方式：
      * Agent 在终端里 `ln -s` 之后用 `read_file` 走链接，`file.path` 里根本没有回收站字样，
      * 于是读面被绕开。删除与写入两面本来就做了 canonical（`classifyDelete` /
      * `protectedWriteReason`），这里把读面补齐，三面口径才一致。
@@ -597,7 +597,7 @@ object HighRiskGate {
             return safe("Ubuntu 环境内的深层目录")
         }
 
-        // App 私有目录（filesDir 之外的 cache/databases 等已被禁区覆盖，这里兜结构层级）
+        // App 私有目录（filesDir 之外的 cache/databases 等已被禁区覆盖，此处兜住结构层级）
         val appDepth = PathGate.depthOf(env.canonicalAppPrivateRoot, canon)
         if (appDepth > 0) {
             if (appDepth <= 2) return confirm("目标是 App 私有目录下的一级目录")
@@ -747,7 +747,7 @@ object HighRiskGate {
             val words = wordsOf(segment)
             if (words.isEmpty()) continue
 
-            // 去掉 sudo / busybox 前缀（busybox 后面仍可能是 rm）
+            // 去掉 sudo / busybox 前缀（busybox 之后仍可能是 rm）
             var index = 0
             while (index < words.size && (words[index] == "sudo" || words[index] == "busybox")) index++
             if (index >= words.size) continue
@@ -988,8 +988,8 @@ object HighRiskGate {
      * - 两者一致：按结论走（canonical 是主判定）；
      * - 任一为 FORBIDDEN：按 FORBIDDEN 走（取更严）；
      * - 其余不一致（SAFE 与 CONFIRM）：**不信任任何一方**，按 FORBIDDEN +
-     *   `CRITICAL_PATH_ERROR` 处理：两个解析器看同一段文本给出不同答案，正是
-     *   拼路径拼错的形态，这种情况下「放行」没有意义。
+     *   `CRITICAL_PATH_ERROR` 处理：两个解析器对同一段文本给出不同答案，正是
+     *   路径拼接错误的形态，此时「放行」没有意义。
      */
     private fun reconcile(canonical: RiskFinding, lexical: RiskFinding): RiskFinding {
         if (canonical.risk == lexical.risk) return canonical
@@ -1043,6 +1043,61 @@ object HighRiskGate {
     private fun under(root: File, rest: String): File {
         val clean = rest.trim('/')
         return if (clean.isEmpty()) root else File(root, clean)
+    }
+
+    /**
+     * 把宿主路径映射成 PRoot 里的 guest 路径（X01/D5：[mapGuestToHost] 的反向函数）。
+     *
+     * 两个方向共用同一张 bind 表（上方的映射规则），保证只有一处真相：会话工作目录
+     * 存的是工作区相对路径，执行前先解析成宿主路径，再由本函数换算回 guest 路径
+     * 拼进 `cd <guest> &&`。规则是 [mapGuestToHost] 各前缀的逆运算，取**最长前缀**匹配：
+     *
+     * - 宿主在共享存储根（`canonicalExternalRoot`）下 → `/sdcard/...`；
+     * - 宿主在 App 私有 `filesDir` 下 → `/data/data/<pkg>/...`（与 `/data/user/<uid>/<pkg>` 同指一处，取规范形式）；
+     * - 宿主在 PRoot 根文件系统（`canonicalRootfs`）下 → 相对 rootfs 的 guest 绝对路径；
+     * - 其余（含物理 SD 卡 `/storage/XXXX-XXXX/...`）→ 返回 null，**不猜**：调用方回落 `/root` 并记日志。
+     *
+     * 比较一律用 canonical 路径，避免符号链接或相对段造成的前缀误判。
+     */
+    fun hostToGuest(env: SandboxEnv, host: File): String? {
+        val target = runCatching { host.canonicalFile }.getOrNull() ?: return null
+        // 最长前缀优先：filesDir 在 externalRoot 之下（/storage/.../Android/data/<pkg>/files），
+        // 必须先判内层根，否则会被外层根截走变成错误的 /sdcard/Android/data/... 路径。
+        // 包名为空时 /data/data/<pkg> 前缀无从构造，跳过该候选（与 mapGuestToHost 的 pkg 判断一致）
+        val candidates = buildList {
+            if (env.packageName.isNotEmpty()) {
+                add(env.canonicalFilesDir to "/data/data/" + env.packageName)
+            }
+            add(env.canonicalExternalRoot to "/sdcard")
+            add(env.canonicalRootfs to "")
+        }
+        for ((root, guestPrefix) in candidates) {
+            val canonicalRoot = runCatching { root.canonicalFile }.getOrNull() ?: continue
+            val rel = relativeUnder(canonicalRoot, target) ?: continue
+            val clean = rel.trim('/')
+            return when {
+                guestPrefix.isEmpty() && clean.isEmpty() -> "/"
+                guestPrefix.isEmpty() -> "/" + clean
+                clean.isEmpty() -> guestPrefix
+                else -> guestPrefix + "/" + clean
+            }
+        }
+        return null
+    }
+
+    /**
+     * [target] 在 [root] 之内的相对路径；不在其下返回 null（均假定已 canonical 化）。
+     *
+     * 比较前统一换成 `/` 分隔：Android 上路径本就是 `/`，此步无影响；
+     * 单测跑在 Windows JVM 上时 `File.path` 为 `\` 分隔，不归一化会使映射全部落空。
+     */
+    private fun relativeUnder(root: File, target: File): String? {
+        val rootPath = root.path.replace('\\', '/').trimEnd('/')
+        val targetPath = target.path.replace('\\', '/')
+        if (targetPath == rootPath) return "/"
+        val prefix = if (rootPath == "/") "/" else rootPath + "/"
+        if (!targetPath.startsWith(prefix)) return null
+        return targetPath.removePrefix(prefix)
     }
 
     /**

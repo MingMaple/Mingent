@@ -5,8 +5,8 @@ import android.content.Context
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.PermissionLevel
-import com.zmf.agent.capability.tools.file.SafeDelete
-import com.zmf.agent.capability.tools.file.TrashStore
+import com.zmf.agent.capability.tools.file.support.SafeDelete
+import com.zmf.agent.capability.tools.file.support.TrashStore
 import java.io.File
 import java.nio.file.Files
 
@@ -185,7 +185,7 @@ object SandboxRegression {
     /**
      * 回收站对 Agent 必须是黑区：删（会抹掉恢复可能）、写（会伪造条目）、读（会看到已删内容）。
      *
-     * 这三条只要有一条漏了，「删完再清空」就能由 Agent 自己完成，回收站等于不存在。
+     * 三条中任一条遗漏，「删完再清空」即可由 Agent 自行完成，回收站等于不存在。
      */
     private fun collectTrashCases(
         env: HighRiskGate.SandboxEnv,
@@ -465,13 +465,13 @@ object SandboxRegression {
     }
 
     /**
-     * 回收站的真实落盘行为：搬进去 → 原路径消失 → 恢复 → 再删掉。
+     * 回收站的真实落盘行为：移入 → 原路径消失 → 恢复 → 再永久删除。
      *
      * 为什么必须测这条链：判定说「已进回收站」而实际没进，等于静默永久删除，
      * 这正是回收站机制最不能出的错。目标与池都放在 App 外部私有目录（同卷，rename 可用）；
      * 外部卷不可用时直接跳过，不伪装成通过。
      *
-     * 自检痕迹：临时目录与测试条目在结尾都删掉，跑完回收站里不会多出东西。
+     * 自检痕迹：结束时清除临时目录与测试条目，回收站不残留额外条目。
      */
     private fun collectTrashFsCases(context: Context): List<Pair<String, Boolean>> {
         val out = ArrayList<Pair<String, Boolean>>(4)
@@ -494,7 +494,7 @@ object SandboxRegression {
             .getOrElse { TrashStore.Outcome(false, it.message ?: "") }
         out += "回收站：恢复到原路径" to (restored.ok && target.exists() && target.readText() == "keep")
 
-        // 再搬一次并永久删除，把这次自检留下的条目清掉
+        // 再移动一次并永久删除，清除本次自检留下的条目
         val again = runCatching { TrashStore.moveInto(context, target, session, "test") }.getOrNull()
         if (again != null) {
             out += "回收站：永久删除条目" to (

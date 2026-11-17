@@ -29,7 +29,7 @@ object SpillStore {
     /** 摘要里保留的尾部字符数。 */
     private const val TAIL_CHARS = 2000
 
-    /** sessionId 缺省值：调用方没给就落到这个公共目录。 */
+    /** sessionId 缺省值：调用方未提供时落到这个公共目录。 */
     private const val DEFAULT_SESSION = "default"
 
     /** 工具名安全化后的最长长度（防止文件名过长写不进去）。 */
@@ -130,7 +130,7 @@ object SpillStore {
         return if (safe.isBlank()) DEFAULT_SESSION else safe.take(MAX_NAME_CHARS)
     }
 
-    /** 时间戳-工具名.txt，同一毫秒撞了就加序号。 */
+    /** 时间戳-工具名.txt，同一毫秒内重名时追加序号。 */
     private fun nextFile(dir: File, toolName: String): File {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())
         val name = safeToolName(toolName)
@@ -154,7 +154,7 @@ object SpillStore {
         return (if (safe.isBlank()) "tool" else safe).take(MAX_NAME_CHARS)
     }
 
-    /** 头 4000 + 省略标记 + 尾 2000 + 一行通告（通告里必须是绝对路径，模型才能直接拿去 read_file）。 */
+    /** 头 4000 + 省略标记 + 尾 2000 + 一行通告（通告里必须是绝对路径，模型可直接用于 read_file）。 */
     private fun summarize(text: String, path: String): String {
         val head = text.take(HEAD_CHARS)
         val tail = text.drop(head.length).takeLast(TAIL_CHARS)

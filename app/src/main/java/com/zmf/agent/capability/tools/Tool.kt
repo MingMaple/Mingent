@@ -48,6 +48,21 @@ data class ToolContext(
      */
     val planMode: Boolean = false,
     /**
+     * 本次调用是否来自子智能体。
+     *
+     * 子智能体没有可与用户交互的界面（提问卡、通知都落在父会话页上），
+     * 依赖用户当场作答的工具必须据此拒绝，而不是猜测会话 id。
+     * 由子智能体执行路径显式置 true，其余调用方保持 false。
+     */
+    val isSubAgent: Boolean = false,
+    /**
+     * 本次调用的执行者标识：子智能体为其面板记录 id，主会话与定时任务为空串。
+     *
+     * 终端据此把子智能体的命令分流到独立执行通道（对齐 DSH「每个 owner 一个 shell」）：
+     * 同一子智能体内部仍串行，不同子智能体互不排队。只由子智能体执行路径填写。
+     */
+    val agentId: String = "",
+    /**
      * 会话里**最近一条真实 user 消息**的惰性读取器。
      *
      * 必须是惰性 lambda，不能是快照：ToolContext 在 AgentLoop 追加新 user 消息**之前**构造，
@@ -55,7 +70,7 @@ data class ToolContext(
      * 模型自己生成的 assistant 内容完全不参与判定。
      *
      * 默认返回 null：子智能体 / 定时任务没有「用户当场授权」这条通道，
-     * 需要确认的高危操作在那里一律被拒绝（确定性优先）。
+     * 需要确认的高危操作在这类调用方中一律被拒绝（确定性优先）。
      */
     val lastUserMessage: () -> ChatMessage? = { null },
     /**
@@ -85,7 +100,22 @@ sealed interface ToolResult {
     /** 回给模型的文本：成功是结果正文，失败是失败原因。 */
     val text: String
 
-    data class Ok(override val text: String) : ToolResult {
+    data class Ok(
+        override val text: String,
+        /**
+         * 工具向模型回传的图片，形如 `data:image/png;base64,...`。
+         *
+         * 仅对当次请求有效，**不得**写入会话文件：图片本身已存在于工作区，落盘只会使会话体积膨胀。
+         * 为空表示本次结果不附带图片。
+         */
+        val imageDataUrls: List<String> = emptyList(),
+        /**
+         * [imageDataUrls] 对应的图片路径，通常为工作区相对路径。
+         *
+         * 供模型与界面按路径回溯原图；**不得**用于替代 [imageDataUrls]，模型接口只接受后者。
+         */
+        val imagePaths: List<String> = emptyList()
+    ) : ToolResult {
         override val ok: Boolean get() = true
     }
 
@@ -130,7 +160,7 @@ const val STEP_DESCRIPTION_PARAM = "description"
 /**
  * 旧字段名：2026-11-10 之前注入的是这个键，历史会话里仍有。
  *
- * 只用于读取，不再写入声明；删除它会让旧会话的工具行退回「运行命令 …」那种原文摘要。
+ * 只用于读取，不再写入声明；删除它会使旧会话的工具行退回「运行命令 …」一类的原文摘要。
  */
 const val LEGACY_ACTION_SUMMARY_PARAM = "action_summary"
 
@@ -151,8 +181,8 @@ interface Tool {
     /**
      * 这个工具**是否可能**产生持久副作用：写文件、执行命令、改 App 自己的状态。
      *
-     * 用途：只读档与计划模式均按**能力**拒绝，不按工具名维护名单：
-     * 名单一旦遗漏，新增的写工具就会在只读档或计划模式下被静默放行。只读档不区分 App 内部与外部。
+     * 用途：给 AgentLoop 的落盘检查点用（执行有副作用的工具前先写一份会话）。
+     * 权限档不再按它判定，见 [sandboxSensitive]。
      */
     val mutates: Boolean get() = false
 
@@ -164,6 +194,26 @@ interface Tool {
     fun mutatesWith(args: JSONObject): Boolean = mutates
 
     /**
+     * 是否允许与**同一步**内其他并发安全工具重叠执行。
+     *
+     * 默认 false：独占调用，构成屏障（对齐 DSH 的 `isConcurrencySafe` 缺省口径）。
+     * 只有既不写父会话、也不共享有状态资源（终端通道、浏览器标签、审批面板）的工具才可置 true；
+     * 子智能体类工具的全部副作用发生在各自独立的子循环里，因此是当前唯一符合条件的工具组。
+     */
+    val concurrencySafe: Boolean get() = false
+
+    /**
+     * 是否受文件系统与命令的沙箱约束。
+     *
+     * 用户的权限档（只读 / 工作区 / 完全）**只约束写文件与执行命令**；计划、待办、目标、记忆、
+     * 定时任务这类「控制类」工具在只读档照常可用，因此它们必须覆盖为 `false`。
+     *
+     * 默认与 [mutates] 一致，避免新增的写工具因漏标而被只读档静默放行；
+     * 判定时还会叠加 [mutatesWith]，`apply_patch dry_run` 这类只读用法不会被误拦。
+     */
+    val sandboxSensitive: Boolean get() = mutates
+
+    /**
      * 计划模式下是否**放行**这次调用。
      *
      * 默认 false（有副作用的一律拒绝）。唯一例外是 `write_plan`：交计划本身就是计划模式
@@ -173,4 +223,24 @@ interface Tool {
 
     /** 执行一次。失败一律折算成 [ToolResult.Error]，只有协程取消可以向外抛。 */
     suspend fun invoke(args: JSONObject, ctx: ToolContext): ToolResult
+
+    /**
+     * 本工具单次调用的时间上界（毫秒）；0 表示不限。
+     *
+     * 执行入口（[ToolRegistry.execute]）按它施加一层总闸，见 [TOOL_EXEC_TIMEOUT_GRACE_MS]。
+     * 工具自带时限的（终端、提问）覆盖此项：自带时限先到，总闸只兜「工具没有任何时限且永久挂起」。
+     * 需要用户当场作答的工具必须覆盖为 0，否则会被总闸判成超时。
+     */
+    val timeoutMs: Long get() = DEFAULT_TOOL_TIMEOUT_MS
 }
+
+/**
+ * 工具执行的总闸默认值：30 分钟。
+ *
+ * 取这么大的理由：它是**兜底**而不是时限本身。各工具自己的时限（终端默认 60 秒、最长 10 分钟）
+ * 都比它短，因此正常路径永远由工具自己先结束，两层不会互相抢答。
+ */
+const val DEFAULT_TOOL_TIMEOUT_MS = 30 * 60 * 1000L
+
+/** 总闸在工具声明值之外多给的余量：让工具自己的时限先到，避免两层计时互相打断。 */
+const val TOOL_EXEC_TIMEOUT_GRACE_MS = 5_000L
