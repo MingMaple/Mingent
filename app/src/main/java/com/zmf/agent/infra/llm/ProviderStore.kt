@@ -78,7 +78,7 @@ object ProviderStore {
     /** 自定义模板的 id 前缀；真建出来的 provider id 是 custom-<毫秒时间戳>。 */
     const val CUSTOM_PREFIX = "custom"
 
-    /** 进程内唯一的一份列表；null = 还没读过盘。 */
+    /** 进程内唯一的一份列表；null 表示尚未读盘。 */
     @Volatile
     private var cache: List<ProviderConfig>? = null
 
@@ -146,7 +146,7 @@ object ProviderStore {
         return fallback
     }
 
-    /** 当前 provider；[load] 保证非空，所以这里一定拿得到。 */
+    /** 当前 provider；[load] 保证非空，因此此处必然命中。 */
     fun current(context: Context): ProviderConfig {
         val list = load(context)
         val id = currentId(context)

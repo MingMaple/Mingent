@@ -10,10 +10,10 @@ object PreviewReader {
     /** 一页文本：从 [nextLine] 行（0 起算）继续读。 */
     data class TextPage(val lines: List<String>, val nextLine: Int, val eof: Boolean)
 
-    /** 单页行数：400 行在手机上约十屏，够滑一段又不至于一次铺满内存。 */
+    /** 单页行数：400 行在手机上约合十屏，足以滑动一段，又不会一次占满内存。 */
     const val PAGE_LINES = 400
 
-    /** 单行字符上限：模型偶尔把整段压成一行，不截断会把一屏撑成一条。 */
+    /** 单行字符上限：模型偶尔把整段压成一行，不截断会使一屏只剩一条内容。 */
     const val MAX_LINE_CHARS = 2000
 
     /** 单页字符上限：行再短也可能有 400 行超长内容，按字符数兜第二道。 */
@@ -56,7 +56,7 @@ object PreviewReader {
         }.getOrNull()
     }
 
-    /** 读整份字节，超过 [maxBytes] 返回 null：半份 PDF 只会渲染失败，不如直接说不支持。 */
+    /** 读整份字节，超过 [maxBytes] 返回 null：不完整的 PDF 只会渲染失败，不如直接判为不支持。 */
     fun readBytes(open: () -> InputStream, maxBytes: Long): ByteArray? {
         return runCatching {
             open().use { input ->

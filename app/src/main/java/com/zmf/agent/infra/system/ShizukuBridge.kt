@@ -28,7 +28,7 @@ object ShizukuBridge {
     const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
 
     enum class State {
-        /** 手机上没装 Shizuku（或 Sui）。 */
+        /** 设备上未安装 Shizuku（或 Sui）。 */
         NOT_INSTALLED,
 
         /** 已安装但服务未启动（用户未启动 Shizuku 或未开启无线调试授权）。 */
@@ -98,7 +98,7 @@ object ShizukuBridge {
         return if (granted) State.READY else State.NO_PERMISSION
     }
 
-    /** 手机上是否装了 Shizuku（Sui 同包名，也算装了）。 */
+    /** 设备上是否已安装 Shizuku（Sui 同包名，同样计为已安装）。 */
     fun isInstalled(context: Context): Boolean = runCatching {
         context.packageManager.getPackageInfo(SHIZUKU_PACKAGE, 0)
         true
@@ -124,7 +124,7 @@ object ShizukuBridge {
     /**
      * 用 Shizuku 的 shell 跑一条命令。
      *
-     * 注意：stdout/stderr 必须并发读，只读一路会在大输出时把进程管道写满、waitFor 永远不返回。
+     * 注意：stdout/stderr 必须并发读取，只读其中一路会在大输出时写满进程管道，导致 waitFor 永不返回。
      */
     suspend fun exec(command: String, timeoutMs: Long = 20_000): ExecResult = withContext(Dispatchers.IO) {
         if (_state.value != State.READY) {

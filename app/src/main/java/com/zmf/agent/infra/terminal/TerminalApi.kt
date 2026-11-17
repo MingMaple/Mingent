@@ -6,8 +6,11 @@ import android.system.OsConstants
 import com.ai.assistance.operit.terminal.TerminalManager
 import com.ai.assistance.operit.terminal.provider.type.HiddenExecResult
 import com.ai.assistance.operit.terminal.view.domain.ansi.AnsiUtils
+import com.zmf.agent.core.log.FileLog
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * 终端执行结果，本模块自定义类型。
@@ -59,13 +62,123 @@ class HiddenProcess internal constructor(
  */
 object TerminalApi {
 
+    /**
+     * 执行通道的空闲回收阈值：某条通道超过 10 分钟没有命令通过，就释放它背后的 shell 进程。
+     *
+     * 为什么需要：`terminal` 工具按会话各用一条通道（`agent-<会话 id>`），会话数量多时会累积同样多的
+     * 常驻 shell。回收只在通道**空闲**时发生——正在跑命令的通道带着占用计数，不会被回收。
+     */
+    const val EXEC_CHANNEL_IDLE_MS = 10 * 60 * 1000L
+
+    /** 回收巡查间隔：每分钟一次，粒度足够且几乎不耗电（只比对时间戳）。 */
+    private const val REAPER_INTERVAL_MS = 60 * 1000L
+
+    private val channelLock = Any()
+
+    /** 通道最近一次被使用（开始或结束）的时刻。 */
+    private val channelLastUsed = HashMap<String, Long>()
+
+    /** 通道当前的占用数：大于 0 表示有命令正在跑，回收跳过。 */
+    private val channelBusy = HashMap<String, Int>()
+
+    /**
+     * 当前存活通道数（X09 内存采样留证用）：已创建且未被释放/回收的执行通道条数。
+     * 锁内取值，只读不副作用。
+     */
+    fun activeChannelCount(): Int = synchronized(channelLock) { channelLastUsed.size }
+
+    /** 首次执行时记下应用 Context，供回收线程释放通道用。 */
+    @Volatile
+    private var appContext: Context? = null
+
+    @Volatile
+    private var reaperStarted = false
+
+    private val reaper = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "mingent-terminal-channel-reaper").apply { isDaemon = true }
+    }
+
+    /**
+     * 释放某条执行通道（取消回合、子智能体结束、显式收尾时用）。
+     *
+     * 与空闲回收的区别：这里不看占用计数，调用方已经确认「这条通道该关」。
+     * 只关这一条，其他会话与执行者的通道不受影响。返回 false 表示这条通道不存在
+     * （例如子智能体从未用过终端），此时不建日志行、也不碰上游。
+     */
+    fun releaseChannel(context: Context, executorKey: String): Boolean {
+        if (executorKey.isBlank()) return false
+        val existed = synchronized(channelLock) {
+            val busy = channelBusy.remove(executorKey)
+            val used = channelLastUsed.remove(executorKey)
+            busy != null || used != null
+        }
+        if (!existed) return false
+        runCatching { TerminalManager.getInstance(context).releaseHiddenExecutor(executorKey) }
+        FileLog.log("terminal", "关闭执行通道：" + executorKey)
+        return true
+    }
+
+    /** 回收全部空闲超阈值的通道；返回回收条数。供定时巡查与测试直接调用。 */
+    fun releaseIdleChannels(now: Long = System.currentTimeMillis()): Int {
+        val idle = ArrayList<String>()
+        synchronized(channelLock) {
+            for ((key, at) in channelLastUsed) {
+                if ((channelBusy[key] ?: 0) > 0) continue
+                if (now - at >= EXEC_CHANNEL_IDLE_MS) idle.add(key)
+            }
+            for (key in idle) {
+                channelLastUsed.remove(key)
+                channelBusy.remove(key)
+            }
+        }
+        val ctx = appContext ?: return 0
+        for (key in idle) runCatching { TerminalManager.getInstance(ctx).releaseHiddenExecutor(key) }
+        if (idle.isNotEmpty()) {
+            FileLog.log("terminal", "空闲回收执行通道 " + idle.size + " 条：" + idle.joinToString(", "))
+        }
+        return idle.size
+    }
+
+    /** 记账一次通道使用；首次调用时启动回收线程（守护线程，随进程退出）。 */
+    private fun beginUse(context: Context, key: String) {
+        synchronized(channelLock) {
+            appContext = context.applicationContext
+            channelLastUsed[key] = System.currentTimeMillis()
+            channelBusy[key] = (channelBusy[key] ?: 0) + 1
+            if (!reaperStarted) {
+                reaperStarted = true
+                runCatching {
+                    reaper.scheduleWithFixedDelay(
+                        { runCatching { releaseIdleChannels() } },
+                        REAPER_INTERVAL_MS,
+                        REAPER_INTERVAL_MS,
+                        TimeUnit.MILLISECONDS
+                    )
+                }
+            }
+        }
+    }
+
+    /** 使用结束：占用数减一，并刷新最近使用时刻。 */
+    private fun endUse(key: String) {
+        synchronized(channelLock) {
+            channelBusy[key] = ((channelBusy[key] ?: 1) - 1).coerceAtLeast(0)
+            channelLastUsed[key] = System.currentTimeMillis()
+        }
+    }
+
     suspend fun exec(context: Context, command: String, executorKey: String, timeoutMs: Long): ShellResult {
-        val raw = TerminalManager.getInstance(context)
-            .executeHiddenCommand(command, executorKey, timeoutMs)
-        return when (raw.state) {
-            HiddenExecResult.State.OK -> ShellResult.Ok(raw.output, raw.exitCode)
-            HiddenExecResult.State.SHELL_NOT_READY -> ShellResult.ShellNotReady
-            else -> ShellResult.Failed(raw.state.name, raw.error, raw.rawOutputPreview)
+        beginUse(context, executorKey)
+        try {
+            val raw = TerminalManager.getInstance(context)
+                .executeHiddenCommand(command, executorKey, timeoutMs)
+            return when (raw.state) {
+                HiddenExecResult.State.OK -> ShellResult.Ok(raw.output, raw.exitCode)
+                HiddenExecResult.State.SHELL_NOT_READY -> ShellResult.ShellNotReady
+                else -> ShellResult.Failed(raw.state.name, raw.error, raw.rawOutputPreview)
+            }
+        } finally {
+            endUse(executorKey)
         }
     }
 
@@ -258,7 +371,7 @@ object TerminalApi {
 
     private const val DEFAULT_CWD = "/root"
 
-    /** 预检只跑一条 `true`，首次要拉起终端环境，给 20 秒。 */
+    /** 预检只跑一条 `true`，首次需拉起终端环境，超时设为 20 秒。 */
     private const val READY_TIMEOUT_MS = 20_000L
 
     /** 终止信号等待上限：SIGTERM 后固定等 1 秒再补 SIGKILL，故留余量在调用方。 */

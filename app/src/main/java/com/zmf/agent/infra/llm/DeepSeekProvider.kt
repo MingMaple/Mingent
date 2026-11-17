@@ -3,16 +3,23 @@ package com.zmf.agent.infra.llm
 import com.zmf.agent.core.log.FileLog
 import com.zmf.agent.core.model.ChatMessage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -31,7 +38,9 @@ class DeepSeekProvider(
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
+        // 无字节 90 秒即失败：连接与写仍为 30 秒，读超时仅在「一直没有新数据」时兜底，
+        // 流式正常出字时每次读到数据都会重新计时，不影响长回复
+        .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
@@ -40,14 +49,26 @@ class DeepSeekProvider(
         // 直接拼接 "/chat/completions" 请求只会抛出底层异常，用户无法判断需修改何处
         val base = baseUrl.trim().trimEnd('/')
         if (base.isEmpty()) {
-            emit(LlmEvent.Failed(-1, "当前提供商还没有填写接口地址，请在设置 → 模型里补上"))
+            emit(
+                LlmEvent.Failed(
+                    -1,
+                    "当前提供商还没有填写接口地址，请在设置 → 模型里补上",
+                    LlmFailureCodes.CONFIG
+                )
+            )
             return@flow
         }
 
         // 开源包不包含内置密钥：空 Key 直接发送只会返回 401，用户无法得知填写位置。
         // 此处于请求前拦截，并明确指出「设置 → 模型」。
         if (apiKey.isBlank()) {
-            emit(LlmEvent.Failed(-1, "当前提供商还没有配置 API 密钥，请到设置 → 模型里填写"))
+            emit(
+                LlmEvent.Failed(
+                    -1,
+                    "当前提供商还没有配置 API 密钥，请到设置 → 模型里填写",
+                    LlmFailureCodes.CONFIG
+                )
+            )
             return@flow
         }
 
@@ -61,21 +82,52 @@ class DeepSeekProvider(
                 .post(buildRequestJson(request).toString().toRequestBody(JSON))
                 .build()
         } catch (e: Exception) {
-            emit(LlmEvent.Failed(-1, "接口地址无效，请在设置 → 模型里检查地址是否以 https:// 开头"))
+            emit(
+                LlmEvent.Failed(
+                    -1,
+                    "接口地址无效，请在设置 → 模型里检查地址是否以 https:// 开头",
+                    LlmFailureCodes.CONFIG
+                )
+            )
             return@flow
         }
 
         val call = client.newCall(httpRequest)
+        // 协程取消时直接掐掉底层连接：阻塞中的 call.execute() 与读循环会立刻抛 IOException，
+        // flow 随即结束。没有这一步，点「停止」后只能等下一次网络读写才有反应。
+        // 用同作用域的子协程做钩子（与父协程同生命周期），不用内部 API 的 invokeOnCompletion(onCancelling)。
+        val cancelHook = CoroutineScope(currentCoroutineContext()).launch {
+            try {
+                awaitCancellation()
+            } finally {
+                call.cancel()
+            }
+        }
         try {
             call.execute().use { response ->
                 if (!response.isSuccessful) {
                     val text = response.body?.string().orEmpty()
-                    emit(LlmEvent.Failed(response.code, text.take(2000)))
+                    // 分类与服务端 Retry-After 一起带出去：重试等待优先听服务端的；
+                    // 分类决定「值不值得重试」（鉴权/额度/参数问题重试无意义）
+                    emit(
+                        LlmEvent.Failed(
+                            response.code,
+                            text.take(2000),
+                            LlmFailureCodes.classify(response.code, text),
+                            LlmFailureCodes.retryAfterMillis(response.header("Retry-After"))
+                        )
+                    )
                     return@use
                 }
                 val source = response.body?.source()
                 if (source == null) {
-                    emit(LlmEvent.Failed(-1, "服务端没有返回内容，请稍后重试"))
+                    emit(
+                        LlmEvent.Failed(
+                            -1,
+                            "服务端没有返回内容，请稍后重试",
+                            LlmFailureCodes.EMPTY_RESPONSE
+                        )
+                    )
                     return@use
                 }
                 var finishReason: String? = null
@@ -194,8 +246,41 @@ class DeepSeekProvider(
             // 取消是协程的正常结束路径，转成失败事件会掩盖取消语义
             throw e
         } catch (e: Exception) {
-            FileLog.log("llm", "请求失败：" + e.javaClass.simpleName + " / " + (e.message ?: ""))
-            emit(LlmEvent.Failed(-1, "请求失败，请检查网络连接后重试"))
+            // call.cancel() 引发的连接关闭同样是取消路径：先把取消语义传出去，不当成网络失败上报
+            currentCoroutineContext().ensureActive()
+            if (e is SocketTimeoutException) {
+                // 读超时：按「无字节」计，收到数据就重新计时
+                FileLog.log("llm", "请求超时：" + READ_TIMEOUT_SECONDS + " 秒内没有收到任何数据")
+                emit(
+                    LlmEvent.Failed(
+                        -1,
+                        "请求超时：" + READ_TIMEOUT_SECONDS + " 秒内没有收到任何数据，请检查网络后重试",
+                        LlmFailureCodes.TIMEOUT
+                    )
+                )
+            } else if (e is InterruptedIOException) {
+                // 连接/写超时（30 秒）走这里：与「无字节 90 秒」区分文案，避免把秒数写错
+                FileLog.log("llm", "请求超时：" + e.javaClass.simpleName)
+                emit(
+                    LlmEvent.Failed(
+                        -1,
+                        "请求超时：网络连接未在限定时间内完成，请检查网络后重试",
+                        LlmFailureCodes.TIMEOUT
+                    )
+                )
+            } else {
+                FileLog.log("llm", "请求失败：" + e.javaClass.simpleName + " / " + (e.message ?: ""))
+                emit(
+                    LlmEvent.Failed(
+                        -1,
+                        "请求失败，请检查网络连接后重试",
+                        LlmFailureCodes.TRANSPORT
+                    )
+                )
+            }
+        } finally {
+            // 正常读完也要收起钩子；此时响应体已关闭，call.cancel() 无副作用
+            cancelHook.cancel()
         }
     }.flowOn(Dispatchers.IO)
 
@@ -296,6 +381,9 @@ class DeepSeekProvider(
 
     private companion object {
         val JSON = "application/json; charset=utf-8".toMediaType()
+
+        /** 读超时：按下「无字节」计，收到数据即重新计时。 */
+        const val READ_TIMEOUT_SECONDS = 90L
     }
 }
 

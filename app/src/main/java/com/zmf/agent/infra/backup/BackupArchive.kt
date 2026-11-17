@@ -6,6 +6,8 @@ import android.provider.OpenableColumns
 import android.util.Xml
 import com.zmf.agent.core.AppPaths
 import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.core.store.SessionStore
+import com.zmf.agent.core.store.ZstdFrames
 import com.zmf.agent.infra.terminal.TerminalEnv
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -64,7 +66,8 @@ data class ImportReport(
  * zip 内的包结构：
  *
  *   backup-manifest.json   清单：format / applicationId / versionName / exportedAt / sections
- *   data/<name>.json       应用自己的 JSON（sessions.json / workspaces.json / stats.json）
+ *   data/<name>.json       应用自己的 JSON（sessions.json / queues.json / workspaces.json / stats.json 等）
+ *   data/sessions/<id>.jsonl  每会话事件流（原样字节，导入端逐文件校验）
  *   prefs/<name>.xml       SharedPreferences（app_prefs.xml 导出前已删掉 api_key 那一条）
  *   workspace/             默认工作区文件（externalFilesDir/workspace，递归全部子目录）
  *   workspaces/            自建工作区文件（externalFilesDir/workspaces，递归全部子目录）
@@ -73,7 +76,7 @@ data class ImportReport(
  *   terminal/              终端环境（filesDir/usr 递归全部子目录、common.sh、setup_fake_sysdata.sh）
  *
  * 原则：
- * - 重活全在 [Dispatchers.IO] 上做，边做边回调进度（百分比 + 阶段文案）；
+ * - 耗时操作全部在 [Dispatchers.IO] 上执行，执行过程中回调进度（百分比与阶段文案）；
  * - 导入**每段独立成败**：某段损坏不影响其他段，结果逐条进入 [ImportReport]；
  * - 不抛给界面：只有整个包根本读不了才返回 Result.failure。
  */
@@ -108,6 +111,8 @@ object BackupArchive {
             "workspaces.json",
             // 未发送的输入内容：不随会话文件走，需单独打包
             "drafts.json",
+            // P33：繁忙时排队的待发消息，按会话分键
+            "queues.json",
             "stats.json",
             // 定时任务：缺它则换机/恢复后所有任务（含目标会话绑定）一起消失
             "schedules.json",
@@ -116,6 +121,17 @@ object BackupArchive {
             // 摘要/压缩事件：只读记录，用于换机后排查上下文被压缩的原因
             "context_events.json"
         )
+
+    /**
+     * D1.3-G：会话事件流目录段。导出按目录遍历（`data/sessions/<file>`），原样拷贝字节——
+     * 不解包、不重压缩；导入端按 [SESSION_FILE_REGEX] 逐文件校验。
+     */
+    private val DATA_DIRS = listOf("sessions")
+
+    /** 会话文件名白名单：纯数字 id + `.jsonl`。`.part`/`.migrated`/`.corrupt` 一律不进包。 */
+    private val SESSION_FILE_REGEX = Regex("^[0-9]+\\.jsonl$")
+
+    private const val SESSIONS_DIR_NAME = "sessions"
 
     /** 终端模块除 usr/ 之外还要带上的脚本。 */
     private val TERMINAL_ROOT_FILES = listOf("common.sh", "setup_fake_sysdata.sh")
@@ -140,7 +156,7 @@ object BackupArchive {
     private const val SENSITIVE_PREFS_XML = "app_prefs.xml"
     private const val SENSITIVE_KEY = "api_key"
 
-    /** 工作区目录里不备份的东西。 */
+    /** 工作区目录中不纳入备份的名称与后缀。 */
     private const val TRASH_DIR = ".trash"
     private const val CACHE_DIR = "cache"
     private const val PART_SUFFIX = ".part"
@@ -235,6 +251,19 @@ object BackupArchive {
             }
         }
         addSection("data", dataItems)
+
+        // ---- data/sessions/：每会话一个 JSONL 事件流（D1.3-G 目录段）。原样拷贝字节 ----
+        val sessionItems = ArrayList<PlanItem>()
+        for (dirName in DATA_DIRS) {
+            val dir = File(AppPaths.dataDir(app), dirName)
+            val files = dir.listFiles { f -> f.isFile && SESSION_FILE_REGEX.matches(f.name) }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+            for (file in files) {
+                sessionItems.add(PlanItem(PREFIX_DATA + dirName + "/" + file.name, file))
+            }
+        }
+        addSection("sessions", sessionItems)
 
         // ---- skills/：appdata/skills 下的技能包（SKILL.md 与它带的脚本）----
         val skillItems = ArrayList<PlanItem>()
@@ -519,6 +548,9 @@ object BackupArchive {
         var logFiles = 0
         var skillFiles = 0
         var memoryFiles = 0
+        // D1.3-G：目录段导入的会话文件数；旧版 sessions.json 是否被导入
+        var sessionFiles = 0
+        var legacySessionsImported = false
 
         // 进度：优先按「已读字节 / 包总大小」（zip 的压缩字节几乎线性推进）；
         // 无法获取总大小时退回按条目数估算（渐近至 95%，结束时补至 100），保证单调递增。
@@ -564,11 +596,23 @@ object BackupArchive {
                                         // 清单已读取，不重复落盘
                                         name == MANIFEST_NAME -> Unit
 
+                                        // D1.3-G：data/sessions/<file> 目录段——放宽「带 / 即非法」的唯一例外
+                                        name.startsWith(PREFIX_DATA + SESSIONS_DIR_NAME + "/") -> {
+                                            val fileName = name.removePrefix(PREFIX_DATA + SESSIONS_DIR_NAME + "/")
+                                            if (!SESSION_FILE_REGEX.matches(fileName)) {
+                                                throw IllegalStateException("会话条目名不合法")
+                                            }
+                                            importSessionFile(app, fileName, readEntryCapped(zis, MAX_DATA_ENTRY_BYTES))
+                                            sessionFiles++
+                                            restored.add("会话数据 sessions/" + fileName)
+                                        }
+
                                         name.startsWith(PREFIX_DATA) -> {
                                             val fileName = name.removePrefix(PREFIX_DATA)
                                             if (fileName.isEmpty() || fileName.contains('/') || !fileName.endsWith(".json")) {
                                                 throw IllegalStateException("数据条目名不合法")
                                             }
+                                            if (fileName == "sessions.json") legacySessionsImported = true
                                             // 先改写包名：正式版与共存版互为来源时，
                                             // 文件中固定的工作区与附件绝对路径需同步改为当前包
                                             val text = rewritePackageIds(
@@ -628,7 +672,7 @@ object BackupArchive {
                                                 ?: throw IllegalStateException("备份中的路径不合法，已跳过该条目")
                                             val root = external
                                                 ?: throw IllegalStateException("外部存储不可用，该段内容未恢复")
-                                            // 日志直接覆盖写，坏了也无所谓
+                                            // 日志直接覆盖写，即使损坏也不影响其他段
                                             writeEntryTo(zis, File(File(root, "logs"), rel))
                                             logFiles++
                                         }
@@ -699,6 +743,25 @@ object BackupArchive {
         }
 
         // ---- 收尾：把临时目录整体 rename 换成正式目录 ----
+
+        // D1.3-G 接驳：旧包的 sessions.json 当场迁移（导入内容覆盖同名会话文件，迁移成功才生效）
+        if (legacySessionsImported) {
+            try {
+                SessionStore.reimportLegacySessions(app)
+                restored.add("会话数据 sessions.json：已当场迁移为每会话事件流")
+            } catch (e: Exception) {
+                failed.add("会话数据 sessions.json：迁移失败，保留本机现状（" + (e.message ?: e.javaClass.simpleName) + "）")
+            }
+        }
+        // 新格式目录段导入完成：作废索引与缓存（导入的 JSONL 从此是权威数据）
+        if (sessionFiles > 0) {
+            try {
+                SessionStore.onSessionsImported(app)
+            } catch (e: Exception) {
+                failed.add("会话索引重建失败：" + (e.message ?: e.javaClass.simpleName))
+            }
+        }
+
         if (workspaceFiles > 0 && external != null && workspaceTemp != null) {
             if (replaceDir(File(external, "workspace"), workspaceTemp)) {
                 restored.add("工作区文件 workspace/：" + workspaceFiles + " 个文件")
@@ -866,8 +929,7 @@ object BackupArchive {
     // ================= 数据文件 =================
 
     /** 先写 .tmp 再 rename：损坏的备份不会将正在使用的文件写成不完整状态。 */
-    private fun writeDataFile(app: Context, fileName: String, bytes: ByteArray) {
-        val target = AppPaths.dataFile(app, fileName)
+    private fun writeDataFile(app: Context, fileName: String, bytes: ByteArray) {        val target = AppPaths.dataFile(app, fileName)
         val parent = target.parentFile
         if (parent != null && !parent.exists()) parent.mkdirs()
         val temp = File(parent, fileName + IMPORT_TMP_SUFFIX)
@@ -882,9 +944,45 @@ object BackupArchive {
         }
     }
 
+    /**
+     * D1.3-G：导入一个会话事件流文件。三项校验（帧 0 可解压、外层 CRC 通过、
+     * header.id 与文件名一致）全部通过才落位 `appdata/sessions/<file>`；
+     * 任一失败抛出（由调用方计入 failed，不覆盖本机同名文件）。
+     */
+    private fun importSessionFile(app: Context, fileName: String, bytes: ByteArray) {
+        val dir = AppPaths.sessionsDir(app)
+        val temp = File(dir, fileName + IMPORT_TMP_SUFFIX)
+        try {
+            temp.parentFile?.mkdirs()
+            temp.writeBytes(bytes)
+            val header = ZstdFrames.firstFramePayload(temp)
+                ?: throw IllegalStateException("帧 0 校验失败（半帧、CRC 不符或不可解压）")
+            val headerId = try {
+                JSONObject(String(header, Charsets.UTF_8)).optString("id", "")
+            } catch (e: Exception) {
+                ""
+            }
+            if (headerId.isEmpty() || headerId != fileName.removeSuffix(".jsonl")) {
+                throw IllegalStateException("header.id 与文件名不一致")
+            }
+            val target = File(dir, fileName)
+            if (!temp.renameTo(target)) {
+                // 个别文件系统 rename 不覆盖已有文件：先删后试，最后退化为直接覆盖
+                target.delete()
+                if (!temp.renameTo(target)) {
+                    temp.copyTo(target, overwrite = true)
+                    temp.delete()
+                }
+            }
+        } finally {
+            if (temp.exists()) temp.delete()
+        }
+    }
+
     /** 数据段在报告里显示的名字。 */
     private fun dataLabel(fileName: String): String = when (fileName) {
         "sessions.json" -> "会话数据 sessions.json"
+        "queues.json" -> "待发队列 queues.json"
         "workspaces.json" -> "工作区与存储单元 workspaces.json"
         "drafts.json" -> "未发送的草稿 drafts.json"
         "stats.json" -> "用量统计 stats.json"
@@ -977,7 +1075,7 @@ object BackupArchive {
         }
     }
 
-    /** 游标停在某个 START_TAG 上，把整个元素（含子元素）吃干净。 */
+    /** 游标停在某个 START_TAG 上，跳过整个元素（含子元素）。 */
     private fun skipElement(parser: XmlPullParser) {
         if (parser.eventType != XmlPullParser.START_TAG) return
         var depth = 1
@@ -1018,7 +1116,7 @@ object BackupArchive {
 
     // ================= 文件工具 =================
 
-    /** 递归收集目录里的普通文件（迭代实现，避免很深的目录把栈撑爆）。 */
+    /** 递归收集目录里的普通文件（迭代实现，避免目录过深导致栈溢出）。 */
     private fun collectFiles(
         root: File,
         prefix: String,
@@ -1136,7 +1234,7 @@ object BackupArchive {
         }
         val size = file.length()
         writeTarHeader(out, rel, size, mtime, '0', "", if (file.canExecute()) 0x1ED else 0x1A4)
-        // 内容读失败属于真异常：已经写了头，这条目只能作罢让整包失败（不写半截文件进去）
+        // 内容读失败属于真异常：已写入头部，该条目只能放弃并让整包失败（不写入不完整文件）
         file.inputStream().use { input ->
             val buffer = ByteArray(COPY_BUFFER)
             var copied = 0L
@@ -1228,14 +1326,14 @@ object BackupArchive {
 
     private fun utf8Length(value: String): Int = value.toByteArray(Charsets.UTF_8).size
     /**
-     * App 自带的 busybox 在哪（**文件名必须叫 busybox**）。
+     * App 自带的 busybox 路径（**文件名必须为 busybox**）。
      *
-     * busybox 靠 argv[0] 派发 applet：以 libbusybox.so 的名字执行，它去找一个叫
-     * "libbusybox.so" 的 applet，只回一句 applet not found / 退出码 127。
+     * busybox 按 argv[0] 派发 applet：以 libbusybox.so 的名字执行时，它会查找名为
+     * "libbusybox.so" 的 applet，仅返回 applet not found，退出码 127。
      *
-     * 优先 filesDir/usr/bin/busybox（终端启动时由 TerminalManager 建好的软链，名字对）；
-     * 终端还没启动过（或刚重装被清掉）就没有这条软链，那就把 APK 里那份 libbusybox.so
-     * 复制到 cache/bin/busybox 再执行：直接用 .so 会让导入报 EPIPE（实测）。
+     * 优先使用 filesDir/usr/bin/busybox（终端启动时由 TerminalManager 创建的软链，文件名正确）；
+     * 终端尚未启动或重装后被清除时该软链不存在，此时把 APK 内的 libbusybox.so
+     * 复制到 cache/bin/busybox 再执行：直接使用 .so 会使导入报 EPIPE（实测）。
      */
     private fun busyboxBinary(app: Context): File? {
         val linked = File(File(app.filesDir, "usr/bin"), "busybox")
@@ -1261,7 +1359,7 @@ object BackupArchive {
         }
     }
 
-    /** 目录里所有文件的体积合计。只用来估进度，量不出来就当 0（进度按一格算）。 */
+    /** 目录里所有文件的体积合计。仅用于估算进度，无法统计时按 0 计（进度按一格算）。 */
     private fun fileTreeSize(root: File): Long = try {
         var total = 0L
         var seen = 0
@@ -1391,8 +1489,8 @@ object BackupArchive {
     /**
      * 目录整体替换：临时目录 → 正式目录。
      *
-     * 先把旧目录 rename 到 .import-old（不是直接删），换成功再删旧的；
-     * 换不上去就把旧的搬回来，保证「导入失败不毁数据」。
+     * 先把旧目录 rename 到 .import-old（不是直接删除），替换成功后再删除旧目录；
+     * 替换失败则恢复旧目录，保证「导入失败不毁数据」。
      */
     private fun replaceDir(target: File, temp: File): Boolean {
         if (!temp.exists()) return false
@@ -1409,7 +1507,7 @@ object BackupArchive {
             deleteTree(old)
             return true
         }
-        // 换不上去：把旧的搬回来，保持原样
+        // 替换失败：恢复旧目录，保持原样
         if (hadOld) old.renameTo(target)
         FileLog.log(TAG, "目录替换失败：" + target.absolutePath)
         return false

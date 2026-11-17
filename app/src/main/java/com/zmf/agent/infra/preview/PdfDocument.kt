@@ -24,7 +24,7 @@ class PdfDocument(file: File) : Closeable {
 
     val pageCount: Int = renderer.pageCount
 
-    /** 单页位图像素上限：4 百万像素约 16 MB 一位图，超过就按比例缩，宁可糊也不 OOM。 */
+    /** 单页位图像素上限：4 百万像素约合 16 MB，超出则按比例缩小，优先避免 OOM。 */
     private val maxPixels = 4_000_000L
 
     /** 页面宽高比（高 / 宽）；打不开时按 A4 竖版兜底。 */

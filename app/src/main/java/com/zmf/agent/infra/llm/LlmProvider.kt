@@ -70,8 +70,97 @@ sealed interface LlmEvent {
          */
         val promptIncludesCache: Boolean = true
     ) : LlmEvent
-    /** 请求失败：携带服务端错误码与消息，由上层决定是否重试。 */
-    data class Failed(val code: Int, val message: String) : LlmEvent
+    /**
+     * 请求失败：携带服务端错误码、消息与稳定分类，由上层决定是否重试。
+     *
+     * [failureCode] 是给自动重试与界面错误节点看的稳定标识，不依赖各家的文案；
+     * [retryAfterMs] 是服务端 Retry-After 换算出的毫秒，重试等待优先用它。
+     */
+    data class Failed(
+        val code: Int,
+        val message: String,
+        val failureCode: String = LlmFailureCodes.UNKNOWN,
+        val retryAfterMs: Long? = null
+    ) : LlmEvent
+}
+
+/**
+ * 一次失败的稳定分类，口径与 DSH 的模型请求重试策略一致。
+ *
+ * 只做「能不能重试」与「错误节点显示哪一类」两件事，不在界面层重新解析各家文案。
+ */
+object LlmFailureCodes {
+    const val AUTH = "AUTH"
+    const val QUOTA = "QUOTA"
+    const val RATE_LIMIT = "RATE_LIMIT"
+    const val CONTEXT_WINDOW_EXCEEDED = "CONTEXT_WINDOW_EXCEEDED"
+    const val INVALID_REQUEST = "INVALID_REQUEST"
+    const val SERVER = "SERVER"
+    const val TIMEOUT = "TIMEOUT"
+    const val TRANSPORT = "TRANSPORT"
+    const val EMPTY_RESPONSE = "EMPTY_RESPONSE"
+    const val CONFIG = "CONFIG"
+    const val UNKNOWN = "UNKNOWN"
+
+    /** 与 DSH 相同：空响应、限流、服务端错误、超时、传输中断可重试；鉴权/额度/参数问题不重试。 */
+    private val RETRYABLE = setOf(EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT)
+
+    fun isRetryable(code: String): Boolean = code in RETRYABLE
+
+    /**
+     * HTTP 状态码 → 稳定分类（与 DSH 的 401/403→AUTH、402/quota→QUOTA、429→RATE_LIMIT、
+     * ≥500/api_error→SERVER 同口径；上下文超限单独成一类，交给压缩恢复而不是退避重试）。
+     */
+    fun classify(status: Int, message: String): String = when {
+        status == 401 || status == 403 -> AUTH
+        status == 402 || isQuotaExceeded(message) -> QUOTA
+        status == 429 -> RATE_LIMIT
+        isContextOverflow(message) -> CONTEXT_WINDOW_EXCEEDED
+        status == 400 || status == 413 -> INVALID_REQUEST
+        status >= 500 -> SERVER
+        status > 0 -> UNKNOWN
+        else -> TRANSPORT
+    }
+
+    /** 服务端说「额度不足」：各家措辞不同，只认几种明确说法，避免把普通 400 误判成额度问题。 */
+    private fun isQuotaExceeded(message: String): Boolean {
+        val text = message.lowercase()
+        return text.contains("insufficient_quota") ||
+            text.contains("quota exceeded") ||
+            text.contains("insufficient balance") ||
+            text.contains("余额不足") ||
+            text.contains("欠费")
+    }
+
+    /** 与 AgentLoop 的上下文溢出判断同一组关键词：命中后不重试，改走「压缩后重发」。 */
+    private fun isContextOverflow(message: String): Boolean {
+        val text = message.lowercase()
+        if (text.isEmpty()) return false
+        if (text.contains("context length")) return true
+        if (text.contains("context window")) return true
+        if (text.contains("maximum context")) return true
+        if (text.contains("too many tokens")) return true
+        if (text.contains("exceeds") && text.contains("token")) return true
+        return text.contains("too long") && text.contains("token")
+    }
+
+    /**
+     * 解析 Retry-After：既支持秒数，也支持 HTTP 日期；解析不了返回 null（走本地指数退避）。
+     *
+     * 与 DSH 一致：服务端给了就优先听它的，但超过重试上限时上层会放弃重试。
+     */
+    fun retryAfterMillis(value: String?, nowMillis: Long = System.currentTimeMillis()): Long? {
+        if (value.isNullOrBlank()) return null
+        val trimmed = value.trim()
+        trimmed.toLongOrNull()?.let { return (it * 1000L).coerceAtLeast(0L) }
+        return runCatching {
+            val at = java.time.ZonedDateTime.parse(
+                trimmed,
+                java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME
+            )
+            (at.toInstant().toEpochMilli() - nowMillis).coerceAtLeast(0L)
+        }.getOrNull()
+    }
 }
 
 /**
