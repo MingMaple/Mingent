@@ -37,31 +37,39 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zmf.agent.core.model.TextMode
+import com.zmf.agent.core.text.MarkdownPlainText
 import com.zmf.agent.uikit.common.stableStatusBarPadding
+import com.zmf.agent.uikit.components.SaltSegmented
 import com.zmf.agent.uikit.theme.Motion
+import androidx.compose.ui.text.font.FontFamily
 import kotlinx.coroutines.launch
 
 /**
  * 选择文本的全屏页。
  *
  * 手势约定：
- * - 顶部「把手 + 标题」为固定栏，也是唯一的拖拽把手：仅从该栏下拉才关闭整页；
+ * - 顶部「把手 + 分段开关」为固定栏，也是唯一的拖拽把手：仅从该栏下拉才关闭整页；
  * - 正文区域可任意上下滑动，仅滚动或选字，页面不会回退。
  *
  * 两个关键约定：
  * - 整页**仅使用一个** SelectionContainer：正文与思考过程共用一个选区，点击任意文字均可取消复制栏；
  * - 退场**全程不透明**：仅做位移，不做整体淡出，否则窗口半透明时文字会与主页文字重叠。
  *
+ * 模式约定：TXT 展示转换后的纯文本——链接只留文字、代码块保留围栏、标题与列表用空行与
+ * 「· 」缩进分隔，全部布局落在字符层；MARKDOWN 以等宽字体显示原始源码。
+ * 两种模式下系统选区复制都复制当前所见字符串，因此所见即所复制，缩进与换行天然保留。
+ *
  * 复制栏使用系统 ActionMode：正文顶部留出 top = 48.dp，否则浮条会被挤出窗口而不可见。
  */
 @Composable
 fun TextSelectionOverlay(
-    title: String,
     text: String,
     reasoning: String,
+    textMode: TextMode,
+    onTextModeChange: (TextMode) -> Unit,
     onDismiss: () -> Unit
 ) {
     val density = LocalDensity.current
@@ -74,6 +82,21 @@ fun TextSelectionOverlay(
 
     var offset by remember { mutableFloatStateOf(0f) }
     var closing by remember { mutableStateOf(false) }
+
+    // 正文按模式取一份纯文本字符串，显示与复制共用同一份，避免「所见」与「所复制」漂移：
+    // TXT 走转换器，产出带空行、缩进、圆点标记的纯文本（代码块保留围栏、链接只留文字）；
+    // MD 直接展示源码。两者都用等宽字体渲染，让字符层缩进（空格、全角空格）能稳定对齐，
+    // 复制后粘贴不丢布局。
+    val shownText = remember(text, textMode) {
+        if (textMode == TextMode.TXT) {
+            MarkdownPlainText.toPlainTextOrOriginal(text, keepCodeFence = true, inlineUrlInLink = false)
+        } else text
+    }
+    val shownReasoning = remember(reasoning, textMode) {
+        if (textMode == TextMode.TXT) {
+            MarkdownPlainText.toPlainTextOrOriginal(reasoning, keepCodeFence = true, inlineUrlInLink = false)
+        } else reasoning
+    }
 
     /** 关闭整页：整块移出屏幕后回调 onDismiss；动画途中重复调用只生效一次。 */
     fun closeNow() {
@@ -135,13 +158,19 @@ fun TextSelectionOverlay(
                                 )
                         )
                     }
-                    Text(
-                        text = title,
-                        modifier = Modifier.padding(start = 20.dp, top = 10.dp, bottom = 10.dp),
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 10.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        SaltSegmented(
+                            options = listOf(TextMode.TXT.label, TextMode.MARKDOWN.label),
+                            selectedIndex = if (textMode == TextMode.TXT) 0 else 1
+                        ) { index ->
+                            onTextModeChange(if (index == 0) TextMode.TXT else TextMode.MARKDOWN)
+                        }
+                    }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.08f))
 
@@ -156,12 +185,13 @@ fun TextSelectionOverlay(
                     SelectionContainer {
                         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                             Text(
-                                text = text,
-                                fontSize = 15.sp,
-                                lineHeight = 24.sp,
+                                text = shownText,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 13.sp,
+                                lineHeight = 21.sp,
                                 color = MaterialTheme.colorScheme.onBackground
                             )
-                            if (reasoning.isNotEmpty()) {
+                            if (shownReasoning.isNotEmpty()) {
                                 DisableSelection {
                                     Text(
                                         text = "思考过程",
@@ -171,7 +201,8 @@ fun TextSelectionOverlay(
                                     )
                                 }
                                 Text(
-                                    text = reasoning,
+                                    text = shownReasoning,
+                                    fontFamily = FontFamily.Monospace,
                                     fontSize = 13.sp,
                                     lineHeight = 21.sp,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)

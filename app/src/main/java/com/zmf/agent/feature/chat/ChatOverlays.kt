@@ -23,6 +23,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.zmf.agent.capability.subagent.SubAgentRegistry
+import com.zmf.agent.core.model.TextMode
 import com.zmf.agent.uikit.theme.Motion
 import kotlinx.coroutines.CoroutineScope
 import java.io.File
@@ -82,7 +83,9 @@ internal fun BoxScope.ChatOverlays(
     context: Context,
     scope: CoroutineScope,
     imageRoot: File,
-    subAgentEntries: List<SubAgentRegistry.Entry>
+    subAgentEntries: List<SubAgentRegistry.Entry>,
+    textMode: TextMode,
+    onTextModeChange: (TextMode) -> Unit
 ) {
     var subAgentDetailId by ui.subAgentDetailId
     var page by ui.page
@@ -144,9 +147,10 @@ internal fun BoxScope.ChatOverlays(
     ) {
         selectionTarget?.let { target ->
             TextSelectionOverlay(
-                title = target.title,
                 text = target.text,
                 reasoning = target.reasoning,
+                textMode = textMode,
+                onTextModeChange = onTextModeChange,
                 onDismiss = { selectionVisible = false }
             )
         }

@@ -54,7 +54,6 @@ internal data class ViewerTarget(
 
 /** 选择文本页要展示的内容。 */
 internal data class SelectionTarget(
-    val title: String,
     val text: String,
     val reasoning: String
 )
