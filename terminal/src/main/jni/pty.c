@@ -20,6 +20,24 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
 
+// Use libc on every supported Android version: Java Os.fcntlInt starts at API 30.
+// Preserve the descriptor's other flags and report failures to Kotlin for cleanup.
+JNIEXPORT jint JNICALL
+Java_com_ai_assistance_operit_terminal_Pty_00024Companion_setNonBlocking(JNIEnv *env, jobject thiz,
+                                                                       jint fd) {
+    int flags;
+    do {
+        flags = fcntl(fd, F_GETFL);
+    } while (flags == -1 && errno == EINTR);
+    if (flags == -1) return errno;
+
+    int result;
+    do {
+        result = fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    } while (result == -1 && errno == EINTR);
+    return result == -1 ? errno : 0;
+}
+
 JNIEXPORT jintArray JNICALL
 Java_com_ai_assistance_operit_terminal_Pty_00024Companion_createSubprocess(JNIEnv *env, jobject thiz,
                                                                           jobjectArray cmdarray,
@@ -128,10 +146,20 @@ Java_com_ai_assistance_operit_terminal_Pty_00024Companion_createSubprocess(JNIEn
 
 JNIEXPORT jint JNICALL
 Java_com_ai_assistance_operit_terminal_Pty_00024Companion_waitFor(JNIEnv *env, jobject thiz, jint pid) {
-    int status;
-    waitpid(pid, &status, 0);
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited == -1 && errno == EINTR);
+    if (waited != pid) {
+        LOGE("waitpid(%d) failed: %s", pid, strerror(errno));
+        return -1;
+    }
     if (WIFEXITED(status)) {
         return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
     }
     return -1;
 }
@@ -205,4 +233,4 @@ Java_com_ai_assistance_operit_terminal_Pty_setPtyWindowSize(JNIEnv *env, jobject
     
     LOGD("PTY window size set to %dx%d for fd %d", rows, cols, fd);
     return 0;
-} 
+}

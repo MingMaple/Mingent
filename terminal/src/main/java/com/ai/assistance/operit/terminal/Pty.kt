@@ -9,11 +9,10 @@
 
 package com.ai.assistance.operit.terminal
 
+import android.system.ErrnoException
 import android.util.Log
 import java.io.File
 import java.io.FileDescriptor
-import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -23,16 +22,21 @@ open class Pty(
     val masterFd: FileDescriptor?,
     private val ptyMaster: Int,
     val stdout: InputStream,
-    val stdin: OutputStream
+    val stdin: OutputStream,
+    /** 子进程 pid；JNI createSubprocess 已返回该值。无法取得 pid 的实现（如远程会话）为 -1。 */
+    val pid: Int = -1,
+    private val interruptInput: () -> Unit = { stdin.write(0x03); stdin.flush() }
 ) {
     // 为本地终端提供的便利构造函数
     constructor(process: Process, masterFd: FileDescriptor, ptyMaster: Int) : this(
-        process = process,
-        masterFd = masterFd,
-        ptyMaster = ptyMaster,
-        stdout = FileInputStream(masterFd),
-        stdin = FileOutputStream(masterFd)
+        process, masterFd, ptyMaster, PtyIo(masterFd, ptyMaster)
     )
+
+    private constructor(
+        process: Process, masterFd: FileDescriptor, ptyMaster: Int, io: PtyIo, pid: Int = -1
+    ) : this(process, masterFd, ptyMaster, io.input, io.output, pid, io::interrupt)
+
+    fun sendInterrupt() = interruptInput()
 
     fun waitFor(): Int {
         return process.waitFor()
@@ -77,52 +81,33 @@ open class Pty(
             val fileDescriptor = Reflect.getFileDescriptor(masterFdInt)
             
             // We need a Process object to manage the subprocess lifetime
-            val dummyProcess = object : Process() {
-                override fun destroy() {
-                    // Send SIGHUP to the process group to ensure all child processes are terminated
-                    try {
-                        android.os.Process.sendSignal(pid, 1) // SIGHUP
-                    } catch (e: Exception) {
-                        // Ignore
-                    }
-                    
-                    // Send SIGKILL to ensure the process is dead immediately
-                    try {
-                        android.os.Process.sendSignal(pid, 9) // SIGKILL
-                    } catch (e: Exception) {
-                        // Ignore
-                    }
-                }
+            val dummyProcess = PtyChildProcess(
+                pid = pid,
+                waitForExit = { Companion.waitFor(pid) },
+                sendSignal = { signal -> android.os.Process.sendSignal(pid, signal) }
+            )
 
-                override fun exitValue(): Int {
-                    // We can't get the actual exit value without a blocking waitpid call,
-                    // which we do in waitFor(). The contract of exitValue() is to throw
-                    // an exception if the process is still running.
-                    try {
-                        // sendSignal(pid, 0) checks if the process exists.
-                        // If it doesn't throw, the process is still alive.
-                        android.os.Process.sendSignal(pid, 0)
-                        throw IllegalThreadStateException("Process hasn't exited")
-                    } catch (e: Exception) {
-                        // The process is dead. We don't have the exit code without waiting,
-                        // so we can't fulfill the contract perfectly. Returning 0 is a
-                        // reasonable fallback for a terminated process where the specific
-                        // exit code isn't available.
-                        return 0
-                    }
+            return try {
+                Pty(dummyProcess, fileDescriptor, masterFdInt, PtyIo(fileDescriptor, masterFdInt), pid)
+            } catch (error: Exception) {
+                dummyProcess.destroy()
+                try {
+                    android.system.Os.close(fileDescriptor)
+                } catch (closeError: Exception) {
+                    error.addSuppressed(closeError)
                 }
-
-                override fun getErrorStream(): InputStream? = null
-                override fun getInputStream(): InputStream? = null
-                override fun getOutputStream(): OutputStream? = null
-
-                override fun waitFor(): Int {
-                    return Companion.waitFor(pid)
-                }
+                throw error
             }
-            
-            return Pty(dummyProcess, fileDescriptor, masterFdInt)
         }
+
+        internal fun configureNonBlocking(fd: Int) {
+            val error = setNonBlocking(fd)
+            if (error != 0) {
+                throw IOException("Failed to set PTY nonblocking mode", ErrnoException("fcntl", error))
+            }
+        }
+
+        private external fun setNonBlocking(fd: Int): Int
 
         private external fun createSubprocess(cmdArray: Array<String>, envArray: Array<String>, workingDir: String): IntArray
 
@@ -243,4 +228,4 @@ object Reflect {
         }
         return fileDescriptor
     }
-} 
+}

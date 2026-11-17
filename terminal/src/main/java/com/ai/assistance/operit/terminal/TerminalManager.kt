@@ -276,26 +276,8 @@ private const val TAG = "TerminalManager"
         )
     }
 
-    private fun escapeInputForLog(input: String): String {
-        return buildString(input.length) {
-            input.forEach { char ->
-                when (char) {
-                    '\\' -> append("\\\\")
-                    '\n' -> append("\\n")
-                    '\r' -> append("\\r")
-                    '\t' -> append("\\t")
-                    else -> {
-                        if (char.isISOControl()) {
-                            append("\\u")
-                            append(char.code.toString(16).padStart(4, '0'))
-                        } else {
-                            append(char)
-                        }
-                    }
-                }
-            }
-        }
-    }
+    private fun escapeInputForLog(input: String): String =
+        SessionInputRouter.escapeInputForLog(input)
 
     /**
      * 发送命令
@@ -347,11 +329,11 @@ private const val TAG = "TerminalManager"
         session.commandMutex.withLock {
             if (session.currentExecutingCommand?.isExecuting == true) {
                 // 有命令正在执行，将新命令加入队列
-                session.commandQueue.add(QueuedCommand(actualCommandId, command))
+                session.commandQueue.add(QueuedCommand(actualCommandId, command, tracksExitStatus = true))
                 Log.d(TAG, "Command queued for session $sessionId: $command (id: $actualCommandId). Queue size: ${session.commandQueue.size}")
             } else {
                 // 没有命令在执行，直接执行
-                executeCommandInternal(command, session, actualCommandId)
+                executeCommandInternal(command, session, actualCommandId, tracksExitStatus = true)
             }
         }
         return actualCommandId
@@ -372,7 +354,7 @@ private const val TAG = "TerminalManager"
             if (session.commandQueue.isNotEmpty()) {
                 val nextCommand = session.commandQueue.removeAt(0)
                 Log.d(TAG, "Processing next queued command: ${nextCommand.command} (id: ${nextCommand.id}). Queue size: ${session.commandQueue.size}")
-                executeCommandInternal(nextCommand.command, session, nextCommand.id)
+                executeCommandInternal(nextCommand.command, session, nextCommand.id, nextCommand.tracksExitStatus)
             }
         }
     }
@@ -380,17 +362,18 @@ private const val TAG = "TerminalManager"
     /**
      * 内部执行命令的函数, 必须在 commandMutex 锁内部调用
      */
-    private suspend fun executeCommandInternal(command: String, session: TerminalSessionData, commandId: String) {
-        if (command.trim() == "clear") {
+    private suspend fun executeCommandInternal(command: String, session: TerminalSessionData, commandId: String, tracksExitStatus: Boolean = false) {
+        if (command.trim() == "clear" && !tracksExitStatus) {
             try {
                 writeInputToKernel(session, "clear$TERMINAL_ENTER", "command-clear")
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending 'clear' command", e)
             }
         } else {
-            handleRegularCommand(command, session, commandId)
+            val submittedCommand = if (tracksExitStatus) TrackedCommandProtocol.wrap(command, commandId) else command
+            handleRegularCommand(command, session, commandId, tracksExitStatus, submittedCommand)
             try {
-                val fullInput = "$command$TERMINAL_ENTER"
+                val fullInput = "$submittedCommand$TERMINAL_ENTER"
                 writeInputToKernel(session, fullInput, "command")
                 Log.d(TAG, "Sent command to PTY: $command")
             } catch (e: Exception) {
@@ -400,42 +383,61 @@ private const val TAG = "TerminalManager"
     }
 
     /**
-     * 发送输入
+     * 发送输入到当前会话
+     *
+     * 目标在调用时确定：协程真正执行时再去读当前会话，中途切换会话就会写错 pty。
      */
     fun sendInput(input: String) {
+        val sessionId = sessionManager.getCurrentSession()?.id ?: return
         coroutineScope.launch(Dispatchers.IO) {
-            val session = sessionManager.getCurrentSession() ?: return@launch
-
-            try {
-                writeInputToKernel(session, input, "direct-input")
-
-                // 如果用户提供了交互式输入，则重置等待状态
-                if (session.isWaitingForInteractiveInput) {
-                    sessionManager.updateSession(session.id) {
-                        it.copy(isWaitingForInteractiveInput = false)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error sending input", e)
-            }
+            sendInputToSession(sessionId, input)
         }
     }
 
     /**
-     * 发送中断信号
+     * 发送输入到指定会话，不读写全局当前会话
+     *
+     * 目标只由 [sessionId] 决定：调用方点名了会话，异步写入再去看当前会话就会写错 pty。
      */
-    fun sendInterruptSignal() {
-        coroutineScope.launch(Dispatchers.IO) {
-            try {
-                val currentSession = sessionManager.getCurrentSession()
-                currentSession?.let {
-                    writeInputToKernel(it, "\u0003", "interrupt")
-                    Log.d(TAG, "Sent interrupt signal (Ctrl+C) to session ${it.id}")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error sending interrupt signal", e)
+    fun sendInputToSession(sessionId: String, input: String): SessionInputResult {
+        val session = sessionManager.getSession(sessionId)
+        val result = SessionInputRouter.deliver(session, sessionId, input, "session-input")
+        if (result != SessionInputResult.DELIVERED || session == null) {
+            return result
+        }
+
+        // 如果用户提供了交互式输入，则重置等待状态
+        if (session.isWaitingForInteractiveInput) {
+            sessionManager.updateSession(session.id) {
+                it.copy(isWaitingForInteractiveInput = false)
             }
         }
+        return result
+    }
+
+    /**
+     * 发送中断信号到当前会话
+     *
+     * 目标在调用时确定，规则同 [sendInput]。
+     */
+    fun sendInterruptSignal() {
+        val sessionId = sessionManager.getCurrentSession()?.id ?: return
+        coroutineScope.launch(Dispatchers.IO) {
+            sendInterruptSignalToSession(sessionId)
+        }
+    }
+
+    /**
+     * 发送中断信号 (Ctrl+C) 到指定会话，不读写全局当前会话
+     *
+     * 中断必须落在调用方点名的那个 pty 上：顺手切走前台终端会让界面跳到后台会话，
+     * 而先切换再写入会让中断落到切换期间被改成当前会话的另一个 pty。
+     */
+    fun sendInterruptSignalToSession(sessionId: String): SessionInputResult {
+        return SessionInputRouter.interrupt(
+            sessionManager.getSession(sessionId),
+            sessionId
+        )
     }
 
     private fun initializeSession(sessionId: String) {
@@ -510,27 +512,30 @@ private const val TAG = "TerminalManager"
         }
 
         val exitCode =
-            if (terminalSession.process.isAlive) {
-                -1
+            if (terminalSession.process.waitFor(250, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                terminalSession.process.exitValue()
             } else {
-                runCatching { terminalSession.process.waitFor() }
-                    .getOrElse {
-                        Log.w(TAG, "Failed to read exit code for session $sessionId", it)
-                        -1
-                    }
+                // EOF without an observed process exit is an unknown result, never success.
+                Log.w(TAG, "PTY closed before process exit was observed for session $sessionId")
+                -1
             }
 
         Log.i(TAG, "Terminal session $sessionId exited with code $exitCode")
-        outputProcessor.handleSessionExit(
+        val completion = outputProcessor.handleSessionExit(
             sessionId = sessionId,
             message = context.getString(R.string.terminal_exited_with_code, exitCode),
-            sessionManager = sessionManager
+            sessionManager = sessionManager,
+            exitCode = exitCode
         )
 
         // 已退出的会话不能继续留在状态表中，否则同名 terminal.create 会复用已关闭的 PTY，
         // 后续命令只会写入失效 writer 并等待一个永远不会到达的完成事件。下一次按名称创建时，
         // 会话管理器会启动新的会话。
         sessionManager.closeSession(sessionId)
+        // Publish only after removal, so an immediate terminal.create cannot reuse the dead PTY.
+        if (completion != null) {
+            coroutineScope.launch { _commandExecutionEvents.emit(completion) }
+        }
     }
     
     /**
@@ -1353,7 +1358,7 @@ $prootBindSetup
         }
     }
 
-    private fun handleRegularCommand(command: String, session: com.ai.assistance.operit.terminal.data.TerminalSessionData, commandId: String) {
+    private fun handleRegularCommand(command: String, session: com.ai.assistance.operit.terminal.data.TerminalSessionData, commandId: String, tracksExitStatus: Boolean, submittedCommand: String) {
         session.currentCommandOutput.clear()
         session.currentOutputLineCount = 0
 
@@ -1362,11 +1367,14 @@ $prootBindSetup
             prompt = session.currentDirectory,
             command = command,
             output = "",
-            isExecuting = true
+            isExecuting = true,
+            tracksExitStatus = tracksExitStatus,
+            submittedCommand = submittedCommand
         )
 
         // Set the current executing command reference for efficient access
         session.currentExecutingCommand = newCommandItem
+        sessionManager.updateSession(session.id) { it.copy(commandRevision = it.commandRevision + 1) }
 
         // 发出命令开始执行事件
         coroutineScope.launch {

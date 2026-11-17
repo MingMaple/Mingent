@@ -17,8 +17,11 @@ import com.ai.assistance.operit.terminal.Pty
 import com.ai.assistance.operit.terminal.TerminalSession
 import com.ai.assistance.operit.terminal.provider.filesystem.FileSystemProvider
 import com.ai.assistance.operit.terminal.provider.filesystem.LocalFileSystemProvider
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
@@ -33,6 +36,19 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * 起壳超时：与取消分开成不同异常，日志与回执才能分辨「等不到进程启动」与「用户主动停止」。
+ *
+ * 不继承 CancellationException：后者会被协程层当作取消继续上抛，而这里是可重试的失败，
+ * 要把可读原因交回工具调用方。
+ */
+private class HiddenExecShellStartTimeoutException(executorKey: String, timeoutMs: Long) :
+    java.io.IOException("隐藏执行 shell 起壳超时（" + timeoutMs + " 毫秒），已释放半成品：" + executorKey)
 
 /**
  * 本地终端提供者
@@ -71,7 +87,31 @@ class LocalTerminalProvider(
         private const val END_MARKER_PREFIX = "__OPERIT_HIDDEN_END__:"
         private const val PID_MARKER_PREFIX = "__OPERIT_HIDDEN_PID__:"
         private const val HIDDEN_EXEC_CANCEL_SETTLE_TIMEOUT_MS = 3_000L
+
+        /** 关闭通道时等待 shell 自行退出的上限；超过就强制结束，避免取消路径被僵死的进程拖住。 */
+        private const val HIDDEN_EXEC_DESTROY_GRACE_MS = 2_000L
+
+        /**
+         * 起壳（fork proot 子进程）的等待上限。
+         *
+         * 为什么需要上限：`ProcessBuilder.start()` 是阻塞调用，既不响应协程取消，也不保证返回；
+         * 实测在设备负载高时曾悬挂 90 秒以上，把子智能体和它占着的执行通道一起挂住。
+         * 15 秒足够覆盖正常启动（就绪标记另由 [awaitHiddenExecReady] 的 30 秒上限管）。
+         */
+        private const val HIDDEN_EXEC_START_TIMEOUT_MS = 15_000L
+
+        /**
+         * 某条通道**首次**起壳的等待上限：冷启动首次挂载 PRoot 根文件系统可能超过 15 秒。
+         *
+         * 依据：新建会话首条命令曾报「隐藏执行 shell 起壳超时（15000 毫秒）」，模型原样重试即成功
+         * （T313-B2A，17:35:34），说明首次挂载耗时落在 15 秒以上、且第二次已命中缓存。
+         * 只对「该通道从未成功拉起过 shell」的首次放宽，成功拉起一次后仍走 15 秒，不放大常驻风险。
+         */
+        private const val HIDDEN_EXEC_FIRST_START_TIMEOUT_MS = 60_000L
     }
+
+    /** 已成功拉起过 shell 的通道键：据此区分「首次起壳」与后续起壳。 */
+    private val startedExecKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     override suspend fun isConnected(): Boolean {
         return true
@@ -137,6 +177,11 @@ class LocalTerminalProvider(
         val shell =
             try {
                 getOrCreateHiddenExecShell(executorKey)
+            } catch (e: CancellationException) {
+                // 取消必须在起壳阶段也原样上抛：折成 SHELL_START_FAILED 会让上层把「被停止」
+                // 当成一次普通执行失败而继续下一轮。
+                Log.d(TAG, "Hidden exec shell preparation cancelled: $executorKey")
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to prepare hidden exec shell: $executorKey", e)
                 return HiddenExecResult(
@@ -147,9 +192,13 @@ class LocalTerminalProvider(
                 )
             }
 
+        var commandStarted = false
+        // 本条命令的进程组号：从输出里的 pid 标记解析，取消或超时时据此终止整棵进程树
+        val commandPid = AtomicLong(0L)
         return try {
             withTimeout(timeoutMs) {
                 shell.mutex.withLock {
+                    commandStarted = true
                     val token = UUID.randomUUID().toString()
                     Log.d(TAG, "Hidden exec command started: key=$executorKey token=$token timeoutMs=$timeoutMs command=${command.lineSequence().firstOrNull().orEmpty().take(200)}")
                     val wrappedCommand = buildHiddenExecEnvelope(command, token)
@@ -157,12 +206,19 @@ class LocalTerminalProvider(
                         shell.writer.write(wrappedCommand)
                         shell.writer.flush()
                     }
-                    collectHiddenExecResult(shell, token, timeoutMs)
+                    collectHiddenExecResult(shell, token, timeoutMs, commandPid)
                 }
             }
         } catch (e: TimeoutCancellationException) {
-            hiddenExecScope.launch {
-                closeHiddenExecShell(executorKey)
+            if (commandStarted) {
+                // 命令已写进这条 shell：先终止进程组再关掉通道，确保超时后没有残留进程
+                withContext(NonCancellable) {
+                    terminateHiddenExec(executorKey, commandPid.get())
+                }
+            } else {
+                // 只是排队等锁就超时，命令还没写进去：此时关壳会连带杀死同一通道上正在执行的上一条命令，
+                // 让它以 PROCESS_EXITED 收场（C5c 并发排查的候选成因）。留着 shell，只回报本次超时。
+                Log.w(TAG, "Hidden exec wait timed out before start, shell kept: $executorKey")
             }
             HiddenExecResult(
                 output = "",
@@ -170,6 +226,18 @@ class LocalTerminalProvider(
                 state = HiddenExecResult.State.TIMEOUT,
                 error = "Hidden exec command timed out after ${timeoutMs}ms"
             )
+        } catch (e: CancellationException) {
+            // 取消（用户停止回合 / 父级连带中止子智能体）必须原样上抛：
+            // 若在这里折成一次普通执行失败，上层会把「被取消」当成工具调用失败而继续下一轮，
+            // 迟到的结论还会盖掉已经写下的「已取消」状态。
+            // 收尾放在 NonCancellable 里同步做完：命令用 setsid 自成进程组，只关 shell 会留下孤儿进程。
+            if (commandStarted) {
+                withContext(NonCancellable) {
+                    terminateHiddenExec(executorKey, commandPid.get())
+                }
+            }
+            Log.d(TAG, "Hidden exec command cancelled: $executorKey")
+            throw e
         } catch (e: Exception) {
             hiddenExecScope.launch {
                 closeHiddenExecShell(executorKey)
@@ -219,13 +287,7 @@ class LocalTerminalProvider(
     }
 
     private suspend fun createHiddenExecShell(executorKey: String): HiddenExecShell {
-        val process =
-            withContext(Dispatchers.IO) {
-                buildProcessBuilder(
-                    command = buildHiddenExecStartupCommand(),
-                    redirectErrorStream = true
-                ).start()
-            }
+        val process = startHiddenExecProcess(executorKey)
         val outputChannel = Channel<String>(Channel.UNLIMITED)
         val readJob =
             hiddenExecScope.launch {
@@ -269,6 +331,90 @@ class LocalTerminalProvider(
 
         Log.d(TAG, "Created hidden exec shell: $executorKey")
         return shell
+    }
+
+    /**
+     * 起一条隐藏执行 shell，并给「起壳」这一步加有界等待。
+     *
+     * 阻塞的 `ProcessBuilder.start()` 放进独立协程执行，本协程只等
+     * [HIDDEN_EXEC_START_TIMEOUT_MS]；超时或取消时把交接位上的进程就地销毁，
+     * 迟到的进程也在落地时自行销毁，因此不会留下没有读线程的半成品 shell。
+     * 常规路径仍是「一次 start + 就绪标记」，没有额外的常驻探针。
+     */
+    private suspend fun startHiddenExecProcess(executorKey: String): Process {
+        val handoff = AtomicReference<Process?>(null)
+        val abandoned = AtomicBoolean(false)
+        val started = CompletableDeferred<Process>()
+        val firstStart = !startedExecKeys.contains(executorKey)
+        val startTimeoutMs =
+            if (firstStart) HIDDEN_EXEC_FIRST_START_TIMEOUT_MS else HIDDEN_EXEC_START_TIMEOUT_MS
+        val startBeganAt = System.currentTimeMillis()
+
+        hiddenExecScope.launch(Dispatchers.IO) {
+            try {
+                val process =
+                    buildProcessBuilder(
+                        command = buildHiddenExecStartupCommand(),
+                        redirectErrorStream = true
+                    ).start()
+                handoff.set(process)
+                if (abandoned.get()) {
+                    discardLateHiddenExecProcess(handoff, executorKey)
+                } else {
+                    started.complete(process)
+                }
+            } catch (t: Throwable) {
+                started.completeExceptionally(t)
+            }
+        }
+
+        val process =
+            try {
+                withTimeoutOrNull(startTimeoutMs) { started.await() }
+            } catch (e: CancellationException) {
+                // 取消（用户停止回合 / 父级连带中止子智能体）：原样上抛，只顺手把半成品放掉
+                abandoned.set(true)
+                discardLateHiddenExecProcess(handoff, executorKey)
+                Log.d(TAG, "Hidden exec shell start cancelled: $executorKey")
+                throw e
+            }
+
+        if (process != null) {
+            if (firstStart) {
+                // 首次起壳放宽上限并留证：实测耗时是判断冷启动是否仍超限的唯一依据
+                startedExecKeys.add(executorKey)
+                Log.i(
+                    TAG,
+                    "First hidden exec shell start relaxed limit: key=$executorKey " +
+                        "elapsedMs=${System.currentTimeMillis() - startBeganAt} limitMs=$startTimeoutMs"
+                )
+            }
+            return process
+        }
+
+        abandoned.set(true)
+        discardLateHiddenExecProcess(handoff, executorKey)
+        Log.e(
+            TAG,
+            "Hidden exec shell start timed out after ${startTimeoutMs}ms: $executorKey"
+        )
+        throw HiddenExecShellStartTimeoutException(executorKey, startTimeoutMs)
+    }
+
+    /**
+     * 放掉一份「已经没人等」的起壳结果。
+     *
+     * 用交接位的原子交换保证同一进程只被一个人销毁：等待方放弃与迟到者落地可能同时发生，
+     * 谁先取到谁负责 `destroy()`，另一方拿到 null 直接返回，不重复打日志。
+     */
+    private fun discardLateHiddenExecProcess(
+        handoff: AtomicReference<Process?>,
+        executorKey: String
+    ) {
+        handoff.getAndSet(null)?.let { process ->
+            runCatching { process.destroy() }
+            Log.w(TAG, "Hidden exec shell start abandoned, process destroyed: $executorKey")
+        }
     }
 
     private suspend fun awaitHiddenExecReady(shell: HiddenExecShell): HiddenExecResult {
@@ -321,7 +467,8 @@ class LocalTerminalProvider(
     private suspend fun collectHiddenExecResult(
         shell: HiddenExecShell,
         token: String,
-        timeoutMs: Long
+        timeoutMs: Long,
+        commandPid: AtomicLong
     ): HiddenExecResult {
         val endMarkerPrefix = "$END_MARKER_PREFIX$token:"
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -334,6 +481,10 @@ class LocalTerminalProvider(
                 } ?: break
             logHiddenExecChunk(shell.key, token, chunk)
             builder.append(chunk)
+            // pid 标记紧跟在命令启动之后输出；先记下来，取消或超时才有目标可终止
+            if (commandPid.get() <= 0L) {
+                extractHiddenExecPid(builder.toString(), token)?.takeIf { it > 0L }?.let { commandPid.set(it) }
+            }
             if (builder.indexOf(endMarkerPrefix) >= 0) {
                 break
             }
@@ -354,7 +505,13 @@ class LocalTerminalProvider(
             )
         }
 
-        cancelHiddenExecCommand(rawOutput, token)
+        // 超时：终止命令的进程组（SIGTERM 后 SIGKILL）。通道本身保留复用，下一条命令不必重新起 shell。
+        val pid = commandPid.get()
+        if (pid > 0L) {
+            killHiddenExecProcessGroup(pid)
+        } else {
+            cancelHiddenExecCommand(rawOutput, token)
+        }
         return HiddenExecResult(
             output = extractHiddenExecOutput(rawOutput, token),
             exitCode = -1,
@@ -445,17 +602,40 @@ class LocalTerminalProvider(
 
     private fun cancelHiddenExecCommand(rawOutput: String, token: String) {
         val pid = extractHiddenExecPid(rawOutput, token) ?: return
+        killHiddenExecProcessGroup(pid)
+    }
+
+    /**
+     * 向命令的进程组发送终止信号：先 `SIGTERM` 让命令自行收尾，短暂等待后再 `SIGKILL` 兜底。
+     *
+     * 组号来自输出里的 pid 标记（命令以 `setsid` 启动，自身即进程组长），因此只作用于**这一条**命令，
+     * 不会波及其他会话或其他通道上正在执行的命令。
+     */
+    private fun killHiddenExecProcessGroup(pid: Long) {
+        if (pid <= 0L) return
+        val group = (-pid).toInt()
         runCatching {
-            Os.kill((-pid).toInt(), OsConstants.SIGTERM)
+            Os.kill(group, OsConstants.SIGTERM)
         }.onFailure { error ->
             Log.w(TAG, "Failed to send SIGTERM to hidden exec process group $pid", error)
         }
         Thread.sleep(100)
         runCatching {
-            Os.kill((-pid).toInt(), OsConstants.SIGKILL)
+            Os.kill(group, OsConstants.SIGKILL)
         }.onFailure { error ->
             Log.w(TAG, "Failed to send SIGKILL to hidden exec process group $pid", error)
         }
+    }
+
+    /**
+     * 取消或超时后的收尾：先终止命令的进程组，再关闭这条通道的 shell。
+     *
+     * 两步都不能省：命令由 `setsid` 放进独立进程组，只关 shell 会留下孤儿进程；
+     * 只杀进程组而不关 shell，则这条通道会带着半死的状态留给下一条命令。
+     */
+    private suspend fun terminateHiddenExec(executorKey: String, pid: Long) {
+        killHiddenExecProcessGroup(pid)
+        closeHiddenExecShell(executorKey)
     }
 
     private fun extractHiddenExecPid(rawOutput: String, token: String): Long? {
@@ -498,6 +678,12 @@ class LocalTerminalProvider(
             withContext(Dispatchers.IO) {
                 runCatching { shell.writer.close() }
                 runCatching { shell.process.destroy() }
+                // 先礼后兵：短等之后仍未退出就强制结束，避免取消路径被僵死的 shell 拖住
+                runCatching {
+                    if (!shell.process.waitFor(HIDDEN_EXEC_DESTROY_GRACE_MS, TimeUnit.MILLISECONDS)) {
+                        shell.process.destroyForcibly()
+                    }
+                }
                 runCatching { shell.readJob.cancel() }
                 runCatching { shell.outputChannel.close() }
             }
