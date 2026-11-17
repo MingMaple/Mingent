@@ -117,7 +117,7 @@ object NoticeCenter {
  *
  * 名称长度直接决定提示条长度：字号最大可放大到 16/14（约 1.14 倍），13sp 汉字约占 14.9dp，
  * 加上内距、图标、间距与动作的固定开销，名称每多 1 字提示条就加宽约 15dp。
- * 会话标题多由首句自动生成，长标题本就没有辨识度，硬截不影响判断。
+ * 会话标题多由首句自动生成，长标题本就没有辨识度，强制截断不影响判断。
  */
 fun noticeName(raw: String, max: Int = 6): String {
     val text = raw.trim()
@@ -165,7 +165,7 @@ private fun NoticeBanner(notice: Notice) {
 
     Surface(
         modifier = Modifier
-            // 页头普遍为 62dp，提示条让过页头，避免盖住标题
+            // 页头普遍为 62dp，提示条避开页头高度，避免遮住标题
             .padding(top = 64.dp)
             .padding(horizontal = 16.dp)
             // 宽度上限按最大倍率（16/14 ≈ 1.14）复核：328dp 为 360dp 屏宽减去左右 16dp

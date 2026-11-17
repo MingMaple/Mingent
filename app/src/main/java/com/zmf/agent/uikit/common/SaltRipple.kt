@@ -59,7 +59,7 @@ fun Modifier.saltRowClickable(
      * 长按动作；null 表示不区分长短按。
      *
      * 传入之后使用 [combinedClickable]：长按到阈值即触发本回调，**抬手不再触发 [onClick]**。
-     * 会话行依赖这一点——长按只用于「露出操作入口」，不应顺带把用户带进那条会话。
+     * 会话行依赖这一点——长按只用于「露出操作入口」，不应同时打开该会话。
      *
      * 位置在 [onClick] 之前：Kotlin 的尾随 lambda 绑定最后一个参数，
      * `saltCardRow { ... }` 这种写法必须继续落在 onClick 上。

@@ -120,7 +120,14 @@ val ImageFileIcon: ImageVector = fileIcon().apply {
     stroke("M3.2 11.4L6.6 8.2L9.0 10.4L10.6 9.0L12.9 11.2")
 }.build()
 
-/** 无后缀、不认识类型：只有纸张与折角。 */
+/** 视频：圆角外框 + 播放三角。 */
+val VideoFileIcon: ImageVector = fileIcon().apply {
+    stroke("M2.9 4.2C2.9 3.5 3.4 3.0 4.1 3.0H11.9C12.6 3.0 13.1 3.5 13.1 4.2V11.8" +
+        "C13.1 12.5 12.6 13.0 11.9 13.0H4.1C3.4 13.0 2.9 12.5 2.9 11.8Z")
+    stroke("M6.6 5.9L10.4 8.0L6.6 10.1Z")
+}.build()
+
+/** 无后缀、无法识别的类型：只有纸张与折角。 */
 val PlainFileIcon: ImageVector = fileIcon().apply {
     stroke(PAPER)
     stroke(FOLD)
@@ -136,6 +143,7 @@ fun fileIconOf(kind: FileKind): ImageVector = when (kind) {
     FileKind.OFFICE_OTHER -> OfficeFileIcon
     FileKind.ARCHIVE -> ArchiveFileIcon
     FileKind.IMAGE -> ImageFileIcon
+    FileKind.VIDEO -> VideoFileIcon
     FileKind.OTHER -> PlainFileIcon
 }
 

@@ -16,10 +16,10 @@ import kotlin.math.abs
 /**
  * 横向行滑动到边界后，将剩余的横向位移就地消费，不交由外层抽屉或轨迹页处理。
  *
- * 不使用 nestedScroll 的原因（上一版 ConsumeHorizontalOverflow 实测无效，已删除）：
+ * 不使用 nestedScroll 拦截该位移的原因（实测无效）：
  * horizontalScroll 到达边界时既不继续消费，也不将该段余量交给 onPostScroll，
  * 因此 onPostScroll 无法接收，继续推动即会拉出抽屉。
- * 前述指「手指仍在屏幕上」的阶段，由下方的 Main 阶段拦截负责。
+ * 上述现象指「手指仍在屏幕上」的阶段，由下文 Main 阶段的拦截处理。
  * 手指抬起后还存在第二阶段：甩动（fling）。快速甩动时行会先滚至边界，
  * 剩余**速度**仍会向上派发至 onPostFling，抽屉接收到超过 600px/s 的速度即直接展开。
  * 现象为「缓慢推至边界不会打开抽屉，但快速甩动仍会进入抽屉」。

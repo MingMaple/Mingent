@@ -133,10 +133,22 @@ fun MarkdownText(
     foldToggleInsetX: Dp = 16.dp,
     foldToggleInsetY: Dp = 12.dp
 ) {
-    // 解析结果按原文缓存，避免每帧重解析；text 变化（流式增量）时才会重算。
+    // 首帧立即解析一次：刚进入屏幕时不能空着等防抖。
+    // 流式逐 token 时 text 每次都变，若每次变化都全文重解析会占满主线程：
+    // 后续变化先记下，80ms 内没有新变化才解析最后那一版；parsedKey 相同则直接跳过。
     // 这里再套一层进程级 LRU：列表滑出屏幕后 item 会被回收，滑回来 remember 已经没了，
     // 只靠 remember 的话每次滑回来都要把整段 Markdown 重新切一遍（长对话滚动卡顿的主因）。
-    val blocks = remember(text, keepBlankLines) { parseMarkdownCached(text, keepBlankLines) }
+    var parsedKey by remember { mutableStateOf(text to keepBlankLines) }
+    var blocks by remember { mutableStateOf(parseMarkdownCached(text, keepBlankLines)) }
+    LaunchedEffect(text, keepBlankLines) {
+        val key = text to keepBlankLines
+        if (parsedKey == key) return@LaunchedEffect
+        delay(80)
+        // 防抖期间可能又有新文本进来（本 effect 已被取消），再确认一次才写入
+        if (parsedKey == key) return@LaunchedEffect
+        blocks = parseMarkdownCached(text, keepBlankLines)
+        parsedKey = key
+    }
     if (foldAt == Dp.Unspecified || foldedHeight == Dp.Unspecified) {
         Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
             for (block in blocks) MarkdownBlock(block, fontSize, color, codeBackground)
@@ -831,10 +843,10 @@ internal fun copyCode(context: Context, code: String, label: String = "代码") 
 
 /* ------------------------------- 行内解析 ------------------------------- */
 
-/** 还没落到 AnnotatedString 上的一段样式。 */
+/** 尚未写入 AnnotatedString 的一段样式。 */
 private class PendingSpan(val style: SpanStyle, val start: Int, val end: Int)
 
-/** 还没落到 AnnotatedString 上的一段链接：文字已经躺在 sb 里，只等 addLink。 */
+/** 尚未写入 AnnotatedString 的一段链接：文字已在 sb 中，只等 addLink。 */
 private class PendingLink(val url: String, val start: Int, val end: Int)
 
 /** 行内嵌套（粗体套代码等）的最大递归层数，防止病态输入。 */
@@ -871,7 +883,7 @@ private fun inlineAnnotated(
     val sb = StringBuilder(raw.length)
     val spans = ArrayList<PendingSpan>()
     val links = ArrayList<PendingLink>()
-    // 行内代码里出现的网址不能当链接：`https://…` 是给用户抄的，点它没有意义
+    // 行内代码中的网址不按链接处理：`https://…` 是供用户复制的文本，点击没有意义
     val codeRanges = ArrayList<IntArray>()
     collectInline(
         s = raw,

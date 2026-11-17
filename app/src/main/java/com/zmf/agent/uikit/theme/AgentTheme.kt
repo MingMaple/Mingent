@@ -186,7 +186,7 @@ fun AgentTheme(
             outline = Palette.DarkStroke,
             outlineVariant = Palette.DarkStroke,
             error = Palette.DarkError,
-            // 语义容器：M3 默认给的是固定粉红 #93000A，与本主题的红不同源，换成自家红降透明度
+            // 语义容器：M3 默认值为固定粉红 #93000A，与本主题的红色不同源，改用本主题红色并降低透明度
             errorContainer = Palette.DarkError.copy(alpha = 0.16f),
             onErrorContainer = Palette.DarkError
         )
