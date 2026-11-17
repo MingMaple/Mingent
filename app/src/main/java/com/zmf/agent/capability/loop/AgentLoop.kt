@@ -14,6 +14,7 @@ import com.zmf.agent.infra.llm.LlmProvider
 import com.zmf.agent.infra.llm.ToolSpec
 import com.zmf.agent.infra.llm.UsageBuckets
 import com.zmf.agent.core.log.FileLog
+import com.zmf.agent.core.llm.CacheAudit
 import com.zmf.agent.capability.tools.displayName
 import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ORIGIN_JOB
@@ -176,6 +177,24 @@ class AgentLoop(
     /** 上一次请求的输入缓存命中 token 数（服务端没返回就是 0）。 */
     private var lastCachedTokens = 0
 
+    /**
+     * 缓存归因基线：上一次请求的输入总量 / 模型 / 是否上报过缓存 / 结束时间。
+     *
+     * 只用于下一次请求的归因，不参与请求组装；失败轮不更新基线（没有可信用量）。
+     */
+    private var prevPromptTokens: Int? = null
+    private var prevModel: String? = null
+    private var prevReportedCache = false
+    private var prevFinishedAt: Long? = null
+
+    /**
+     * 最近一次请求的缓存未命中归因（内存态）。
+     *
+     * 只供日志复核与后续任务读取：不落盘、不进请求，也不接界面（本批不做 UI 展示）。
+     */
+    var cacheAudit: CacheAudit.Result? = null
+        private set
+
     /** 上一次请求的输出 tokens（来自 usage）：生成速度的分子。 */
     private var lastRequestOutputTokens = 0
 
@@ -250,6 +269,21 @@ class AgentLoop(
     }
 
     /**
+     * 用历史里最后一条带用量的 assistant 回填归因基线。
+     *
+     * 聊天页每回合 `newLoop()` 重建实例：不回填的话，跨回合的第一个请求会被误判为「首轮」。
+     * 失败轮不写用量（promptTokens = 0），自然跳过。
+     */
+    private fun seedBaseline(messages: List<ChatMessage>) {
+        if (prevPromptTokens != null) return
+        val last = messages.lastOrNull { it.role == "assistant" && it.promptTokens > 0 } ?: return
+        prevPromptTokens = last.promptTokens
+        prevModel = last.usageModel.ifEmpty { null }
+        prevReportedCache = last.usageCacheReported
+        prevFinishedAt = last.createdAt
+    }
+
+    /**
      * 执行一次完整回复。
      *
      * @param userText 这条提问的正文；**null = 不追加新的用户消息**，直接在当前历史之后继续执行。
@@ -313,6 +347,7 @@ class AgentLoop(
                 )
             )
         }
+        seedBaseline(messages)
         var round = 0
         var modelMillis = 0L
         var toolMillis = 0L
@@ -981,6 +1016,36 @@ class AgentLoop(
                                 " 输出=" + buckets.completionTokens
                         )
                         ui.onUsage(buckets)
+                        // 缓存归因：只观测，不改变本次请求；服务商从未上报缓存时不产生结论
+                        if (buckets.cacheReadReported || (buckets.cacheWriteTokens ?: 0) > 0) {
+                            val audit = CacheAudit.audit(
+                                CacheAudit.Input(
+                                    prevPromptTokens = prevPromptTokens,
+                                    prevModel = prevModel,
+                                    prevReportedCache = prevReportedCache,
+                                    promptTokens = buckets.promptTokens,
+                                    cacheReadTokens = buckets.cacheReadTokens,
+                                    cacheWriteTokens = buckets.cacheWriteTokens ?: 0,
+                                    idleMillis = prevFinishedAt?.let {
+                                        (System.currentTimeMillis() - it).coerceAtLeast(0)
+                                    },
+                                    model = model
+                                )
+                            )
+                            cacheAudit = audit
+                            FileLog.log(
+                                "cache",
+                                "未命中归因：" + audit.reason + " miss=" + audit.missTokens +
+                                    " tok（输入=" + buckets.promptTokens +
+                                    " 读取=" + buckets.cacheReadTokens + "）",
+                                sessionId = toolContext.sessionId
+                            )
+                        }
+                        // 基线无条件前移：本轮无论是否产出归因，下一轮都以它作为参照
+                        prevPromptTokens = buckets.promptTokens
+                        prevModel = model
+                        prevReportedCache = prevReportedCache || buckets.cacheReadReported
+                        prevFinishedAt = System.currentTimeMillis()
                     }
 
                     is LlmEvent.Failed -> {
