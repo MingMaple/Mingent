@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.zmf.agent.capability.subagent.SubAgentRegistry
+import com.zmf.agent.core.prefs.ShareTargetPrefs
 import com.zmf.agent.feature.chat.AppPage
 import com.zmf.agent.feature.chat.BrowserState
 import com.zmf.agent.feature.chat.ChatComposerArea
@@ -52,8 +53,10 @@ import com.zmf.agent.feature.chat.ChatUiState
 import com.zmf.agent.feature.chat.ChatViewModel
 import com.zmf.agent.feature.chat.ShareArea
 import com.zmf.agent.feature.chat.ShareIntake
+import com.zmf.agent.feature.chat.SharePreparingArea
 import com.zmf.agent.feature.chat.PreviewTabs
 import com.zmf.agent.feature.chat.TracePage
+import com.zmf.agent.feature.chat.ViewerTarget
 import com.zmf.agent.uikit.components.salt.SaltFullPane
 import com.zmf.agent.uikit.layout.LocalUiWindow
 import kotlinx.coroutines.CoroutineScope
@@ -317,15 +320,19 @@ private fun ChatColumn(
                 // 平滑过渡，clip=false 让下滑的那块能越过动画中的高度继续往下走。
                 val shareDraft by ui.shareDraft
                 val shareVisible by ui.shareVisible
+                val sharePreparing by ui.sharePreparing
                 var shareSending by remember { mutableStateOf(false) }
                 var shareFailure by remember { mutableStateOf<String?>(null) }
                 // 新一批内容进来时清掉上一批的进度与错误，避免失败文案带到下一次分享
                 LaunchedEffect(shareDraft) {
                     shareSending = false
                     shareFailure = null
+                    ui.shareSent.value = false
                 }
+                // 未决提问由输入区自己挂在输入条上方（见 Composer 的 ask 参数），不占这个槽位：
+                // 提问期间输入条照常可用，只是输入区自己的伴随面板让位。
                 AnimatedContent(
-                    targetState = shareVisible && shareDraft != null,
+                    targetState = shareVisible,
                     transitionSpec = {
                         if (targetState) {
                             (slideInVertically(tween(220)) { it } + fadeIn(tween(160))) togetherWith
@@ -338,7 +345,10 @@ private fun ChatColumn(
                     label = "shareSlot"
                 ) { sharing ->
                     val draftNow = shareDraft
-                    if (sharing && draftNow != null) {
+                    if (sharing && (sharePreparing || draftNow == null)) {
+                        // 会话已经切到目标，内容还在导入：先占住输入区，避免用户对着旧输入框发空消息
+                        SharePreparingArea(onCancel = { ui.shareVisible.value = false })
+                    } else if (sharing && draftNow != null) {
                         ShareArea(
                             draft = draftNow,
                             workspaces = viewModel.workspaceList,
@@ -363,18 +373,25 @@ private fun ChatColumn(
                                     imageRelPaths = draftNow.imageRelPaths - rel
                                 )
                             },
+                            // 点缩略图看大图：路径相对中转批次解析，查看器本身与主页共用
+                            onPreviewImage = { index ->
+                                ui.viewer.value = ViewerTarget(
+                                    paths = draftNow.imageRelPaths,
+                                    startIndex = index,
+                                    rootPath = draftNow.sourceRootPath
+                                )
+                            },
                             // 发送已提交时不再受理放弃：否则面板消失但消息仍会发出
                             onCancel = { if (!shareSending) ui.shareVisible.value = false },
                             onTargetPicked = { picked ->
                                 shareFailure = null
-                                // 生成期间会话层不允许切换（流式结果写的是当前会话的消息表），
-                                // 此时保持原会话不变；选中的就是当前会话本身则不算切换，不提示。
-                                if (viewModel.isStreaming) {
-                                    if (!viewModel.isShareTargetCurrent(picked)) {
-                                        shareFailure = "正在生成回复，本轮结束后再切换目标"
-                                    }
-                                } else if (!viewModel.selectShareTarget(picked)) {
+                                // 选目标就是切会话：与抽屉同一套动作，生成期间同样允许切换——
+                                // 切过去只是换看到哪条会话，不会打断正在跑的那一轮
+                                if (!viewModel.selectShareTarget(picked)) {
                                     shareFailure = "目标会话或工作区已不存在，请重新选择"
+                                } else {
+                                    // 记住本次落点：一小时内的下一次分享回到这条会话
+                                    ShareTargetPrefs.remember(context, viewModel.currentSessionId)
                                 }
                             },
                             onSend = { body ->
@@ -385,8 +402,10 @@ private fun ChatColumn(
                                     if (failure != null) {
                                         shareFailure = failure
                                     } else {
-                                        // 发送成功：面板退场，常规输入区露出，消息就在眼前的这个会话里
+                                        // 发送成功：面板退场，常规输入区露出，消息即出现在当前会话中。
+                                        // 先记「已发出」，退场收尾据此直接删除中转批次而不是再移交一次
                                         ui.wasAtBottom.value = true
+                                        ui.shareSent.value = true
                                         ui.shareVisible.value = false
                                     }
                                 }

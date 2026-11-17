@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 截屏用无障碍服务的说明：系统设置页原样展示，须说明用途与版本条件。 -->
+    <string name="accessibility_capture_description">本服务仅用于截取屏幕画面与读取前台应用包名，不读取也不修改任何应用内容。开启后，助手才能截取其他应用；系统版本低于 Android 11 时该能力不可用。应用内截屏不需要本服务。</string>
+</resources>

@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.zmf.agent.core.AppForeground
+import com.zmf.agent.capability.runtime.MemoryMonitor
 import com.zmf.agent.infra.system.ShizukuBridge
 import com.zmf.agent.core.model.SharePayload
 import com.zmf.agent.core.notify.Notifier
@@ -60,6 +61,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 实例与任务的可查证据：本包只允许一个 MainActivity（singleTask）。若仍出现第二个实例，
+        // 该行会连续出现两次且 taskId 不同——那是「两个 ViewModel 各写一份会话」的现场，必须立刻修掉。
+        FileLog.log("life", "onCreate 实例=" + Integer.toHexString(System.identityHashCode(this)) +
+            " 任务=" + taskId + " 恢复=" + (savedInstanceState != null))
         // 冷启动：通知携带的是一次性令牌，兑换成功才切会话；伪造或已用过的令牌会得到 null
         notificationSessionId = sessionIdFrom(intent)
         // 读取后立即移除：Activity 因配置变化重建时会复用同一 Intent，残留 extra 会再次发起兑换
@@ -78,6 +83,13 @@ class MainActivity : ComponentActivity() {
         // （重排用于重装、重启或被系统清除后的兜底）
         // 日志须先于重排绑定：重排发生在界面之前，未绑定时它写的「重排 N 条」会被静默丢弃
         FileLog.init(this)
+        // 冷启动清扫分享中转目录：上一次进程被回收时留下的批次在这里一次收掉（日志记清掉的批次与文件数）。
+        // 必须排在 FileLog.init 之后；放在后台执行，不拖慢首帧，也不与本次分享的落盘抢目录
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching { ShareIntake.sweepStale(this@MainActivity) }
+        }
+        // 工具跨层服务：产物登记、通知、上下文读数与生图；其余端口由界面绑定后补装
+        runCatching { com.zmf.agent.app.graph.AppGraph.installTools(this) }
         runCatching { ScheduleRunner.installBridge(this) }
         // 重排只读写任务表与闹钟，不参与首帧；放到后台执行，避免拖慢冷启动。
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
@@ -144,12 +156,14 @@ class MainActivity : ComponentActivity() {
     /** 点击通知（应用已在后台或前台）：兑换令牌后切换会话，不重建界面。 */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        FileLog.log("life", "onNewIntent 实例=" + Integer.toHexString(System.identityHashCode(this)) +
+            " 任务=" + taskId + " 动作=" + intent.action)
         // 必须刷新引用：不调 setIntent 时后续 getIntent() 仍返回首次启动的那一个
         setIntent(intent)
         sessionIdFrom(intent)?.let { notificationSessionId = it }
         // 同样移除令牌，避免重建时再次兑换
         intent.removeExtra(Notifier.EXTRA_SESSION_TOKEN)
-        // 热启动的分享：singleTop 复用同一实例，按一次性语义解析并交给界面
+        // 热启动的分享：singleTask 复用同一实例，按一次性语义解析并交给界面
         takeShareIntent()?.let { sharePayload = it }
     }
 
@@ -180,12 +194,16 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         AppForeground.active++
+        // X09：界面在前台也参与内存采样；是否真正写行由采样前的活动判定决定
+        MemoryMonitor.start(MemoryMonitor.OWNER_UI)
     }
 
     override fun onPause() {
         super.onPause()
         // 计数为正时才递减：个别机型或多窗口会重复回调，减为负数会导致前台判断持续错误，影响通知发送
         if (AppForeground.active > 0) AppForeground.active--
+        // 仍有前台界面（分屏/多窗口）时不停；全部退到后台才注销这个触发方
+        if (!AppForeground.isForeground) MemoryMonitor.stop(MemoryMonitor.OWNER_UI)
     }
 
     /**

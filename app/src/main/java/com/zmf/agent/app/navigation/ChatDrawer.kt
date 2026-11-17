@@ -48,6 +48,8 @@ internal fun ChatDrawerPane(
                     sessions = viewModel.sessionList,
                     currentWorkspaceId = viewModel.currentWorkspaceId,
                     currentSessionId = viewModel.currentSessionId,
+                    // 有待答提问的会话在抽屉里显示提示点：用户切走后仍可看到仍有提问待答
+                    waitingSessionIds = viewModel.pendingAskSessions,
                     // 抽屉收起时复位内联搜索，下次打开回到分组树
                     drawerOpen = drawerOpen,
                     themeMode = themeMode,

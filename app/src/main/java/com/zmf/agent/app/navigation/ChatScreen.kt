@@ -59,7 +59,7 @@ import com.zmf.agent.feature.chat.ChatViewModel
  * @param onShareConsumed 分享内容已被受理时回调，外部据此置空载荷
  *
  * 分享进来时本页进入**分享模式**：底部输入区临时换成分享面板（附件行浮在其上），
- * 发送完或取消后面板整体下滑出屏，常规输入区随即露出。
+ * 发送或取消后分享面板整体下滑出屏，常规输入区随即露出。
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -74,9 +74,10 @@ fun ChatScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // 所有瞬时界面状态集中于此：子组合通过 `var x by ui.x` 获取同一份状态
-    val ui = remember { ChatUiState(context) }
+    // 所有瞬时界面状态集中于此：子组合通过 `var x by ui.x` 获取同一份状态。
+    // 先建 ViewModel：界面状态里的「页面」按会话各一份，需要读当前会话 id
     val viewModel = remember { ChatViewModel(context) }
+    val ui = remember { ChatUiState(context, sessionIdOf = { viewModel.currentSessionId }) }
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -86,8 +87,11 @@ fun ChatScreen(
     // 此处采用订阅版本号的方式：没有子智能体运行时，该 Flow 不会发送任何事件，主线程不会被唤醒；
     // 相比 300ms 轮询，空闲时不会周期性分配快照。
     val versionTick by SubAgentRegistry.version.collectAsState()
-    // 仅在版本实际变化时重新获取快照（首帧同样经过该 remember，相当于打开页面时先获取一次）
-    val subAgentEntries = remember(versionTick) { SubAgentRegistry.snapshot() }
+    // 仅在版本实际变化时重新获取快照（首帧同样经过该 remember，相当于打开页面时先获取一次）。
+    // P25：面板只显示当前会话发起的子智能体；切换会话同样重取快照。
+    val subAgentEntries = remember(versionTick, viewModel.currentSessionId) {
+        SubAgentRegistry.snapshot(viewModel.currentSessionId)
+    }
 
     // 两条选择文件入口：OpenDocument 为系统文稿页，GetContent 进入设备自带的文件管理器
     // （部分机型的文稿页侧边栏没有「文件管理」入口，因此保留第二个入口作为兜底）。
@@ -148,17 +152,18 @@ fun ChatScreen(
 
     val lastMessage = viewModel.messages.lastOrNull()
     // 一个回合指一次提问到下一条提问之间的区间，含中间的工具结果消息。
-    // 该结构仅在会话切换、消息条数或末条内容变化时重建；流式输出逐 token 触发时若重扫全量消息，
-    // 会造成每次 O(n) 的扫描与一次列表分配。以末条消息对象作为 key 可精确判定变化，
-    // 未变化时仅进行一次引用比较。
-    val items = remember(viewModel.currentSessionId, viewModel.messages.size, lastMessage) {
+    // ChatItem 只持有下标（UserItem 另持消息引用，不复制正文），条目结构因此只随「消息条数」变化：
+    // 流式逐 token 改写末条内容时无需重建列表，正文由各行按索引读取最新消息自行刷新。
+    // 原先以末条消息实例为键，流式每个 token 都会重扫全量消息并重建整个列表。
+    val items = remember(viewModel.currentSessionId, viewModel.messages.size) {
         buildChatItems(viewModel.messages)
     }
 
     // 状态行的轮数与步数在 ViewModel 中为计算属性：轮数需遍历全部消息，步数需遍历会话表。
-    // 组合期间每收到一个 token 均会读取一次，因此按同一组特征缓存上一次结果；
-    // 步数还需随本轮 stats.steps 变化，同一轮内步数持续增长，缺少该项会保留旧值。
-    val statusRounds = remember(viewModel.currentSessionId, viewModel.messages.size, lastMessage) {
+    // 轮数只看每条消息的 role / programmatic / origin，三者都不会在流式途中改写，按条数缓存即可。
+    // 步数还需随本轮 stats.steps 变化，且回合收尾的 commitSteps 会改写会话记录（不改变消息条数），
+    // 因此仍保留末条消息实例这一项作为兜底失效条件。
+    val statusRounds = remember(viewModel.currentSessionId, viewModel.messages.size) {
         viewModel.statusRounds
     }
     val statusSteps = remember(
@@ -223,7 +228,7 @@ fun ChatScreen(
         launchPicker {
             // 微信等应用用的是 GET_CONTENT：系统文稿页在这一动作下会把「文件管理、录音机、媒体」
             // 等来源一并列进侧边栏；OPEN_DOCUMENT 的挑选模式只显示声明了可长期访问的源，
-            // 这些系统来源会缺席。我们取到 URI 后立即复制，不依赖长期授权，因此改用 GET_CONTENT。
+            // 这些系统来源会缺席。取到 URI 后立即复制，不依赖长期授权，因此改用 GET_CONTENT。
             val intent = Intent(Intent.ACTION_GET_CONTENT)
                 .addCategory(Intent.CATEGORY_OPENABLE)
                 .setType("*/*")

@@ -40,7 +40,6 @@ import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.theme.Motion
 import kotlinx.coroutines.launch
 import com.zmf.agent.feature.chat.BrowserPage
-import com.zmf.agent.feature.chat.WorkSpacePage
 import com.zmf.agent.feature.chat.AppPage
 import com.zmf.agent.feature.chat.ChatUiState
 import com.zmf.agent.feature.chat.ChatViewModel
@@ -250,21 +249,6 @@ internal fun ChatPageLayers(
             AboutPage(onBack = { page = AppPage.SETTINGS })
         }
 
-        PageSlide(visible = page == AppPage.WORKSPACE) {
-            WorkSpacePage(
-                workspaces = viewModel.workspaceList,
-                currentId = viewModel.currentWorkspaceId,
-                streaming = viewModel.isStreaming,
-                onPick = { id ->
-                    viewModel.switchWorkspace(id)
-                    page = null
-                },
-                onCreate = { name -> viewModel.createWorkspace(name) },
-                onDelete = { id -> viewModel.deleteWorkspace(id) },
-                onBack = { page = null }
-            )
-        }
-
         PageSlide(visible = page == AppPage.MODEL) {
             ModelSettingsPage(
                 onBack = { page = AppPage.SETTINGS },
@@ -349,7 +333,7 @@ internal fun ChatPageLayers(
                 selectedId = viewModel.selectedPlanId,
                 onSelect = { id -> viewModel.selectPlan(id) },
                 onDelete = { id -> viewModel.deletePlan(id) },
-                // 「继续修改」仅返回主页：代替用户发送语句会将「再看看」变为一次实际发送。
+                // 「继续修改」仅返回主页：若代用户发送语句，原本只是查看计划的操作会变成一次实际发送。
                 // 携带 id 进入时，该计划会被标记为「已处理」，按钮随之变灰
                 onContinueEdit = { id ->
                     viewModel.continuePlanEdit(id)

@@ -21,9 +21,6 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- 保活：请求忽略电池优化（设置｜权限管理页一键跳转） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <!-- 后续在 App 内装 APK（插件/更新） -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-
     <!-- 定时任务：开机与应用更新后重排闹钟（国产 ROM 还需用户在系统设置里允许自启动） -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 定时任务：Android 12+ 精确闹钟；同时声明 USE_EXACT_ALARM，供 Android 13+ 装机即授予 -->
@@ -35,7 +32,7 @@
     <!-- Shizuku：动态授权的 shell 通道（见 infra/system/ShizukuBridge.kt） -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
-    <!-- 允许 http 明文：web_fetch 抓 http 页面、以及后续连本机 dsh 面板（http://127.0.0.1:…）都要用 -->
+    <!-- 允许 http 明文：web_fetch 抓取 http 页面、以及后续连接本机 dsh 面板（http://127.0.0.1:…）均依赖明文 http -->
     <application
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
@@ -46,11 +43,16 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Agent">
         <!-- configChanges：系统切深浅色时不重建 Activity，否则 Activity 重建会丢失 ChatViewModel 中的会话状态 -->
-        <!-- launchMode=singleTop：从其它应用分享时复用栈顶实例并走 onNewIntent，不叠加新任务 -->
+        <!-- launchMode=singleTask：整个系统只保留一个实例，再次启动（分享、通知、小窗、桌面图标）一律走 onNewIntent。
+             此前是 singleTop，从其它应用分享时若调用方带 NEW_TASK|MULTIPLE_TASK（真机相册即如此、应用在后台时尤其明显），
+             系统会新建任务与实例：进程内因此并存两个 ChatViewModel，两个 messages 列表、两条会话写盘路径，
+             并共用进程级的 SessionBusy。表现为「一直在跑的那一轮的流式输出不出现、切后台再回前台才看到已结束的内容」、
+             「发送被另一个实例的会话占用挡下，只剩用户气泡」、「后台实例按旧快照覆盖 sessions.json，刚发的消息消失」。
+             该约束只在这一处生效：本包只有这一个启动入口。 -->
         <activity
             android:name=".app.MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize|locale|layoutDirection|density|fontScale"
             android:windowSoftInputMode="adjustNothing">
             <intent-filter>
@@ -117,6 +119,21 @@
         <service
             android:name=".feature.float.FloatingBallService"
             android:exported="false" />
+
+        <!-- 截屏：应用外截屏依赖本无障碍服务（takeScreenshot 自 Android 11 起提供）；
+             exported=true 是系统绑定该服务的必要条件，实际访问由 BIND_ACCESSIBILITY_SERVICE 权限保护 -->
+        <service
+            android:name=".app.capture.CaptureAccessibilityService"
+            android:exported="true"
+            android:label="${appLabel}"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_capture" />
+        </service>
 
         <!-- 定时任务：AlarmManager 到点后由它转发给 ScheduleRunner；exported=false，只有本 App 的闹钟能发进来 -->
         <receiver
