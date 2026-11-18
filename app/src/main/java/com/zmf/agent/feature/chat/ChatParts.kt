@@ -102,6 +102,7 @@ import com.zmf.agent.core.model.ChatMessage
 import com.zmf.agent.core.model.ORIGIN_JOB
 import com.zmf.agent.core.model.ORIGIN_RECOVERY
 import com.zmf.agent.core.model.ORIGIN_SUBAGENT
+import com.zmf.agent.core.text.MarkdownPlainText
 import com.zmf.agent.uikit.components.salt.SaltSwitch
 import com.zmf.agent.uikit.theme.Motion
 import com.zmf.agent.uikit.theme.Palette
@@ -1597,6 +1598,31 @@ internal fun copyToClipboard(context: Context, text: String) {
         NoticeCenter.info("已复制")
     }
 }
+
+/**
+ * 复制消息正文：同一剪贴板项同时携带 HTML 与纯文本。
+ *
+ * 富文本接收端（Word、飞书文档、Google Docs）取 HTML 分支，保留标题、列表与表格；
+ * 只认纯文本的输入框按系统规则取纯文本兜底。HTML 生成失败时退回纯文本，不阻断复制。
+ */
+internal fun copyMarkdownToClipboard(context: Context, markdown: String) {
+    val plain = MarkdownPlainText.toPlainTextOrOriginal(markdown)
+    val html = runCatching { MarkdownPlainText.toHtml(markdown) }.getOrNull()
+    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+    val clip = if (html.isNullOrBlank()) {
+        ClipData.newPlainText("消息", plain)
+    } else {
+        ClipData.newHtmlText("消息", plain, wrapClipboardHtml(html))
+    }
+    manager.setPrimaryClip(clip)
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+        NoticeCenter.info("已复制")
+    }
+}
+
+/** HTML 分支自带字符集声明：部分接收端缺省按本地编码解释，中文会乱码。 */
+private fun wrapClipboardHtml(fragment: String): String =
+    "<html><head><meta charset=\"utf-8\"></head><body>" + fragment + "</body></html>"
 
 /** 文件选择器「上次目录」的有效期：超过后即停止使用，避免一次选择使后续每次打开都停留在同一层。 */
 private const val PICKER_DIR_TTL_MS = 30L * 60 * 1000L

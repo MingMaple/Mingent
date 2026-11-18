@@ -39,7 +39,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zmf.agent.capability.runtime.AskBridge
-import com.zmf.agent.core.text.MarkdownPlainText
 import com.zmf.agent.uikit.layout.LocalUiWindow
 import com.zmf.agent.uikit.markdown.FileLinkRouter
 import kotlinx.coroutines.delay
@@ -313,10 +312,7 @@ internal fun ColumnScope.ChatMessageList(
                                     roundsFromEnd = item.roundsFromEnd,
                                     imageRoot = imageRoot,
                                     onCopy = { text ->
-                                        copyToClipboard(
-                                            context,
-                                            MarkdownPlainText.toPlainTextOrOriginal(text)
-                                        )
+                                        copyMarkdownToClipboard(context, text)
                                     },
                                     onSelectText = { text ->
                                         selectionTarget = SelectionTarget(
@@ -362,10 +358,7 @@ internal fun ColumnScope.ChatMessageList(
                                     root = imageRoot,
                                     onOpenFile = openPreview,
                                     onCopy = { text ->
-                                        copyToClipboard(
-                                            context,
-                                            MarkdownPlainText.toPlainTextOrOriginal(text)
-                                        )
+                                        copyMarkdownToClipboard(context, text)
                                     },
                                     onSelectText = { text, reasoning ->
                                         selectionTarget = SelectionTarget(

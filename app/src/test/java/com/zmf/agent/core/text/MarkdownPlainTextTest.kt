@@ -98,6 +98,30 @@ class MarkdownPlainTextTest {
     }
 
     @Test
+    fun tablePadsColumnsToWidestCell() {
+        val source = "| a | 名称 |\n| --- | --- |\n| bbb | 苹果 |"
+        assertEquals(
+            "a    名称\nbbb  苹果",
+            MarkdownPlainText.toPlainText(source)
+        )
+    }
+
+    @Test
+    fun tableCountsCjkAsTwoColumns() {
+        val source = "| 名称 | 值 |\n| --- | --- |\n| ab | 12 |"
+        assertEquals(
+            "名称  值\nab    12",
+            MarkdownPlainText.toPlainText(source)
+        )
+    }
+
+    @Test
+    fun tableWithoutDataKeepsHeader() {
+        val source = "| a | b |\n| --- | --- |"
+        assertEquals("a  b", MarkdownPlainText.toPlainText(source))
+    }
+
+    @Test
     fun dividerLeavesOneBlankLine() {
         val source = "上文\n\n---\n\n下文"
         assertEquals("上文\n\n下文", MarkdownPlainText.toPlainText(source))
